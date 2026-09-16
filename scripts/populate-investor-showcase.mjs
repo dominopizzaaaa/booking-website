@@ -11,6 +11,7 @@ if (targetUrl.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].inclu
   throw new Error('INVESTOR_DEMO_BASE_URL must use HTTPS unless it targets a loopback development host');
 }
 const baseUrl = targetUrl.origin;
+const useNodeHttp = process.env.INVESTOR_DEMO_NODE_HTTP === 'true';
 const allowCreate = process.env.INVESTOR_DEMO_ALLOW_CREATE === 'true';
 const expectedBusinessId = process.env.INVESTOR_DEMO_EXPECTED_BUSINESS_ID?.trim() || null;
 const expectedBusinessSlug = process.env.INVESTOR_DEMO_EXPECTED_BUSINESS_SLUG?.trim() || null;
@@ -46,13 +47,17 @@ class ApiError extends Error {
 class Client {
   static nextId = 1;
   cookieJar = join(cookieDirectory, `cookies-${Client.nextId++}.txt`);
+  cookieHeader = '';
 
-  constructor() { writeFileSync(this.cookieJar, ''); }
+  constructor() {
+    if (!useNodeHttp) writeFileSync(this.cookieJar, '');
+  }
 
   async request(path, method = 'GET', body) {
+    if (useNodeHttp) return this.nodeRequest(path, method, body);
     const marker = '__COURTLY_HTTP_STATUS__:';
     const args = [
-      '--silent', '--show-error', '--connect-timeout', '15', '--max-time', '120',
+      '--silent', '--show-error', '--http1.1', '--connect-timeout', '15', '--max-time', '120',
       '--cookie', this.cookieJar, '--cookie-jar', this.cookieJar,
       '--request', method, '--header', 'Accept: application/json', '--header', `Origin: ${baseUrl}`,
       '--write-out', `\n${marker}%{http_code}`,
@@ -74,6 +79,35 @@ class Client {
     try { data = text ? JSON.parse(text) : {}; } catch { data = { error: text || 'Non-JSON response' }; }
     if (status < 200 || status >= 300) throw new ApiError(status, path, data);
     return data;
+  }
+
+  async nodeRequest(path, method, body) {
+    const attempts = method === 'GET' ? 11 : 1;
+    let lastError;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const headers = { Accept: 'application/json', Origin: baseUrl };
+        if (this.cookieHeader) headers.Cookie = this.cookieHeader;
+        if (body !== undefined) headers['Content-Type'] = 'application/json';
+        const response = await fetch(`${baseUrl}/api${path}`, {
+          method, headers, body: body === undefined ? undefined : JSON.stringify(body),
+          redirect: 'error',
+          signal: AbortSignal.timeout(120_000),
+        });
+        const setCookie = response.headers.get('set-cookie');
+        if (setCookie) this.cookieHeader = setCookie.split(';', 1)[0];
+        const text = await response.text();
+        let data;
+        try { data = text ? JSON.parse(text) : {}; } catch { data = { error: text || 'Non-JSON response' }; }
+        if (!response.ok) throw new ApiError(response.status, path, data);
+        return data;
+      } catch (error) {
+        if (error instanceof ApiError) throw error;
+        lastError = error;
+        if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, 1_000));
+      }
+    }
+    throw new Error(`Network request failed for ${path}: ${lastError?.message || String(lastError)}`);
   }
 
   get(path) { return this.request(path); }
