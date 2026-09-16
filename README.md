@@ -4,7 +4,17 @@ Courtly is a full-stack booking platform for coaching businesses. This repositor
 
 [![CI](https://github.com/dominopizzaaaa/booking-website/actions/workflows/ci.yml/badge.svg)](https://github.com/dominopizzaaaa/booking-website/actions/workflows/ci.yml)
 
-The working MVP includes multi-location and instructor-aware availability, travel and preparation buffers, private and capacity-limited group lessons, atomic recurring bookings, pending venue approval, customer self-booking and private management links, packages, manual payment records, attendance, customer/parent details, staff roles, and a responsive provider workspace. Defaults are SGD and Asia/Singapore.
+The working MVP includes global customer and provider accounts, club memberships, multi-location and instructor-aware availability, travel and preparation buffers, private and capacity-limited group lessons, atomic recurring bookings, pending venue approval, account-backed customer booking and self-service, packages, manual payment records, attendance, customer/parent details, staff roles, and a responsive provider workspace. Defaults are SGD and Asia/Singapore.
+
+## Accounts, clubs, and bookings
+
+An account belongs to a person, not to one club. Customers use the same global account to book with different clubs. Provider accounts gain access to individual club workspaces through memberships, and can switch between the clubs they belong to. A membership carries the workspace role (`OWNER`, `ADMIN`, or `COACH`) rather than duplicating the person's login for each club.
+
+- **Customers** create or sign in to a customer account from a club's booking page. Signing in is required before a booking can be submitted. The resulting club customer record is linked to the global account, so the customer can return to the booking page to view their receipt and club-specific booking history, then cancel or reschedule eligible sessions. New guest bookings and private management links are not supported; already-issued legacy links remain available only for their existing bookings.
+- **Owners** choose the owner account type at sign-up and create their first club workspace. They manage the club's services, locations, instructor roster, schedules, bookings, customers, and staff access.
+- **Coaches** create their own coach account first. A club owner then adds that existing account to the club and links its membership to the matching instructor profile. Every new coach roster entry or customer record must resolve to a registered account; creating an instructor profile alone does not grant sign-in access, and an owner does not create or share a coach password.
+
+Club membership and customer membership are separate concerns: provider memberships grant workspace permissions, while each account-backed customer record holds that customer's club-specific booking, package, attendance, and payment context.
 
 ## Requirements
 
@@ -51,7 +61,7 @@ The working MVP includes multi-location and instructor-aware availability, trave
 
    Open [http://localhost:3000](http://localhost:3000). The Next.js server rewrites same-origin `/api/*` requests to the API at `http://127.0.0.1:4000`.
 
-To create a persistent sample owner instead of using the visitor demo, optionally set `SEED_OWNER_EMAIL`, `SEED_OWNER_PASSWORD`, `SEED_BUSINESS_NAME`, and `SEED_BUSINESS_SLUG` in `backend/.env`, then run `npm run seed --prefix backend`. If `SEED_OWNER_PASSWORD` is omitted, the command prints a generated password once.
+To create a persistent sample club and owner membership instead of using the demo workspace, optionally set `SEED_OWNER_EMAIL`, `SEED_OWNER_PASSWORD`, `SEED_BUSINESS_NAME`, and `SEED_BUSINESS_SLUG` in `backend/.env`, then run `npm run seed --prefix backend`. If `SEED_OWNER_PASSWORD` is omitted, the command prints a generated password once.
 
 ## Checks
 
@@ -98,21 +108,21 @@ Deploy the backend to Railway first, then point the Vercel frontend at the Railw
 4. Deploy the project and note its canonical production URL.
 5. Return to the Railway API variables, add `APP_ORIGIN` with that exact Vercel origin (for example `https://courtly.example.com`, with no trailing slash), and redeploy the API. If a custom frontend domain is added later, update `APP_ORIGIN` to the domain users actually visit. For more than one allowed origin, use a comma-separated list.
 6. Redeploy Vercel whenever `BACKEND_URL` changes because Next.js resolves the rewrite configuration during the build.
-7. Open the Vercel application and exercise registration or the demo. In browser developer tools, `/api/*` requests should target the Vercel hostname, not the Railway hostname.
+7. Open the Vercel application, register or sign in with a customer account, and complete a booking. Confirm that it appears in the customer's self-service history. In browser developer tools, `/api/*` requests should target the Vercel hostname, not the Railway hostname.
 
 Preview deployments have a different origin on every build. If previews need authenticated mutations, add the desired preview origins to Railway's `APP_ORIGIN`; otherwise keep previews connected only for read-only checks or omit the Preview `BACKEND_URL`.
 
 ## Production operations
 
 - Commit a new Prisma migration for every schema change. Railway runs `prisma migrate deploy` through `npm run db:migrate`; it does not run destructive development migrations or seed production automatically.
-- Set `DEMO_ENABLED=false` when public demo creation is not wanted. Registration and normal sign-in remain available.
+- Set `DEMO_ENABLED=false` when public demo creation is not wanted. Global customer and provider account registration and sign-in remain available.
 - To create an initial known business deliberately, run the Railway service's `npm run seed` command once with strong `SEED_OWNER_PASSWORD`, `SEED_OWNER_EMAIL`, `SEED_BUSINESS_NAME`, and `SEED_BUSINESS_SLUG` variables. The seed is idempotent for an existing slug and is not part of deployment.
 - Check the Railway health endpoint after releases. It returns `503` if PostgreSQL cannot be reached.
 - Treat Railway and Vercel environment changes as production changes. Never copy the generated `DATABASE_URL` into GitHub, Vercel, or committed files; only the backend needs database access.
 
 ## Platform admin console
 
-Courtly ships a platform-owner console at `/admin`, separate from provider (business) logins. It is gated by a single `ADMIN_PASSWORD` environment variable on the backend, not by a database account.
+Courtly ships a platform-owner console at `/admin`, separate from global customer/provider accounts and club memberships. It is gated by a single `ADMIN_PASSWORD` environment variable on the backend, not by a user account.
 
 - Set `ADMIN_PASSWORD` in the Railway API service to a long, random secret, then redeploy. Leaving it unset disables `/admin` (the page shows a "not configured" notice and every admin API returns `401`/`503`).
 - Visit `https://YOUR-FRONTEND-DOMAIN/admin`, enter the password, and you get a platform overview (businesses, customers, bookings, payments) plus a searchable, filterable list of every workspace.

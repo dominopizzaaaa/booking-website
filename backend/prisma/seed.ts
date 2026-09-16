@@ -23,7 +23,12 @@ async function main() {
       throw new Error(`The owner email ${ownerEmail} is already in use. Choose another SEED_OWNER_EMAIL; no data was changed.`);
     }
     const seeded = await seedBusiness(tx, { slug, ownerEmail, businessName, isDemo: false });
-    return { created: true as const, ...seeded };
+    return {
+      created: true as const,
+      business: seeded.business,
+      owner: seeded.owner,
+      ownerMembership: seeded.ownerMembership,
+    };
   }, { maxWait: 10_000, timeout: 60_000 });
 
   if (!result.created) {

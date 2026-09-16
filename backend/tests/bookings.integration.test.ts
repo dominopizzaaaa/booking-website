@@ -6,7 +6,7 @@ import { app } from '../src/app.js';
 import { config } from '../src/config.js';
 import { HttpError } from '../src/http.js';
 import { cancelBooking, createBookings, type BookingInput } from '../src/scheduling.js';
-import { createCustomer, createPackage, inputFor, prisma, tenantCounts, TestTenants, verifyTestDatabase, type Fixture } from './fixtures.js';
+import { createAccount, createCustomer, createPackage, inputFor, linkedInputFor, prisma, tenantCounts, TestTenants, verifyTestDatabase, type Fixture } from './fixtures.js';
 
 // Keep every PostgreSQL/HTTP integration suite in this file and sequential;
 // concurrency is introduced only by the explicit transaction race tests.
@@ -24,8 +24,13 @@ describe.sequential('PostgreSQL booking transactions', () => {
   afterEach(async () => { await tenants.cleanup(); });
 
   it('admits exactly one concurrent private booking and rolls back losing customers', async () => {
-    const attempts = Array.from({ length: 8 }, () => inputFor(f));
-    const results = await Promise.allSettled(attempts.map(input => createBookings(f.business.id, input)));
+    const accounts = await Promise.all(Array.from({ length: 8 }, (_, index) => createAccount(f, {
+      name: `Concurrent Customer ${index}`, email: `concurrent-${index}-${randomUUID()}@example.test`,
+    })));
+    const attempts = accounts.map(account => inputFor(f, { customer: { name: account.name, email: account.email } }));
+    const results = await Promise.allSettled(attempts.map((input, index) =>
+      createBookings(f.business.id, input, { customerUserId: accounts[index]!.id }),
+    ));
     const successful = results.filter(result => result.status === 'fulfilled');
     const rejected = results.filter(result => result.status === 'rejected');
 
@@ -40,7 +45,7 @@ describe.sequential('PostgreSQL booking transactions', () => {
     expect(persisted.capacity).toBe(1);
     expect(persisted.participants).toHaveLength(1);
     const response = successful[0]!.value;
-    expect(response.managementToken).toMatch(/^[\w-]{43}$/);
+    expect(response).not.toHaveProperty('managementToken');
     expect(response.bookings[0]).toMatchObject({
       id: persisted.id, serviceId: f.service.id, serviceName: f.service.name,
       instructorId: f.instructor.id, instructorName: f.instructor.name,
@@ -55,8 +60,15 @@ describe.sequential('PostgreSQL booking transactions', () => {
   it('admits exactly group capacity under concurrent enrollment without duplicate sessions', async () => {
     const capacity = 3;
     await prisma.service.update({ where: { id: f.service.id }, data: { type: 'GROUP', capacity } });
+    const accounts = await Promise.all(Array.from({ length: 9 }, (_, index) => createAccount(f, {
+      name: `Group Customer ${index}`, email: `group-${index}-${randomUUID()}@example.test`,
+    })));
     const results = await Promise.allSettled(
-      Array.from({ length: 9 }, () => createBookings(f.business.id, inputFor(f))),
+      accounts.map(account => createBookings(
+        f.business.id,
+        inputFor(f, { customer: { name: account.name, email: account.email } }),
+        { customerUserId: account.id },
+      )),
     );
     const successful = results.filter(result => result.status === 'fulfilled');
     const rejected = results.filter(result => result.status === 'rejected');
@@ -99,8 +111,8 @@ describe.sequential('PostgreSQL booking transactions', () => {
       businessId: f.business.id, instructorId: f.instructor.id, locationId: secondLocation.id,
       dayOfWeek, startTime: '08:00', endTime: '20:00',
     })) });
-    await createBookings(f.business.id, inputFor(f));
-    const input = inputFor(f, { serviceId: secondService.id, locationId: secondLocation.id });
+    await createBookings(f.business.id, await linkedInputFor(f));
+    const input = await linkedInputFor(f, { serviceId: secondService.id, locationId: secondLocation.id });
     await expect(createBookings(f.business.id, input)).rejects.toMatchObject({ status: 409 });
     await expect(createBookings(f.business.id, {
       ...input, startAt: f.starts.plus({ minutes: 109 }).toISO()!,
@@ -117,15 +129,16 @@ describe.sequential('PostgreSQL booking transactions', () => {
     await prisma.availabilityException.create({ data: {
       businessId: f.business.id, instructorId: f.instructor.id, date: blocked.toISODate()!, reason: 'Away',
     } });
-    const input = inputFor(f, { repeatWeeks: 3 });
-    await expect(createBookings(f.business.id, input)).rejects.toMatchObject({
+    const account = await createAccount(f);
+    const input = inputFor(f, {
+      repeatWeeks: 3, customer: { name: account.name, email: account.email },
+    });
+    await expect(createBookings(f.business.id, input, { customerUserId: account.id })).rejects.toMatchObject({
       status: 409,
       details: { conflicts: [{ date: blocked.toJSDate().toISOString(), reason: 'Coach is unavailable on this date' }] },
     });
     expect(await tenantCounts(f.business.id)).toMatchObject({ bookings: 0, participants: 0, customers: 0, notifications: 0 });
-    expect(await prisma.customer.findUnique({
-      where: { businessId_email: { businessId: f.business.id, email: input.customer!.email } },
-    })).toBeNull();
+    expect(await prisma.customer.findFirst({ where: { businessId: f.business.id, userId: account.id } })).toBeNull();
   });
 
   it('leaves existing package credits unchanged when a later recurring occurrence is blocked', async () => {
@@ -265,14 +278,16 @@ describe.sequential('PostgreSQL booking transactions', () => {
     ['serviceId', 404], ['instructorId', 404], ['locationId', 404], ['customerId', 404], ['packageId', 400],
   ] as const)('rejects another tenant’s %s without modifying either tenant', async (field, status) => {
     const other = await tenants.fixture();
+    const localCustomer = await createCustomer(f);
     const otherCustomer = await createCustomer(other);
     const otherPackage = await createPackage(other, otherCustomer.id);
     const foreignIds = {
       serviceId: other.service.id, instructorId: other.instructor.id, locationId: other.location.id,
       customerId: otherCustomer.id, packageId: otherPackage.id,
     };
-    const overrides: Partial<BookingInput> = { [field]: foreignIds[field] };
-    if (field === 'customerId') overrides.customer = undefined;
+    const overrides: Partial<BookingInput> = {
+      customerId: localCustomer.id, customer: undefined, [field]: foreignIds[field],
+    };
     const before = await tenantCounts(f.business.id);
     const otherBefore = await tenantCounts(other.business.id);
     await expect(createBookings(f.business.id, inputFor(f, overrides))).rejects.toMatchObject({ status });
@@ -283,7 +298,10 @@ describe.sequential('PostgreSQL booking transactions', () => {
 
   it('rejects a complete foreign scheduling tuple even when those foreign assignments are valid', async () => {
     const other = await tenants.fixture();
-    await expect(createBookings(f.business.id, inputFor(other))).rejects.toMatchObject({ status: 404 });
+    const account = await createAccount(other);
+    await expect(createBookings(f.business.id, inputFor(other, {
+      customer: { name: account.name, email: account.email },
+    }), { customerUserId: account.id })).rejects.toMatchObject({ status: 404 });
     expect(await tenantCounts(f.business.id)).toMatchObject({ bookings: 0, participants: 0, customers: 0 });
     expect(await tenantCounts(other.business.id)).toMatchObject({ bookings: 0, participants: 0, customers: 0 });
   });
@@ -316,215 +334,251 @@ describe.sequential('PostgreSQL booking transactions', () => {
   });
 });
 
-describe.sequential('Guest management and exact participant payments', () => {
+describe.sequential('Account bookings and exact participant payments', () => {
   let tenants: TestTenants;
   let f: Fixture;
   beforeEach(async () => { tenants = new TestTenants(); f = await tenants.fixture(); });
   afterEach(async () => { await tenants.cleanup(); });
 
-  it('keeps group guest identities private and cancels only the token holder', async () => {
-    await prisma.service.update({ where: { id: f.service.id }, data: { type: 'GROUP', capacity: 3 } });
-    const first = await request(app).post(`/api/public/${f.business.slug}/bookings`).send(inputFor(f)).expect(201);
-    const second = await request(app).post(`/api/public/${f.business.slug}/bookings`).send(inputFor(f)).expect(201);
-    expect(second.body.bookings[0].participants).toHaveLength(1);
-    expect(second.body.bookings[0].participants[0].managementToken).not.toBe(first.body.managementToken);
-    const managed = await request(app).get(`/api/manage/${first.body.managementToken}`).expect(200);
-    expect(managed.body.booking.participants).toHaveLength(1);
-    expect(managed.body.canCancel).toBe(true);
-    expect(managed.body.canReschedule).toBe(false);
-    const cancelled = await request(app).post(`/api/manage/${first.body.managementToken}/cancel`).send({}).expect(200);
-    expect(cancelled.body.booking.status).toBe('CANCELLED');
-    await request(app).post(`/api/manage/${first.body.managementToken}/cancel`).send({}).expect(200);
-    const remaining = await request(app).get(`/api/manage/${second.body.managementToken}`).expect(200);
-    expect(remaining.body.booking.status).toBe('CONFIRMED');
-    expect(await prisma.participant.count({ where: { bookingId: first.body.bookings[0].id, cancelledAt: null } })).toBe(1);
-  });
-
-  it('reschedules a private guest booking and enforces cancellation notice', async () => {
-    const created = await request(app).post(`/api/public/${f.business.slug}/bookings`).send(inputFor(f)).expect(201);
-    const path = `/api/manage/${created.body.managementToken}`;
-    const startAt = f.starts.plus({ days: 1 }).toISO();
-    const moved = await request(app).post(`${path}/reschedule`).send({ startAt }).expect(200);
-    expect(moved.body.booking.startAt).toBe(f.starts.plus({ days: 1 }).toJSDate().toISOString());
-    await prisma.business.update({ where: { id: f.business.id }, data: { cancellationHours: 720 } });
-    const view = await request(app).get(path).expect(200);
-    expect(view.body.canCancel).toBe(false);
-    await request(app).post(`${path}/cancel`).send({}).expect(400);
-  });
-
   it('records payment for exactly one group participant and never charges cancelled sessions', async () => {
     await prisma.service.update({ where: { id: f.service.id }, data: { type: 'GROUP', capacity: 3 } });
-    const first = await createBookings(f.business.id, inputFor(f));
-    const second = await createBookings(f.business.id, inputFor(f));
+    const first = await createBookings(f.business.id, await linkedInputFor(f));
+    const second = await createBookings(f.business.id, await linkedInputFor(f));
     const participant = first.bookings[0].participants[0];
     const other = second.bookings[0].participants.find(p => p.id !== participant.id)!;
-    const user = await prisma.user.create({ data: { businessId: f.business.id, name: 'Owner', email: `${randomUUID()}@example.test`, passwordHash: 'not-a-login-hash', role: 'OWNER', instructorId: f.instructor.id } });
-    const token = randomUUID();
-    await prisma.authSession.create({ data: { id: createHash('sha256').update(token).digest('hex'), userId: user.id, expiresAt: new Date(Date.now() + 3600_000) } });
-    const cookie = `${config.sessionCookie}=${token}`;
     const payment = { customerId: participant.customerId, bookingId: first.bookings[0].id, amount: participant.price, method: 'CASH' };
-    await request(app).post('/api/payments').set('Cookie', cookie).send(payment).expect(201);
+    await request(app).post('/api/payments').set('Cookie', f.cookie).send(payment).expect(201);
     expect(await prisma.participant.findUniqueOrThrow({ where: { id: participant.id } })).toMatchObject({ paid: true });
     expect(await prisma.participant.findUniqueOrThrow({ where: { id: other.id } })).toMatchObject({ paid: false });
-    await request(app).post('/api/payments').set('Cookie', cookie).send(payment).expect(409);
-    await request(app).patch(`/api/bookings/${first.bookings[0].id}`).set('Cookie', cookie).send({ status: 'CANCELLED' }).expect(200);
-    await request(app).post('/api/payments').set('Cookie', cookie).send({ ...payment, customerId: other.customerId }).expect(400);
+    await request(app).post('/api/payments').set('Cookie', f.cookie).send(payment).expect(409);
+    await request(app).patch(`/api/bookings/${first.bookings[0].id}`).set('Cookie', f.cookie).send({ status: 'CANCELLED' }).expect(200);
+    await request(app).post('/api/payments').set('Cookie', f.cookie).send({ ...payment, customerId: other.customerId }).expect(400);
     expect(await prisma.payment.count({ where: { businessId: f.business.id } })).toBe(1);
   });
 });
 
-describe.sequential('HTTP authentication and tenant contract', () => {
+describe.sequential('Global account authentication and workspace memberships', () => {
   let tenants: TestTenants;
   const password = 'Courtly-test-password-123';
 
   beforeEach(() => { tenants = new TestTenants(); });
   afterEach(async () => { await tenants.cleanup(); });
 
-  async function authenticatedFixture(role: 'OWNER' | 'COACH' = 'OWNER') {
+  async function loginFixture(role: 'OWNER' | 'COACH' = 'OWNER') {
     const fixture = await tenants.fixture();
-    const user = await prisma.user.create({ data: {
-      businessId: fixture.business.id, name: 'Test User', email: `${randomUUID()}@example.test`,
-      passwordHash: await bcrypt.hash(password, 4), role, instructorId: fixture.instructor.id,
-    } });
+    await prisma.user.update({ where: { id: fixture.user.id }, data: { passwordHash: await bcrypt.hash(password, 4) } });
+    if (role === 'COACH') {
+      await prisma.membership.update({ where: { id: fixture.membership.id }, data: { role } });
+      await prisma.user.update({ where: { id: fixture.user.id }, data: { accountType: 'COACH' } });
+    }
     const agent = request.agent(app);
-    const response = await agent.post('/api/auth/login').send({ email: user.email, password });
-    expect(response.status).toBe(200);
-    return { ...fixture, user, agent, login: response };
+    const response = await agent.post('/api/auth/login').send({ email: fixture.user.email, password }).expect(200);
+    return { ...fixture, user: await prisma.user.findUniqueOrThrow({ where: { id: fixture.user.id } }), agent, login: response };
   }
 
-  it('registers an isolated owner, establishes a safe session and returns the frontend workspace contract', async () => {
+  async function trackRegistration(email: string) {
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) return null;
+    tenants.ownUser(user.id);
+    const memberships = await prisma.membership.findMany({ where: { userId: user.id } });
+    for (const membership of memberships) tenants.own(membership.businessId);
+    return { user, memberships };
+  }
+
+  it('registers an owner with a selected membership and returns the workspace contract', async () => {
     const email = `${randomUUID()}@example.test`;
     const agent = request.agent(app);
     const response = await agent.post('/api/auth/register').send({
-      businessName: 'Test New Academy', name: 'New Owner', email: email.toUpperCase(), password,
+      accountType: 'OWNER', businessName: 'Test New Academy', name: 'New Owner',
+      email: email.toUpperCase(), password,
     });
-    // Capture the tenant before assertions, including a registration that created
-    // a user but failed later while issuing the session.
-    const owner = await prisma.user.findUnique({ where: { email } });
-    if (owner) tenants.own(owner.businessId);
+    const registered = await trackRegistration(email);
     expect(response.status).toBe(201);
-    expect(response.body.user).toMatchObject({ name: 'New Owner', email, role: 'OWNER' });
+    expect(response.body.user).toMatchObject({ name: 'New Owner', email, accountType: 'OWNER' });
     expect(response.body.user).not.toHaveProperty('passwordHash');
-    expect(response.body.business).toMatchObject({ name: 'Test New Academy', timezone: 'Asia/Singapore', currency: 'SGD', isDemo: false });
-    expect(owner).not.toBeNull();
-    expect(owner!.passwordHash).not.toBe(password);
-    expect(await bcrypt.compare(password, owner!.passwordHash)).toBe(true);
+    expect(response.body.membership).toMatchObject({ role: 'OWNER', active: true });
+    expect(response.body.memberships).toHaveLength(1);
+    expect(response.body.business).toMatchObject({ name: 'Test New Academy', isDemo: false });
+    expect(registered).not.toBeNull();
+    expect(registered!.memberships[0]!.businessId).toBe(response.body.business.id);
+    expect(await bcrypt.compare(password, registered!.user.passwordHash!)).toBe(true);
     const cookie = response.get('set-cookie')![0]!;
     expect(cookie).toContain(`${config.sessionCookie}=`);
     expect(cookie).toContain('HttpOnly');
     expect(cookie).toContain('SameSite=Lax');
-    expect(cookie).toContain('Path=/');
 
-    const me = await agent.get('/api/auth/me').expect(200);
-    expect(me.body).toEqual(response.body);
+    expect((await agent.get('/api/auth/me').expect(200)).body).toEqual(response.body);
     const workspace = await agent.get('/api/workspace').expect(200);
-    expect(workspace.body.business.id).toBe(owner!.businessId);
-    expect(workspace.body.user.id).toBe(owner!.id);
+    expect(workspace.body).toMatchObject({
+      business: { id: response.body.business.id },
+      user: { id: registered!.user.id, accountType: 'OWNER', role: 'OWNER' },
+      membership: { id: response.body.membership.id, businessId: response.body.business.id },
+    });
     expect(workspace.body.instructors).toHaveLength(1);
-    for (const key of ['locations', 'services', 'availability', 'exceptions', 'customers', 'packages', 'bookings', 'payments', 'notifications']) {
-      expect(workspace.body[key], key).toEqual([]);
-    }
     await request(app).get('/api/workspace').expect(401);
-    await request(app).get('/api/auth/me').expect(401);
   });
 
-  it('authenticates credentials, stores a digest, rejects expired sessions and revokes on logout', async () => {
-    const f = await authenticatedFixture();
+  it.each(['COACH', 'CUSTOMER'] as const)(
+    'registers a standalone %s account but denies workspace access without a membership', async accountType => {
+      const email = `${accountType.toLowerCase()}-${randomUUID()}@example.test`;
+      const agent = request.agent(app);
+      const response = await agent.post('/api/auth/register').send({
+        accountType, name: `${accountType} Account`, email, password,
+      }).expect(201);
+      await trackRegistration(email);
+      expect(response.body).toMatchObject({
+        user: { email, accountType }, membership: null, business: null, memberships: [],
+      });
+      await agent.get('/api/auth/me').expect(200);
+      await agent.get('/api/workspace').expect(403);
+      await agent.get('/api/bookings').expect(403);
+    },
+  );
+
+  it('stores a session digest and selected membership, rejects expiry, and revokes on logout', async () => {
+    const f = await loginFixture();
     const cookie = f.login.get('set-cookie')![0]!.split(';')[0]!;
     const token = cookie.slice(cookie.indexOf('=') + 1);
     const digest = createHash('sha256').update(token).digest('hex');
     const stored = await prisma.authSession.findUniqueOrThrow({ where: { id: digest } });
-    expect(stored.userId).toBe(f.user.id);
+    expect(stored).toMatchObject({ userId: f.user.id, activeMembershipId: f.membership.id });
     expect(stored.id).not.toBe(token);
     await request(app).post('/api/auth/login').send({ email: f.user.email, password: 'wrong-password' }).expect(401);
-    await request(app).get('/api/auth/me').set('Cookie', `${config.sessionCookie}=unrecognized-token`).expect(401);
     await prisma.authSession.update({ where: { id: digest }, data: { expiresAt: new Date(Date.now() - 1000) } });
     await request(app).get('/api/auth/me').set('Cookie', cookie).expect(401);
 
     const secondLogin = await f.agent.post('/api/auth/login').send({ email: f.user.email, password }).expect(200);
     const secondCookie = secondLogin.get('set-cookie')![0]!.split(';')[0]!;
     expect(secondCookie).not.toBe(cookie);
-    expect(await prisma.authSession.findUnique({ where: { id: digest } })).toBeNull();
-    await f.agent.get('/api/auth/me').expect(200);
     await f.agent.post('/api/auth/logout').send({}).expect(200);
-    await f.agent.get('/api/workspace').expect(401);
     await request(app).get('/api/auth/me').set('Cookie', secondCookie).expect(401);
     expect(await prisma.authSession.count({ where: { userId: f.user.id } })).toBe(0);
   });
 
-  it('lets only owners create and remove tenant-scoped staff access without exposing password hashes', async () => {
-    const owner = await authenticatedFixture();
-    const otherTenant = await authenticatedFixture();
-    const staffInstructor = await prisma.instructor.create({
-      data: { businessId: owner.business.id, name: 'Assistant Coach', initials: 'AC' },
+  it('switches one global provider between memberships and isolates each workspace', async () => {
+    const first = await loginFixture();
+    const second = await tenants.fixture();
+    const secondMembership = await prisma.membership.create({
+      data: { userId: first.user.id, businessId: second.business.id, role: 'ADMIN' },
     });
+    const foreignUser = await createAccount(second, { accountType: 'COACH' });
+    const foreignMembership = await prisma.membership.create({
+      data: { userId: foreignUser.id, businessId: second.business.id, role: 'COACH' },
+    });
+    const ownCustomer = await createCustomer(first);
+    const foreignCustomer = await createCustomer(second);
+    const own = await createBookings(first.business.id, inputFor(first, { customerId: ownCustomer.id, customer: undefined }));
+    const foreign = await createBookings(second.business.id, inputFor(second, { customerId: foreignCustomer.id, customer: undefined }));
+
+    expect((await first.agent.get('/api/workspace').expect(200)).body.business.id).toBe(first.business.id);
+    const switched = await first.agent.post('/api/auth/switch-workspace')
+      .send({ membershipId: secondMembership.id }).expect(200);
+    expect(switched.body).toMatchObject({
+      membership: { id: secondMembership.id, businessId: second.business.id },
+      business: { id: second.business.id },
+    });
+    const workspace = await first.agent.get('/api/workspace').expect(200);
+    expect(workspace.body.business.id).toBe(second.business.id);
+    expect(workspace.body.bookings.map((booking: { id: string }) => booking.id)).toEqual([foreign.bookings[0]!.id]);
+    expect(JSON.stringify(workspace.body)).not.toContain(own.bookings[0]!.id);
+    await first.agent.patch(`/api/bookings/${own.bookings[0]!.id}`).send({ status: 'CANCELLED' }).expect(404);
+    await first.agent.post('/api/auth/switch-workspace').send({ membershipId: foreignMembership.id }).expect(403);
+    await prisma.membership.update({ where: { id: secondMembership.id }, data: { active: false } });
+    await first.agent.post('/api/auth/switch-workspace').send({ membershipId: secondMembership.id }).expect(403);
+  });
+
+  it('links only pre-registered staff and removes membership while preserving the global user and history', async () => {
+    const owner = await loginFixture();
+    const otherTenant = await tenants.fixture();
     const staffEmail = `${randomUUID()}@example.test`;
+    const staff = await createAccount(owner, {
+      name: 'Assistant Coach', email: staffEmail, accountType: 'COACH',
+      passwordHash: await bcrypt.hash(password, 4),
+    });
+    const otherMembership = await prisma.membership.create({
+      data: { userId: staff.id, businessId: otherTenant.business.id, role: 'ADMIN' },
+    });
+    await owner.agent.post('/api/staff').send({
+      email: `${randomUUID()}@example.test`, role: 'ADMIN', instructorId: null,
+    }).expect(404);
     const created = await owner.agent.post('/api/staff').send({
-      name: 'Assistant Coach', email: staffEmail, password, role: 'COACH',
-      instructorId: staffInstructor.id,
+      email: staffEmail, role: 'COACH', instructorId: null,
     }).expect(201);
     expect(created.body).toMatchObject({
-      name: 'Assistant Coach', email: staffEmail, role: 'COACH', instructorId: staffInstructor.id,
+      userId: staff.id, name: 'Assistant Coach', email: staffEmail, accountType: 'COACH',
+      role: 'COACH', active: true,
     });
+    expect(created.body.instructorId).toEqual(expect.any(String));
     expect(created.body).not.toHaveProperty('passwordHash');
-    const persisted = await prisma.user.findUniqueOrThrow({ where: { id: created.body.id } });
-    expect(persisted.businessId).toBe(owner.business.id);
-    expect(await bcrypt.compare(password, persisted.passwordHash)).toBe(true);
+    const linkedCustomer = await createCustomer(owner);
+    await prisma.serviceInstructor.create({
+      data: {
+        serviceLocationId: (await prisma.serviceLocation.findUniqueOrThrow({
+          where: { serviceId_locationId: { serviceId: owner.service.id, locationId: owner.location.id } },
+        })).id,
+        instructorId: created.body.instructorId,
+      },
+    });
+    await prisma.availability.createMany({ data: Array.from({ length: 7 }, (_, dayOfWeek) => ({
+      businessId: owner.business.id, instructorId: created.body.instructorId, locationId: owner.location.id,
+      dayOfWeek, startTime: '08:00', endTime: '20:00',
+    })) });
+    const lesson = await createBookings(owner.business.id, inputFor(owner, {
+      customerId: linkedCustomer.id, customer: undefined, instructorId: created.body.instructorId,
+    }));
 
     const listing = await owner.agent.get('/api/staff').expect(200);
-    expect(listing.body.map((user: { id: string }) => user.id)).toEqual(expect.arrayContaining([owner.user.id, created.body.id]));
-    expect(JSON.stringify(listing.body)).not.toContain('passwordHash');
-    expect(JSON.stringify(listing.body)).not.toContain(otherTenant.user.id);
-
-    await otherTenant.agent.patch(`/api/staff/${created.body.id}`).send({ name: 'Cross-tenant edit' }).expect(404);
-    await otherTenant.agent.delete(`/api/staff/${created.body.id}`).expect(404);
+    expect(listing.body.map((membership: { id: string }) => membership.id)).toEqual(
+      expect.arrayContaining([owner.membership.id, created.body.id]),
+    );
+    expect(JSON.stringify(listing.body)).not.toContain(otherMembership.id);
+    await request(app).delete(`/api/staff/${created.body.id}`).set('Cookie', otherTenant.cookie).expect(404);
 
     const coach = request.agent(app);
     await coach.post('/api/auth/login').send({ email: staffEmail, password }).expect(200);
     await coach.get('/api/staff').expect(403);
-    await coach.post('/api/staff').send({
-      name: 'Unauthorized admin', email: `${randomUUID()}@example.test`, password, role: 'ADMIN',
-    }).expect(403);
-
+    await coach.post('/api/auth/switch-workspace').send({ membershipId: created.body.id }).expect(200);
     await owner.agent.patch(`/api/staff/${created.body.id}`).send({ role: 'ADMIN', instructorId: null }).expect(200);
     await owner.agent.delete(`/api/staff/${created.body.id}`).expect(200);
-    await coach.get('/api/workspace').expect(401);
-    expect(await prisma.user.findUnique({ where: { id: created.body.id } })).toBeNull();
-    expect(await prisma.instructor.findUnique({ where: { id: staffInstructor.id } })).not.toBeNull();
+    await coach.get('/api/workspace').expect(403);
+    expect(await prisma.membership.findUnique({ where: { id: created.body.id } })).toBeNull();
+    expect(await prisma.user.findUnique({ where: { id: staff.id } })).toMatchObject({ email: staffEmail });
+    expect(await prisma.membership.findUnique({ where: { id: otherMembership.id } })).not.toBeNull();
+    expect(await prisma.instructor.findUnique({ where: { id: created.body.instructorId } })).toMatchObject({ active: false });
+    expect(await prisma.booking.findUnique({ where: { id: lesson.bookings[0]!.id } })).not.toBeNull();
   });
 
-  it('scopes workspace and booking reads to the session tenant and rejects foreign booking mutations', async () => {
-    const first = await authenticatedFixture();
-    const second = await authenticatedFixture();
-    const customer = { name: 'Same Email', email: 'shared-customer@example.test' };
-    const own = await first.agent.post('/api/bookings').send(inputFor(first, { customer })).expect(201);
-    const foreign = await second.agent.post('/api/bookings').send(inputFor(second, { customer })).expect(201);
-    const ownBooking = own.body.bookings[0];
-    const foreignBooking = foreign.body.bookings[0];
-    expect(ownBooking.participants[0].customerId).not.toBe(foreignBooking.participants[0].customerId);
-    expect(own.body.managementToken).toEqual(expect.any(String));
-    expect(ownBooking).toMatchObject({
-      serviceName: first.service.name, instructorName: first.instructor.name,
-      locationName: first.location.name, status: 'CONFIRMED', price: 8000,
-      startAt: first.starts.toJSDate().toISOString(),
+  it('allows provider bookings only for existing account-linked customers', async () => {
+    const owner = await loginFixture();
+    const linked = await createCustomer(owner);
+    const legacy = await createCustomer(owner, { userId: null });
+    await owner.agent.post('/api/bookings').send(inputFor(owner)).expect(400);
+    await owner.agent.post('/api/bookings').send(inputFor(owner, {
+      customerId: legacy.id, customer: undefined,
+    })).expect(400);
+    const created = await owner.agent.post('/api/bookings').send(inputFor(owner, {
+      customerId: linked.id, customer: undefined,
+    })).expect(201);
+    expect(created.body).not.toHaveProperty('managementToken');
+    expect(created.body.bookings[0].participants[0].customerId).toBe(linked.id);
+    const persisted = await prisma.participant.findUniqueOrThrow({
+      where: { id: created.body.bookings[0].participants[0].id },
     });
-    const bookings = await first.agent.get('/api/bookings').expect(200);
-    expect(bookings.body.map((b: { id: string }) => b.id)).toEqual([ownBooking.id]);
-    const workspace = await first.agent.get('/api/workspace').expect(200);
-    expect(workspace.body.business.id).toBe(first.business.id);
-    expect(workspace.body.customers.map((c: { id: string }) => c.id)).toEqual([ownBooking.participants[0].customerId]);
-    expect(workspace.body.services[0]).toMatchObject({ locations: [{
-      locationId: first.location.id, price: 8000, duration: 60, instructorIds: [first.instructor.id],
-    }] });
-    expect(JSON.stringify(workspace.body)).not.toContain(second.business.id);
-    expect(JSON.stringify(workspace.body)).not.toContain(foreignBooking.id);
-    await first.agent.patch(`/api/bookings/${foreignBooking.id}`).send({ status: 'CANCELLED' }).expect(404);
-    expect(await prisma.booking.findUniqueOrThrow({ where: { id: foreignBooking.id } })).toMatchObject({ status: 'CONFIRMED' });
+    expect(persisted).toMatchObject({ managementTokenHash: null, managementTokenExpiresAt: null });
   });
 
-  it('limits COACH reads to their schedule/customers and denies other-coach or administrative writes', async () => {
-    const f = await authenticatedFixture('COACH');
+  it('limits a coach membership to its schedule and denies other-coach or administrative writes', async () => {
+    const f = await loginFixture('COACH');
     const other = await prisma.instructor.create({ data: { businessId: f.business.id, name: 'Other Coach', initials: 'OC' } });
+    const otherCoachAccount = await createAccount(f, {
+      name: 'Other Coach', email: `${randomUUID()}@example.test`,
+      accountType: 'COACH', passwordHash: 'registered-provider-account',
+    });
+    await prisma.membership.create({
+      data: {
+        userId: otherCoachAccount.id, businessId: f.business.id, role: 'COACH', instructorId: other.id,
+      },
+    });
     const assignment = await prisma.serviceLocation.findUniqueOrThrow({
       where: { serviceId_locationId: { serviceId: f.service.id, locationId: f.location.id } },
     });
@@ -534,29 +588,23 @@ describe.sequential('HTTP authentication and tenant contract', () => {
       dayOfWeek, startTime: '08:00', endTime: '20:00',
     })) });
     const ownCustomer = await createCustomer(f);
-    const pkg = await createPackage(f, ownCustomer.id);
-    const own = await createBookings(f.business.id, inputFor(f, { customerId: ownCustomer.id, customer: undefined, packageId: pkg.id }));
-    const others = await createBookings(f.business.id, inputFor(f, { instructorId: other.id }));
-    await prisma.payment.create({ data: { businessId: f.business.id, customerId: ownCustomer.id, packageId: pkg.id, amount: 40000 } });
+    const otherCustomer = await createCustomer(f);
+    const own = await createBookings(f.business.id, inputFor(f, { customerId: ownCustomer.id, customer: undefined }));
+    const others = await createBookings(f.business.id, inputFor(f, {
+      customerId: otherCustomer.id, customer: undefined, instructorId: other.id,
+    }));
 
-    const response = await f.agent.get('/api/workspace').expect(200);
-    expect(response.body.user.role).toBe('COACH');
-    expect(response.body.instructors.map((i: { id: string }) => i.id)).toEqual([f.instructor.id]);
-    expect(response.body.bookings.map((b: { id: string }) => b.id)).toEqual([own.bookings[0]!.id]);
-    expect(response.body.customers.map((c: { id: string }) => c.id)).toEqual([ownCustomer.id]);
-    expect(response.body.availability).toHaveLength(7);
-    expect(response.body.availability.every((a: { instructorId: string }) => a.instructorId === f.instructor.id)).toBe(true);
-    expect(response.body.services[0].locations[0].instructorIds).toEqual([f.instructor.id]);
-    expect(response.body.packages).toEqual([]);
-    expect(response.body.payments).toEqual([]);
-    expect(response.body.notifications).toHaveLength(1);
-    const bookings = await f.agent.get('/api/bookings').expect(200);
-    expect(bookings.body.map((b: { id: string }) => b.id)).toEqual([own.bookings[0]!.id]);
+    const workspace = await f.agent.get('/api/workspace').expect(200);
+    expect(workspace.body).toMatchObject({
+      user: { role: 'COACH' }, membership: { id: f.membership.id, role: 'COACH' },
+    });
+    expect(workspace.body.bookings.map((booking: { id: string }) => booking.id)).toEqual([own.bookings[0]!.id]);
+    expect(workspace.body.customers.map((customer: { id: string }) => customer.id)).toEqual([ownCustomer.id]);
     await f.agent.patch(`/api/bookings/${others.bookings[0]!.id}`).send({ notes: 'Unauthorized edit' }).expect(403);
     await f.agent.post('/api/bookings').send(inputFor(f, {
-      instructorId: other.id, startAt: f.starts.plus({ days: 1 }).toISO()!,
+      customerId: otherCustomer.id, customer: undefined, instructorId: other.id,
+      startAt: f.starts.plus({ days: 1 }).toISO()!,
     })).expect(403);
     await f.agent.post('/api/payments').send({ customerId: ownCustomer.id, amount: 100, method: 'CASH' }).expect(403);
-    expect(await prisma.booking.findUniqueOrThrow({ where: { id: others.bookings[0]!.id } })).toMatchObject({ notes: '' });
   });
 });

@@ -46,6 +46,8 @@ describe.sequential('Platform admin console', () => {
     const overview = await request(app).get('/api/admin/overview').set('Cookie', cookie);
     expect(overview.status).toBe(200);
     expect(overview.body.totals.businesses).toBeGreaterThanOrEqual(1);
+    expect(overview.body.totals.users).toBeGreaterThanOrEqual(1);
+    expect(overview.body.totals.memberships).toBeGreaterThanOrEqual(1);
 
     const list = await request(app).get('/api/admin/businesses').query({ search: f.business.slug }).set('Cookie', cookie);
     expect(list.status).toBe(200);
@@ -54,6 +56,13 @@ describe.sequential('Platform admin console', () => {
     const del = await request(app).delete(`/api/admin/businesses/${f.business.id}`).set('Cookie', cookie);
     expect(del.status).toBe(200);
     expect(await prisma.business.count({ where: { id: f.business.id } })).toBe(0);
+    expect(await prisma.membership.count({ where: { id: f.membership.id } })).toBe(0);
+    expect(await prisma.user.count({ where: { id: f.user.id } })).toBe(1);
+
+    // The admin deletion removes the tenant boundary, not the global account.
+    // TestTenants still owns that account and can safely remove it afterward.
+    await tenants.cleanup();
+    expect(await prisma.user.count({ where: { id: f.user.id } })).toBe(0);
   });
 
   it('purges only demo workspaces and leaves real providers intact', async () => {
