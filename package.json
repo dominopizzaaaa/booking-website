@@ -1,0 +1,14 @@
+{
+  "name": "courtly-platform",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "install:all": "npm install --prefix backend && npm install --prefix frontend",
+    "db:local": "node scripts/local-db.mjs",
+    "dev": "concurrently -n api,web -c green,blue \"npm run dev --prefix backend\" \"npm run dev --prefix frontend\"",
+    "build": "npm run build --prefix backend && npm run build --prefix frontend",
+    "test": "npm test --prefix backend",
+    "check": "npm run typecheck --prefix frontend && npm run build --prefix backend"
+  },
+  "devDependencies": { "concurrently": "^9.2.1", "embedded-postgres": "18.4.0-beta.17" }
+}
