@@ -1,6 +1,10 @@
 import type { NextConfig } from 'next';
 
-const backendUrl = (process.env.BACKEND_URL || 'http://127.0.0.1:4000').replace(/\/+$/, '');
+// Normalise BACKEND_URL: trim, strip trailing slashes, and ensure a protocol.
+// Railway/Vercel often surface a bare host (e.g. "app.up.railway.app"); without
+// a scheme Next.js rejects the rewrite below and `next build` exits 1.
+const rawBackendUrl = (process.env.BACKEND_URL || 'http://127.0.0.1:4000').trim().replace(/\/+$/, '');
+const backendUrl = /^https?:\/\//i.test(rawBackendUrl) ? rawBackendUrl : `https://${rawBackendUrl}`;
 
 const config: NextConfig = {
   turbopack: { root: process.cwd() },
