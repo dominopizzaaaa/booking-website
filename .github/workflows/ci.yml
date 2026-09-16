@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: courtly_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d courtly_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/courtly_test?schema=public
+      BACKEND_URL: http://127.0.0.1:4000
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Apply database migrations
+        working-directory: backend
+        run: npm run db:migrate
+
+      - name: Test backend
+        working-directory: backend
+        env:
+          NODE_ENV: test
+        run: npm test
+
+      - name: Build backend
+        working-directory: backend
+        run: npm run build
+
+      - name: Type-check frontend
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Install responsive browser test runtime
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Start production bundles
+        run: |
+          nohup env NODE_ENV=development DEMO_ENABLED=true APP_ORIGIN=http://localhost:3107,http://127.0.0.1:3107 npm start --prefix backend > /tmp/courtly-api.log 2>&1 &
+          nohup env PORT=3107 BACKEND_URL=http://127.0.0.1:4000 npm start --prefix frontend > /tmp/courtly-web.log 2>&1 &
+          for attempt in {1..60}; do
+            if curl --fail --silent http://127.0.0.1:4000/api/health >/dev/null && curl --fail --silent http://127.0.0.1:3107 >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/courtly-api.log /tmp/courtly-web.log
+          exit 1
+
+      - name: Test desktop and phone journeys
+        working-directory: frontend
+        env:
+          PLAYWRIGHT_BASE_URL: http://localhost:3107
+        run: npx playwright test
+
+      - name: Upload browser diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: courtly-browser-diagnostics
+          if-no-files-found: ignore
+          path: |
+            frontend/test-results
+            frontend/.data/screenshots
+            /tmp/courtly-api.log
+            /tmp/courtly-web.log

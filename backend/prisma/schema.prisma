@@ -1,0 +1,281 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Business {
+  id                String @id @default(cuid())
+  name              String
+  slug              String @unique
+  ownerName         String
+  email             String
+  timezone          String @default("Asia/Singapore")
+  currency          String @default("SGD")
+  color             String @default("sage")
+  tagline           String @default("Good coaching. Great possibilities.")
+  cancellationHours Int @default(24)
+  isDemo            Boolean @default(false)
+  createdAt         DateTime @default(now())
+  users             User[]
+  instructors       Instructor[]
+  locations         Location[]
+  services          Service[]
+  availability      Availability[]
+  exceptions        AvailabilityException[]
+  customers         Customer[]
+  packages          LessonPackage[]
+  bookings          Booking[]
+  payments          Payment[]
+  notifications     Notification[]
+}
+
+model User {
+  id           String @id @default(cuid())
+  businessId   String
+  business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name         String
+  email        String @unique
+  passwordHash String
+  role         String @default("OWNER")
+  instructorId String? @unique
+  instructor   Instructor? @relation(fields: [instructorId], references: [id], onDelete: SetNull)
+  sessions     AuthSession[]
+  createdAt    DateTime @default(now())
+  @@index([businessId])
+}
+
+model AuthSession {
+  id        String @id
+  userId    String
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  @@index([expiresAt])
+}
+
+model Instructor {
+  id         String @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name       String
+  initials   String
+  color      String @default("sage")
+  email      String @default("")
+  specialty  String @default("")
+  active     Boolean @default(true)
+  user       User?
+  assignments ServiceInstructor[]
+  availability Availability[]
+  exceptions AvailabilityException[]
+  bookings   Booking[]
+  @@index([businessId])
+}
+
+model Location {
+  id               String @id @default(cuid())
+  businessId       String
+  business         Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name             String
+  address          String @default("")
+  type             String @default("FACILITY")
+  color            String @default("sage")
+  requiresApproval Boolean @default(false)
+  travelMinutes    Int @default(20)
+  notes            String @default("")
+  active           Boolean @default(true)
+  services         ServiceLocation[]
+  availability     Availability[]
+  bookings         Booking[]
+  @@index([businessId])
+}
+
+model Service {
+  id            String @id @default(cuid())
+  businessId    String
+  business      Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name          String
+  description   String @default("")
+  category      String @default("Tennis")
+  type          String @default("PRIVATE")
+  duration      Int @default(60)
+  /// Integer minor units (cents), never a floating-point currency amount.
+  price         Int @default(8000)
+  capacity      Int @default(1)
+  bufferMinutes Int @default(0)
+  noticeHours   Int @default(2)
+  color         String @default("sage")
+  active        Boolean @default(true)
+  locations     ServiceLocation[]
+  bookings      Booking[]
+  packages      LessonPackage[]
+  @@index([businessId])
+}
+
+model ServiceLocation {
+  id           String @id @default(cuid())
+  serviceId    String
+  service      Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  locationId   String
+  location     Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  /// Integer minor units (cents).
+  price        Int
+  duration     Int
+  instructors  ServiceInstructor[]
+  @@unique([serviceId, locationId])
+}
+
+model ServiceInstructor {
+  serviceLocationId String
+  serviceLocation   ServiceLocation @relation(fields: [serviceLocationId], references: [id], onDelete: Cascade)
+  instructorId      String
+  instructor        Instructor @relation(fields: [instructorId], references: [id], onDelete: Cascade)
+  @@id([serviceLocationId, instructorId])
+}
+
+model Availability {
+  id           String @id @default(cuid())
+  businessId   String
+  business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  instructorId String
+  instructor   Instructor @relation(fields: [instructorId], references: [id], onDelete: Cascade)
+  locationId   String
+  location     Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  dayOfWeek    Int
+  startTime    String
+  endTime      String
+  @@unique([instructorId, locationId, dayOfWeek, startTime])
+  @@index([businessId])
+}
+
+model AvailabilityException {
+  id           String @id @default(cuid())
+  businessId   String
+  business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  instructorId String
+  instructor   Instructor @relation(fields: [instructorId], references: [id], onDelete: Cascade)
+  date         String
+  reason       String @default("Unavailable")
+  @@unique([instructorId, date])
+  @@index([businessId])
+}
+
+model Customer {
+  id           String @id @default(cuid())
+  businessId   String
+  business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name         String
+  email        String
+  phone        String @default("")
+  initials     String
+  notes        String @default("")
+  parentName   String @default("")
+  createdAt    DateTime @default(now())
+  participants Participant[]
+  packages     LessonPackage[]
+  payments     Payment[]
+  @@unique([businessId, email])
+}
+
+model LessonPackage {
+  id           String @id @default(cuid())
+  businessId   String
+  business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  customerId   String
+  customer     Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  name         String
+  serviceId    String?
+  service      Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  totalCredits Int
+  usedCredits  Int @default(0)
+  /// Integer minor units (cents).
+  price        Int
+  expiresAt    DateTime
+  paid         Boolean @default(false)
+  participants Participant[]
+  payments     Payment[]
+  @@index([businessId])
+}
+
+model Booking {
+  id            String @id @default(cuid())
+  businessId    String
+  business      Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  serviceId     String
+  service       Service @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  instructorId  String
+  instructor    Instructor @relation(fields: [instructorId], references: [id], onDelete: Restrict)
+  locationId    String
+  location      Location @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  startAt       DateTime
+  endAt         DateTime
+  duration      Int
+  bufferMinutes Int @default(0)
+  status        String @default("CONFIRMED")
+  type          String
+  capacity      Int
+  /// Integer minor units (cents), snapshotted when the booking is created.
+  price         Int
+  notes         String @default("")
+  address       String @default("")
+  recurringId   String?
+  createdAt     DateTime @default(now())
+  participants  Participant[]
+  payments      Payment[]
+  @@index([businessId, startAt])
+  @@index([instructorId, startAt, endAt])
+}
+
+model Participant {
+  id              String @id @default(cuid())
+  bookingId       String
+  booking         Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  customerId      String
+  customer        Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  attendance      String @default("UNMARKED")
+  paid            Boolean @default(false)
+  /// Integer minor units (cents), snapshotted for this participant.
+  price           Int
+  notes           String @default("")
+  packageId       String?
+  package         LessonPackage? @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  creditConsumed  Boolean @default(false)
+  cancelledAt     DateTime?
+  managementTokenHash      String @unique
+  managementTokenExpiresAt DateTime
+  managementTokenRevokedAt DateTime?
+  @@unique([bookingId, customerId])
+}
+
+model Payment {
+  id         String @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  bookingId  String?
+  booking    Booking? @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  packageId  String?
+  package    LessonPackage? @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  /// Integer minor units (cents).
+  amount     Int
+  method     String @default("BANK_TRANSFER")
+  note       String @default("")
+  paidAt     DateTime @default(now())
+  @@index([businessId])
+}
+
+model Notification {
+  id           String @id @default(cuid())
+  businessId   String
+  business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  instructorId String?
+  title        String
+  message      String
+  read         Boolean @default(false)
+  createdAt    DateTime @default(now())
+  @@index([businessId])
+}
