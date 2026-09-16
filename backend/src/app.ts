@@ -35,7 +35,7 @@ app.use('/api', (req, res, next) => {
   next();
 });
 app.get('/api/health', async (_req, res) => {
-  try { await prisma.$queryRaw`SELECT 1`; res.json({ ok: true, service: 'courtly', database: 'connected' }); }
+  try { await prisma.$queryRaw`SELECT 1`; res.json({ ok: true, service: 'courtly', database: 'connected', accountModel: 'global-memberships' }); }
   catch { res.status(503).json({ error: 'Database is unavailable' }); }
 });
 app.use('/api/auth', authRouter);

@@ -63,6 +63,8 @@ Club membership and customer membership are separate concerns: provider membersh
 
 To create a persistent sample club and owner membership instead of using the demo workspace, optionally set `SEED_OWNER_EMAIL`, `SEED_OWNER_PASSWORD`, `SEED_BUSINESS_NAME`, and `SEED_BUSINESS_SLUG` in `backend/.env`, then run `npm run seed --prefix backend`. If `SEED_OWNER_PASSWORD` is omitted, the command prints a generated password once.
 
+For a temporary investor showcase on an already deployed account-aware environment, run `npm run demo:investors` with an explicit `INVESTOR_DEMO_BASE_URL` plus separate `INVESTOR_DEMO_OWNER_PASSWORD`, `INVESTOR_DEMO_CLUB_ADMIN_PASSWORD`, `INVESTOR_DEMO_COACH_PASSWORD`, `INVESTOR_DEMO_CUSTOMER_PASSWORD`, and undisclosed `INVESTOR_DEMO_BACKGROUND_PASSWORD` values in the invoking shell. First-time provisioning also requires `INVESTOR_DEMO_ALLOW_CREATE=true`; later runs require the exact `INVESTOR_DEMO_EXPECTED_BUSINESS_ID` and `INVESTOR_DEMO_EXPECTED_BUSINESS_SLUG` printed by the first run. The builder uses normal authenticated APIs to create the `Courtly Investor Showcase` workspace and representative schedules, rentals, group classes, packages, payments, cancellations, and venue approvals. It never stores supplied passwords in the repository, never retries mutations automatically, requires HTTPS outside loopback development, and anchors dates to workspace creation so reconciliation does not append a new schedule each day. Because normal owner registration creates a non-demo workspace, delete the exact printed workspace ID from the platform admin console when the showcase is no longer needed; do not use the bulk demo purge action.
+
 ## Checks
 
 With PostgreSQL running and the migrations applied:
