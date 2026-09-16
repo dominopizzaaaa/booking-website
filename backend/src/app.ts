@@ -7,6 +7,7 @@ import { ZodError } from 'zod';
 import { Prisma } from '@prisma/client';
 import { config, production } from './config.js';
 import { authRouter, requireAuth } from './auth.js';
+import { adminRouter } from './admin.js';
 import { publicRouter } from './public.js';
 import { workspaceRouter } from './workspace.js';
 import { bookingsRouter } from './bookings.js';
@@ -38,6 +39,7 @@ app.get('/api/health', async (_req, res) => {
   catch { res.status(503).json({ error: 'Database is unavailable' }); }
 });
 app.use('/api/auth', authRouter);
+app.use('/api', adminRouter);
 app.use('/api', publicRouter);
 app.use('/api', requireAuth, workspaceRouter, bookingsRouter, crudRouter, staffRouter);
 app.use((_req, _res, next) => next(new HttpError(404, 'Route not found')));

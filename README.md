@@ -81,6 +81,7 @@ Deploy the backend to Railway first, then point the Vercel frontend at the Railw
    | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` (choose the generated PostgreSQL reference variable; replace `Postgres` if the database service has another name) |
    | `NODE_ENV` | `production` |
    | `DEMO_ENABLED` | `false` (recommended) to prevent public demo-data growth; use `true` only for a monitored showcase |
+   | `ADMIN_PASSWORD` | A long, random secret to unlock the platform admin console at `/admin`. Leave unset to disable the admin console entirely. |
 
    Do not set `PORT`; Railway injects it.
    `APP_ORIGIN` is added after Vercel assigns the frontend URL. It can remain unset for this initial health-only deployment because no browser will use the API yet.
@@ -108,6 +109,15 @@ Preview deployments have a different origin on every build. If previews need aut
 - To create an initial known business deliberately, run the Railway service's `npm run seed` command once with strong `SEED_OWNER_PASSWORD`, `SEED_OWNER_EMAIL`, `SEED_BUSINESS_NAME`, and `SEED_BUSINESS_SLUG` variables. The seed is idempotent for an existing slug and is not part of deployment.
 - Check the Railway health endpoint after releases. It returns `503` if PostgreSQL cannot be reached.
 - Treat Railway and Vercel environment changes as production changes. Never copy the generated `DATABASE_URL` into GitHub, Vercel, or committed files; only the backend needs database access.
+
+## Platform admin console
+
+Courtly ships a platform-owner console at `/admin`, separate from provider (business) logins. It is gated by a single `ADMIN_PASSWORD` environment variable on the backend, not by a database account.
+
+- Set `ADMIN_PASSWORD` in the Railway API service to a long, random secret, then redeploy. Leaving it unset disables `/admin` (the page shows a "not configured" notice and every admin API returns `401`/`503`).
+- Visit `https://YOUR-FRONTEND-DOMAIN/admin`, enter the password, and you get a platform overview (businesses, customers, bookings, payments) plus a searchable, filterable list of every workspace.
+- From the console you can permanently delete any business (cascading to all of its customers, bookings, packages, and payments) or purge every demo workspace at once. These actions are irreversible.
+- The admin session is a stateless, HMAC-signed cookie keyed by the password itself, so rotating `ADMIN_PASSWORD` immediately invalidates all existing admin sessions. The page carries `noindex` so it stays out of search results.
 
 ## MVP boundaries
 
