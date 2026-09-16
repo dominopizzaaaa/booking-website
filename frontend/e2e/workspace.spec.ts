@@ -1,6 +1,11 @@
 import { expect, test } from '@playwright/test';
 
-test('private demo loads, persists, and adapts to the screen', async ({ page }, testInfo) => {
+test.beforeEach(async ({ page }) => {
+  const demo = await page.request.post('/api/auth/demo', { data: {} });
+  expect(demo.ok()).toBeTruthy();
+});
+
+test('demo workspace loads, persists, and adapts to the screen', async ({ page }, testInfo) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');

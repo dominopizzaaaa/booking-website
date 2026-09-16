@@ -1,28 +1,48 @@
 import { Router } from 'express';
+import { createHash } from 'node:crypto';
 import { DateTime } from 'luxon';
 import { z } from 'zod';
 import { rateLimit } from 'express-rate-limit';
+import { requireAuth, requireCustomer } from './auth.js';
 import { prisma } from './db.js';
 import { asyncRoute, HttpError } from './http.js';
 import { bookingInclude, bookingJson, publicBookingBusiness, publicInstructor, publicLocation, serviceJson } from './serializers.js';
-import { bookingInput, createBookings, evaluateSlot, lockInstructors, managementTokenHash, refundParticipant, rescheduleBooking, schedulingContext } from './scheduling.js';
+import { bookableInstructorWhere, createBookings, evaluateSlot, lockInstructors, publicBookingInput, refundParticipant, rescheduleBooking, schedulingContext } from './scheduling.js';
+
 export const publicRouter = Router();
 const bookingLimit = rateLimit({ windowMs: 60 * 60_000, limit: 80, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many requests. Please try again later.' } });
 const slotLimit = rateLimit({ windowMs: 5 * 60_000, limit: 180, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many availability checks. Please wait a moment.' } });
+const legacyLookupLimit = rateLimit({ windowMs: 15 * 60_000, limit: 120, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many management-link requests. Please try again later.' } });
+
 async function businessForSlug(slug: string) {
   const business = await prisma.business.findUnique({ where: { slug } });
   if (!business) throw new HttpError(404, 'Booking page not found');
   return business;
 }
+
 publicRouter.get('/public/:slug', asyncRoute(async (req, res) => {
   const business = await businessForSlug(req.params.slug);
   const [instructors, locations, services] = await Promise.all([
-    prisma.instructor.findMany({ where: { businessId: business.id, active: true }, orderBy: { name: 'asc' } }),
+    prisma.instructor.findMany({ where: bookableInstructorWhere(business.id), orderBy: { name: 'asc' } }),
     prisma.location.findMany({ where: { businessId: business.id, active: true }, orderBy: { name: 'asc' } }),
     prisma.service.findMany({ where: { businessId: business.id, active: true }, include: { locations: { include: { instructors: true } } }, orderBy: { name: 'asc' } }),
   ]);
-  res.json({ business: publicBookingBusiness(business), instructors: instructors.map(publicInstructor), locations: locations.map(publicLocation), services: services.map(serviceJson) });
+  const bookableIds = new Set(instructors.map(instructor => instructor.id));
+  const bookableServices = services.map(service => ({
+    ...service,
+    locations: service.locations.map(location => ({
+      ...location,
+      instructors: location.instructors.filter(assignment => bookableIds.has(assignment.instructorId)),
+    })).filter(location => location.instructors.length > 0),
+  })).filter(service => service.locations.length > 0);
+  res.json({
+    business: publicBookingBusiness(business),
+    instructors: instructors.map(publicInstructor),
+    locations: locations.map(publicLocation),
+    services: bookableServices.map(serviceJson),
+  });
 }));
+
 publicRouter.get('/public/:slug/slots', slotLimit, asyncRoute(async (req, res) => {
   const query = z.object({ serviceId: z.string().min(1), instructorId: z.string().min(1), locationId: z.string().min(1), date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).parse(req.query);
   const business = await businessForSlug(req.params.slug);
@@ -46,59 +66,256 @@ publicRouter.get('/public/:slug/slots', slotLimit, asyncRoute(async (req, res) =
   }, { timeout: 15_000 });
   res.json({ slots });
 }));
-publicRouter.post('/public/:slug/bookings', bookingLimit, asyncRoute(async (req, res) => {
-  const input = bookingInput.parse(req.body);
-  if (input.customerId || input.packageId) throw new HttpError(403, 'Guest bookings require contact details. Contact your coach to apply package credits.');
+
+publicRouter.post('/public/:slug/bookings', bookingLimit, requireAuth, requireCustomer, asyncRoute(async (req, res) => {
+  const input = publicBookingInput.parse(req.body);
   const business = await businessForSlug(req.params.slug);
-  const result = await createBookings(business.id, input, { guest: true });
-  // A guest must never receive another group participant's identity, a team's
-  // private lesson notes, or another participant's management credential.
-  res.status(201).json({ ...result, bookings: result.bookings.map(b => {
-    const { notes: _internalNotes, ...publicBooking } = b;
-    return { ...publicBooking, participants: b.participants.filter(p => p.email === input.customer!.email) };
-  }) });
+  const result = await createBookings(business.id, {
+    ...input,
+    customer: {
+      name: req.auth.user.name,
+      email: req.auth.user.email,
+      phone: input.customer?.phone,
+      parentName: input.customer?.parentName,
+    },
+  }, { customerUserId: req.auth.user.id });
+  res.status(201).json(result);
 }));
-async function managed(token: string) {
-  const participant = await prisma.participant.findUnique({ where: { managementTokenHash: managementTokenHash(token) }, include: { customer: true, booking: { include: { ...bookingInclude, business: true } } } });
-  if (!participant) throw new HttpError(404, 'Management link not found');
-  if (participant.managementTokenRevokedAt || participant.managementTokenExpiresAt <= new Date()) throw new HttpError(410, 'This management link has expired. Please contact your coach.');
+
+type AccountParticipant = Awaited<ReturnType<typeof accountParticipant>>;
+
+async function accountParticipant(participantId: string, userId: string) {
+  const participant = await prisma.participant.findFirst({
+    where: { id: participantId, customer: { userId } },
+    include: { customer: true, booking: { include: { ...bookingInclude, business: true } } },
+  });
+  if (!participant) throw new HttpError(404, 'Booking not found');
   return participant;
 }
-function canManage(p: Awaited<ReturnType<typeof managed>>) {
-  return !p.cancelledAt && !['CANCELLED', 'COMPLETED'].includes(p.booking.status) && p.booking.startAt.getTime() - Date.now() >= p.booking.business.cancellationHours * 3600_000;
+
+function canManageAccount(p: AccountParticipant) {
+  return !p.cancelledAt
+    && !['CANCELLED', 'COMPLETED'].includes(p.booking.status)
+    && p.booking.startAt.getTime() > Date.now()
+    && p.booking.startAt.getTime() - Date.now() >= p.booking.business.cancellationHours * 3600_000;
 }
-function manageJson(p: Awaited<ReturnType<typeof managed>>) {
+
+function accountBookingJson(p: AccountParticipant) {
+  // Serialize exactly one participant even for group lessons. Other customers'
+  // identities, contact details and participant notes stay private.
   const single = bookingJson({ ...p.booking, participants: [{ ...p, cancelledAt: null }] }, { includeNotes: false });
   if (p.cancelledAt) single.status = 'CANCELLED';
-  return { business: publicBookingBusiness(p.booking.business), booking: single, participant: single.participants[0], location: publicLocation(p.booking.location), canCancel: canManage(p), canReschedule: canManage(p) && p.booking.type === 'PRIVATE', management: { cancellationHours: p.booking.business.cancellationHours, reminders: 'Queued in Courtly; external delivery is not configured', venueReserved: false } };
+  const canChange = canManageAccount(p);
+  return {
+    business: publicBookingBusiness(p.booking.business),
+    booking: single,
+    participant: { ...single.participants[0], cancelled: !!p.cancelledAt, cancelledAt: p.cancelledAt?.toISOString() ?? null },
+    location: publicLocation(p.booking.location),
+    canCancel: canChange,
+    canReschedule: canChange && p.booking.type === 'PRIVATE',
+    management: {
+      cancellationHours: p.booking.business.cancellationHours,
+      reminders: 'Queued in Courtly; external delivery is not configured',
+      venueReserved: false,
+    },
+  };
 }
-publicRouter.get('/manage/:token', asyncRoute(async (req, res) => { res.set('Cache-Control', 'no-store'); res.json(manageJson(await managed(req.params.token))); }));
+
+// Compatibility bridge for booking links issued before account-only booking
+// was introduced. No new token is created anywhere; these routes exist only
+// so an already-issued, unexpired credential can manage its existing booking.
+const legacyTokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
+const legacyTokenSchema = z.string().length(43).regex(/^[A-Za-z0-9_-]+$/);
+const legacyParticipantInclude = {
+  customer: true,
+  booking: { include: {
+    service: { include: { locations: { include: { instructors: true } } } },
+    instructor: { include: { membership: { include: { user: true } } } },
+    location: true, participants: { include: { customer: true } }, business: true,
+  } },
+} as const;
+type LegacyParticipant = Awaited<ReturnType<typeof legacyParticipant>>;
+
+async function legacyParticipant(rawToken: string) {
+  const token = legacyTokenSchema.parse(rawToken);
+  const currentDigest = legacyTokenHash(token);
+  let participant = await prisma.participant.findUnique({
+    where: { managementTokenHash: currentDigest },
+    include: legacyParticipantInclude,
+  });
+  if (!participant) {
+    // The private-token migration predates the SHA-256 runtime format and
+    // stored md5(token || participant.id). Keep that one-way legacy format
+    // readable so links issued before account-only booking continue to work,
+    // then upgrade a successful match so later requests use the unique index.
+    const migratedMatches = await prisma.$queryRaw<Array<{ id: string; digest: string }>>`
+      SELECT participant."id", participant."managementTokenHash" AS digest
+      FROM "Participant" AS participant
+      WHERE length(participant."managementTokenHash") = 32
+        AND participant."managementTokenHash" = md5(${token}::text || participant."id")
+        AND participant."managementTokenRevokedAt" IS NULL
+        AND participant."managementTokenExpiresAt" > CURRENT_TIMESTAMP
+      LIMIT 2
+    `;
+    if (migratedMatches.length > 1) throw new HttpError(404, 'Management link not found');
+    const [migrated] = migratedMatches;
+    if (migrated) {
+      await prisma.participant.updateMany({
+        where: { id: migrated.id, managementTokenHash: migrated.digest },
+        data: { managementTokenHash: currentDigest },
+      });
+      participant = await prisma.participant.findUnique({
+        where: { id: migrated.id },
+        include: legacyParticipantInclude,
+      });
+    }
+  }
+  if (!participant) throw new HttpError(404, 'Management link not found');
+  if (!participant.managementTokenExpiresAt || participant.managementTokenRevokedAt
+    || participant.managementTokenExpiresAt <= new Date()) {
+    throw new HttpError(410, 'This management link has expired. Please contact your coach.');
+  }
+  return participant;
+}
+
+function canManageLegacy(p: LegacyParticipant) {
+  return !p.cancelledAt
+    && !['CANCELLED', 'COMPLETED'].includes(p.booking.status)
+    && p.booking.startAt.getTime() > Date.now()
+    && p.booking.startAt.getTime() - Date.now() >= p.booking.business.cancellationHours * 3600_000;
+}
+
+function legacyBookingJson(p: LegacyParticipant) {
+  const single = bookingJson({ ...p.booking, participants: [{ ...p, cancelledAt: null }] }, { includeNotes: false });
+  if (p.cancelledAt) single.status = 'CANCELLED';
+  const canChange = canManageLegacy(p);
+  const membership = p.booking.instructor.membership;
+  const mapping = p.booking.service.locations.find(candidate =>
+    candidate.locationId === p.booking.locationId
+      && candidate.instructors.some(candidateInstructor => candidateInstructor.instructorId === p.booking.instructorId));
+  const instructorCanHost = p.booking.service.active && p.booking.location.active && p.booking.instructor.active
+    && !!mapping && !!membership && membership.businessId === p.booking.businessId && membership.active
+    && membership.user.passwordHash !== null && ['COACH', 'OWNER'].includes(membership.user.accountType);
+  const { participants: _participants, ...booking } = single;
+  const visibleParticipant = single.participants[0];
+  return {
+    business: publicBookingBusiness(p.booking.business),
+    booking,
+    participant: {
+      name: visibleParticipant.name, paid: visibleParticipant.paid, price: visibleParticipant.price,
+      cancelled: !!p.cancelledAt, cancelledAt: p.cancelledAt?.toISOString() ?? null,
+    },
+    location: publicLocation(p.booking.location),
+    canCancel: canChange,
+    canReschedule: canChange && p.booking.type === 'PRIVATE' && instructorCanHost,
+  };
+}
+
+publicRouter.get('/manage/:token', legacyLookupLimit, asyncRoute(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(legacyBookingJson(await legacyParticipant(req.params.token)));
+}));
+
 publicRouter.post('/manage/:token/cancel', bookingLimit, asyncRoute(async (req, res) => {
-  const initial = await managed(req.params.token);
+  z.object({}).strict().parse(req.body ?? {});
+  const initial = await legacyParticipant(req.params.token);
   await prisma.$transaction(async tx => {
     await lockInstructors(tx, [initial.booking.instructorId]);
-    const participant = await tx.participant.findUniqueOrThrow({ where: { id: initial.id }, include: { booking: { include: { business: true } } } });
-    if (participant.cancelledAt || participant.booking.status === 'CANCELLED') return;
+    const participant = await tx.participant.findUniqueOrThrow({
+      where: { id: initial.id }, include: { booking: { include: { business: true } } },
+    });
     if (participant.booking.instructorId !== initial.booking.instructorId) throw new HttpError(409, 'Session changed. Please refresh and try again');
-    if (participant.booking.status === 'COMPLETED' || participant.booking.startAt.getTime() - Date.now() < participant.booking.business.cancellationHours * 3600_000) throw new HttpError(400, `Cancellation requires ${participant.booking.business.cancellationHours} hours notice. Please contact your coach.`);
+    if (participant.cancelledAt || participant.booking.status === 'CANCELLED') return;
+    if (participant.booking.status === 'COMPLETED' || participant.booking.startAt.getTime() <= Date.now()
+      || participant.booking.startAt.getTime() - Date.now() < participant.booking.business.cancellationHours * 3600_000) {
+      throw new HttpError(400, `Cancellation requires ${participant.booking.business.cancellationHours} hours notice. Please contact your coach.`);
+    }
     await refundParticipant(tx, participant);
     await tx.participant.update({ where: { id: participant.id }, data: { cancelledAt: new Date() } });
     const remaining = await tx.participant.count({ where: { bookingId: participant.bookingId, cancelledAt: null } });
     if (!remaining) await tx.booking.update({ where: { id: participant.bookingId }, data: { status: 'CANCELLED' } });
-    await tx.notification.create({ data: { businessId: participant.booking.businessId, instructorId: participant.booking.instructorId, title: 'Guest cancelled a booking', message: 'The player cancelled using their private link. Any consumed package credit was restored. Cancellation notice queued; no external message sent.' } });
+    await tx.notification.create({ data: {
+      businessId: participant.booking.businessId, instructorId: participant.booking.instructorId,
+      title: 'Customer cancelled a booking',
+      message: 'The customer cancelled through an existing private booking link. Any consumed package credit was restored.',
+    } });
   });
-  res.json(manageJson(await managed(req.params.token)));
+  res.json(legacyBookingJson(await legacyParticipant(req.params.token)));
 }));
+
 publicRouter.post('/manage/:token/reschedule', bookingLimit, asyncRoute(async (req, res) => {
   const changes = z.object({ startAt: z.string().datetime({ offset: true }) }).strict().parse(req.body);
-  const initial = await managed(req.params.token);
+  const initial = await legacyParticipant(req.params.token);
   await prisma.$transaction(async tx => {
     await lockInstructors(tx, [initial.booking.instructorId]);
-    const p = await tx.participant.findUniqueOrThrow({ where: { id: initial.id }, include: { booking: { include: { business: true } } } });
-    if (p.booking.instructorId !== initial.booking.instructorId) throw new HttpError(409, 'Session changed. Please refresh and try again');
-    if (p.cancelledAt || !['CONFIRMED', 'PENDING'].includes(p.booking.status) || p.booking.startAt.getTime() - Date.now() < p.booking.business.cancellationHours * 3600_000) throw new HttpError(400, 'This booking is outside the self-service rescheduling window. Contact your coach.');
-    if (p.booking.type !== 'PRIVATE') throw new HttpError(400, 'Please contact your coach to move your place in a group session');
-    await rescheduleBooking(tx, p.booking.businessId, p.bookingId, changes);
+    const participant = await tx.participant.findUniqueOrThrow({
+      where: { id: initial.id }, include: { booking: { include: { business: true } } },
+    });
+    if (participant.booking.instructorId !== initial.booking.instructorId) throw new HttpError(409, 'Session changed. Please refresh and try again');
+    if (participant.cancelledAt || !['CONFIRMED', 'PENDING'].includes(participant.booking.status)
+      || participant.booking.startAt.getTime() <= Date.now()
+      || participant.booking.startAt.getTime() - Date.now() < participant.booking.business.cancellationHours * 3600_000) {
+      throw new HttpError(400, 'This booking is outside the self-service rescheduling window. Contact your coach.');
+    }
+    if (participant.booking.type !== 'PRIVATE') throw new HttpError(400, 'Please contact your coach to move your place in a group session');
+    await rescheduleBooking(tx, participant.booking.businessId, participant.bookingId, changes);
   }, { timeout: 30_000 });
-  res.json(manageJson(await managed(req.params.token)));
+  res.json(legacyBookingJson(await legacyParticipant(req.params.token)));
+}));
+
+publicRouter.get('/account/bookings', requireAuth, requireCustomer, asyncRoute(async (req, res) => {
+  const query = z.object({ businessSlug: z.string().trim().min(1).optional() }).strict().parse(req.query);
+  const participants = await prisma.participant.findMany({
+    where: {
+      customer: { userId: req.auth.user.id },
+      ...(query.businessSlug ? { booking: { business: { slug: query.businessSlug } } } : {}),
+    },
+    include: { customer: true, booking: { include: { ...bookingInclude, business: true } } },
+    orderBy: { booking: { startAt: 'asc' } },
+  });
+  res.json({ bookings: participants.map(accountBookingJson) });
+}));
+
+publicRouter.post('/account/bookings/:participantId/cancel', bookingLimit, requireAuth, requireCustomer, asyncRoute(async (req, res) => {
+  z.object({}).strict().parse(req.body ?? {});
+  const initial = await accountParticipant(req.params.participantId, req.auth.user.id);
+  await prisma.$transaction(async tx => {
+    await lockInstructors(tx, [initial.booking.instructorId]);
+    const participant = await tx.participant.findFirst({
+      where: { id: initial.id, customer: { userId: req.auth.user.id } },
+      include: { booking: { include: { business: true } } },
+    });
+    if (!participant) throw new HttpError(404, 'Booking not found');
+    if (participant.booking.instructorId !== initial.booking.instructorId) throw new HttpError(409, 'Session changed. Please refresh and try again');
+    if (participant.cancelledAt || participant.booking.status === 'CANCELLED') return;
+    if (participant.booking.status === 'COMPLETED' || participant.booking.startAt.getTime() <= Date.now() || participant.booking.startAt.getTime() - Date.now() < participant.booking.business.cancellationHours * 3600_000) {
+      throw new HttpError(400, `Cancellation requires ${participant.booking.business.cancellationHours} hours notice. Please contact your coach.`);
+    }
+    await refundParticipant(tx, participant);
+    await tx.participant.update({ where: { id: participant.id }, data: { cancelledAt: new Date() } });
+    const remaining = await tx.participant.count({ where: { bookingId: participant.bookingId, cancelledAt: null } });
+    if (!remaining) await tx.booking.update({ where: { id: participant.bookingId }, data: { status: 'CANCELLED' } });
+    await tx.notification.create({ data: { businessId: participant.booking.businessId, instructorId: participant.booking.instructorId, title: 'Customer cancelled a booking', message: 'The customer cancelled through their account. Any consumed package credit was restored. Cancellation notice queued; no external message sent.' } });
+  });
+  res.json(accountBookingJson(await accountParticipant(req.params.participantId, req.auth.user.id)));
+}));
+
+publicRouter.post('/account/bookings/:participantId/reschedule', bookingLimit, requireAuth, requireCustomer, asyncRoute(async (req, res) => {
+  const changes = z.object({ startAt: z.string().datetime({ offset: true }) }).strict().parse(req.body);
+  const initial = await accountParticipant(req.params.participantId, req.auth.user.id);
+  await prisma.$transaction(async tx => {
+    await lockInstructors(tx, [initial.booking.instructorId]);
+    const participant = await tx.participant.findFirst({
+      where: { id: initial.id, customer: { userId: req.auth.user.id } },
+      include: { booking: { include: { business: true } } },
+    });
+    if (!participant) throw new HttpError(404, 'Booking not found');
+    if (participant.booking.instructorId !== initial.booking.instructorId) throw new HttpError(409, 'Session changed. Please refresh and try again');
+    if (participant.cancelledAt || !['CONFIRMED', 'PENDING'].includes(participant.booking.status) || participant.booking.startAt.getTime() <= Date.now() || participant.booking.startAt.getTime() - Date.now() < participant.booking.business.cancellationHours * 3600_000) {
+      throw new HttpError(400, 'This booking is outside the self-service rescheduling window. Contact your coach.');
+    }
+    if (participant.booking.type !== 'PRIVATE') throw new HttpError(400, 'Please contact your coach to move your place in a group session');
+    await rescheduleBooking(tx, participant.booking.businessId, participant.bookingId, changes);
+  }, { timeout: 30_000 });
+  res.json(accountBookingJson(await accountParticipant(req.params.participantId, req.auth.user.id)));
 }));

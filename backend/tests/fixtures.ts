@@ -1,8 +1,9 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { DateTime } from 'luxon';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../src/db.js';
-import { bookingInput, type BookingInput } from '../src/scheduling.js';
+import { config } from '../src/config.js';
+import { bookingInput, publicBookingInput, type BookingInput, type PublicBookingInput } from '../src/scheduling.js';
 
 export { prisma };
 
@@ -10,9 +11,14 @@ export { prisma };
 // only the business IDs registered here and removes restrictive children first.
 export class TestTenants {
   private readonly businessIds = new Set<string>();
+  private readonly userIds = new Set<string>();
 
   own(businessId: string) {
     this.businessIds.add(businessId);
+  }
+
+  ownUser(userId: string) {
+    this.userIds.add(userId);
   }
 
   async fixture() {
@@ -48,25 +54,53 @@ export class TestTenants {
         dayOfWeek, startTime: '08:00', endTime: '20:00',
       })),
     });
+    const user = await prisma.user.create({
+      data: {
+        name: 'Test Owner', email: `${id}-owner@example.test`, passwordHash: 'not-used-by-this-test',
+        accountType: 'OWNER',
+      },
+    });
+    this.ownUser(user.id);
+    const membership = await prisma.membership.create({
+      data: { userId: user.id, businessId: id, role: 'OWNER', instructorId: instructor.id },
+    });
+    const sessionToken = randomBytes(32).toString('base64url');
+    const session = await prisma.authSession.create({
+      data: {
+        id: createHash('sha256').update(sessionToken).digest('hex'), userId: user.id,
+        activeMembershipId: membership.id, expiresAt: new Date(Date.now() + 3_600_000),
+      },
+    });
     // Dynamic dates remain in the future and represent a fixed Singapore clock
     // time, independently of the host timezone and when the suite is run.
     const starts = DateTime.now().setZone('Asia/Singapore').plus({ days: 14 }).startOf('day').set({ hour: 10 });
-    return { business, instructor, location, service, starts };
+    return {
+      business, instructor, location, service, starts, user, membership, session, sessionToken,
+      cookie: `${config.sessionCookie}=${sessionToken}`, tracker: this,
+    };
   }
 
   async cleanup() {
-    for (const businessId of this.businessIds) {
+    for (const businessId of [...this.businessIds]) {
       await prisma.$transaction(async tx => {
         await tx.payment.deleteMany({ where: { businessId } });
         await tx.participant.deleteMany({ where: { booking: { businessId } } });
         await tx.booking.deleteMany({ where: { businessId } });
         await tx.lessonPackage.deleteMany({ where: { businessId } });
         await tx.customer.deleteMany({ where: { businessId } });
-        // Cascades now safely remove users/sessions, availability, assignment
-        // joins, instructors, locations, services, exceptions and notifications.
+        // Memberships, availability, assignment joins, instructors, locations,
+        // services, exceptions and notifications cascade from the business.
+        // Global users deliberately do not.
         await tx.business.deleteMany({ where: { id: businessId } });
       });
       this.businessIds.delete(businessId);
+    }
+    // Delete only global accounts explicitly created by this test fixture. This
+    // also cascades their sessions and cannot affect a pre-existing account that
+    // was merely granted membership in one of the disposable businesses.
+    if (this.userIds.size) {
+      await prisma.user.deleteMany({ where: { id: { in: [...this.userIds] } } });
+      this.userIds.clear();
     }
   }
 }
@@ -82,10 +116,70 @@ export function inputFor(f: Fixture, overrides: Partial<BookingInput> = {}): Boo
   });
 }
 
-export function createCustomer(f: Fixture) {
-  return prisma.customer.create({
-    data: { businessId: f.business.id, name: 'Package Customer', initials: 'PC', email: `${randomUUID()}@example.test` },
+export function publicInputFor(f: Fixture, overrides: Partial<PublicBookingInput> = {}): PublicBookingInput {
+  return publicBookingInput.parse({
+    serviceId: f.service.id, instructorId: f.instructor.id, locationId: f.location.id,
+    startAt: f.starts.toISO(),
+    ...overrides,
   });
+}
+
+export async function createAccount(
+  f: Fixture,
+  overrides: Partial<{ name: string; email: string; passwordHash: string | null; accountType: string; phone: string; parentName: string }> = {},
+) {
+  const user = await prisma.user.create({
+    data: {
+      name: 'Test Customer', email: `${randomUUID()}@example.test`, passwordHash: 'not-used-by-this-test',
+      accountType: 'CUSTOMER', phone: '', parentName: '', ...overrides,
+    },
+  });
+  f.tracker.ownUser(user.id);
+  return user;
+}
+
+export async function createCustomer(
+  f: Fixture,
+  overrides: Partial<{ name: string; email: string; phone: string; parentName: string; notes: string }> & { userId?: string | null } = {},
+) {
+  const name = overrides.name ?? 'Package Customer';
+  const email = overrides.email ?? `${randomUUID()}@example.test`;
+  const userId = Object.prototype.hasOwnProperty.call(overrides, 'userId')
+    ? overrides.userId
+    : (await createAccount(f, {
+      name, email,
+    })).id;
+  const { userId: _userId, ...profile } = overrides;
+  return prisma.customer.create({
+    data: {
+      businessId: f.business.id, userId, name, initials: 'PC', email, ...profile,
+    },
+  });
+}
+
+export async function linkedInputFor(f: Fixture, overrides: Partial<BookingInput> = {}): Promise<BookingInput> {
+  if (overrides.customerId) return inputFor(f, { ...overrides, customer: undefined });
+  const supplied = overrides.customer;
+  const customer = await createCustomer(f, {
+    name: supplied?.name ?? 'Test Customer',
+    email: supplied?.email ?? `${randomUUID()}@example.test`,
+    phone: supplied?.phone ?? '',
+    parentName: supplied?.parentName ?? '',
+  });
+  return inputFor(f, { ...overrides, customerId: customer.id, customer: undefined });
+}
+
+export async function createSession(
+  f: Fixture, userId: string, activeMembershipId: string | null = null,
+) {
+  const token = randomBytes(32).toString('base64url');
+  const session = await prisma.authSession.create({
+    data: {
+      id: createHash('sha256').update(token).digest('hex'), userId, activeMembershipId,
+      expiresAt: new Date(Date.now() + 3_600_000),
+    },
+  });
+  return { session, token, cookie: `${config.sessionCookie}=${token}` };
 }
 
 export function createPackage(

@@ -1,4 +1,4 @@
-import type { Workspace, PublicBusiness, Slot, BookingInput, BookingResult } from './types';
+import type { Workspace, PublicBusiness, Slot, BookingInput, PublicBookingInput, BookingResult, AuthSession, AccountBooking, AccountBookingsResult } from './types';
 
 export class ApiError extends Error {
   constructor(message: string, public status: number, public details?: unknown) { super(message); }
@@ -14,7 +14,18 @@ export const loadWorkspace = () => api<Workspace>('/workspace');
 export const loadPublicBusiness = (slug: string) => api<PublicBusiness>(`/public/${encodeURIComponent(slug)}`);
 export const loadSlots = (slug: string, values: { serviceId: string; instructorId: string; locationId: string; date: string }) => api<{ slots: Slot[] }>(`/public/${encodeURIComponent(slug)}/slots?${new URLSearchParams(values)}`);
 export const createBooking = (values: BookingInput) => api<BookingResult>('/bookings', { method: 'POST', body: JSON.stringify(values) });
-export const createPublicBooking = (slug: string, values: BookingInput) => api<BookingResult>(`/public/${encodeURIComponent(slug)}/bookings`, { method: 'POST', body: JSON.stringify(values) });
+export const createPublicBooking = (slug: string, values: PublicBookingInput) => api<BookingResult>(`/public/${encodeURIComponent(slug)}/bookings`, { method: 'POST', body: JSON.stringify(values) });
+export const loadAuthSession = () => api<AuthSession>('/auth/me');
+export const loginCustomerAccount = (values: { email: string; password: string }) => api<AuthSession>('/auth/login', { method: 'POST', body: JSON.stringify(values) });
+export const registerCustomerAccount = (values: { name: string; email: string; password: string; phone?: string; parentName?: string }) => api<AuthSession>('/auth/register', { method: 'POST', body: JSON.stringify({ ...values, accountType: 'CUSTOMER' }) });
+export const logoutAccount = () => api<{ ok: true }>('/auth/logout', { method: 'POST', body: JSON.stringify({}) });
+export async function loadAccountBookings(businessSlug?: string): Promise<AccountBookingsResult> {
+  const query = businessSlug ? `?${new URLSearchParams({ businessSlug })}` : '';
+  const value = await api<AccountBookingsResult | AccountBooking[]>(`/account/bookings${query}`);
+  return Array.isArray(value) ? { bookings: value } : value;
+}
+export const cancelAccountBooking = (participantId: string) => api(`/account/bookings/${encodeURIComponent(participantId)}/cancel`, { method: 'POST', body: JSON.stringify({}) });
+export const rescheduleAccountBooking = (participantId: string, startAt: string) => api(`/account/bookings/${encodeURIComponent(participantId)}/reschedule`, { method: 'POST', body: JSON.stringify({ startAt }) });
 export const mutate = <T = unknown>(path: string, method: 'POST' | 'PATCH' | 'DELETE', values?: unknown) => api<T>(path, { method, body: values ? JSON.stringify(values) : undefined });
 
 export type AdminSession = { configured: boolean; authenticated: boolean };

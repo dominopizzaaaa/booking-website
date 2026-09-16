@@ -1,6 +1,6 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { DateTime } from 'luxon';
 
 export type SeedBusinessOptions = {
@@ -20,13 +20,22 @@ export async function seedBusiness(prismaOrTx: PrismaClient | Prisma.Transaction
     throw new Error('SEED_OWNER_PASSWORD must contain at least 8 characters and at most 72 UTF-8 bytes.');
   }
   const passwordHash = await bcrypt.hash(password, 12);
+  // Demo/sample people still receive real account credentials in the data
+  // model. Their random password is deliberately not returned or shared; the
+  // only interactive seed credential is the owner password above.
+  const samplePasswordHash = await bcrypt.hash(randomBytes(32).toString('base64url'), 12);
   if ('$transaction' in prismaOrTx) {
-    return prismaOrTx.$transaction(tx => populateBusiness(tx, options, passwordHash), { timeout: 60_000 });
+    return prismaOrTx.$transaction(tx => populateBusiness(tx, options, passwordHash, samplePasswordHash), { timeout: 60_000 });
   }
-  return populateBusiness(prismaOrTx, options, passwordHash);
+  return populateBusiness(prismaOrTx, options, passwordHash, samplePasswordHash);
 }
 
-async function populateBusiness(tx: Prisma.TransactionClient, options: SeedBusinessOptions, passwordHash: string) {
+async function populateBusiness(
+  tx: Prisma.TransactionClient,
+  options: SeedBusinessOptions,
+  passwordHash: string,
+  samplePasswordHash: string,
+) {
   const now = DateTime.now().setZone(timezone);
   const weekStart = now.startOf('week');
   const todayIndex = now.weekday - 1;
@@ -50,12 +59,35 @@ async function populateBusiness(tx: Prisma.TransactionClient, options: SeedBusin
   const businessId = business.id;
   const instructors = await Promise.all([
     { name: 'Marcus Tan', color: '#527a5b', email, specialty: 'Tennis · technique and match play' },
-    { name: 'Sarah Lim', color: '#5c7f91', email: `sarah+${tenantKey}@courtly.example`, specialty: 'Junior tennis · confidence and fundamentals' },
-    { name: 'Daniel Lee', color: '#b1854f', email: `daniel+${tenantKey}@courtly.example`, specialty: 'Badminton · footwork and doubles' },
+    { name: 'Sarah Lim', color: '#5c7f91', email: `sarah.${tenantKey}@sample.courtly.invalid`, specialty: 'Junior tennis · confidence and fundamentals' },
+    { name: 'Daniel Lee', color: '#b1854f', email: `daniel.${tenantKey}@sample.courtly.invalid`, specialty: 'Badminton · footwork and doubles' },
   ].map(instructor => tx.instructor.create({ data: { businessId, ...instructor, initials: initials(instructor.name) } })));
   const owner = await tx.user.create({
-    data: { businessId, name: 'Marcus Tan', email, passwordHash, role: 'OWNER', instructorId: instructors[0].id, createdAt: business.createdAt },
+    data: {
+      name: 'Marcus Tan', email, passwordHash, accountType: 'OWNER', phone: '', parentName: '', createdAt: business.createdAt,
+    },
   });
+  const ownerMembership = await tx.membership.create({
+    data: { userId: owner.id, businessId, role: 'OWNER', instructorId: instructors[0].id, createdAt: business.createdAt },
+  });
+  await Promise.all(instructors.slice(1).map(async instructor => {
+    const accountId = `seed-instructor-${instructor.id}`;
+    const account = await tx.user.create({
+      data: {
+        id: accountId,
+        name: instructor.name,
+        email: instructor.email,
+        passwordHash: samplePasswordHash,
+        accountType: 'COACH',
+        phone: '',
+        parentName: '',
+        createdAt: business.createdAt,
+      },
+    });
+    await tx.membership.create({
+      data: { id: `seed-membership-${instructor.id}`, userId: account.id, businessId, role: 'COACH', instructorId: instructor.id, createdAt: business.createdAt },
+    });
+  }));
 
   const locations = await Promise.all([
     { name: 'Kallang Tennis Centre', address: '52 Stadium Road, Singapore 397724', type: 'FACILITY', color: '#78915e', requiresApproval: false, travelMinutes: 20, notes: 'Meet beside the main entrance. Court reservations are arranged separately.' },
@@ -138,12 +170,19 @@ async function populateBusiness(tx: Prisma.TransactionClient, options: SeedBusin
     { name: 'Aarav Menon', notes: 'Building confidence at the net.' },
   ];
   const customers = customerDefinitions.map((customer, index) => ({
-    id: randomUUID(), businessId, name: customer.name, initials: initials(customer.name),
-    email: `${customer.name.toLowerCase().replaceAll(' ', '.')}@example.com`,
+    id: randomUUID(), userId: `seed-customer-${randomUUID()}`, businessId, name: customer.name, initials: initials(customer.name),
+    email: `${customer.name.toLowerCase().replaceAll(' ', '.')}.${tenantKey}@sample.courtly.invalid`,
     phone: `+65 8${String(100_000 + index).padStart(7, '0')}`,
     parentName: customer.parentName ?? '', notes: customer.notes,
     createdAt: now.minus({ days: 90 - index * 3 }).toJSDate(),
   }));
+  await tx.user.createMany({
+    data: customers.map(customer => ({
+      id: customer.userId, name: customer.name, email: customer.email,
+      passwordHash: samplePasswordHash, accountType: 'CUSTOMER',
+      phone: customer.phone, parentName: customer.parentName, createdAt: customer.createdAt,
+    })),
+  });
   await tx.customer.createMany({ data: customers });
 
   const packageDefinitions = [
@@ -223,8 +262,9 @@ async function populateBusiness(tx: Prisma.TransactionClient, options: SeedBusin
           id: randomUUID(), bookingId, customerId: customer.id, price: assignment.price,
           paid, packageId: pkg?.id ?? null, creditConsumed,
           attendance: status === 'COMPLETED' ? ((day + slot + seat) % 13 === 0 ? 'ABSENT' : 'PRESENT') : 'UNMARKED',
-          managementTokenHash: createHash('sha256').update(randomBytes(32)).digest('hex'),
-          managementTokenExpiresAt: endAt.plus({ days: 30 }).toJSDate(),
+          managementTokenHash: null,
+          managementTokenExpiresAt: null,
+          managementTokenRevokedAt: null,
           notes: '',
         });
         // Package purchases are recorded once; credit redemptions are not new revenue.
@@ -267,5 +307,5 @@ async function populateBusiness(tx: Prisma.TransactionClient, options: SeedBusin
     });
   }
   await tx.notification.createMany({ data: notifications });
-  return { business, owner };
+  return { business, owner, ownerMembership };
 }

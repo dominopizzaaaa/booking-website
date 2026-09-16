@@ -1,8 +1,17 @@
-import type { Prisma } from '@prisma/client';
+import type { Business, Membership, Prisma, User } from '@prisma/client';
+import { prisma } from './db.js';
+
 export const bookingInclude = { service: true, instructor: true, location: true, participants: { include: { customer: true } } } satisfies Prisma.BookingInclude;
 export type FullBooking = Prisma.BookingGetPayload<{ include: typeof bookingInclude }>;
-export const publicBusiness = (b: any) => ({ id: b.id, name: b.name, slug: b.slug, ownerName: b.ownerName, email: b.email, timezone: b.timezone, currency: b.currency, color: b.color, tagline: b.tagline, cancellationHours: b.cancellationHours, isDemo: b.isDemo });
-export const publicBookingBusiness = (b: any) => ({
+export type MembershipWithBusiness = Membership & { business: Business };
+export type AccountType = 'CUSTOMER' | 'COACH' | 'OWNER';
+export type MembershipRole = 'OWNER' | 'ADMIN' | 'COACH';
+
+export const publicBusiness = (b: Business) => ({
+  id: b.id, name: b.name, slug: b.slug, ownerName: b.ownerName, email: b.email, timezone: b.timezone,
+  currency: b.currency, color: b.color, tagline: b.tagline, cancellationHours: b.cancellationHours, isDemo: b.isDemo,
+});
+export const publicBookingBusiness = (b: Business) => ({
   name: b.name, slug: b.slug, ownerName: b.ownerName, timezone: b.timezone, currency: b.currency,
   color: b.color, tagline: b.tagline, cancellationHours: b.cancellationHours,
 });
@@ -14,7 +23,52 @@ export const publicLocation = (location: any) => ({
   id: location.id, name: location.name, address: location.address, type: location.type, color: location.color,
   requiresApproval: location.requiresApproval, active: location.active,
 });
-export const userJson = (u: any) => ({ id: u.id, name: u.name, email: u.email, role: u.role, instructorId: u.instructorId });
+
+// Account identity and workspace authorization are deliberately serialized separately.
+export const userJson = (user: User) => ({
+  id: user.id, name: user.name, email: user.email, accountType: user.accountType as AccountType,
+});
+export const workspaceUserJson = (user: User, membership: Pick<Membership, 'role' | 'instructorId'>) => ({
+  ...userJson(user), role: membership.role as MembershipRole, instructorId: membership.instructorId,
+});
+export const membershipJson = (membership: MembershipWithBusiness) => ({
+  id: membership.id, userId: membership.userId, businessId: membership.businessId, role: membership.role as MembershipRole,
+  instructorId: membership.instructorId, active: membership.active, createdAt: membership.createdAt.toISOString(),
+  business: publicBusiness(membership.business),
+});
+
+export type AuthState = {
+  user: ReturnType<typeof userJson>;
+  membership: ReturnType<typeof membershipJson> | null;
+  business: ReturnType<typeof publicBusiness> | null;
+  memberships: ReturnType<typeof membershipJson>[];
+};
+
+/**
+ * Build the canonical account/session response. Undefined selects the first active
+ * membership; null intentionally represents no selected workspace.
+ */
+export async function authState(userId: string, activeMembershipId?: string | null): Promise<AuthState> {
+  const account = await prisma.user.findUniqueOrThrow({
+    where: { id: userId },
+    include: { memberships: { include: { business: true }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] } },
+  });
+  const { memberships, ...user } = account;
+  const selected = account.accountType === 'CUSTOMER' || activeMembershipId === null
+    ? null
+    : activeMembershipId === undefined
+      ? memberships.find(candidate => candidate.active && candidate.userId === account.id
+        && candidate.businessId === candidate.business.id) ?? null
+      : memberships.find(candidate => candidate.id === activeMembershipId && candidate.active
+        && candidate.userId === account.id && candidate.businessId === candidate.business.id) ?? null;
+  return {
+    user: userJson(user),
+    membership: selected ? membershipJson(selected) : null,
+    business: selected ? publicBusiness(selected.business) : null,
+    memberships: memberships.map(membershipJson),
+  };
+}
+
 export const serviceJson = (s: any) => ({
   id: s.id, name: s.name, description: s.description, category: s.category, type: s.type,
   duration: s.duration, price: s.price, capacity: s.capacity, bufferMinutes: s.bufferMinutes,

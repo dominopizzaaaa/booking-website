@@ -1,21 +1,59 @@
 import { DateTime } from 'luxon';
 import { Prisma } from '@prisma/client';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { prisma } from './db.js';
 import { HttpError, initials } from './http.js';
 import { bookingInclude, bookingJson } from './serializers.js';
 
-export const bookingInput = z.object({
+const bookingSelection = {
   serviceId: z.string().min(1), instructorId: z.string().min(1), locationId: z.string().min(1),
-  startAt: z.string().datetime({ offset: true }), customerId: z.string().min(1).optional(),
-  customer: z.object({ name: z.string().trim().min(2).max(120), email: z.string().trim().email().transform(s => s.toLowerCase()), phone: z.string().max(40).optional(), parentName: z.string().max(120).optional() }).optional(),
+  startAt: z.string().datetime({ offset: true }),
   repeatWeeks: z.number().int().min(1).max(12).default(1), packageId: z.string().min(1).optional(), notes: z.string().max(2000).default(''), address: z.string().max(500).default(''),
-}).refine(x => !!x.customerId || !!x.customer, { message: 'Customer details are required' });
+};
+const customerContact = z.object({
+  phone: z.string().trim().max(40).optional(),
+  parentName: z.string().trim().max(120).optional(),
+}).strict();
+export const bookingInput = z.object({
+  ...bookingSelection,
+  customerId: z.string().min(1).optional(),
+  customer: customerContact.extend({
+    name: z.string().trim().min(2).max(120),
+    email: z.string().trim().email().transform(s => s.toLowerCase()),
+  }).strict().optional(),
+}).strict().refine(x => !!x.customerId || !!x.customer, { message: 'Customer details are required' });
+export const publicBookingInput = z.object({
+  ...bookingSelection,
+  customer: customerContact.optional(),
+}).strict();
 export type BookingInput = z.infer<typeof bookingInput>;
+export type PublicBookingInput = z.infer<typeof publicBookingInput>;
 export type Tx = Prisma.TransactionClient;
-export const managementToken = () => randomBytes(32).toString('base64url');
-export const managementTokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
+export type CreateBookingsOptions = { customerUserId: string } | { requireLinkedCustomer: true };
+
+// A roster row by itself is not enough to host a new session. Legacy data can
+// retain unclaimed instructors for history and later account connection, but
+// only an active membership backed by a registered provider account is
+// bookable. Keep this predicate shared by catalog and scheduling entry points
+// so a hidden legacy coach cannot still be selected with a crafted request.
+export const bookableInstructorWhere = (businessId: string): Prisma.InstructorWhereInput => ({
+  businessId,
+  active: true,
+  membership: {
+    is: {
+      businessId,
+      active: true,
+      user: {
+        is: {
+          passwordHash: { not: null },
+          accountType: { in: ['COACH', 'OWNER'] },
+        },
+      },
+    },
+  },
+});
+
 export async function lockInstructors(tx: Tx, ids: string[]) {
   for (const id of [...new Set(ids)].sort()) await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${id}, 0))`;
 }
@@ -44,7 +82,7 @@ export async function schedulingContext(tx: Tx, businessId: string, serviceId: s
   const [business, service, instructor, location, blocks, exceptions] = await Promise.all([
     tx.business.findUniqueOrThrow({ where: { id: businessId } }),
     tx.service.findFirst({ where: { id: serviceId, businessId, active: true }, include: { locations: { include: { instructors: true } } } }),
-    tx.instructor.findFirst({ where: { id: instructorId, businessId, active: true } }),
+    tx.instructor.findFirst({ where: { id: instructorId, ...bookableInstructorWhere(businessId) } }),
     tx.location.findFirst({ where: { id: locationId, businessId, active: true } }),
     tx.availability.findMany({ where: { businessId, instructorId, locationId } }),
     tx.availabilityException.findMany({ where: { businessId, instructorId } }),
@@ -74,13 +112,69 @@ export async function evaluateSlot(tx: Tx, ctx: Context, startAt: Date, excludeB
   return result('', remaining, group?.id);
 }
 
-export async function createBookingsInTransaction(tx: Tx, businessId: string, input: BookingInput, options: { guest?: boolean } = {}) {
+const normalizeEmail = (email: string) => email.trim().toLowerCase();
+
+async function updateAccountContact(tx: Tx, customerId: string, contact: BookingInput['customer']) {
+  if (!contact || (contact.phone === undefined && contact.parentName === undefined)) {
+    return tx.customer.findUniqueOrThrow({ where: { id: customerId } });
+  }
+  return tx.customer.update({
+    where: { id: customerId },
+    data: {
+      ...(contact.phone !== undefined ? { phone: contact.phone } : {}),
+      ...(contact.parentName !== undefined ? { parentName: contact.parentName } : {}),
+    },
+  });
+}
+
+async function resolveAccountCustomer(tx: Tx, businessId: string, userId: string, profile: NonNullable<BookingInput['customer']>) {
+  // Serializing first-time resolution makes creating the account-backed club
+  // profile race-safe. Legacy email-only rows are intentionally never claimed:
+  // registration alone does not prove ownership of an old contact address.
+  const lockKey = `account-customer:${businessId}:${userId}`;
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+
+  const linked = await tx.customer.findFirst({ where: { businessId, userId } });
+  if (linked) return updateAccountContact(tx, linked.id, profile);
+
+  const email = normalizeEmail(profile.email);
+  const legacyContact = await tx.customer.findUnique({
+    where: { businessId_email: { businessId, email } },
+    select: { id: true, userId: true },
+  });
+  if (legacyContact) {
+    throw new HttpError(409, legacyContact.userId
+      ? 'This email is already connected to another customer account for this business'
+      : 'This business already has unclaimed history for this email. Ask the club to verify and connect your account before booking');
+  }
+
+  return tx.customer.create({ data: {
+    businessId, userId, name: profile.name, email, initials: initials(profile.name),
+    phone: profile.phone ?? '', parentName: profile.parentName ?? '',
+  } });
+}
+
+async function resolveBookingCustomer(tx: Tx, businessId: string, input: BookingInput, options: CreateBookingsOptions) {
+  if ('customerUserId' in options) {
+    if (input.customerId) throw new HttpError(400, 'Account bookings cannot select a customer identity');
+    if (!input.customer) throw new HttpError(400, 'Customer account details are required');
+    return resolveAccountCustomer(tx, businessId, options.customerUserId, input.customer);
+  }
+
+  // Provider bookings must select an existing account-backed customer. They
+  // cannot silently create an email-only customer from request contact data.
+  if (!input.customerId || input.customer) throw new HttpError(400, 'Select an existing account-linked customer');
+  const customer = await tx.customer.findFirst({ where: { id: input.customerId, businessId } });
+  if (!customer) throw new HttpError(404, 'Customer not found');
+  if (!customer.userId) throw new HttpError(400, 'Customer must be linked to a registered account');
+  return customer;
+}
+
+export async function createBookingsInTransaction(tx: Tx, businessId: string, input: BookingInput, options: CreateBookingsOptions = { requireLinkedCustomer: true }) {
   await lockInstructors(tx, [input.instructorId]);
   const ctx = await schedulingContext(tx, businessId, input.serviceId, input.instructorId, input.locationId);
-  let customer = input.customerId ? await tx.customer.findFirst({ where: { id: input.customerId, businessId } }) : null;
-  if (input.customerId && !customer) throw new HttpError(404, 'Customer not found');
-  if (!customer && input.customer) customer = await tx.customer.upsert({ where: { businessId_email: { businessId, email: input.customer.email } }, create: { businessId, ...input.customer, initials: initials(input.customer.name) }, update: {} });
-  if (!customer) throw new HttpError(400, 'Customer details are required');
+  const accountBooking = 'customerUserId' in options;
+  const customer = await resolveBookingCustomer(tx, businessId, input, options);
   const first = DateTime.fromISO(input.startAt, { zone: ctx.business.timezone });
   const occurrences = [];
   const conflicts = [];
@@ -103,28 +197,28 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
   }
   const recurringId = occurrences.length > 1 ? randomUUID() : null;
   const booked = [];
-  let firstToken: string | undefined;
   for (const slot of occurrences) {
-    const token = managementToken();
-    firstToken ??= token;
     let bookingId = slot.groupId;
     if (!bookingId) {
-      const booking = await tx.booking.create({ data: { businessId, serviceId: input.serviceId, instructorId: input.instructorId, locationId: input.locationId, startAt: slot.startAt, endAt: slot.endAt, duration: ctx.assignment.duration, bufferMinutes: ctx.service.bufferMinutes, price: ctx.assignment.price, type: ctx.service.type, capacity: ctx.service.type === 'PRIVATE' ? 1 : ctx.service.capacity, status: (ctx.location.requiresApproval || ctx.location.type === 'RENTED') ? 'PENDING' : 'CONFIRMED', recurringId, notes: options.guest ? '' : input.notes, address: input.address } });
+      const booking = await tx.booking.create({ data: { businessId, serviceId: input.serviceId, instructorId: input.instructorId, locationId: input.locationId, startAt: slot.startAt, endAt: slot.endAt, duration: ctx.assignment.duration, bufferMinutes: ctx.service.bufferMinutes, price: ctx.assignment.price, type: ctx.service.type, capacity: ctx.service.type === 'PRIVATE' ? 1 : ctx.service.capacity, status: (ctx.location.requiresApproval || ctx.location.type === 'RENTED') ? 'PENDING' : 'CONFIRMED', recurringId, notes: accountBooking ? '' : input.notes, address: input.address } });
       bookingId = booking.id;
     }
     const existing = await tx.participant.findUnique({ where: { bookingId_customerId: { bookingId, customerId: customer.id } } });
     const sessionSnapshot = await tx.booking.findUniqueOrThrow({ where: { id: bookingId }, select: { price: true } });
-    const participantData = { managementTokenHash: managementTokenHash(token), managementTokenExpiresAt: new Date(slot.endAt.getTime() + 30 * 86400_000), managementTokenRevokedAt: null, notes: options.guest ? input.notes : '', price: sessionSnapshot.price, packageId: pkg?.id ?? null, paid: pkg?.paid ?? false, creditConsumed: !!pkg, cancelledAt: null, attendance: 'UNMARKED' };
+    const participantData = { managementTokenHash: null, managementTokenExpiresAt: null, managementTokenRevokedAt: null, notes: accountBooking ? input.notes : '', price: sessionSnapshot.price, packageId: pkg?.id ?? null, paid: pkg?.paid ?? false, creditConsumed: !!pkg, cancelledAt: null, attendance: 'UNMARKED' };
     if (existing) await tx.participant.update({ where: { id: existing.id }, data: participantData });
     else await tx.participant.create({ data: { bookingId, customerId: customer.id, ...participantData } });
     const booking = await tx.booking.findUniqueOrThrow({ where: { id: bookingId }, include: bookingInclude });
-    const json = bookingJson(booking);
-    booked.push({ ...json, participants: json.participants.map(participant => participant.customerId === customer.id ? { ...participant, managementToken: token } : participant) });
+    const json = bookingJson(booking, { includeNotes: !accountBooking });
+    booked.push(accountBooking
+      ? { ...json, participants: json.participants.filter(participant => participant.customerId === customer.id) }
+      : json);
   }
-  await tx.notification.create({ data: { businessId, instructorId: input.instructorId, title: `${booked.length > 1 ? 'Recurring booking' : 'New booking'} · ${customer.name}`, message: `${ctx.service.name} with ${ctx.instructor.name}. ${ctx.location.requiresApproval ? 'Venue approval is required; no external court has been reserved. ' : ''}Booking confirmation and 24-hour reminder queued in Courtly; external delivery is not configured.` } });
-  return { bookings: booked, managementToken: firstToken };
+  const venuePending = ctx.location.requiresApproval || ctx.location.type === 'RENTED';
+  await tx.notification.create({ data: { businessId, instructorId: input.instructorId, title: `${booked.length > 1 ? 'Recurring booking' : 'New booking'} · ${customer.name}`, message: `${ctx.service.name} with ${ctx.instructor.name}. ${venuePending ? 'Venue approval is required; no external court has been reserved. ' : ''}Booking confirmation and 24-hour reminder queued in Courtly; external delivery is not configured.` } });
+  return { bookings: booked };
 }
-export const createBookings = (businessId: string, input: BookingInput, options: { guest?: boolean } = {}) => prisma.$transaction(tx => createBookingsInTransaction(tx, businessId, input, options), { timeout: 30_000 });
+export const createBookings = (businessId: string, input: BookingInput, options: CreateBookingsOptions = { requireLinkedCustomer: true }) => prisma.$transaction(tx => createBookingsInTransaction(tx, businessId, input, options), { timeout: 30_000 });
 
 export async function refundParticipant(tx: Tx, participant: { id: string; packageId: string | null; creditConsumed: boolean }) {
   if (!participant.creditConsumed || !participant.packageId) return;

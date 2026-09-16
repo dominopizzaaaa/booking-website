@@ -8,10 +8,13 @@ export const bookingsRouter = Router();
 bookingsRouter.post('/bookings', asyncRoute(async (req, res) => {
   const input = bookingInput.parse(req.body);
   coachScope(req, input.instructorId);
-  res.status(201).json(await createBookings(req.auth.business.id, input));
+  // Provider-created bookings may select an existing customer, but they may
+  // never mint a guest/contact-only identity. The scheduler enforces that the
+  // selected Customer is linked to a registered global account.
+  res.status(201).json(await createBookings(req.auth.business!.id, input, { requireLinkedCustomer: true }));
 }));
 bookingsRouter.get('/bookings', asyncRoute(async (req, res) => {
-  const bookings = await prisma.booking.findMany({ where: { businessId: req.auth.business.id, instructorId: req.auth.user.role === 'COACH' ? req.auth.user.instructorId || '__none__' : undefined }, include: bookingInclude, orderBy: { startAt: 'asc' } });
+  const bookings = await prisma.booking.findMany({ where: { businessId: req.auth.business!.id, instructorId: req.auth.membership!.role === 'COACH' ? req.auth.membership!.instructorId || '__none__' : undefined }, include: bookingInclude, orderBy: { startAt: 'asc' } });
   res.json(bookings.map(b => bookingJson(b)));
 }));
 bookingsRouter.patch('/bookings/:id', asyncRoute(async (req, res) => {
@@ -25,6 +28,12 @@ bookingsRouter.patch('/bookings/:id', asyncRoute(async (req, res) => {
     coachScope(req, current.instructorId);
     if (current.instructorId !== initial.instructorId) throw new HttpError(409, 'Session changed. Please retry.');
     if (body.status && current.status === 'CANCELLED' && body.status !== 'CANCELLED') throw new HttpError(400, 'Cancelled sessions cannot be reopened. Create a new booking.');
+    if (body.status === 'CONFIRMED') {
+      const location = await tx.location.findUniqueOrThrow({ where: { id: current.locationId } });
+      if ((location.type === 'RENTED' || location.requiresApproval) && req.auth.membership!.role === 'COACH') {
+        throw new HttpError(403, 'Only an owner or admin can confirm a lesson that requires venue approval');
+      }
+    }
     if (body.status === 'CANCELLED') await cancelBooking(tx, req.auth.business.id, current.id);
     else if (body.status) await tx.booking.update({ where: { id: current.id }, data: { status: body.status } });
     if (body.notes !== undefined) await tx.booking.update({ where: { id: current.id }, data: { notes: body.notes } });

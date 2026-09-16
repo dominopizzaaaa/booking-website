@@ -2,28 +2,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { app } from '../src/app.js';
-import { config } from '../src/config.js';
-import { inputFor, prisma, TestTenants, verifyTestDatabase, type Fixture } from './fixtures.js';
-
-const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
-
-async function ownerCookie(f: Fixture) {
-  const user = await prisma.user.create({
-    data: {
-      businessId: f.business.id,
-      name: 'Security Test Owner',
-      email: `${randomUUID()}@example.test`,
-      passwordHash: 'not-used-by-this-test',
-      role: 'OWNER',
-      instructorId: f.instructor.id,
-    },
-  });
-  const token = randomBytes(32).toString('base64url');
-  await prisma.authSession.create({
-    data: { id: sha256(token), userId: user.id, expiresAt: new Date(Date.now() + 3_600_000) },
-  });
-  return `${config.sessionCookie}=${token}`;
-}
+import {
+  createAccount, createSession, prisma, publicInputFor, TestTenants, verifyTestDatabase, type Fixture,
+} from './fixtures.js';
 
 beforeAll(verifyTestDatabase, 15_000);
 afterAll(async () => { await prisma.$disconnect(); });
@@ -37,6 +18,40 @@ describe.sequential('Public API security regressions', () => {
     f = await tenants.fixture();
   });
   afterEach(async () => { await tenants.cleanup(); });
+
+  async function accountSession(overrides: Parameters<typeof createAccount>[1] = {}) {
+    const account = await createAccount(f, overrides);
+    const session = await createSession(f, account.id);
+    return { account, ...session };
+  }
+
+  async function attachLegacyToken(participantId: string, overrides: { expiresAt?: Date; revokedAt?: Date } = {}) {
+    const token = randomBytes(32).toString('base64url');
+    const hash = createHash('sha256').update(token).digest('hex');
+    await prisma.participant.update({
+      where: { id: participantId },
+      data: {
+        managementTokenHash: hash,
+        managementTokenExpiresAt: overrides.expiresAt ?? new Date(Date.now() + 7 * 86_400_000),
+        managementTokenRevokedAt: overrides.revokedAt ?? null,
+      },
+    });
+    return { token, hash };
+  }
+
+  async function attachMigratedLegacyToken(participantId: string) {
+    const token = randomBytes(32).toString('base64url');
+    const hash = createHash('md5').update(`${token}${participantId}`).digest('hex');
+    await prisma.participant.update({
+      where: { id: participantId },
+      data: {
+        managementTokenHash: hash,
+        managementTokenExpiresAt: new Date(Date.now() + 7 * 86_400_000),
+        managementTokenRevokedAt: null,
+      },
+    });
+    return { token, hash };
+  }
 
   it('redacts tenant identifiers, instructor email and internal location notes from the public catalog', async () => {
     const privateInstructorEmail = `coach-private-${randomUUID()}@example.test`;
@@ -62,7 +77,7 @@ describe.sequential('Public API security regressions', () => {
     expect(location).not.toHaveProperty('notes');
     expect(location).not.toHaveProperty('businessId');
     expect(service).not.toHaveProperty('businessId');
-    expect(JSON.stringify(response.body)).not.toContain('"businessId"');
+    expect(JSON.stringify(response.body)).not.toContain('\"businessId\"');
     expect(response.body.business).not.toHaveProperty('id');
     expect(response.body.business).not.toHaveProperty('email');
     expect(response.body.business).not.toHaveProperty('isDemo');
@@ -70,230 +85,242 @@ describe.sequential('Public API security regressions', () => {
     expect(JSON.stringify(response.body)).not.toContain(privateLocationNotes);
   });
 
-  it('keeps each group guest participant note private in booking receipts and management views', async () => {
-    await prisma.service.update({ where: { id: f.service.id }, data: { type: 'GROUP', capacity: 3 } });
-    const firstEmail = `first-${randomUUID()}@example.test`;
-    const secondEmail = `second-${randomUUID()}@example.test`;
-    const firstNote = `first participant private note ${randomUUID()}`;
-    const secondNote = `second participant private note ${randomUUID()}`;
+  it('hides active unclaimed instructors and rejects their slots and account bookings', async () => {
+    // Model a migrated roster entry: both instructor and membership remain active,
+    // but the deterministic global account has never been claimed with a password.
+    await prisma.user.update({ where: { id: f.user.id }, data: { passwordHash: null } });
+    const { cookie } = await accountSession({ name: 'Registered Player' });
 
-    const first = await request(app).post(`/api/public/${f.business.slug}/bookings`).send(inputFor(f, {
-      customer: { name: 'First Guest', email: firstEmail },
-      notes: firstNote,
-    })).expect(201);
-    const second = await request(app).post(`/api/public/${f.business.slug}/bookings`).send(inputFor(f, {
-      customer: { name: 'Second Guest', email: secondEmail },
-      notes: secondNote,
-    })).expect(201);
-
-    expect(second.body.bookings[0].id).toBe(first.body.bookings[0].id);
-    expect(second.body.bookings[0].participants).toEqual([expect.objectContaining({
-      email: secondEmail, notes: secondNote,
-    })]);
-    expect(second.body.bookings[0]).not.toHaveProperty('notes');
-    expect(JSON.stringify(second.body)).not.toContain(firstEmail);
-    expect(JSON.stringify(second.body)).not.toContain(firstNote);
-    expect(JSON.stringify(second.body)).not.toContain(first.body.managementToken);
-    const storedGroup = await prisma.booking.findUniqueOrThrow({
-      where: { id: first.body.bookings[0].id },
-      include: { participants: { include: { customer: true } } },
-    });
-    expect(storedGroup.notes).toBe('');
-    expect(Object.fromEntries(storedGroup.participants.map(participant => [
-      participant.customer.email, participant.notes,
-    ]))).toEqual({ [firstEmail]: firstNote, [secondEmail]: secondNote });
-
-    const firstManaged = await request(app).get(`/api/manage/${first.body.managementToken}`).expect(200);
-    const secondManaged = await request(app).get(`/api/manage/${second.body.managementToken}`).expect(200);
-    expect(firstManaged.body.booking.participants).toEqual([expect.objectContaining({
-      email: firstEmail, notes: firstNote,
-    })]);
-    expect(firstManaged.body.booking).not.toHaveProperty('notes');
-    expect(firstManaged.body.participant).toMatchObject({ email: firstEmail, notes: firstNote });
-    expect(JSON.stringify(firstManaged.body)).not.toContain(secondEmail);
-    expect(JSON.stringify(firstManaged.body)).not.toContain(secondNote);
-    expect(secondManaged.body.booking.participants).toEqual([expect.objectContaining({
-      email: secondEmail, notes: secondNote,
-    })]);
-    expect(secondManaged.body.booking).not.toHaveProperty('notes');
-    expect(secondManaged.body.participant).toMatchObject({ email: secondEmail, notes: secondNote });
-    expect(JSON.stringify(secondManaged.body)).not.toContain(firstEmail);
-    expect(JSON.stringify(secondManaged.body)).not.toContain(firstNote);
-  });
-
-  it('returns a usable management token once while persisting and serializing only its digest', async () => {
-    const created = await request(app).post(`/api/public/${f.business.slug}/bookings`)
-      .send(inputFor(f))
-      .expect(201);
-    const token = created.body.managementToken as string;
-    const booking = created.body.bookings[0];
-    const participant = booking.participants[0];
-    const digest = sha256(token);
-
-    expect(token).toMatch(/^[\w-]{43}$/);
-    expect(participant.managementToken).toBe(token);
-    const persisted = await prisma.participant.findUniqueOrThrow({ where: { id: participant.id } });
-    expect(persisted.managementTokenHash).toBe(digest);
-    expect(persisted.managementTokenHash).not.toBe(token);
-    expect(persisted.managementTokenExpiresAt.getTime()).toBe(
-      new Date(booking.endAt).getTime() + 30 * 86_400_000,
-    );
-    expect(Object.prototype.hasOwnProperty.call(persisted, 'managementToken')).toBe(false);
-    expect(JSON.stringify(persisted)).not.toContain(token);
-    expect(await prisma.participant.findUnique({ where: { managementTokenHash: digest } })).toMatchObject({
-      id: participant.id, bookingId: booking.id,
-    });
-
-    const columns = await prisma.$queryRaw<{ column_name: string }[]>`
-      SELECT column_name
-      FROM information_schema.columns
-      WHERE table_schema = current_schema() AND table_name = 'Participant'
-    `;
-    expect(columns.map(column => column.column_name)).toContain('managementTokenHash');
-    expect(columns.map(column => column.column_name)).not.toContain('managementToken');
-
-    const managed = await request(app).get(`/api/manage/${token}`).expect(200);
-    expect(managed.headers['cache-control']).toContain('no-store');
-    expect(managed.body.participant.id).toBe(participant.id);
-    expect(JSON.stringify(managed.body)).not.toContain(token);
-    expect(JSON.stringify(managed.body)).not.toContain(digest);
-    await request(app).get(`/api/manage/${digest}`).expect(404);
-    const mutated = `${token.slice(0, -1)}${token.endsWith('A') ? 'B' : 'A'}`;
-    await request(app).get(`/api/manage/${mutated}`).expect(404);
-
-    const workspace = await request(app).get('/api/workspace')
-      .set('Cookie', await ownerCookie(f))
-      .expect(200);
-    const serializedWorkspace = JSON.stringify(workspace.body);
-    expect(serializedWorkspace).not.toContain(token);
-    expect(serializedWorkspace).not.toContain(digest);
-    expect(serializedWorkspace).not.toContain('managementToken');
-  });
-
-  it('rejects expired and revoked management tokens for reads and mutations', async () => {
-    const expired = await request(app).post(`/api/public/${f.business.slug}/bookings`)
-      .send(inputFor(f))
-      .expect(201);
-    const revoked = await request(app).post(`/api/public/${f.business.slug}/bookings`)
-      .send(inputFor(f, { startAt: f.starts.plus({ days: 1 }).toISO()! }))
-      .expect(201);
-
-    await prisma.participant.update({
-      where: { managementTokenHash: sha256(expired.body.managementToken) },
-      data: { managementTokenExpiresAt: new Date(Date.now() - 60_000) },
-    });
-    await prisma.participant.update({
-      where: { managementTokenHash: sha256(revoked.body.managementToken) },
-      data: { managementTokenRevokedAt: new Date() },
-    });
-
-    for (const token of [expired.body.managementToken, revoked.body.managementToken]) {
-      const responses = [
-        await request(app).get(`/api/manage/${token}`).expect(410),
-        await request(app).post(`/api/manage/${token}/cancel`).send({}).expect(410),
-        await request(app).post(`/api/manage/${token}/reschedule`)
-          .send({ startAt: f.starts.plus({ days: 2 }).toISO()! })
-          .expect(410),
-      ];
-      for (const response of responses) {
-        expect(response.body).toEqual({
-          error: 'This management link has expired. Please contact your coach.',
-        });
-      }
+    const catalog = await request(app).get(`/api/public/${f.business.slug}`).expect(200);
+    expect(catalog.body.instructors.map((instructor: { id: string }) => instructor.id)).not.toContain(f.instructor.id);
+    for (const service of catalog.body.services as { locations: { instructorIds: string[] }[] }[]) {
+      for (const location of service.locations) expect(location.instructorIds).not.toContain(f.instructor.id);
     }
-    const bookings = await prisma.booking.findMany({ where: { businessId: f.business.id } });
-    expect(bookings).toHaveLength(2);
-    expect(bookings.every(booking => booking.status === 'CONFIRMED')).toBe(true);
+
+    await request(app).get(`/api/public/${f.business.slug}/slots`).query({
+      serviceId: f.service.id, instructorId: f.instructor.id, locationId: f.location.id,
+      date: f.starts.toISODate(),
+    }).expect(404);
+    await request(app).post(`/api/public/${f.business.slug}/bookings`)
+      .set('Cookie', cookie).send(publicInputFor(f)).expect(404);
+
+    expect(await prisma.booking.count({ where: { businessId: f.business.id } })).toBe(0);
+    expect(await prisma.customer.count({ where: { businessId: f.business.id } })).toBe(0);
   });
 
-  it('allows startAt-only public and provider reschedules but rejects catalog identity fields', async () => {
+  it('requires an authenticated account to book and stores no management credential', async () => {
+    const input = publicInputFor(f, { notes: 'Private account note' });
+    await request(app).post(`/api/public/${f.business.slug}/bookings`).send(input).expect(401);
+
+    const { account, cookie } = await accountSession({
+      name: 'Account Player', email: `${randomUUID()}@example.test`,
+    });
     const created = await request(app).post(`/api/public/${f.business.slug}/bookings`)
-      .send(inputFor(f))
-      .expect(201);
+      .set('Cookie', cookie).send(input).expect(201);
+    const participant = created.body.bookings[0].participants[0];
+
+    expect(created.body).not.toHaveProperty('managementToken');
+    expect(JSON.stringify(created.body)).not.toContain('managementToken');
+    expect(participant).toMatchObject({ email: account.email, notes: 'Private account note' });
+    const persisted = await prisma.participant.findUniqueOrThrow({ where: { id: participant.id } });
+    expect(persisted).toMatchObject({
+      managementTokenHash: null, managementTokenExpiresAt: null, managementTokenRevokedAt: null,
+    });
+  });
+
+  it('exposes only the signed-in participant in group receipts and account history', async () => {
+    await prisma.service.update({ where: { id: f.service.id }, data: { type: 'GROUP', capacity: 3 } });
+    const first = await accountSession({ name: 'First Player', email: `first-${randomUUID()}@example.test` });
+    const second = await accountSession({ name: 'Second Player', email: `second-${randomUUID()}@example.test` });
+    const firstNote = `first private note ${randomUUID()}`;
+    const secondNote = `second private note ${randomUUID()}`;
+
+    const firstCreated = await request(app).post(`/api/public/${f.business.slug}/bookings`)
+      .set('Cookie', first.cookie).send(publicInputFor(f, { notes: firstNote })).expect(201);
+    const secondCreated = await request(app).post(`/api/public/${f.business.slug}/bookings`)
+      .set('Cookie', second.cookie).send(publicInputFor(f, { notes: secondNote })).expect(201);
+
+    expect(secondCreated.body.bookings[0].id).toBe(firstCreated.body.bookings[0].id);
+    expect(firstCreated.body.bookings[0].participants).toEqual([
+      expect.objectContaining({ email: first.account.email, notes: firstNote }),
+    ]);
+    expect(secondCreated.body.bookings[0].participants).toEqual([
+      expect.objectContaining({ email: second.account.email, notes: secondNote }),
+    ]);
+    expect(JSON.stringify(firstCreated.body)).not.toContain(second.account.email);
+    expect(JSON.stringify(firstCreated.body)).not.toContain(secondNote);
+    expect(JSON.stringify(secondCreated.body)).not.toContain(first.account.email);
+    expect(JSON.stringify(secondCreated.body)).not.toContain(firstNote);
+
+    const firstHistory = await request(app).get('/api/account/bookings').set('Cookie', first.cookie).expect(200);
+    const secondHistory = await request(app).get('/api/account/bookings').set('Cookie', second.cookie).expect(200);
+    expect(firstHistory.body.bookings).toHaveLength(1);
+    expect(secondHistory.body.bookings).toHaveLength(1);
+    expect(firstHistory.body.bookings[0].booking.participants).toEqual([
+      expect.objectContaining({ email: first.account.email, notes: firstNote }),
+    ]);
+    expect(secondHistory.body.bookings[0].booking.participants).toEqual([
+      expect.objectContaining({ email: second.account.email, notes: secondNote }),
+    ]);
+    expect(JSON.stringify(firstHistory.body)).not.toContain(second.account.email);
+    expect(JSON.stringify(firstHistory.body)).not.toContain(secondNote);
+    expect(JSON.stringify(secondHistory.body)).not.toContain(first.account.email);
+    expect(JSON.stringify(secondHistory.body)).not.toContain(firstNote);
+  });
+
+  it('honors a management link migrated from the original plaintext-token schema', async () => {
+    const account = await accountSession({ name: 'Migrated Link Player' });
+    const created = await request(app).post(`/api/public/${f.business.slug}/bookings`)
+      .set('Cookie', account.cookie).send(publicInputFor(f)).expect(201);
+    const participantId = created.body.bookings[0].participants[0].id as string;
+    const credential = await attachMigratedLegacyToken(participantId);
+
+    const managed = await request(app).get(`/api/manage/${credential.token}`).expect(200);
+    expect(managed.headers['cache-control']).toBe('no-store');
+    expect(managed.body.participant).toMatchObject({ name: account.account.name, paid: false });
+    expect(managed.body.booking).not.toHaveProperty('participants');
+    expect(await prisma.participant.findUniqueOrThrow({ where: { id: participantId } })).toMatchObject({
+      managementTokenHash: createHash('sha256').update(credential.token).digest('hex'),
+    });
+    await request(app).get(`/api/manage/${credential.token}`).expect(200);
+    const serialized = JSON.stringify(managed.body);
+    expect(serialized).not.toContain(credential.token);
+    expect(serialized).not.toContain(credential.hash);
+    expect(serialized).not.toContain('managementToken');
+  });
+
+  it('honors an existing legacy link for a group participant without exposing another participant or credential', async () => {
+    await prisma.service.update({ where: { id: f.service.id }, data: { type: 'GROUP', capacity: 3 } });
+    const first = await accountSession({ name: 'Legacy Link Player', email: `legacy-${randomUUID()}@example.test` });
+    const second = await accountSession({ name: 'Private Group Player', email: `private-${randomUUID()}@example.test` });
+    const firstNote = `legacy participant note ${randomUUID()}`;
+    const secondNote = `other participant note ${randomUUID()}`;
+    const firstCreated = await request(app).post(`/api/public/${f.business.slug}/bookings`)
+      .set('Cookie', first.cookie).send(publicInputFor(f, { notes: firstNote })).expect(201);
+    const secondCreated = await request(app).post(`/api/public/${f.business.slug}/bookings`)
+      .set('Cookie', second.cookie).send(publicInputFor(f, { notes: secondNote })).expect(201);
+    const participantId = firstCreated.body.bookings[0].participants[0].id as string;
+    const otherParticipantId = secondCreated.body.bookings[0].participants[0].id as string;
+    const credential = await attachLegacyToken(participantId);
+
+    const assertPrivateLegacyResponse = (body: unknown) => {
+      const serialized = JSON.stringify(body);
+      expect(serialized).toContain(first.account.name);
+      expect(serialized).not.toContain(first.account.email);
+      expect(serialized).not.toContain(firstNote);
+      expect(serialized).not.toContain(second.account.email);
+      expect(serialized).not.toContain(secondNote);
+      expect(serialized).not.toContain(otherParticipantId);
+      expect(serialized).not.toContain(credential.token);
+      expect(serialized).not.toContain(credential.hash);
+      expect(serialized).not.toContain('managementToken');
+    };
+
+    const managed = await request(app).get(`/api/manage/${credential.token}`).expect(200);
+    expect(managed.body.booking).not.toHaveProperty('participants');
+    expect(managed.body.participant).toMatchObject({ name: first.account.name });
+    assertPrivateLegacyResponse(managed.body);
+
+    const cancelled = await request(app).post(`/api/manage/${credential.token}/cancel`).send({}).expect(200);
+    expect(cancelled.body.participant).toMatchObject({ name: first.account.name, cancelled: true });
+    assertPrivateLegacyResponse(cancelled.body);
+    expect(await prisma.participant.findUniqueOrThrow({ where: { id: otherParticipantId } })).toMatchObject({ cancelledAt: null });
+    expect(await prisma.booking.findUniqueOrThrow({ where: { id: firstCreated.body.bookings[0].id } })).toMatchObject({ status: 'CONFIRMED' });
+  });
+
+  it('reschedules through a valid legacy link and rejects invalid, expired and revoked credentials', async () => {
+    const validAccount = await accountSession({ name: 'Legacy Reschedule Player' });
+    const validCreated = await request(app).post(`/api/public/${f.business.slug}/bookings`)
+      .set('Cookie', validAccount.cookie).send(publicInputFor(f)).expect(201);
+    const validParticipantId = validCreated.body.bookings[0].participants[0].id as string;
+    const validCredential = await attachLegacyToken(validParticipantId);
+    const movedStart = f.starts.plus({ days: 1 }).toISO()!;
+
+    const moved = await request(app).post(`/api/manage/${validCredential.token}/reschedule`)
+      .send({ startAt: movedStart }).expect(200);
+    expect(moved.body.booking).toMatchObject({
+      id: validCreated.body.bookings[0].id, startAt: f.starts.plus({ days: 1 }).toJSDate().toISOString(),
+      serviceId: f.service.id, instructorId: f.instructor.id, locationId: f.location.id,
+    });
+    const movedJson = JSON.stringify(moved.body);
+    expect(movedJson).not.toContain(validCredential.token);
+    expect(movedJson).not.toContain(validCredential.hash);
+    expect(movedJson).not.toContain('managementToken');
+
+    await request(app).get(`/api/manage/${randomBytes(32).toString('base64url')}`).expect(404);
+
+    const expiredAccount = await accountSession({ name: 'Expired Link Player' });
+    const expiredCreated = await request(app).post(`/api/public/${f.business.slug}/bookings`)
+      .set('Cookie', expiredAccount.cookie)
+      .send(publicInputFor(f, { startAt: f.starts.plus({ days: 2 }).toISO()! })).expect(201);
+    const expiredCredential = await attachLegacyToken(expiredCreated.body.bookings[0].participants[0].id, {
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+
+    const revokedAccount = await accountSession({ name: 'Revoked Link Player' });
+    const revokedCreated = await request(app).post(`/api/public/${f.business.slug}/bookings`)
+      .set('Cookie', revokedAccount.cookie)
+      .send(publicInputFor(f, { startAt: f.starts.plus({ days: 3 }).toISO()! })).expect(201);
+    const revokedCredential = await attachLegacyToken(revokedCreated.body.bookings[0].participants[0].id, {
+      revokedAt: new Date(),
+    });
+
+    for (const token of [expiredCredential.token, revokedCredential.token]) {
+      await request(app).get(`/api/manage/${token}`).expect(410);
+      await request(app).post(`/api/manage/${token}/cancel`).send({}).expect(410);
+      await request(app).post(`/api/manage/${token}/reschedule`)
+        .send({ startAt: f.starts.plus({ days: 4 }).toISO()! }).expect(410);
+    }
+  });
+
+  it('denies another account access to history, cancellation and rescheduling', async () => {
+    const owner = await accountSession({ name: 'Booking Owner' });
+    const stranger = await accountSession({ name: 'Other Account' });
+    const created = await request(app).post(`/api/public/${f.business.slug}/bookings`)
+      .set('Cookie', owner.cookie).send(publicInputFor(f)).expect(201);
+    const participantId = created.body.bookings[0].participants[0].id as string;
+
+    const strangerHistory = await request(app).get('/api/account/bookings')
+      .set('Cookie', stranger.cookie).expect(200);
+    expect(strangerHistory.body).toEqual({ bookings: [] });
+    await request(app).post(`/api/account/bookings/${participantId}/cancel`)
+      .set('Cookie', stranger.cookie).send({}).expect(404);
+    await request(app).post(`/api/account/bookings/${participantId}/reschedule`)
+      .set('Cookie', stranger.cookie).send({ startAt: f.starts.plus({ days: 1 }).toISO()! }).expect(404);
+
+    expect(await prisma.participant.findUniqueOrThrow({ where: { id: participantId } })).toMatchObject({ cancelledAt: null });
+    expect(await prisma.booking.findUniqueOrThrow({ where: { id: created.body.bookings[0].id } })).toMatchObject({
+      startAt: f.starts.toJSDate(), status: 'CONFIRMED',
+    });
+  });
+
+  it('accepts only startAt when an account reschedules and preserves catalog identity', async () => {
+    const { cookie } = await accountSession();
+    const created = await request(app).post(`/api/public/${f.business.slug}/bookings`)
+      .set('Cookie', cookie).send(publicInputFor(f)).expect(201);
     const bookingId = created.body.bookings[0].id as string;
-    const token = created.body.managementToken as string;
-    const alternateInstructor = await prisma.instructor.create({
-      data: { businessId: f.business.id, name: 'Alternate Coach', initials: 'AC' },
-    });
-    const originalAssignment = await prisma.serviceLocation.findUniqueOrThrow({
-      where: { serviceId_locationId: { serviceId: f.service.id, locationId: f.location.id } },
-    });
-    await prisma.serviceInstructor.create({
-      data: { serviceLocationId: originalAssignment.id, instructorId: alternateInstructor.id },
-    });
-    await prisma.availability.createMany({
-      data: Array.from({ length: 7 }, (_, dayOfWeek) => ({
-        businessId: f.business.id, instructorId: alternateInstructor.id, locationId: f.location.id,
-        dayOfWeek, startTime: '08:00', endTime: '20:00',
-      })),
-    });
-    const alternateLocation = await prisma.location.create({
-      data: { businessId: f.business.id, name: 'Alternate Court' },
-    });
-    await prisma.serviceLocation.create({
-      data: {
-        serviceId: f.service.id, locationId: alternateLocation.id, price: 8000, duration: 60,
-        instructors: { create: { instructorId: f.instructor.id } },
-      },
-    });
-    await prisma.availability.createMany({
-      data: Array.from({ length: 7 }, (_, dayOfWeek) => ({
-        businessId: f.business.id, instructorId: f.instructor.id, locationId: alternateLocation.id,
-        dayOfWeek, startTime: '08:00', endTime: '20:00',
-      })),
-    });
-    const alternateService = await prisma.service.create({
-      data: {
-        businessId: f.business.id, name: 'Alternate Service', type: 'PRIVATE', capacity: 1, noticeHours: 0,
-        locations: { create: {
-          locationId: f.location.id, price: 8000, duration: 60,
-          instructors: { create: { instructorId: f.instructor.id } },
-        } },
-      },
-    });
+    const participantId = created.body.bookings[0].participants[0].id as string;
+    const movedStart = f.starts.plus({ days: 1 }).toISO()!;
     const forbiddenFields = [
-      ['instructorId', alternateInstructor.id],
-      ['locationId', alternateLocation.id],
-      ['serviceId', alternateService.id],
+      ['instructorId', f.instructor.id],
+      ['locationId', f.location.id],
+      ['serviceId', f.service.id],
     ] as const;
 
-    const publicStartAt = f.starts.plus({ days: 1 }).toISO()!;
     for (const [field, value] of forbiddenFields) {
-      await request(app).post(`/api/manage/${token}/reschedule`)
-        .send({ startAt: publicStartAt, [field]: value })
-        .expect(400);
+      await request(app).post(`/api/account/bookings/${participantId}/reschedule`)
+        .set('Cookie', cookie).send({ startAt: movedStart, [field]: value }).expect(400);
     }
     expect(await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } })).toMatchObject({
       serviceId: f.service.id, instructorId: f.instructor.id, locationId: f.location.id,
       startAt: f.starts.toJSDate(),
     });
-    const publicMove = await request(app).post(`/api/manage/${token}/reschedule`)
-      .send({ startAt: publicStartAt })
-      .expect(200);
-    expect(publicMove.body.booking).toMatchObject({
-      serviceId: f.service.id, instructorId: f.instructor.id, locationId: f.location.id,
-      startAt: f.starts.plus({ days: 1 }).toJSDate().toISOString(),
-    });
 
-    const cookie = await ownerCookie(f);
-    const providerStartAt = f.starts.plus({ days: 2 }).toISO()!;
-    for (const [field, value] of forbiddenFields) {
-      await request(app).post(`/api/bookings/${bookingId}/reschedule`)
-        .set('Cookie', cookie)
-        .send({ startAt: providerStartAt, [field]: value })
-        .expect(400);
-    }
-    expect(await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } })).toMatchObject({
-      serviceId: f.service.id, instructorId: f.instructor.id, locationId: f.location.id,
-      startAt: f.starts.plus({ days: 1 }).toJSDate(),
-    });
-    const providerMove = await request(app).post(`/api/bookings/${bookingId}/reschedule`)
-      .set('Cookie', cookie)
-      .send({ startAt: providerStartAt })
-      .expect(200);
-    expect(providerMove.body).toMatchObject({
-      serviceId: f.service.id, instructorId: f.instructor.id, locationId: f.location.id,
-      startAt: f.starts.plus({ days: 2 }).toJSDate().toISOString(),
+    const moved = await request(app).post(`/api/account/bookings/${participantId}/reschedule`)
+      .set('Cookie', cookie).send({ startAt: movedStart }).expect(200);
+    expect(moved.body.booking).toMatchObject({
+      id: bookingId, serviceId: f.service.id, instructorId: f.instructor.id, locationId: f.location.id,
+      startAt: f.starts.plus({ days: 1 }).toJSDate().toISOString(),
     });
   });
 });

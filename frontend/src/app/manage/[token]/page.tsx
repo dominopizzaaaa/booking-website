@@ -1,9 +1,13 @@
-'use client';
+import type { Metadata } from 'next';
+import { LegacyBooking } from '@/components/legacy-booking';
 
-import { use } from 'react';
-import { ManageBooking } from '@/components/public-booking';
+export const metadata: Metadata = { robots: { index: false, follow: false } };
 
-export default function ManageBookingPage({ params }: { params: Promise<{ token: string }> }) {
-  const { token } = use(params);
-  return <ManageBooking token={token} />;
+export default async function LegacyManageBookingPage({
+  params,
+}: {
+  params: Promise<{ token: string }>;
+}) {
+  const { token } = await params;
+  return <LegacyBooking token={token} />;
 }

@@ -6,6 +6,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type FormEvent,
   type ReactNode,
 } from "react";
 import {
@@ -18,7 +19,6 @@ import {
   ChevronRight,
   CircleDot,
   Clock3,
-  Copy,
   ExternalLink,
   Home,
   Info,
@@ -35,17 +35,23 @@ import {
 } from "lucide-react";
 import {
   ApiError,
-  api,
+  cancelAccountBooking,
   createPublicBooking,
+  loadAccountBookings,
+  loadAuthSession,
   loadPublicBusiness,
   loadSlots,
+  loginCustomerAccount,
+  logoutAccount,
+  registerCustomerAccount,
+  rescheduleAccountBooking,
 } from "@/lib/api";
 import type {
-  Booking,
+  AccountBooking,
+  AuthSession,
   BookingResult,
   PublicBookingBusiness,
   PublicLocation,
-  Participant,
   PublicBusiness,
   Service,
   Slot,
@@ -65,7 +71,7 @@ const steps = [
   "Lesson",
   "Coach & place",
   "Date & time",
-  "Your details",
+  "Your account",
   "Review",
 ];
 
@@ -122,6 +128,222 @@ function LocationIcon({
   return <Icon size={size} strokeWidth={1.7} />;
 }
 
+function isCustomerSession(session: AuthSession | null): boolean {
+  if (!session) return false;
+  if (session.user.accountType) return session.user.accountType === "CUSTOMER";
+  if (session.user.role) return session.user.role === "CUSTOMER";
+  return !session.membership && !session.business;
+}
+
+function useAccountSession() {
+  const [session, setSession] = useState<AuthSession | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [signingOut, setSigningOut] = useState(false);
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      setSession(await loadAuthSession());
+    } catch (err) {
+      setSession(null);
+      if (!(err instanceof ApiError) || err.status !== 401) setError(messageOf(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+  const signOut = useCallback(async () => {
+    setSigningOut(true);
+    setError("");
+    try {
+      await logoutAccount();
+      setSession(null);
+    } catch (err) {
+      setError(messageOf(err));
+    } finally {
+      setSigningOut(false);
+    }
+  }, []);
+  return { session, setSession, loading, error, refresh, signOut, signingOut };
+}
+
+function CustomerAccountAccess({
+  onAuthenticated,
+  formId,
+  externalSubmit = false,
+}: {
+  onAuthenticated: (session: AuthSession) => void;
+  formId: string;
+  externalSubmit?: boolean;
+}) {
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [values, setValues] = useState({
+    name: "",
+    email: "",
+    password: "",
+    phone: "",
+    parentName: "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function submitAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const email = values.email.trim().toLowerCase();
+      const session =
+        mode === "login"
+          ? await loginCustomerAccount({ email, password: values.password })
+          : await registerCustomerAccount({
+              name: values.name.trim(),
+              email,
+              password: values.password,
+              ...(values.phone.trim() ? { phone: values.phone.trim() } : {}),
+              ...(values.parentName.trim()
+                ? { parentName: values.parentName.trim() }
+                : {}),
+            });
+      onAuthenticated(session);
+    } catch (err) {
+      setError(messageOf(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section className={cn(panel, "overflow-hidden")}>
+      <div className="border-b border-[#edf0e8] bg-[#fafbf7] p-2">
+        <div className="grid grid-cols-2 gap-1" role="tablist" aria-label="Account access">
+          {(["login", "register"] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              aria-selected={mode === value}
+              onClick={() => {
+                setMode(value);
+                setError("");
+              }}
+              className={cn(
+                "min-h-11 rounded-xl px-3 text-sm font-semibold transition",
+                mode === value
+                  ? "bg-white text-[#174c3c] shadow-sm"
+                  : "text-[#7f8d79] hover:text-[#52644f]",
+              )}
+            >
+              {value === "login" ? "Sign in" : "Create account"}
+            </button>
+          ))}
+        </div>
+      </div>
+      <form id={formId} onSubmit={submitAccount} className="space-y-5 p-5 sm:p-7">
+        <div>
+          <h2 className="!text-base">
+            {mode === "login" ? "Welcome back" : "Your Courtly account"}
+          </h2>
+          <p className="!mt-2 text-xs leading-relaxed text-[#89957f]">
+            {mode === "login"
+              ? "Sign in to book and keep every session in one secure place."
+              : "Create one account for bookings, changes, and your lesson history."}
+          </p>
+        </div>
+        <div className="grid gap-5 sm:grid-cols-2">
+          {mode === "register" && (
+            <div className="sm:col-span-2">
+              <label htmlFor={`${formId}-name`}>Full name</label>
+              <input
+                id={`${formId}-name`}
+                className={field}
+                required
+                minLength={2}
+                maxLength={120}
+                autoComplete="name"
+                value={values.name}
+                onChange={(event) => setValues({ ...values, name: event.target.value })}
+              />
+            </div>
+          )}
+          <div className={mode === "login" ? "sm:col-span-2" : ""}>
+            <label htmlFor={`${formId}-email`}>Email address</label>
+            <input
+              id={`${formId}-email`}
+              className={field}
+              type="email"
+              required
+              maxLength={254}
+              autoComplete="email"
+              value={values.email}
+              onChange={(event) => setValues({ ...values, email: event.target.value })}
+            />
+          </div>
+          <div className={mode === "login" ? "sm:col-span-2" : ""}>
+            <label htmlFor={`${formId}-password`}>Password</label>
+            <input
+              id={`${formId}-password`}
+              className={field}
+              type="password"
+              required
+              minLength={mode === "register" ? 12 : 8}
+              maxLength={72}
+              autoComplete={mode === "register" ? "new-password" : "current-password"}
+              value={values.password}
+              onChange={(event) => setValues({ ...values, password: event.target.value })}
+            />
+            {mode === "register" && (
+              <p className="!mt-1.5 text-[11px] text-[#89957f]">Use at least 12 characters.</p>
+            )}
+          </div>
+          {mode === "register" && (
+            <>
+              <div>
+                <label htmlFor={`${formId}-phone`}>
+                  Phone <span className="font-normal text-[#99a28e]">optional</span>
+                </label>
+                <input
+                  id={`${formId}-phone`}
+                  className={field}
+                  type="tel"
+                  maxLength={40}
+                  autoComplete="tel"
+                  placeholder="e.g. +65 9123 4567"
+                  value={values.phone}
+                  onChange={(event) => setValues({ ...values, phone: event.target.value })}
+                />
+              </div>
+              <div>
+                <label htmlFor={`${formId}-parent`}>
+                  Parent or guardian <span className="font-normal text-[#99a28e]">optional</span>
+                </label>
+                <input
+                  id={`${formId}-parent`}
+                  className={field}
+                  maxLength={120}
+                  value={values.parentName}
+                  onChange={(event) => setValues({ ...values, parentName: event.target.value })}
+                />
+              </div>
+            </>
+          )}
+        </div>
+        {error && <ErrorNotice message={error} />}
+        {!externalSubmit && (
+          <button type="submit" className={button} disabled={busy}>
+            {busy && <LoaderCircle size={16} className="animate-spin" />}
+            {busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}
+          </button>
+        )}
+        <p className="text-[11px] leading-relaxed text-[#929d86]">
+          Your contact details belong to your account and are shared only with the coaches you book.
+        </p>
+      </form>
+    </section>
+  );
+}
 export function CourtlyLogo({ light = false }: { light?: boolean }) {
   return (
     <span
@@ -146,7 +368,6 @@ export function CourtlyLogo({ light = false }: { light?: boolean }) {
     </span>
   );
 }
-
 export function PublicShell({
   business,
   children,
@@ -182,7 +403,7 @@ export function PublicShell({
             </span>
             <span className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full border border-[#e5e9e4] bg-[#f6f8f2] px-2.5 py-1.5 text-[10px] font-medium text-[#617455] sm:px-3 sm:text-[11px]">
               <ShieldCheck size={13} />{" "}
-              {business ? "Guest booking" : "Made for coaches"}
+              {business ? "Account required" : "Made for coaches"}
             </span>
           </div>
         </div>
@@ -475,6 +696,7 @@ function DateSlots({
 }
 
 export function PublicBooking({ slug }: { slug: string }) {
+  const account = useAccountSession();
   const [data, setData] = useState<PublicBusiness | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -488,9 +710,7 @@ export function PublicBooking({ slug }: { slug: string }) {
   const [slotsLoading, setSlotsLoading] = useState(false);
   const [slotsError, setSlotsError] = useState("");
   const [slotsVersion, setSlotsVersion] = useState(0);
-  const [customer, setCustomer] = useState({
-    name: "",
-    email: "",
+  const [bookingContact, setBookingContact] = useState({
     phone: "",
     parentName: "",
   });
@@ -521,6 +741,14 @@ export function PublicBooking({ slug }: { slug: string }) {
   useEffect(() => {
     void load();
   }, [load]);
+  useEffect(() => {
+    const session = account.session;
+    if (!session || !isCustomerSession(session)) return;
+    setBookingContact({
+      phone: session.user.phone ?? "",
+      parentName: session.user.parentName ?? "",
+    });
+  }, [account.session]);
   useEffect(() => {
     if (!serviceId || !locationId || !instructorId || !date) return;
     let ignore = false;
@@ -578,7 +806,9 @@ export function PublicBooking({ slug }: { slug: string }) {
         ? !!locationId && !!instructorId
         : step === 2
           ? !!slot && !slotsLoading
-          : true;
+          : step === 3
+            ? isCustomerSession(account.session)
+            : true;
   const actionLabel =
     step === 3
       ? "Review booking"
@@ -666,6 +896,7 @@ export function PublicBooking({ slug }: { slug: string }) {
       !instructor ||
       !slot ||
       !agreed ||
+      !isCustomerSession(account.session) ||
       saving
     )
       return;
@@ -679,10 +910,12 @@ export function PublicBooking({ slug }: { slug: string }) {
         instructorId,
         startAt: slot.startAt,
         customer: {
-          name: customer.name.trim(),
-          email: customer.email.trim().toLowerCase(),
-          phone: customer.phone.trim(),
-          parentName: customer.parentName.trim(),
+          ...(bookingContact.phone.trim()
+            ? { phone: bookingContact.phone.trim() }
+            : {}),
+          ...(bookingContact.parentName.trim()
+            ? { parentName: bookingContact.parentName.trim() }
+            : {}),
         },
         repeatWeeks,
         notes: notes.trim(),
@@ -698,6 +931,10 @@ export function PublicBooking({ slug }: { slug: string }) {
       setResult(value);
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        await account.refresh();
+        setStep(3);
+      }
       setSubmitError(messageOf(error));
       setConflicts(conflictList(error));
     } finally {
@@ -735,7 +972,7 @@ export function PublicBooking({ slug }: { slug: string }) {
         <BookingReceipt
           data={data}
           result={result}
-          customerName={customer.name}
+          customerName={account.session?.user.name ?? "Player"}
           location={location}
           onBookAgain={() => {
             setResult(null);
@@ -756,14 +993,14 @@ export function PublicBooking({ slug }: { slug: string }) {
     "Good days start with a lesson.",
     "Your coach. Your kind of place.",
     "Make a little time for your game.",
-    "Let’s get to know you.",
+    "Keep your bookings close.",
     "All set for your next good game?",
   ];
   const subtitles = [
     "A little practice, a little progress, a whole lot of possibility. Find the right session for you.",
     "Find your match, on and off the court. Choose where and who you’d like to play with.",
     "Pick a day and a time that fits. Availability is checked directly with your coach’s schedule.",
-    "Just a few details so your coach can get ready for your session.",
+    "Sign in or create an account here. Your selected lesson and time will stay right where they are.",
     "Take a moment to check the details. We’ll keep the rest simple.",
   ];
   return (
@@ -1168,164 +1405,138 @@ export function PublicBooking({ slug }: { slug: string }) {
               </section>
             )}
             {step === 3 && (
-              <form
-                id="customer-details"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  if (
-                    customer.name.trim().length < 2 ||
-                    !customer.phone.trim() ||
-                    (location?.type === "HOME" && !address.trim())
-                  )
-                    return;
-                  goTo(4);
-                }}
-                className="space-y-5"
-              >
-                <section className={cn(panel, "p-5 sm:p-7")}>
-                  <h2 className="!mb-1 !text-base">
-                    The person behind the booking
-                  </h2>
-                  <p className="!mb-6 text-xs text-[#89957f]">
-                    No account needed. Just you, and your next session.
-                  </p>
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    <div className="sm:col-span-2">
-                      <label htmlFor="customer-name">
-                        Player’s full name{" "}
-                        <span className="text-[#9aa58f]">*</span>
-                      </label>
-                      <input
-                        id="customer-name"
-                        className={field}
-                        required
-                        minLength={2}
-                        maxLength={120}
-                        pattern=".*\S.*\S.*"
-                        title="Enter the player’s name using at least two non-space characters."
-                        autoComplete="name"
-                        placeholder="e.g. Alex Tan"
-                        value={customer.name}
-                        onChange={(event) =>
-                          setCustomer({ ...customer, name: event.target.value })
-                        }
-                      />
-                    </div>
-                    <div>
-                      <label htmlFor="customer-email">
-                        Email address <span className="text-[#9aa58f]">*</span>
-                      </label>
-                      <input
-                        id="customer-email"
-                        className={field}
-                        type="email"
-                        required
-                        maxLength={254}
-                        autoComplete="email"
-                        placeholder="you@example.com"
-                        value={customer.email}
-                        onChange={(event) =>
-                          setCustomer({
-                            ...customer,
-                            email: event.target.value,
-                          })
-                        }
-                      />
-                    </div>
-                    <div>
-                      <label htmlFor="customer-phone">
-                        Phone number <span className="text-[#9aa58f]">*</span>
-                      </label>
-                      <input
-                        id="customer-phone"
-                        className={field}
-                        type="tel"
-                        required
-                        maxLength={40}
-                        pattern=".*[0-9].*"
-                        title="Enter a phone number with your country code."
-                        autoComplete="tel"
-                        placeholder="e.g. +65 9123 4567"
-                        value={customer.phone}
-                        onChange={(event) =>
-                          setCustomer({
-                            ...customer,
-                            phone: event.target.value,
-                          })
-                        }
-                      />
-                    </div>
-                    <div className="sm:col-span-2">
-                      <label htmlFor="parent-name">
-                        Parent or guardian’s name{" "}
-                        <span className="ml-1 font-normal text-[#99a28e]">
-                          optional
-                        </span>
-                      </label>
-                      <input
-                        id="parent-name"
-                        className={field}
-                        maxLength={120}
-                        placeholder="If you’re booking for a younger player"
-                        value={customer.parentName}
-                        onChange={(event) =>
-                          setCustomer({
-                            ...customer,
-                            parentName: event.target.value,
-                          })
-                        }
-                      />
-                    </div>
-                    {location?.type === "HOME" && (
-                      <div className="sm:col-span-2">
-                        <label htmlFor="customer-address">
-                          Session address{" "}
-                          <span className="text-[#9aa58f]">*</span>
-                        </label>
-                        <textarea
-                          id="customer-address"
-                          className={field}
-                          required
-                          maxLength={500}
-                          autoComplete="street-address"
-                          rows={3}
-                          placeholder="Street address, unit number, postal code, and court access details"
-                          value={address}
-                          onChange={(event) => {
-                            setAddress(event.target.value);
-                            event.target.setCustomValidity(
-                              event.target.value.trim()
-                                ? ""
-                                : "Please enter the session address.",
-                            );
-                          }}
-                        />
-                        <p className="!mt-1.5 text-[11px] text-[#89957f]">
-                          Please make sure your coach can access the court or
-                          training space.
-                        </p>
-                      </div>
-                    )}
-                    <div className="sm:col-span-2">
-                      <label htmlFor="booking-notes">
-                        Anything your coach should know?{" "}
-                        <span className="ml-1 font-normal text-[#99a28e]">
-                          optional
-                        </span>
-                      </label>
-                      <textarea
-                        id="booking-notes"
-                        className={field}
-                        rows={3}
-                        maxLength={2000}
-                        placeholder="Your experience, goals, or anything that helps us prepare…"
-                        value={notes}
-                        onChange={(event) => setNotes(event.target.value)}
-                      />
-                    </div>
+              <div className="space-y-5">
+                {account.loading ? (
+                  <div className={panel}>
+                    <Loading text="Checking your account…" />
                   </div>
-                </section>
-                <section className={cn(panel, "p-5 sm:p-7")}>
+                ) : !account.session ? (
+                  <>
+                    {account.error && <ErrorNotice message={account.error} />}
+                    <CustomerAccountAccess
+                      formId="customer-account"
+                      externalSubmit
+                      onAuthenticated={(session) => {
+                        account.setSession(session);
+                        setBookingContact({
+                          phone: session.user.phone ?? "",
+                          parentName: session.user.parentName ?? "",
+                        });
+                      }}
+                    />
+                  </>
+                ) : !isCustomerSession(account.session) ? (
+                  <section className={cn(panel, "p-5 sm:p-7")}>
+                    <ShieldCheck size={26} className="text-[#8da179]" />
+                    <h2 className="!mt-4 !text-base">Use a customer account to book</h2>
+                    <p className="!mt-2 text-xs leading-relaxed text-[#89957f]">
+                      You’re signed in as {account.session.user.email}, a provider account.
+                      Sign out here, then use or create your personal customer account.
+                    </p>
+                    {account.error && <div className="!mt-4"><ErrorNotice message={account.error} /></div>}
+                    <button
+                      type="button"
+                      className={cn(secondary, "!mt-5")}
+                      disabled={account.signingOut}
+                      onClick={() => void account.signOut()}
+                    >
+                      {account.signingOut && <LoaderCircle size={15} className="animate-spin" />}
+                      Sign out and switch account
+                    </button>
+                  </section>
+                ) : (
+                  <form
+                    id="booking-details"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (location?.type === "HOME" && !address.trim()) return;
+                      goTo(4);
+                    }}
+                    className="space-y-5"
+                  >
+                    <section className={cn(panel, "p-5 sm:p-7")}>
+                      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
+                        <div className="flex items-center gap-3">
+                          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[#e8eee9] text-[#658776]">
+                            <UserRound size={20} />
+                          </span>
+                          <div>
+                            <h2 className="!text-base">{account.session.user.name}</h2>
+                            <p className="!mt-1 break-all text-xs text-[#89957f]">{account.session.user.email}</p>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Link
+                            href={`/manage?slug=${encodeURIComponent(slug)}`}
+                            className={cn(secondary, "!min-h-9 !px-3 !py-1.5 !text-xs")}
+                          >
+                            My bookings
+                          </Link>
+                          <button
+                            type="button"
+                            className={cn(secondary, "!min-h-9 !px-3 !py-1.5 !text-xs")}
+                            disabled={account.signingOut}
+                            onClick={() => void account.signOut()}
+                          >
+                            Sign out
+                          </button>
+                        </div>
+                      </div>
+                      <div className="!mt-6 grid gap-5 sm:grid-cols-2">
+                        <div>
+                          <label htmlFor="booking-phone">Phone <span className="font-normal text-[#99a28e]">optional</span></label>
+                          <input
+                            id="booking-phone"
+                            className={field}
+                            type="tel"
+                            maxLength={40}
+                            autoComplete="tel"
+                            placeholder="e.g. +65 9123 4567"
+                            value={bookingContact.phone}
+                            onChange={(event) => setBookingContact({ ...bookingContact, phone: event.target.value })}
+                          />
+                        </div>
+                        <div>
+                          <label htmlFor="booking-parent">Parent or guardian <span className="font-normal text-[#99a28e]">optional</span></label>
+                          <input
+                            id="booking-parent"
+                            className={field}
+                            maxLength={120}
+                            value={bookingContact.parentName}
+                            onChange={(event) => setBookingContact({ ...bookingContact, parentName: event.target.value })}
+                          />
+                        </div>
+                        {location?.type === "HOME" && (
+                          <div className="sm:col-span-2">
+                            <label htmlFor="customer-address">Session address <span className="text-[#9aa58f]">*</span></label>
+                            <textarea
+                              id="customer-address"
+                              className={field}
+                              required
+                              maxLength={500}
+                              autoComplete="street-address"
+                              rows={3}
+                              placeholder="Street address, unit number, postal code, and court access details"
+                              value={address}
+                              onChange={(event) => setAddress(event.target.value)}
+                            />
+                          </div>
+                        )}
+                        <div className="sm:col-span-2">
+                          <label htmlFor="booking-notes">Anything your coach should know? <span className="font-normal text-[#99a28e]">optional</span></label>
+                          <textarea
+                            id="booking-notes"
+                            className={field}
+                            rows={3}
+                            maxLength={2000}
+                            placeholder="Your experience, goals, or anything that helps us prepare…"
+                            value={notes}
+                            onChange={(event) => setNotes(event.target.value)}
+                          />
+                        </div>
+                      </div>
+                    </section>
+                    <section className={cn(panel, "p-5 sm:p-7")}>
                   <h2 className="!text-base">
                     Make a good thing a regular thing
                   </h2>
@@ -1370,8 +1581,10 @@ export function PublicBooking({ slug }: { slug: string }) {
                       {money(price * repeatWeeks, data.business.currency)}
                     </span>
                   </div>
-                </section>
-              </form>
+                    </section>
+                  </form>
+                )}
+              </div>
             )}
             {step === 4 && (
               <div className="space-y-5">
@@ -1425,14 +1638,16 @@ export function PublicBooking({ slug }: { slug: string }) {
                       </p>
                     </DetailRow>
                     <DetailRow icon={<UserRound size={18} />} title="Player">
-                      {customer.name}
+                      {account.session?.user.name}
                       <p className="break-all text-xs text-[#8b9781]">
-                        {customer.email}
+                        {account.session?.user.email}
                       </p>
-                      <p className="text-xs text-[#8b9781]">{customer.phone}</p>
-                      {customer.parentName && (
+                      {bookingContact.phone && (
+                        <p className="text-xs text-[#8b9781]">{bookingContact.phone}</p>
+                      )}
+                      {bookingContact.parentName && (
                         <p className="!mt-1 text-xs text-[#8b9781]">
-                          Parent / guardian: {customer.parentName}
+                          Parent / guardian: {bookingContact.parentName}
                         </p>
                       )}
                     </DetailRow>
@@ -1555,10 +1770,11 @@ export function PublicBooking({ slug }: { slug: string }) {
               {step === 3 ? (
                 <button
                   type="submit"
-                  form="customer-details"
+                  form={isCustomerSession(account.session) ? "booking-details" : "customer-account"}
                   className={button}
+                  disabled={account.loading || (!!account.session && !isCustomerSession(account.session))}
                 >
-                  Review booking <ArrowRight size={15} />
+                  {isCustomerSession(account.session) ? "Review booking" : "Continue with account"} <ArrowRight size={15} />
                 </button>
               ) : step === 4 ? (
                 <button
@@ -1721,10 +1937,11 @@ export function PublicBooking({ slug }: { slug: string }) {
               {step === 3 ? (
                 <button
                   type="submit"
-                  form="customer-details"
+                  form={isCustomerSession(account.session) ? "booking-details" : "customer-account"}
                   className={cn(button, "!min-h-12 !min-w-0 !flex-1 !px-4")}
+                  disabled={account.loading || (!!account.session && !isCustomerSession(account.session))}
                 >
-                  Review booking <ArrowRight size={15} />
+                  {isCustomerSession(account.session) ? "Review booking" : "Continue with account"} <ArrowRight size={15} />
                 </button>
               ) : step === 4 ? (
                 <button
@@ -1772,34 +1989,11 @@ function BookingReceipt({
   location?: PublicLocation;
   onBookAgain: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
-  const [copyError, setCopyError] = useState("");
-  const [origin, setOrigin] = useState("");
-  useEffect(() => {
-    setOrigin(window.location.origin);
-  }, []);
   const first = result.bookings[0];
   const pending = result.bookings.some(
     (booking) => booking.status === "PENDING",
   );
-  const token =
-    result.managementToken ||
-    first.participants.find((participant) => participant.managementToken)
-      ?.managementToken;
-  const managePath = token ? `/manage/${encodeURIComponent(token)}` : "";
-  const manageUrl = managePath ? `${origin}${managePath}` : "";
   const shareText = `${pending ? "My lesson request" : "My next lesson"} with ${data.business.name}: ${first.serviceName}, ${shortDate(first.startAt, data.business.timezone)} at ${time(first.startAt, data.business.timezone)} (${data.business.timezone}), with ${first.instructorName}. ${first.locationName}.${isPendingVenue(location) ? ` ${venueMessage}.` : ""}`;
-  async function copyLink() {
-    try {
-      await navigator.clipboard.writeText(manageUrl);
-      setCopied(true);
-      setCopyError("");
-    } catch {
-      setCopyError(
-        "Copy the booking link from the field below to keep it safe.",
-      );
-    }
-  }
   return (
     <main className="!mx-auto max-w-2xl px-5 py-12 sm:px-8 sm:py-16">
       <div className="!mb-8 text-center">
@@ -1863,18 +2057,7 @@ function BookingReceipt({
                     {data.business.timezone}
                   </p>
                 </div>
-                {booking.participants.find((person) => person.managementToken)
-                  ?.managementToken ? (
-                  <Link
-                    className="inline-flex min-h-10 shrink-0 items-center gap-1 text-[11px] font-medium text-[#698454]"
-                    href={`/manage/${encodeURIComponent(booking.participants.find((person) => person.managementToken)!.managementToken!)}`}
-                    aria-label={`Manage session on ${shortDate(booking.startAt, data.business.timezone)}`}
-                  >
-                    Manage <ArrowRight size={12} />
-                  </Link>
-                ) : (
-                  <Check size={15} className="shrink-0 text-[#91a67a]" />
-                )}
+                <Check size={15} className="shrink-0 text-[#91a67a]" />
               </div>
             ))}
           </div>
@@ -1908,51 +2091,25 @@ function BookingReceipt({
           />
         </div>
       ) : null}
-      {token && (
-        <div className="!mt-5 rounded-2xl border border-[#dfe7d4] bg-[#eef4e5] p-5 sm:p-6">
-          <div className="!mb-4 flex gap-3">
+      <div className="!mt-5 rounded-2xl border border-[#dfe7d4] bg-[#eef4e5] p-5 sm:p-6">
+        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+          <div className="flex gap-3">
             <ShieldCheck size={19} className="shrink-0 text-[#8a9e74]" />
             <div>
-              <h3 className="!text-sm text-[#627e4a]">
-                Keep your booking link somewhere safe
-              </h3>
+              <h3 className="!text-sm text-[#627e4a]">Your bookings stay with your account</h3>
               <p className="!mt-1.5 text-xs leading-relaxed text-[#869675]">
-                This private link lets you view and manage your booking. No
-                sign-in needed. Anyone with the link can manage it, so only
-                share it with someone you trust.
+                View your history or make an eligible change any time after signing in.
               </p>
             </div>
           </div>
-          <label htmlFor="receipt-link" className="sr-only">
-            Private management link
-          </label>
-          <input
-            id="receipt-link"
-            value={manageUrl}
-            readOnly
-            onFocus={(event) => event.target.select()}
-            className="!min-h-10 !rounded-lg !border-[#dce5d1] !bg-white/70 !text-xs !text-[#6c805c]"
-          />
-          <div className="!mt-3 flex flex-wrap gap-2">
-            <Link href={managePath} className={button}>
-              Manage booking <ArrowRight size={14} />
-            </Link>
-            <button
-              type="button"
-              className={secondary}
-              onClick={() => void copyLink()}
-            >
-              {copied ? <Check size={14} /> : <Copy size={14} />}
-              {copied ? "Link copied" : "Copy link"}
-            </button>
-          </div>
-          {copyError && (
-            <p role="status" className="!mt-3 text-xs text-[#7c8a6e]">
-              {copyError}
-            </p>
-          )}
+          <Link
+            href={`/manage?slug=${encodeURIComponent(data.business.slug)}`}
+            className={cn(button, "shrink-0")}
+          >
+            My bookings <ArrowRight size={14} />
+          </Link>
         </div>
-      )}
+      </div>
       <div className="!mt-6 flex flex-col justify-center gap-3 sm:flex-row">
         <a
           className={secondary}
@@ -1974,73 +2131,111 @@ function BookingReceipt({
   );
 }
 
-// The management link is a guest credential; never require a workspace session here.
-type ManagedBooking = {
-  business: PublicBookingBusiness;
-  booking: Booking;
-  participant: Participant;
-  location?: PublicLocation;
-  bookings?: Booking[];
-  canCancel?: boolean;
-  canReschedule?: boolean;
-};
-
-export function ManageBooking({ token }: { token: string }) {
-  const [data, setData] = useState<ManagedBooking | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [actionError, setActionError] = useState("");
-  const [conflicts, setConflicts] = useState<
-    { date: string; reason: string }[]
-  >([]);
-  const [action, setAction] = useState<"none" | "cancel" | "reschedule">(
-    "none",
+function accountBookingCancelled(item: AccountBooking) {
+  return (
+    item.booking.status === "CANCELLED" ||
+    item.participant.cancelled === true ||
+    !!item.participant.cancelledAt
   );
-  const [busy, setBusy] = useState(false);
+}
+
+function accountBookingState(item: AccountBooking) {
+  if (accountBookingCancelled(item)) return "Cancelled";
+  if (item.booking.status === "PENDING") return "Awaiting confirmation";
+  if (
+    item.booking.status === "COMPLETED" ||
+    new Date(item.booking.endAt).getTime() < Date.now()
+  )
+    return "Completed";
+  return "Confirmed";
+}
+
+function accountBookingCanChange(item: AccountBooking, kind: "cancel" | "reschedule") {
+  const { booking, business } = item;
+  const started = new Date(booking.startAt).getTime() <= Date.now();
+  const insideWindow =
+    new Date(booking.startAt).getTime() - Date.now() <
+    business.cancellationHours * 3_600_000;
+  const fallback =
+    !accountBookingCancelled(item) &&
+    booking.status !== "COMPLETED" &&
+    !started &&
+    !insideWindow;
+  return kind === "cancel"
+    ? (item.canCancel ?? fallback)
+    : (item.canReschedule ?? (fallback && booking.type === "PRIVATE"));
+}
+
+export function CustomerBookings({ slug }: { slug?: string }) {
+  const account = useAccountSession();
+  const [bookings, setBookings] = useState<AccountBooking[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const [notice, setNotice] = useState("");
+  const [action, setAction] = useState<{
+    kind: "cancel" | "reschedule";
+    participantId: string;
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState("");
+  const [conflicts, setConflicts] = useState<{ date: string; reason: string }[]>([]);
   const [date, setDate] = useState("");
   const [slots, setSlots] = useState<Slot[]>([]);
   const [slotsLoading, setSlotsLoading] = useState(false);
   const [slotsError, setSlotsError] = useState("");
   const [slot, setSlot] = useState<Slot | null>(null);
-  const [version, setVersion] = useState(0);
-  const path = `/manage/${encodeURIComponent(token)}`;
-  const load = useCallback(async () => {
+  const [slotsVersion, setSlotsVersion] = useState(0);
+
+  const loadBookings = useCallback(async () => {
     setLoading(true);
-    setError("");
+    setLoadError("");
     try {
-      const value = await api<ManagedBooking>(
-        `/manage/${encodeURIComponent(token)}`,
+      const value = await loadAccountBookings(slug);
+      setBookings(
+        [...value.bookings].sort(
+          (a, b) =>
+            new Date(a.booking.startAt).getTime() -
+            new Date(b.booking.startAt).getTime(),
+        ),
       );
-      setData(value);
-      setDate(dateKey(new Date(), value.business.timezone));
     } catch (err) {
-      setError(messageOf(err));
+      if (err instanceof ApiError && err.status === 401) await account.refresh();
+      else setLoadError(messageOf(err));
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [slug, account.refresh]);
+
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (isCustomerSession(account.session)) void loadBookings();
+    else {
+      setBookings([]);
+      setLoading(false);
+    }
+  }, [account.session, loadBookings]);
+
+  const actionBooking = action
+    ? bookings.find((item) => item.participant.id === action.participantId)
+    : undefined;
+
   useEffect(() => {
-    if (action !== "reschedule" || !data || !date) return;
+    if (action?.kind !== "reschedule" || !actionBooking || !date) return;
     let ignore = false;
     setSlotsLoading(true);
     setSlotsError("");
     setSlots([]);
     setSlot(null);
-    loadSlots(data.business.slug, {
-      serviceId: data.booking.serviceId,
-      instructorId: data.booking.instructorId,
-      locationId: data.booking.locationId,
+    loadSlots(actionBooking.business.slug, {
+      serviceId: actionBooking.booking.serviceId,
+      instructorId: actionBooking.booking.instructorId,
+      locationId: actionBooking.booking.locationId,
       date,
     })
       .then((value) => {
         if (!ignore)
           setSlots(
             value.slots.filter(
-              (value) => value.startAt !== data.booking.startAt,
+              (candidate) => candidate.startAt !== actionBooking.booking.startAt,
             ),
           );
       })
@@ -2053,405 +2248,337 @@ export function ManageBooking({ token }: { token: string }) {
     return () => {
       ignore = true;
     };
-  }, [action, data, date, version]);
-  async function perform(kind: "cancel" | "reschedule") {
-    if (busy || (kind === "reschedule" && !slot)) return;
+  }, [action?.kind, actionBooking, date, slotsVersion]);
+
+  function beginAction(item: AccountBooking, kind: "cancel" | "reschedule") {
+    setAction({ kind, participantId: item.participant.id });
+    setActionError("");
+    setConflicts([]);
+    setNotice("");
+    setSlot(null);
+    if (kind === "reschedule")
+      setDate(dateKey(new Date(), item.business.timezone));
+  }
+
+  async function performAction() {
+    if (!action || !actionBooking || busy) return;
+    if (action.kind === "reschedule" && !slot) return;
     setBusy(true);
     setActionError("");
     setConflicts([]);
     try {
-      const value = await api<ManagedBooking>(`${path}/${kind}`, {
-        method: "POST",
-        body: JSON.stringify(
-          kind === "reschedule" ? { startAt: slot!.startAt } : {},
-        ),
-      });
-      setData(value);
+      if (action.kind === "cancel")
+        await cancelAccountBooking(action.participantId);
+      else await rescheduleAccountBooking(action.participantId, slot!.startAt);
+      const completedAction = action.kind;
+      setAction(null);
       setSlot(null);
-      setAction("none");
       setNotice(
-        kind === "cancel"
-          ? "Your booking has been cancelled. Your coach’s schedule has been updated."
-          : "Your session has been rescheduled. The new details are below.",
+        completedAction === "cancel"
+          ? "Your booking has been cancelled."
+          : "Your session has been rescheduled.",
       );
+      await loadBookings();
     } catch (err) {
+      if (err instanceof ApiError && err.status === 401) await account.refresh();
       setActionError(messageOf(err));
       setConflicts(conflictList(err));
     } finally {
       setBusy(false);
     }
   }
-  if (loading)
+
+  const now = Date.now();
+  const upcoming = bookings.filter(
+    (item) =>
+      !accountBookingCancelled(item) &&
+      item.booking.status !== "COMPLETED" &&
+      new Date(item.booking.endAt).getTime() >= now,
+  );
+  const history = bookings
+    .filter((item) => !upcoming.includes(item))
+    .sort(
+      (a, b) =>
+        new Date(b.booking.startAt).getTime() -
+        new Date(a.booking.startAt).getTime(),
+    );
+  const shellBusiness = bookings[0]?.business;
+
+  if (account.loading)
     return (
       <PublicShell>
-        <Loading text="Opening your booking…" />
+        <Loading text="Opening your bookings…" />
       </PublicShell>
     );
-  if (error || !data)
+
+  if (!account.session)
+    return (
+      <PublicShell>
+        <main className="!mx-auto max-w-xl px-5 py-12 sm:px-8 sm:py-16">
+          <div className="!mb-7">
+            {slug && (
+              <Link
+                href={`/book/${encodeURIComponent(slug)}`}
+                className="!mb-5 inline-flex min-h-9 items-center gap-1.5 text-xs font-medium text-[#7c8f6d]"
+              >
+                <ArrowLeft size={14} /> Back to booking
+              </Link>
+            )}
+            <p className="!mb-2 text-[10px] font-semibold uppercase tracking-[2px] text-[#8d9b80]">
+              Your sessions, one secure place
+            </p>
+            <h1 className="!text-3xl !font-medium !tracking-tight sm:!text-4xl">
+              Sign in to your bookings.
+            </h1>
+          </div>
+          {account.error && <div className="!mb-5"><ErrorNotice message={account.error} /></div>}
+          <CustomerAccountAccess
+            formId="manage-account"
+            onAuthenticated={account.setSession}
+          />
+        </main>
+      </PublicShell>
+    );
+
+  if (!isCustomerSession(account.session))
     return (
       <PublicShell>
         <main className="!mx-auto max-w-lg px-5 py-16">
-          <section className={cn(panel, "space-y-5 p-7")}>
+          <section className={cn(panel, "p-7")}>
             <ShieldCheck size={30} className="text-[#93a582]" />
-            <h1 className="!text-2xl">Let’s find your booking</h1>
-            <ErrorNotice
-              message={error || "This management link is not available."}
-            />
-            <p className="text-xs leading-relaxed text-[#86947a]">
-              Check that you’ve opened the full private link from your booking
-              receipt. If it no longer works, please contact your coach.
+            <h1 className="!mt-5 !text-2xl">Customer account required</h1>
+            <p className="!mt-3 text-sm leading-relaxed text-[#86947a]">
+              {account.session.user.email} is signed in as a provider. Switch to
+              your customer account to view personal bookings.
             </p>
-            <button className={secondary} onClick={() => void load()}>
-              <RefreshCw size={15} />
-              Try again
+            {account.error && <div className="!mt-5"><ErrorNotice message={account.error} /></div>}
+            <button
+              type="button"
+              className={cn(button, "!mt-6")}
+              disabled={account.signingOut}
+              onClick={() => void account.signOut()}
+            >
+              {account.signingOut && <LoaderCircle size={16} className="animate-spin" />}
+              Sign out and switch account
             </button>
           </section>
         </main>
       </PublicShell>
     );
-  const { booking, business, participant } = data;
-  const location = data.location;
-  const cancelled =
-    booking.status === "CANCELLED" ||
-    (participant as Participant & { cancelled?: boolean }).cancelled === true;
-  const pending = booking.status === "PENDING";
-  const started = new Date(booking.startAt).getTime() <= Date.now();
-  const insideWindow =
-    new Date(booking.startAt).getTime() - Date.now() <
-    business.cancellationHours * 3_600_000;
-  const canCancel =
-    !cancelled &&
-    booking.status !== "COMPLETED" &&
-    (data.canCancel ?? (!started && !insideWindow));
-  const canReschedule =
-    !cancelled &&
-    booking.status !== "COMPLETED" &&
-    (data.canReschedule ?? (!started && !insideWindow));
-  return (
-    <PublicShell business={business}>
-      <main className="!mx-auto max-w-3xl px-5 py-10 sm:px-8 sm:py-14">
-        <div className="!mb-8">
+
+  function bookingCard(item: AccountBooking) {
+    const state = accountBookingState(item);
+    const canCancel = accountBookingCanChange(item, "cancel");
+    const canReschedule = accountBookingCanChange(item, "reschedule");
+    const editing = action?.participantId === item.participant.id;
+    return (
+      <article key={item.participant.id} className={cn(panel, "overflow-hidden")}>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#edf0e8] bg-[#fafbf7] px-5 py-4 sm:px-6">
           <Link
-            href={`/book/${encodeURIComponent(business.slug)}`}
-            className="!mb-6 inline-flex min-h-9 items-center gap-1.5 text-xs font-medium text-[#7c8f6d]"
+            href={`/book/${encodeURIComponent(item.business.slug)}`}
+            className="inline-flex items-center gap-2 text-sm font-semibold text-[#31533e]"
           >
-            <ArrowLeft size={14} />
-            Back to {business.name}
+            {item.business.name} <ExternalLink size={12} />
           </Link>
-          <p className="!mb-2 text-[10px] font-semibold uppercase tracking-[2px] text-[#8d9b80]">
-            A little room to stay in sync
-          </p>
-          <h1 className="!text-3xl !font-medium !tracking-tight sm:!text-4xl">
-            Your next good game.
-          </h1>
-          <p className="!mt-3 text-sm text-[#86937c]">
-            Your booking details, all in one place. No sign-in needed.
-          </p>
-        </div>
-        {notice && (
-          <div
-            role="status"
-            className="!mb-5 flex items-start gap-2.5 rounded-xl border border-[#d8e4cb] bg-[#edf5e4] p-4 text-sm leading-relaxed text-[#66834d]"
+          <span
+            className={cn(
+              "rounded-full px-2.5 py-1 text-[10px] font-medium",
+              state === "Cancelled"
+                ? "bg-[#f8e8e3] text-[#a67260]"
+                : state === "Awaiting confirmation"
+                  ? "bg-[#f8eed3] text-[#9b844b]"
+                  : state === "Completed"
+                    ? "bg-[#e8edf2] text-[#728696]"
+                    : "bg-[#e9f0df] text-[#77905c]",
+            )}
           >
-            <CheckCheck size={18} className="!mt-0.5 shrink-0" />
-            {notice}
-          </div>
-        )}
-        {actionError && action === "none" && (
-          <div className="!mb-5">
-            <ErrorNotice message={actionError} conflicts={conflicts} />
-          </div>
-        )}
-        <section className={cn(panel, "overflow-hidden")}>
-          <div className="flex items-center justify-between gap-4 border-b border-[#edf0e8] bg-[#fafbf7] px-6 py-5">
-            <h2 className="!text-base">{business.name}</h2>
-            <span
-              className={cn(
-                "rounded-full px-3 py-1.5 text-[10px] font-medium",
-                cancelled
-                  ? "bg-[#f8e8e3] text-[#a67260]"
-                  : pending
-                    ? "bg-[#f8eed3] text-[#9b844b]"
-                    : booking.status === "COMPLETED"
-                      ? "bg-[#e8edf2] text-[#728696]"
-                      : "bg-[#e9f0df] text-[#77905c]",
-              )}
-            >
-              {cancelled
-                ? "Cancelled"
-                : pending
-                  ? "Awaiting confirmation"
-                  : booking.status === "COMPLETED"
-                    ? "Completed"
-                    : "Confirmed"}
+            {state}
+          </span>
+        </div>
+        <div className="p-5 sm:p-6">
+          <div className="flex items-start gap-4">
+            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[#eaf0e2] text-[#869d6f]">
+              <CircleDot size={25} strokeWidth={1.5} />
             </span>
-          </div>
-          <div className="p-6 sm:p-8">
-            <div className="!mb-7 flex items-center gap-4">
-              <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-[#eaf0e2] text-[#869d6f]">
-                <CircleDot size={29} strokeWidth={1.5} />
-              </span>
-              <div>
-                <h2 className="!text-xl">{booking.serviceName}</h2>
-                <p className="!mt-1.5 text-xs text-[#88967d]">
-                  With {booking.instructorName} ·{" "}
-                  {Math.round(
-                    (new Date(booking.endAt).getTime() -
-                      new Date(booking.startAt).getTime()) /
-                      60000,
-                  )}{" "}
-                  minutes
-                </p>
-              </div>
-            </div>
-            <div className="grid gap-6 sm:grid-cols-2">
-              <DetailRow icon={<CalendarDays size={18} />} title="When">
-                {shortDate(booking.startAt, business.timezone)}
-                <p className="text-xs text-[#89977d]">
-                  {time(booking.startAt, business.timezone)} –{" "}
-                  {time(booking.endAt, business.timezone)}
-                </p>
-                <p className="text-[10px] text-[#9aa48e]">
-                  {business.timezone}
-                </p>
-              </DetailRow>
-              <DetailRow
-                icon={<LocationIcon location={location} size={18} />}
-                title="Where"
-              >
-                {booking.locationName}
-                <p className="break-words text-xs text-[#89977d]">
-                  {booking.address || location?.address}
-                </p>
-              </DetailRow>
-              <DetailRow icon={<UserRound size={18} />} title="Player">
-                {participant?.name || "Your session"}
-                <p className="break-all text-xs text-[#89977d]">
-                  {participant?.email}
-                </p>
-              </DetailRow>
-              <DetailRow icon={<ShieldCheck size={18} />} title="Session price">
-                {money(participant?.price ?? booking.price, business.currency)}
-                <p className="text-xs text-[#89977d]">
-                  {participant?.paid
-                    ? "Marked paid by your coach"
-                    : "Payment arranged with your coach"}
-                </p>
-              </DetailRow>
-            </div>
-            {pending && (
-              <div className="!mt-6">
-                <div className="flex gap-2.5 rounded-xl border border-[#eee5ce] bg-[#fcf8ec] p-4 text-xs leading-relaxed text-[#897344]">
-                  <Info size={16} className="!mt-0.5 shrink-0" />
-                  <div>
-                    <strong>{venueMessage}</strong>
-                    <p className="!mt-1">
-                      Please wait for the venue and lesson to be confirmed by
-                      your coach.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-            {participant.notes && (
-              <div className="!mt-6 rounded-xl bg-[#f7f9f3] p-4">
-                <p className="!mb-1 text-[10px] font-medium uppercase tracking-wide text-[#96a08a]">
-                  What you shared
-                </p>
-                <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-[#7d8d71]">
-                  {participant.notes}
-                </p>
-              </div>
-            )}
-          </div>
-        </section>
-        {action === "none" && (
-          <section className={cn(panel, "mt-5 p-6")}>
-            <h2 className="!text-base">Plans change. We get it.</h2>
-            <p className="!mt-2 text-xs leading-relaxed text-[#87967b]">
-              {cancelled
-                ? "This booking is cancelled. We’d love to see you another time."
-                : `Please make changes at least ${business.cancellationHours} hours before your session. Changes here apply to this session only.`}
-            </p>
-            {!cancelled && booking.type === "GROUP" && !canReschedule && (
-              <p className="!mt-3 text-xs leading-relaxed text-[#849575]">
-                To move your place in a group session, please contact your
-                coach.
+            <div className="flex-1">
+              <h3 className="!text-lg">{item.booking.serviceName}</h3>
+              <p className="!mt-1 text-xs text-[#88967d]">
+                With {item.booking.instructorName}
               </p>
-            )}
-            {!cancelled && !canCancel && !canReschedule && (
-              <p className="!mt-3 rounded-xl bg-[#f6f8f2] p-3 text-xs leading-relaxed text-[#849575]">
-                {started
-                  ? "This session has already started or finished."
-                  : "This session is within the cancellation window."}{" "}
-                Please contact your coach about any changes.
+            </div>
+          </div>
+          <div className="!mt-6 grid gap-5 sm:grid-cols-2">
+            <DetailRow icon={<CalendarDays size={18} />} title="When">
+              {shortDate(item.booking.startAt, item.business.timezone)}
+              <p className="text-xs text-[#89977d]">
+                {time(item.booking.startAt, item.business.timezone)} –{" "}
+                {time(item.booking.endAt, item.business.timezone)}
               </p>
-            )}
-            <div className="!mt-5 flex flex-wrap gap-3">
+            </DetailRow>
+            <DetailRow icon={<LocationIcon location={item.location} size={18} />} title="Where">
+              {item.booking.locationName}
+              {(item.booking.address || item.location?.address) && (
+                <p className="text-xs text-[#89977d]">
+                  {item.booking.address || item.location?.address}
+                </p>
+              )}
+            </DetailRow>
+            <DetailRow icon={<ShieldCheck size={18} />} title="Session price">
+              {money(item.participant.price ?? item.booking.price, item.business.currency)}
+              <p className="text-xs text-[#89977d]">
+                {item.participant.paid
+                  ? "Marked paid by your coach"
+                  : "Payment arranged with your coach"}
+              </p>
+            </DetailRow>
+            <DetailRow icon={<UserRound size={18} />} title="Booked for">
+              {item.participant.name}
+            </DetailRow>
+          </div>
+          {state === "Awaiting confirmation" && (
+            <div className="!mt-5 flex gap-2.5 rounded-xl border border-[#eee5ce] bg-[#fcf8ec] p-4 text-xs leading-relaxed text-[#897344]">
+              <Info size={16} className="!mt-0.5 shrink-0" />
+              Your coach will confirm this request and any venue arrangements.
+            </div>
+          )}
+          {!editing && (canCancel || canReschedule) && (
+            <div className="!mt-6 flex flex-wrap gap-3 border-t border-[#edf0e8] pt-5">
               {canReschedule && (
-                <button
-                  className={secondary}
-                  onClick={() => {
-                    setAction("reschedule");
-                    setActionError("");
-                    setNotice("");
-                    setDate(dateKey(booking.startAt, business.timezone));
-                  }}
-                >
-                  <CalendarDays size={16} />
-                  Reschedule session
+                <button type="button" className={secondary} onClick={() => beginAction(item, "reschedule")}>
+                  <CalendarDays size={15} /> Reschedule
                 </button>
               )}
               {canCancel && (
                 <button
-                  className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-[#edddd7] px-4 py-2.5 text-xs font-medium text-[#a37565] transition hover:bg-[#fff7f3]"
-                  onClick={() => {
-                    setAction("cancel");
-                    setActionError("");
-                    setNotice("");
-                  }}
+                  type="button"
+                  className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-[#edddd7] px-4 py-2.5 text-sm font-medium text-[#a37565] transition hover:bg-[#fff7f3]"
+                  onClick={() => beginAction(item, "cancel")}
                 >
-                  <X size={15} />
-                  Cancel booking
+                  <X size={15} /> Cancel booking
                 </button>
               )}
-              {cancelled && (
-                <Link
-                  href={`/book/${encodeURIComponent(business.slug)}`}
-                  className={button}
+            </div>
+          )}
+          {editing && action.kind === "cancel" && (
+            <div role="region" aria-label="Confirm cancellation" className="!mt-6 rounded-xl border border-[#e7d4ca] bg-[#fffcf9] p-5">
+              <h4 className="!text-base">Cancel this session?</h4>
+              <p className="!mt-2 text-xs leading-relaxed text-[#958273]">
+                Your place on {shortDate(item.booking.startAt, item.business.timezone)} at{" "}
+                {time(item.booking.startAt, item.business.timezone)} will be released.
+              </p>
+              {actionError && <div className="!mt-4"><ErrorNotice message={actionError} conflicts={conflicts} /></div>}
+              <div className="!mt-5 flex flex-wrap gap-3">
+                <button type="button" className={secondary} disabled={busy} onClick={() => setAction(null)}>Keep booking</button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-[#a46d56] px-5 py-3 text-sm font-semibold text-white hover:bg-[#8b5945] disabled:opacity-50"
+                  onClick={() => void performAction()}
                 >
-                  Find a new session <ArrowRight size={15} />
-                </Link>
-              )}
-            </div>
-          </section>
-        )}
-        {action === "cancel" && (
-          <section
-            role="region"
-            aria-label="Confirm cancellation"
-            className="!mt-5 rounded-2xl border border-[#e7d4ca] bg-[#fffcf9] p-6"
-          >
-            <h2 className="!text-lg">Cancel this session?</h2>
-            <p className="!mt-2 text-sm leading-relaxed text-[#958273]">
-              This will release your place in {booking.serviceName} on{" "}
-              {shortDate(booking.startAt, business.timezone)} at{" "}
-              {time(booking.startAt, business.timezone)}. This action cannot be
-              undone.
-            </p>
-            <p className="!mt-3 text-xs leading-relaxed text-[#a09586]">
-              Other sessions in a weekly series are not changed. If you have
-              paid your coach, please contact them directly about their refund
-              policy.
-            </p>
-            {actionError && (
-              <div className="!mt-4">
-                <ErrorNotice message={actionError} />
+                  {busy ? <LoaderCircle size={15} className="animate-spin" /> : <X size={15} />}
+                  Yes, cancel session
+                </button>
               </div>
-            )}
-            <div className="!mt-5 flex flex-wrap gap-3">
-              <button
-                type="button"
-                className={secondary}
-                disabled={busy}
-                onClick={() => setAction("none")}
-              >
-                Keep my booking
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-[#a46d56] px-5 py-3 text-sm font-semibold text-white hover:bg-[#8b5945] disabled:opacity-50"
-                onClick={() => void perform("cancel")}
-              >
-                {busy ? (
-                  <LoaderCircle size={15} className="animate-spin" />
-                ) : (
-                  <X size={15} />
-                )}
-                Yes, cancel this session
-              </button>
             </div>
-          </section>
-        )}
-        {action === "reschedule" && (
-          <section className={cn(panel, "mt-5 p-5 sm:p-7")}>
-            <div className="!mb-6 flex items-center justify-between">
-              <div>
-                <h2 className="!text-lg">Find a better time</h2>
-                <p className="!mt-2 text-xs text-[#8b987f]">
-                  Same lesson, coach, and location. Just a fresh start time.
-                </p>
+          )}
+          {editing && action.kind === "reschedule" && (
+            <div role="region" aria-label="Reschedule session" className="!mt-6 border-t border-[#edf0e8] pt-6">
+              <div className="!mb-5 flex items-start justify-between gap-3">
+                <div>
+                  <h4 className="!text-base">Find a better time</h4>
+                  <p className="!mt-1 text-xs text-[#8b987f]">Same lesson, coach, and place.</p>
+                </div>
+                <button type="button" className={cn(secondary, "!min-h-10 !px-2.5")} aria-label="Close reschedule" onClick={() => setAction(null)}>
+                  <X size={16} />
+                </button>
               </div>
-              <button
-                className={cn(secondary, "!px-2.5")}
-                aria-label="Close reschedule"
-                disabled={busy}
-                onClick={() => setAction("none")}
-              >
-                <X size={17} />
-              </button>
+              <DateSlots
+                date={date}
+                onDateChange={(value) => { setDate(value); setSlot(null); }}
+                slots={slots}
+                loading={slotsLoading}
+                error={slotsError}
+                onRetry={() => setSlotsVersion((value) => value + 1)}
+                selected={slot?.startAt ?? ""}
+                onSelect={setSlot}
+                timezone={item.business.timezone}
+                minimumDate={dateKey(new Date(), item.business.timezone)}
+              />
+              {actionError && <div className="!mt-5"><ErrorNotice message={actionError} conflicts={conflicts} /></div>}
+              <div className="!mt-5 flex flex-wrap gap-3">
+                <button type="button" className={secondary} disabled={busy} onClick={() => setAction(null)}>Keep original time</button>
+                <button type="button" className={button} disabled={!slot || busy || slotsLoading} onClick={() => void performAction()}>
+                  {busy ? <LoaderCircle size={15} className="animate-spin" /> : <Check size={15} />}
+                  Confirm new time
+                </button>
+              </div>
             </div>
-            <DateSlots
-              date={date}
-              onDateChange={(value) => {
-                setDate(value);
-                setSlot(null);
-              }}
-              slots={slots}
-              loading={slotsLoading}
-              error={slotsError}
-              onRetry={() => setVersion((value) => value + 1)}
-              selected={slot?.startAt ?? ""}
-              onSelect={setSlot}
-              timezone={business.timezone}
-              minimumDate={dateKey(new Date(), business.timezone)}
-            />
-            {slot && (
-              <div className="!mt-5 rounded-xl bg-[#f0f5e8] p-4 text-xs leading-relaxed text-[#7d9169]">
-                Your new session:{" "}
-                <strong>
-                  {shortDate(slot.startAt, business.timezone)},{" "}
-                  {time(slot.startAt, business.timezone)}
-                </strong>
-                . Your current time is kept until this change succeeds.
-              </div>
-            )}
-            {actionError && (
-              <div className="!mt-5">
-                <ErrorNotice message={actionError} conflicts={conflicts} />
-              </div>
-            )}
-            <div className="!mt-6 flex flex-wrap gap-3">
-              <button
-                type="button"
-                className={secondary}
-                disabled={busy}
-                onClick={() => setAction("none")}
-              >
-                Keep original time
-              </button>
-              <button
-                type="button"
-                className={button}
-                disabled={!slot || busy || slotsLoading}
-                onClick={() => void perform("reschedule")}
-              >
-                {busy ? (
-                  <LoaderCircle size={15} className="animate-spin" />
-                ) : (
-                  <Check size={15} />
-                )}
-                Confirm new time
-              </button>
-            </div>
-          </section>
-        )}
-        <div className="!mt-7 flex items-start gap-2.5 px-1 text-[11px] leading-relaxed text-[#96a08a]">
-          <ShieldCheck size={15} className="!mt-0.5 shrink-0" />
-          This is your private booking link. Keep it safe — anyone with this
-          link can manage this booking.
+          )}
         </div>
+      </article>
+    );
+  }
+
+  return (
+    <PublicShell business={shellBusiness}>
+      <main className="!mx-auto max-w-4xl px-5 py-10 sm:px-8 sm:py-14">
+        <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
+          <div>
+            {slug && (
+              <Link href={`/book/${encodeURIComponent(slug)}`} className="!mb-5 inline-flex min-h-9 items-center gap-1.5 text-xs font-medium text-[#7c8f6d]">
+                <ArrowLeft size={14} /> Back to booking
+              </Link>
+            )}
+            <p className="!mb-2 text-[10px] font-semibold uppercase tracking-[2px] text-[#8d9b80]">Your Courtly account</p>
+            <h1 className="!text-3xl !font-medium !tracking-tight sm:!text-4xl">My bookings</h1>
+            <p className="!mt-3 text-sm text-[#86937c]">Upcoming sessions and lesson history for {account.session.user.name}.</p>
+          </div>
+          <button type="button" className={secondary} disabled={account.signingOut} onClick={() => void account.signOut()}>
+            {account.signingOut && <LoaderCircle size={15} className="animate-spin" />} Sign out
+          </button>
+        </div>
+        {notice && (
+          <div role="status" className="!mt-7 flex items-start gap-2.5 rounded-xl border border-[#d8e4cb] bg-[#edf5e4] p-4 text-sm text-[#66834d]">
+            <CheckCheck size={18} className="!mt-0.5 shrink-0" /> {notice}
+          </div>
+        )}
+        {loadError && <div className="!mt-7"><ErrorNotice message={loadError} /></div>}
+        {loading ? (
+          <div className={cn(panel, "!mt-7")}><Loading text="Gathering your sessions…" /></div>
+        ) : bookings.length === 0 ? (
+          <section className={cn(panel, "!mt-7 p-10 text-center")}>
+            <CalendarDays size={32} className="!mx-auto text-[#91a681]" />
+            <h2 className="!mt-5 !text-xl">Your next good game starts here</h2>
+            <p className="!mx-auto mt-2 max-w-sm text-sm leading-relaxed text-[#87927f]">
+              {slug ? "You haven’t booked with this coach yet." : "You don’t have any bookings yet."}
+            </p>
+            {slug && <Link href={`/book/${encodeURIComponent(slug)}`} className={cn(button, "!mt-6")}>Find a session <ArrowRight size={15} /></Link>}
+          </section>
+        ) : (
+          <div className="!mt-9 space-y-10">
+            {upcoming.length > 0 && (
+              <section aria-labelledby="upcoming-bookings">
+                <div className="!mb-4 flex items-end justify-between">
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#8a987e]">Next up</p>
+                    <h2 id="upcoming-bookings" className="!mt-1 !text-xl">Upcoming sessions</h2>
+                  </div>
+                  <span className="text-xs text-[#89957f]">{upcoming.length} booking{upcoming.length === 1 ? "" : "s"}</span>
+                </div>
+                <div className="space-y-4">{upcoming.map(bookingCard)}</div>
+              </section>
+            )}
+            {history.length > 0 && (
+              <section aria-labelledby="booking-history">
+                <div className="!mb-4">
+                  <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#8a987e]">Looking back</p>
+                  <h2 id="booking-history" className="!mt-1 !text-xl">Booking history</h2>
+                </div>
+                <div className="space-y-4">{history.map(bookingCard)}</div>
+              </section>
+            )}
+          </div>
+        )}
       </main>
     </PublicShell>
   );

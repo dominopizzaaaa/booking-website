@@ -62,10 +62,11 @@ adminRouter.post('/admin/logout', asyncRoute(async (_req, res) => {
 adminRouter.get('/admin/overview', requireAdmin, asyncRoute(async (_req, res) => {
   const now = new Date();
   const weekAgo = new Date(now.getTime() - 7 * 86400_000);
-  const [businesses, demoBusinesses, users, customers, bookings, upcoming, weekBookings, payments, packages] = await Promise.all([
+  const [businesses, demoBusinesses, users, memberships, customers, bookings, upcoming, weekBookings, payments, packages] = await Promise.all([
     prisma.business.count(),
     prisma.business.count({ where: { isDemo: true } }),
     prisma.user.count(),
+    prisma.membership.count(),
     prisma.customer.count(),
     prisma.booking.count(),
     prisma.booking.count({ where: { startAt: { gte: now }, status: { not: 'CANCELLED' } } }),
@@ -77,7 +78,7 @@ adminRouter.get('/admin/overview', requireAdmin, asyncRoute(async (_req, res) =>
     generatedAt: now.toISOString(),
     totals: {
       businesses, demoBusinesses, realBusinesses: businesses - demoBusinesses,
-      users, customers, bookings, upcomingBookings: upcoming,
+      users, memberships, customers, bookings, upcomingBookings: upcoming,
       bookingsLast7Days: weekBookings, packages,
       paymentsCount: payments._count, paymentsTotal: payments._sum.amount ?? 0,
     },
@@ -103,10 +104,15 @@ adminRouter.get('/admin/businesses', requireAdmin, asyncRoute(async (req, res) =
     select: {
       id: true, name: true, slug: true, ownerName: true, email: true, currency: true,
       timezone: true, isDemo: true, createdAt: true,
-      _count: { select: { users: true, customers: true, bookings: true, locations: true, services: true, instructors: true } },
+      _count: { select: { memberships: true, customers: true, bookings: true, locations: true, services: true, instructors: true } },
     },
   });
-  res.json({ businesses: businesses.map(b => ({ ...b, createdAt: b.createdAt.toISOString(), counts: b._count, _count: undefined })) });
+  res.json({ businesses: businesses.map(b => ({
+    ...b,
+    createdAt: b.createdAt.toISOString(),
+    counts: { ...b._count, users: b._count.memberships },
+    _count: undefined,
+  })) });
 }));
 
 // Several foreign keys are intentionally onDelete: Restrict (a booking pins its
@@ -114,12 +120,42 @@ adminRouter.get('/admin/businesses', requireAdmin, asyncRoute(async (req, res) =
 // the owned rows in dependency order first, then let the remaining relations
 // cascade from Business. This mirrors the integration fixture teardown.
 async function deleteBusinessDeep(tx: Prisma.TransactionClient, businessId: string) {
+  const disposableUserIds = (await tx.user.findMany({
+    where: {
+      OR: [
+        { id: { startsWith: 'seed-instructor-' } },
+        { id: { startsWith: 'seed-customer-' } },
+      ],
+      email: { endsWith: '@sample.courtly.invalid' },
+      AND: [{ OR: [
+        { memberships: { some: { businessId } } },
+        { customers: { some: { businessId } } },
+      ] }],
+    },
+    select: { id: true },
+  })).map(user => user.id);
+  const placeholderUserIds = (await tx.membership.findMany({
+    where: { businessId, user: {
+      passwordHash: null, accountType: 'COACH', email: { endsWith: '@unclaimed.courtly.invalid' },
+    } },
+    select: { userId: true },
+  })).map(membership => membership.userId);
   await tx.payment.deleteMany({ where: { businessId } });
   await tx.participant.deleteMany({ where: { booking: { businessId } } });
   await tx.booking.deleteMany({ where: { businessId } });
   await tx.lessonPackage.deleteMany({ where: { businessId } });
   await tx.customer.deleteMany({ where: { businessId } });
   await tx.business.delete({ where: { id: businessId } });
+  const removableUserIds = [...new Set([...disposableUserIds, ...placeholderUserIds])];
+  if (removableUserIds.length) {
+    await tx.user.deleteMany({
+      where: {
+        id: { in: removableUserIds },
+        memberships: { none: {} },
+        customers: { none: {} },
+      },
+    });
+  }
 }
 
 adminRouter.delete('/admin/businesses/:id', requireAdmin, asyncRoute(async (req, res) => {
