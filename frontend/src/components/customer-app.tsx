@@ -416,6 +416,96 @@ function EmptyState({
   );
 }
 
+function bookingSlugFromInput(value: string) {
+  const input = value.trim();
+  if (!input) return null;
+
+  let encodedSlug = input;
+  if (/^https?:\/\//i.test(input)) {
+    try {
+      const url = new URL(input);
+      const match = url.pathname.match(/^\/book\/([^/]+)\/?$/);
+      if (!match) return null;
+      encodedSlug = match[1];
+    } catch {
+      return null;
+    }
+  } else if (/^\/?book\//i.test(input)) {
+    const path = input.split(/[?#]/, 1)[0];
+    const match = path.match(/^\/?book\/([^/]+)\/?$/i);
+    if (!match) return null;
+    encodedSlug = match[1];
+  } else if (/[/?#\s]/.test(input)) {
+    return null;
+  }
+
+  try {
+    const decodedSlug = decodeURIComponent(encodedSlug);
+    return /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/i.test(decodedSlug)
+      ? decodedSlug
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function BookingLinkForm({ id }: { id: string }) {
+  const router = useRouter();
+  const [value, setValue] = useState('');
+  const [error, setError] = useState('');
+  const errorId = `${id}-error`;
+  const hintId = `${id}-hint`;
+
+  function openBookingPage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const bookingSlug = bookingSlugFromInput(value);
+    if (!bookingSlug) {
+      setError('Enter a Courtly booking link or club slug.');
+      return;
+    }
+    setError('');
+    router.push(`/book/${encodeURIComponent(bookingSlug)}`);
+  }
+
+  return (
+    <form onSubmit={openBookingPage} noValidate className="mx-auto max-w-md text-left">
+      <label htmlFor={id} className="text-xs font-semibold text-[#465e4c]">
+        Club booking link or slug
+      </label>
+      <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+        <input
+          id={id}
+          type="text"
+          inputMode="url"
+          autoCapitalize="none"
+          autoComplete="url"
+          spellCheck={false}
+          value={value}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? errorId : hintId}
+          placeholder="https://courtly.example/book/your-club"
+          className={cn(field, 'min-w-0 flex-1')}
+          onChange={(event) => {
+            setValue(event.target.value);
+            setError('');
+          }}
+        />
+        <button type="submit" className={cn(primaryButton, 'shrink-0')}>
+          Open booking page <ArrowRight size={15} />
+        </button>
+      </div>
+      <p id={hintId} className="mt-2 text-[11px] leading-relaxed text-[#899487]">
+        Use the full link your club shared, or just the part after /book/.
+      </p>
+      {error && (
+        <p id={errorId} role="alert" className="mt-2 text-xs font-medium text-[#a16a55]">
+          {error}
+        </p>
+      )}
+    </form>
+  );
+}
+
 function LoadingScreen({ text }: { text: string }) {
   return (
     <div role="status" className="flex min-h-[55vh] flex-col items-center justify-center gap-4">
@@ -779,10 +869,12 @@ function AppHeader({
   userName,
   activeTab,
   homeHref,
+  onOpenProfile,
 }: {
   userName: string;
   activeTab: CustomerTab;
   homeHref: string;
+  onOpenProfile: () => void;
 }) {
   const title = tabs.find((tab) => tab.id === activeTab)?.label ?? 'Home';
   return (
@@ -793,12 +885,16 @@ function AppHeader({
         </Link>
         <div className="flex items-center gap-2">
           <span className="hidden text-[11px] font-medium text-[#899486] sm:inline">{title}</span>
-          <span
-            aria-label={`Signed in as ${userName}`}
-            className="grid h-9 w-9 place-items-center rounded-full border border-[#dfe6da] bg-[#edf2e7] text-[10px] font-bold text-[#6e835e]"
+          <button
+            type="button"
+            aria-label="Open profile"
+            aria-current={activeTab === 'profile' ? 'page' : undefined}
+            title={`Signed in as ${userName}`}
+            onClick={onOpenProfile}
+            className="grid h-10 w-10 place-items-center rounded-full border border-[#dfe6da] bg-[#edf2e7] text-[10px] font-bold text-[#6e835e] transition hover:border-[#b8c8b1] hover:bg-[#e5eddd] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a] focus-visible:ring-offset-2"
           >
             {initials(userName)}
-          </span>
+          </button>
         </div>
       </div>
     </header>
@@ -836,7 +932,7 @@ function BottomNavigation({
               }
               onClick={() => onChange(tab.id)}
               className={cn(
-                'relative flex min-h-[62px] min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 text-[9px] font-medium transition sm:text-[10px]',
+                'relative flex min-h-[62px] min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 text-[11px] font-medium transition sm:text-xs',
                 active ? 'text-[#174c3c]' : 'text-[#8b958a] hover:bg-[#f6f8f3] hover:text-[#496353]',
                 central && '-translate-y-2',
               )}
@@ -888,6 +984,8 @@ export function CustomerApp({ slug }: { slug?: string }) {
   const [notificationsFallback, setNotificationsFallback] = useState(false);
   const [notificationError, setNotificationError] = useState('');
   const [markingRead, setMarkingRead] = useState(false);
+  const [alertsStatus, setAlertsStatus] = useState('');
+  const [bookingNavigationStatus, setBookingNavigationStatus] = useState('');
   const [notice, setNotice] = useState('');
   const [action, setAction] = useState<BookingAction>(null);
   const [actionBusy, setActionBusy] = useState(false);
@@ -909,6 +1007,9 @@ export function CustomerApp({ slug }: { slug?: string }) {
   const [signOutError, setSignOutError] = useState('');
   const [nowMs, setNowMs] = useState(() => Date.now());
   const successNoticeRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
+  const previousTabRouteRef = useRef(requestedTab);
+  const pendingBookingIdRef = useRef<string | null>(null);
 
   const tabHref = useCallback((tab: CustomerTab) => {
     const params = new URLSearchParams();
@@ -928,6 +1029,41 @@ export function CustomerApp({ slug }: { slug?: string }) {
     if (requestedTab === null || customerTabIds.has(requestedTab as CustomerTab)) return;
     router.replace(tabHref('home'), { scroll: false });
   }, [requestedTab, router, tabHref]);
+
+  useEffect(() => {
+    if (previousTabRouteRef.current === requestedTab) return;
+    previousTabRouteRef.current = requestedTab;
+    if (pendingBookingIdRef.current && activeTab === 'home') return;
+    pendingBookingIdRef.current = null;
+    setBookingNavigationStatus('');
+    const frame = window.requestAnimationFrame(() => {
+      mainRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeTab, requestedTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'alerts') setAlertsStatus('');
+  }, [activeTab]);
+
+  useEffect(() => {
+    const bookingId = pendingBookingIdRef.current;
+    if (activeTab !== 'home' || !bookingId || bookingsLoading || bookingsError) return;
+    pendingBookingIdRef.current = null;
+    const frame = window.requestAnimationFrame(() => {
+      const bookingCard = document.getElementById(`customer-booking-${bookingId}`);
+      if (bookingCard instanceof HTMLElement) {
+        bookingCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        bookingCard.focus({ preventScroll: true });
+        setBookingNavigationStatus('Booking details opened.');
+      } else {
+        mainRef.current?.focus({ preventScroll: true });
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        setBookingNavigationStatus('That booking is no longer available. Showing all bookings.');
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeTab, bookingsError, bookingsLoading]);
 
   const refreshSession = useCallback(async () => {
     setAuthLoading(true);
@@ -1091,10 +1227,34 @@ export function CustomerApp({ slug }: { slug?: string }) {
 
   function selectTab(tab: CustomerTab) {
     setNotice('');
+    setBookingNavigationStatus('');
+    if (tab !== 'alerts') setAlertsStatus('');
     if (tab !== activeTab || requestedTab === null) {
       router.push(tabHref(tab), { scroll: false });
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function openAlertBooking(bookingId: string) {
+    setNotice('');
+    setBookingNavigationStatus('');
+    pendingBookingIdRef.current = bookingId;
+    if (activeTab !== 'home' || requestedTab === null) {
+      router.push(tabHref('home'), { scroll: false });
+      return;
+    }
+    const bookingCard = document.getElementById(`customer-booking-${bookingId}`);
+    if (bookingCard instanceof HTMLElement) {
+      bookingCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      bookingCard.focus({ preventScroll: true });
+      pendingBookingIdRef.current = null;
+      setBookingNavigationStatus('Booking details opened.');
+    } else {
+      pendingBookingIdRef.current = null;
+      mainRef.current?.focus({ preventScroll: true });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      setBookingNavigationStatus('That booking is no longer available. Showing all bookings.');
+    }
   }
 
   function beginAction(item: AccountBooking, kind: 'cancel' | 'reschedule') {
@@ -1173,12 +1333,14 @@ export function CustomerApp({ slug }: { slug?: string }) {
     if (markingRead || notificationsFallback || unread === 0) return;
     setMarkingRead(true);
     setNotificationError('');
+    setAlertsStatus('');
     try {
       await api<unknown>('/account/notifications/read', {
         method: 'PATCH',
         body: JSON.stringify({}),
       });
       setNotifications((current) => current.map((item) => ({ ...item, read: true })));
+      setAlertsStatus('All alerts marked as read.');
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         router.replace(loginHrefRef.current);
@@ -1367,8 +1529,18 @@ export function CustomerApp({ slug }: { slug?: string }) {
 
   return (
     <div className="customer-shell min-h-screen overflow-x-clip bg-[#f6f7f4] pb-32 text-[#1c3029] sm:pb-36">
-      <AppHeader userName={session.user.name} activeTab={activeTab} homeHref={tabHref('home')} />
-      <main className="customer-content mx-auto w-full max-w-3xl px-4 py-7 sm:px-6 sm:py-10">
+      <AppHeader
+        userName={session.user.name}
+        activeTab={activeTab}
+        homeHref={tabHref('home')}
+        onOpenProfile={() => selectTab('profile')}
+      />
+      <main
+        ref={mainRef}
+        tabIndex={-1}
+        className="customer-content mx-auto w-full max-w-3xl px-4 py-7 outline-none sm:px-6 sm:py-10"
+      >
+        <p role="status" className="sr-only">{bookingNavigationStatus}</p>
         {bookingsError && (
           <div className="mb-6 space-y-3">
             <ErrorNotice message={bookingsError} />
@@ -1430,18 +1602,20 @@ export function CustomerApp({ slug }: { slug?: string }) {
               <div className="mt-8">
                 <EmptyState
                   icon={<CalendarDays size={23} />}
-                  title="Your next good game starts with a club link"
+                  title={slug ? 'Book your first session with this club' : 'Open your club’s booking page'}
                   action={
                     slug ? (
                       <Link href={`/book/${encodeURIComponent(slug)}`} className={primaryButton}>
                         Open booking page <ArrowRight size={15} />
                       </Link>
-                    ) : undefined
+                    ) : (
+                      <BookingLinkForm id="customer-home-booking-link" />
+                    )
                   }
                 >
                   {slug
-                    ? 'You have not booked with this club yet. Choose a session to bring it into your Courtly home.'
-                    : 'Open a booking link shared by your club. After your first booking, that club and every session will appear here.'}
+                    ? 'Choose a session on the club’s booking page. It will appear here after you book.'
+                    : 'Paste the booking link your club sent you to choose a session.'}
                 </EmptyState>
               </div>
             ) : (
@@ -1570,8 +1744,22 @@ export function CustomerApp({ slug }: { slug?: string }) {
               <LoadingScreen text="Finding your clubs…" />
             ) : clubs.length === 0 ? (
               <div className="mt-8">
-                <EmptyState icon={<Compass size={23} />} title="No clubs in your history yet">
-                  Courtly does not have a public club marketplace. Open a club’s shared booking link and it will appear here after you book.
+                <EmptyState
+                  icon={<Compass size={23} />}
+                  title={slug ? 'Book with this club to add it here' : 'Add your first club'}
+                  action={
+                    slug ? (
+                      <Link href={`/book/${encodeURIComponent(slug)}`} className={primaryButton}>
+                        Open booking page <ArrowRight size={15} />
+                      </Link>
+                    ) : (
+                      <BookingLinkForm id="customer-explore-booking-link" />
+                    )
+                  }
+                >
+                  {slug
+                    ? 'Choose a session on its booking page. The club will appear here after you book.'
+                    : 'Paste a club’s Courtly booking link to choose a session and add it to your history.'}
                 </EmptyState>
               </div>
             ) : (
@@ -1646,18 +1834,20 @@ export function CustomerApp({ slug }: { slug?: string }) {
               <div className="mt-8">
                 <EmptyState
                   icon={<Plus size={23} />}
-                  title="Start from a club’s booking link"
+                  title={slug ? 'Choose a session with this club' : 'Open your club’s booking page'}
                   action={
                     slug ? (
                       <Link href={`/book/${encodeURIComponent(slug)}`} className={primaryButton}>
                         Continue to booking <ArrowRight size={15} />
                       </Link>
-                    ) : undefined
+                    ) : (
+                      <BookingLinkForm id="customer-book-booking-link" />
+                    )
                   }
                 >
                   {slug
-                    ? 'This link came from a club. Open it to choose an available lesson; the club will become part of your history after you book.'
-                    : 'For privacy and accuracy, Courtly only shows clubs you have booked with. Ask your club for its Courtly booking link.'}
+                    ? 'Open the club’s live availability and choose the session you want.'
+                    : 'Paste the booking link your club sent you to see its live availability.'}
                 </EmptyState>
               </div>
             ) : (
@@ -1668,19 +1858,23 @@ export function CustomerApp({ slug }: { slug?: string }) {
                     {clubs.map((club) => {
                       const selected = selectedClubSlug === club.business.slug;
                       return (
-                        <button
+                        <label
                           key={club.business.slug}
-                          type="button"
-                          role="radio"
-                          aria-checked={selected}
-                          onClick={() => setSelectedClubSlug(club.business.slug)}
                           className={cn(
-                            'flex min-h-[76px] w-full items-center gap-3 rounded-2xl border bg-white p-4 text-left transition',
+                            'relative flex min-h-[76px] w-full cursor-pointer items-center gap-3 rounded-2xl border bg-white p-4 text-left transition focus-within:ring-2 focus-within:ring-[#327a5a] focus-within:ring-offset-2',
                             selected
                               ? 'border-[#618159] ring-1 ring-[#618159]'
                               : 'border-[#e2e7df] hover:border-[#b8c8b1]',
                           )}
                         >
+                          <input
+                            type="radio"
+                            name="customer-booking-club"
+                            value={club.business.slug}
+                            checked={selected}
+                            onChange={() => setSelectedClubSlug(club.business.slug)}
+                            className="sr-only"
+                          />
                           <ClubAvatar club={club} size="small" />
                           <span className="min-w-0 flex-1">
                             <span className="block text-sm font-semibold text-[#304a39]">{club.business.name}</span>
@@ -1694,9 +1888,9 @@ export function CustomerApp({ slug }: { slug?: string }) {
                               selected ? 'border-[#174c3c] bg-[#174c3c] text-white' : 'border-[#d8dfd5]',
                             )}
                           >
-                            {selected && <Check size={13} />}
+                            {selected && <Check aria-hidden="true" size={13} />}
                           </span>
-                        </button>
+                        </label>
                       );
                     })}
                   </div>
@@ -1732,6 +1926,14 @@ export function CustomerApp({ slug }: { slug?: string }) {
                 </button>
               )}
             </div>
+            {alertsStatus && (
+              <div
+                role="status"
+                className="mt-6 flex items-center gap-2 rounded-xl border border-[#d8e4cb] bg-[#edf5e4] p-4 text-sm text-[#66834d]"
+              >
+                <CheckCheck aria-hidden="true" size={17} /> {alertsStatus}
+              </div>
+            )}
             {notificationError && !notificationsFallback && (
               <div className="mt-6">
                 <ErrorNotice message={notificationError} />
@@ -1767,11 +1969,12 @@ export function CustomerApp({ slug }: { slug?: string }) {
                       item.read ? 'bg-[#f0f2ed] text-[#879287]' : 'bg-[#e5eedb] text-[#678054]',
                     )}>
                       <Bell size={16} />
-                      {!item.read && <span className="absolute right-0 top-0 h-2.5 w-2.5 rounded-full border-2 border-white bg-[#a86752]" />}
+                      {!item.read && <span aria-hidden="true" className="absolute right-0 top-0 h-2.5 w-2.5 rounded-full border-2 border-white bg-[#a86752]" />}
                     </span>
                     <div className="flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <h2 className="text-sm font-semibold text-[#314a39]">{item.title}</h2>
+                        {!item.read && <span className="sr-only">Unread</span>}
                         {item.actionNeeded && (
                           <span className="rounded-full bg-[#f8eed3] px-2 py-0.5 text-[9px] font-semibold text-[#927a42]">
                             Action needed
@@ -1793,14 +1996,24 @@ export function CustomerApp({ slug }: { slug?: string }) {
                       )}
                       {item.actionNeeded && (
                         <div className="mt-3 flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            className={cn(secondaryButton, '!min-h-9 !px-3 !py-1.5 !text-xs')}
-                            onClick={() => selectTab('home')}
-                          >
-                            View bookings <ArrowRight size={13} />
-                          </button>
-                          {alertClub && (
+                          {item.bookingId ? (
+                            <button
+                              type="button"
+                              className={cn(secondaryButton, '!min-h-9 !px-3 !py-1.5 !text-xs')}
+                              onClick={() => openAlertBooking(item.bookingId!)}
+                            >
+                              View bookings <ArrowRight size={13} />
+                            </button>
+                          ) : item.actionNeeded ? (
+                            <button
+                              type="button"
+                              className={cn(secondaryButton, '!min-h-9 !px-3 !py-1.5 !text-xs')}
+                              onClick={() => selectTab('home')}
+                            >
+                              View bookings <ArrowRight size={13} />
+                            </button>
+                          ) : null}
+                          {item.actionNeeded && alertClub && (
                             <Link
                               href={`/book/${encodeURIComponent(alertClub.business.slug)}`}
                               className={cn(secondaryButton, '!min-h-9 !px-3 !py-1.5 !text-xs')}

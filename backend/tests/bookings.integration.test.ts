@@ -385,6 +385,15 @@ describe.sequential('Global account authentication and workspace memberships', (
     return { user, memberships };
   }
 
+  it('requires clients to choose an account type explicitly', async () => {
+    const email = randomUUID() + '@example.test';
+    const response = await request(app).post('/api/auth/register').send({
+      name: 'Unspecified Account', email, password,
+    });
+    expect(response.status).toBe(400);
+    expect(await prisma.user.findUnique({ where: { email } })).toBeNull();
+  });
+
   it('registers an owner with a selected membership and returns the workspace contract', async () => {
     const email = `${randomUUID()}@example.test`;
     const agent = request.agent(app);

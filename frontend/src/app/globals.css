@@ -112,7 +112,7 @@ h1,h2,h3,p { margin:0; } h1 { font-size:29px; letter-spacing:-.85px; font-weight
   .panel.overflow-x-auto > .grid.min-w-\[900px\] > div > div:first-child { position:sticky; left:0; padding:13px 16px; text-align:left; font-weight:600; background:#fafbf8; }
   .panel.overflow-x-auto > .grid.min-w-\[900px\] > div > div:last-child { display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:8px; padding:10px; }
   .mobile-bottom { position:fixed; bottom:0; left:0; right:0; z-index:40; min-height:calc(var(--mobile-tab-height) + env(safe-area-inset-bottom)); display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); align-items:start; padding:5px 5px max(6px,env(safe-area-inset-bottom)); background:#fffffff2; backdrop-filter:blur(18px) saturate(1.25); border-top:1px solid #e4e9df; box-shadow:0 -8px 24px #203a2e0a; }
-  .mobile-bottom button { min-width:0; min-height:58px; border:0; border-radius:12px; background:transparent; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; padding:5px 1px; color:#8a9486; font-size:9px; font-weight:500; line-height:1; }
+  .mobile-bottom button { min-width:0; min-height:58px; border:0; border-radius:12px; background:transparent; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; padding:5px 1px; color:#8a9486; font-size:11px; font-weight:500; line-height:1; }
   .mobile-bottom button.active { color:#214e3e; }
   .mobile-bottom button.active:not(.mobile-bottom-new) svg { stroke-width:2.2; }
   .mobile-bottom-new { transform:translateY(-15px); color:#214e3e!important; }
@@ -126,5 +126,5 @@ h1,h2,h3,p { margin:0; } h1 { font-size:29px; letter-spacing:-.85px; font-weight
   .dialog-close { top:10px; right:10px; }
   [role="dialog"] button { min-height:44px; }
 }
-@media(max-width:390px) { .content { padding-inline:12px; }.topbar { padding-inline:8px; }.topbar-context { max-width:calc(100% - 132px); }.topbar-action { width:42px; height:44px; flex-basis:42px; }.stat-card { padding:13px; }.stat-value { font-size:22px; }.mobile-bottom button { font-size:8.5px; } }
+@media(max-width:390px) { .content { padding-inline:12px; }.topbar { padding-inline:8px; }.topbar-context { max-width:calc(100% - 132px); }.topbar-action { width:42px; height:44px; flex-basis:42px; }.stat-card { padding:13px; }.stat-value { font-size:22px; }.mobile-bottom button { font-size:10px; } }
 @media(prefers-reduced-motion:reduce) { *,*:before,*:after { animation:none!important; transition:none!important; } }
