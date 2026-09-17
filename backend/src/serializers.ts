@@ -26,7 +26,8 @@ export const publicLocation = (location: any) => ({
 
 // Account identity and workspace authorization are deliberately serialized separately.
 export const userJson = (user: User) => ({
-  id: user.id, name: user.name, email: user.email, accountType: user.accountType as AccountType,
+  id: user.id, name: user.name, email: user.email, phone: user.phone, parentName: user.parentName,
+  accountType: user.accountType as AccountType,
 });
 export const workspaceUserJson = (user: User, membership: Pick<Membership, 'role' | 'instructorId'>) => ({
   ...userJson(user), role: membership.role as MembershipRole, instructorId: membership.instructorId,
@@ -78,6 +79,37 @@ export const serviceJson = (s: any) => ({
     instructorIds: l.instructors.map((i: any) => i.instructorId),
   })),
 });
+type ServiceFinancials = { price: unknown; locations: Array<{ price: unknown }> };
+type ServiceWithoutFinancials<T extends ServiceFinancials> = Omit<T, 'price' | 'locations'> & {
+  locations: Array<Omit<T['locations'][number], 'price'>>;
+};
+export function withoutServiceFinancials<T extends ServiceFinancials>(service: T): ServiceWithoutFinancials<T> {
+  const { price: _price, locations, ...safe } = service;
+  return {
+    ...safe,
+    locations: locations.map(location => {
+      const { price: _locationPrice, ...details } = location;
+      return details;
+    }),
+  } as ServiceWithoutFinancials<T>;
+}
+type BookingFinancials = {
+  price: unknown;
+  participants: Array<{ paid: unknown; price: unknown; packageId: unknown }>;
+};
+type BookingWithoutFinancials<T extends BookingFinancials> = Omit<T, 'price' | 'participants'> & {
+  participants: Array<Omit<T['participants'][number], 'paid' | 'price' | 'packageId'>>;
+};
+export function withoutBookingFinancials<T extends BookingFinancials>(booking: T): BookingWithoutFinancials<T> {
+  const { price: _price, participants, ...safe } = booking;
+  return {
+    ...safe,
+    participants: participants.map(participant => {
+      const { paid: _paid, price: _participantPrice, packageId: _packageId, ...details } = participant;
+      return details;
+    }),
+  } as BookingWithoutFinancials<T>;
+}
 export function bookingJson(b: FullBooking, options: { includeNotes?: boolean } = {}) {
   return { id: b.id, serviceId: b.serviceId, serviceName: b.service.name, instructorId: b.instructorId, instructorName: b.instructor.name, locationId: b.locationId, locationName: b.location.name, locationColor: b.location.color, startAt: b.startAt.toISOString(), endAt: b.endAt.toISOString(), status: b.status, type: b.type, capacity: b.capacity, price: b.price, ...(options.includeNotes === false ? {} : { notes: b.notes }), address: b.address, recurringId: b.recurringId,
     participants: b.participants.filter(p => !p.cancelledAt).map(p => ({ id: p.id, customerId: p.customerId, name: p.customer.name, email: p.customer.email, attendance: p.attendance, paid: p.paid, price: p.price, packageId: p.packageId, notes: p.notes })) };

@@ -8,6 +8,7 @@ import { prisma } from './db.js';
 import { asyncRoute, HttpError } from './http.js';
 import { bookingInclude, bookingJson, publicBookingBusiness, publicInstructor, publicLocation, serviceJson } from './serializers.js';
 import { bookableInstructorWhere, createBookings, evaluateSlot, lockInstructors, publicBookingInput, refundParticipant, rescheduleBooking, schedulingContext } from './scheduling.js';
+import { createBookingAccountAlerts } from './account-notifications.js';
 
 export const publicRouter = Router();
 const bookingLimit = rateLimit({ windowMs: 60 * 60_000, limit: 80, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many requests. Please try again later.' } });
@@ -22,10 +23,13 @@ async function businessForSlug(slug: string) {
 
 publicRouter.get('/public/:slug', asyncRoute(async (req, res) => {
   const business = await businessForSlug(req.params.slug);
-  const [instructors, locations, services] = await Promise.all([
+  const [instructors, services] = await Promise.all([
     prisma.instructor.findMany({ where: bookableInstructorWhere(business.id), orderBy: { name: 'asc' } }),
-    prisma.location.findMany({ where: { businessId: business.id, active: true }, orderBy: { name: 'asc' } }),
-    prisma.service.findMany({ where: { businessId: business.id, active: true }, include: { locations: { include: { instructors: true } } }, orderBy: { name: 'asc' } }),
+    prisma.service.findMany({
+      where: { businessId: business.id, active: true },
+      include: { locations: { where: { location: { active: true } }, include: { instructors: true } } },
+      orderBy: { name: 'asc' },
+    }),
   ]);
   const bookableIds = new Set(instructors.map(instructor => instructor.id));
   const bookableServices = services.map(service => ({
@@ -35,6 +39,11 @@ publicRouter.get('/public/:slug', asyncRoute(async (req, res) => {
       instructors: location.instructors.filter(assignment => bookableIds.has(assignment.instructorId)),
     })).filter(location => location.instructors.length > 0),
   })).filter(service => service.locations.length > 0);
+  const locationIds = [...new Set(bookableServices.flatMap(service => service.locations.map(location => location.locationId)))];
+  const locations = await prisma.location.findMany({
+    where: { id: { in: locationIds }, businessId: business.id, active: true },
+    orderBy: { name: 'asc' },
+  });
   res.json({
     business: publicBookingBusiness(business),
     instructors: instructors.map(publicInstructor),
@@ -222,7 +231,7 @@ publicRouter.post('/manage/:token/cancel', bookingLimit, asyncRoute(async (req, 
   await prisma.$transaction(async tx => {
     await lockInstructors(tx, [initial.booking.instructorId]);
     const participant = await tx.participant.findUniqueOrThrow({
-      where: { id: initial.id }, include: { booking: { include: { business: true } } },
+      where: { id: initial.id }, include: { customer: true, booking: { include: { business: true } } },
     });
     if (participant.booking.instructorId !== initial.booking.instructorId) throw new HttpError(409, 'Session changed. Please refresh and try again');
     if (participant.cancelledAt || participant.booking.status === 'CANCELLED') return;
@@ -239,6 +248,7 @@ publicRouter.post('/manage/:token/cancel', bookingLimit, asyncRoute(async (req, 
       title: 'Customer cancelled a booking',
       message: 'The customer cancelled through an existing private booking link. Any consumed package credit was restored.',
     } });
+    await createBookingAccountAlerts(tx, participant.bookingId, 'CUSTOMER_CANCELLED', [participant.customer.userId]);
   });
   res.json(legacyBookingJson(await legacyParticipant(req.params.token)));
 }));
@@ -296,6 +306,7 @@ publicRouter.post('/account/bookings/:participantId/cancel', bookingLimit, requi
     const remaining = await tx.participant.count({ where: { bookingId: participant.bookingId, cancelledAt: null } });
     if (!remaining) await tx.booking.update({ where: { id: participant.bookingId }, data: { status: 'CANCELLED' } });
     await tx.notification.create({ data: { businessId: participant.booking.businessId, instructorId: participant.booking.instructorId, title: 'Customer cancelled a booking', message: 'The customer cancelled through their account. Any consumed package credit was restored. Cancellation notice queued; no external message sent.' } });
+    await createBookingAccountAlerts(tx, participant.bookingId, 'CUSTOMER_CANCELLED', [req.auth.user.id]);
   });
   res.json(accountBookingJson(await accountParticipant(req.params.participantId, req.auth.user.id)));
 }));

@@ -6,13 +6,14 @@ import { rateLimit } from 'express-rate-limit';
 import { ZodError } from 'zod';
 import { Prisma } from '@prisma/client';
 import { config, production } from './config.js';
-import { authRouter, requireAuth, requireWorkspace } from './auth.js';
+import { authRouter, requireAuth, requireCustomer, requireWorkspace } from './auth.js';
 import { adminRouter } from './admin.js';
 import { publicRouter } from './public.js';
 import { workspaceRouter } from './workspace.js';
 import { bookingsRouter } from './bookings.js';
 import { crudRouter } from './crud.js';
 import { staffRouter } from './staff.js';
+import { accountRouter } from './account-notifications.js';
 import { HttpError } from './http.js';
 import { prisma } from './db.js';
 export const app = express();
@@ -41,6 +42,7 @@ app.get('/api/health', async (_req, res) => {
 app.use('/api/auth', authRouter);
 app.use('/api', adminRouter);
 app.use('/api', publicRouter);
+app.use('/api/account', requireAuth, requireCustomer, accountRouter);
 // Account-only public booking management installs its own authentication
 // middleware. Every provider route below additionally requires an active,
 // non-revoked membership selected on the session.

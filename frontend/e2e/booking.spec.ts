@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 
 const password = 'TestingOnly!2026';
 
@@ -18,13 +18,37 @@ function uniqueEmail(prefix: string, projectName: string) {
   return `${prefix}-${project}-${Date.now()}@example.test`;
 }
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function expectCustomerManageUrl(page: Page, slug: string, tab?: string) {
+  await expect(page).toHaveURL(url =>
+    url.pathname === '/manage'
+      && url.searchParams.get('slug') === slug
+      && url.searchParams.get('tab') === (tab ?? null)
+      && [...url.searchParams.keys()].every(key => key === 'slug' || key === 'tab'),
+  );
+}
+
+async function visibleWorkspaceNavigation(page: Page): Promise<Locator> {
+  const mobileNavigation = page.getByRole('navigation', { name: 'Mobile navigation' });
+  if (await mobileNavigation.isVisible()) return mobileNavigation;
+
+  const desktopNavigation = page.getByRole('navigation', { name: 'Primary' });
+  await expect(desktopNavigation).toBeVisible();
+  return desktopNavigation;
+}
+
 async function openWorkspaceView(page: Page, label: string) {
-  const navigationTrigger = page.getByRole('button', { name: 'Open navigation' });
-  if (await navigationTrigger.isVisible()) await navigationTrigger.click();
-  await page.locator('.sidebar').getByRole('button', { name: label, exact: true }).click();
+  const navigation = await visibleWorkspaceNavigation(page);
+  await navigation.getByRole('button', { name: 'Explore', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: `Open ${label}`, exact: true }).click();
 }
 
 test('customer creates an account, books, views history, and cancels', async ({ page }, testInfo) => {
+  test.setTimeout(120_000);
   const demo = await page.request.post('/api/auth/demo', { data: {} });
   expect(demo.ok()).toBeTruthy();
   const workspace = await (await page.request.get('/api/workspace')).json();
@@ -62,10 +86,10 @@ test('customer creates an account, books, views history, and cancels', async ({ 
   await page.request.post('/api/auth/logout', { data: {} });
   await page.goto(`/book/${workspace.business.slug}`);
   await expect(page.getByRole('heading', { name: 'Good days start with a lesson.' })).toBeVisible();
-  await page.getByRole('button', { name: new RegExp(service.name) }).click();
+  await page.getByRole('button', { name: new RegExp(escapeRegExp(service.name)) }).click();
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
-  await page.getByRole('button', { name: new RegExp(location.name) }).click();
-  await page.getByRole('button', { name: new RegExp(coach.name) }).click();
+  await page.getByRole('button', { name: new RegExp(escapeRegExp(location.name)) }).click();
+  await page.getByRole('button', { name: new RegExp(escapeRegExp(coach.name)) }).click();
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await page.getByLabel('Choose a date').fill(date);
   await page.getByRole('button', { name: /^\d{1,2}:\d{2} [AP]M/ }).first().click();
@@ -91,8 +115,79 @@ test('customer creates an account, books, views history, and cancels', async ({ 
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
 
   await page.getByRole('link', { name: 'My bookings', exact: true }).click();
-  await expect(page).toHaveURL(new RegExp(`/manage\\?slug=${workspace.business.slug}`));
+  await expectCustomerManageUrl(page, workspace.business.slug);
   await expect(page.getByRole('heading', { name: 'My bookings' })).toBeVisible();
+  const customerNavigation = page.getByRole('navigation', { name: 'Customer navigation' });
+  await expect(customerNavigation.getByRole('button')).toHaveCount(5);
+  await expect(customerNavigation.getByRole('button', { name: 'Home', exact: true })).toHaveAttribute('aria-current', 'page');
+
+  await customerNavigation.getByRole('button', { name: 'Explore', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
+  await expectCustomerManageUrl(page, workspace.business.slug, 'explore');
+  await expect(page.getByRole('heading', { name: workspace.business.name, exact: true })).toBeVisible();
+  await expect(customerNavigation.getByRole('button', { name: 'Explore', exact: true })).toHaveAttribute('aria-current', 'page');
+
+  await customerNavigation.getByRole('button', { name: 'Book', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Book a session', exact: true })).toBeVisible();
+  await expectCustomerManageUrl(page, workspace.business.slug, 'book');
+  await expect(page.getByRole('radio', { name: new RegExp(escapeRegExp(workspace.business.name)) })).toBeChecked();
+  await expect(customerNavigation.getByRole('button', { name: 'Book', exact: true })).toHaveAttribute('aria-current', 'page');
+
+  const alertsNavigationButton = customerNavigation.getByRole('button', { name: /^Alerts/ });
+  await expect(alertsNavigationButton).toHaveAccessibleName(/^Alerts, \d+ unread alerts?$/);
+  await alertsNavigationButton.click();
+  await expect(page.getByRole('heading', { name: 'Alerts', exact: true })).toBeVisible();
+  await expectCustomerManageUrl(page, workspace.business.slug, 'alerts');
+  await expect(customerNavigation.getByRole('button', { name: /^Alerts/ })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByText(/Live alerts are temporarily unavailable/)).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: /^Booking (confirmed|request received)$/ })).toBeVisible();
+  const markAllRead = page.getByRole('button', { name: 'Mark all as read', exact: true });
+  await expect(markAllRead).toBeVisible();
+  await markAllRead.click();
+  await expect(markAllRead).toHaveCount(0);
+  await expect(alertsNavigationButton).toHaveAccessibleName('Alerts');
+  const reloadedNotifications = page.waitForResponse(response =>
+    response.request().method() === 'GET'
+      && new URL(response.url()).pathname === '/api/account/notifications',
+  );
+  await page.reload();
+  await reloadedNotifications;
+  await expect(page.getByRole('heading', { name: 'Alerts', exact: true })).toBeVisible();
+  await expect(page.getByText(/Live alerts are temporarily unavailable/)).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Mark all as read', exact: true })).toHaveCount(0);
+
+  await customerNavigation.getByRole('button', { name: 'Profile', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Profile', exact: true })).toBeVisible();
+  await expectCustomerManageUrl(page, workspace.business.slug, 'profile');
+  await expect(page.getByRole('heading', { name: 'Personal details', exact: true })).toBeVisible();
+  const profileName = page.getByLabel('Full name', { exact: true });
+  const profileEmail = page.getByLabel('Email address', { exact: true });
+  const profilePhone = page.getByLabel('Phone', { exact: true });
+  const profileGuardian = page.getByLabel('Parent or guardian', { exact: true });
+  await expect(profileName).toHaveValue(customerName);
+  await expect(profileEmail).toHaveValue(customerEmail);
+  await expect(profileEmail).not.toBeEditable();
+  await expect(profilePhone).toHaveValue('+65 9123 4567');
+  await expect(profileGuardian).toHaveValue('Robin Browser Test');
+  await expect(page.getByRole('group', { name: 'Filter booking history' })).toBeVisible();
+  await expect(customerNavigation.getByRole('button', { name: 'Profile', exact: true })).toHaveAttribute('aria-current', 'page');
+
+  const updatedPhone = '+65 9876 5432';
+  const updatedGuardian = 'Robin Browser Updated';
+  await profilePhone.fill(updatedPhone);
+  await profileGuardian.fill(updatedGuardian);
+  await page.getByRole('button', { name: 'Save profile', exact: true }).click();
+  await expect(page.locator('#customer-profile-panel').getByRole('status')).toContainText('Your profile has been updated.');
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Profile', exact: true })).toBeVisible();
+  await expect(page.getByLabel('Email address', { exact: true })).toHaveValue(customerEmail);
+  await expect(page.getByLabel('Email address', { exact: true })).not.toBeEditable();
+  await expect(page.getByLabel('Phone', { exact: true })).toHaveValue(updatedPhone);
+  await expect(page.getByLabel('Parent or guardian', { exact: true })).toHaveValue(updatedGuardian);
+
+  await customerNavigation.getByRole('button', { name: 'Home', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'My bookings' })).toBeVisible();
+  await expectCustomerManageUrl(page, workspace.business.slug, 'home');
   const bookingCard = page.getByRole('article').filter({ hasText: service.name });
   await expect(bookingCard).toContainText(customerName);
   await expect(bookingCard).toContainText('Confirmed');
@@ -103,7 +198,9 @@ test('customer creates an account, books, views history, and cancels', async ({ 
   await bookingCard.getByRole('button', { name: 'Cancel booking' }).click();
   await expect(bookingCard.getByRole('region', { name: 'Confirm cancellation' })).toBeVisible();
   await bookingCard.getByRole('button', { name: 'Yes, cancel session' }).click();
-  await expect(page.getByText('Your booking has been cancelled.', { exact: true })).toBeVisible();
+  const cancellationNotice = page.getByRole('status').filter({ hasText: 'Your booking has been cancelled.' });
+  await expect(cancellationNotice).toBeVisible();
+  await expect(cancellationNotice).toBeFocused();
   await expect(page.getByRole('heading', { name: 'Booking history' })).toBeVisible();
   await expect(bookingCard).toContainText('Cancelled');
 
@@ -124,6 +221,153 @@ test('customer creates an account, books, views history, and cancels', async ({ 
   ]));
 });
 
+test('customer shell guards stale actions and exposes current sessions and actionable alerts', async ({ page }) => {
+  const now = Date.now();
+  const session = {
+    user: {
+      id: 'customer-user',
+      name: 'Taylor Player',
+      email: 'taylor@example.test',
+      accountType: 'CUSTOMER',
+      phone: '',
+      parentName: '',
+    },
+    membership: null,
+    business: null,
+    memberships: [],
+  };
+  const business = {
+    name: 'Known Test Club',
+    slug: 'known-test-club',
+    ownerName: 'Coach Test',
+    timezone: 'Asia/Singapore',
+    currency: 'SGD',
+    color: '#174c3c',
+    tagline: 'A real club from booking history',
+    cancellationHours: 24,
+  };
+  function accountBooking(
+    id: string,
+    serviceName: string,
+    startAt: string,
+    endAt: string,
+  ) {
+    const participant = {
+      id: `participant-${id}`,
+      customerId: 'customer-record',
+      name: session.user.name,
+      email: session.user.email,
+      attendance: 'UNMARKED',
+      paid: false,
+      price: 9000,
+      packageId: null,
+      notes: '',
+      cancelled: false,
+      cancelledAt: null,
+    };
+    return {
+      business,
+      booking: {
+        id,
+        serviceId: `service-${id}`,
+        serviceName,
+        instructorId: 'instructor-test',
+        instructorName: 'Coach Test',
+        locationId: 'location-test',
+        locationName: 'Centre Court',
+        locationColor: '#174c3c',
+        startAt,
+        endAt,
+        status: 'CONFIRMED',
+        type: 'PRIVATE',
+        capacity: 1,
+        price: 9000,
+        notes: '',
+        address: '1 Court Lane',
+        recurringId: null,
+        participants: [participant],
+      },
+      participant,
+      location: {
+        id: 'location-test',
+        name: 'Centre Court',
+        address: '1 Court Lane',
+        type: 'FACILITY',
+        color: '#174c3c',
+        requiresApproval: false,
+        active: true,
+      },
+      // Intentionally stale server snapshots: local time policy must still win.
+      canCancel: true,
+      canReschedule: true,
+    };
+  }
+
+  const inProgress = accountBooking(
+    'in-progress-booking',
+    'Live coaching',
+    new Date(now - 15 * 60_000).toISOString(),
+    new Date(now + 45 * 60_000).toISOString(),
+  );
+  const insideCutoff = accountBooking(
+    'inside-cutoff-booking',
+    'Tomorrow coaching',
+    new Date(now + 60 * 60_000).toISOString(),
+    new Date(now + 2 * 60 * 60_000).toISOString(),
+  );
+
+  await page.route('**/api/auth/me', route => route.fulfill({ json: session }));
+  await page.route('**/api/account/bookings*', route => route.fulfill({
+    json: { bookings: [inProgress, insideCutoff] },
+  }));
+  await page.route('**/api/account/notifications', route => route.fulfill({
+    json: {
+      notifications: [{
+        id: 'action-alert',
+        bookingId: 'in-progress-booking',
+        type: 'BOOKING_RESCHEDULED',
+        title: 'Schedule changed',
+        message: 'Your coach moved this session. Review your bookings.',
+        read: false,
+        actionNeeded: true,
+        createdAt: new Date(now).toISOString(),
+        business: { name: business.name, slug: business.slug },
+      }],
+    },
+  }));
+
+  await page.goto(`/manage?slug=${business.slug}&tab=home`);
+  await expect(page.getByRole('heading', { name: 'My bookings' })).toBeVisible();
+
+  const currentSection = page.locator('section[aria-labelledby="current-bookings"]');
+  const currentCard = currentSection.getByRole('article').filter({ hasText: 'Live coaching' });
+  await expect(currentSection.getByRole('heading', { name: 'In progress' })).toBeVisible();
+  await expect(currentCard).toContainText('In progress');
+  await expect(currentCard.getByRole('button', { name: 'Cancel booking' })).toHaveCount(0);
+  await expect(currentCard.getByRole('button', { name: 'Reschedule' })).toHaveCount(0);
+
+  const upcomingSection = page.locator('section[aria-labelledby="upcoming-bookings"]');
+  const cutoffCard = upcomingSection.getByRole('article').filter({ hasText: 'Tomorrow coaching' });
+  await expect(cutoffCard).toBeVisible();
+  await expect(cutoffCard.getByRole('button', { name: 'Cancel booking' })).toHaveCount(0);
+  await expect(cutoffCard.getByRole('button', { name: 'Reschedule' })).toHaveCount(0);
+  await expect(page.locator('section[aria-labelledby="booking-history"]')).toHaveCount(0);
+
+  const customerNavigation = page.getByRole('navigation', { name: 'Customer navigation' });
+  const alertsButton = customerNavigation.getByRole('button', { name: 'Alerts, 1 unread alert' });
+  await expect(alertsButton).toHaveAccessibleName('Alerts, 1 unread alert');
+  await alertsButton.click();
+
+  const actionableAlert = page.getByRole('article').filter({ hasText: 'Schedule changed' });
+  await expect(actionableAlert.getByText('Action needed', { exact: true })).toBeVisible();
+  await expect(actionableAlert.getByRole('button', { name: 'View bookings' })).toBeVisible();
+  await expect(actionableAlert.getByRole('link', { name: `Book with ${business.name}` }))
+    .toHaveAttribute('href', `/book/${business.slug}`);
+  await actionableAlert.getByRole('button', { name: 'View bookings' }).click();
+  await expectCustomerManageUrl(page, business.slug, 'home');
+  await expect(page.getByRole('heading', { name: 'My bookings' })).toBeVisible();
+});
+
 test('owner sign-up creates an empty club membership and sign-in restores it', async ({ page }, testInfo) => {
   const email = uniqueEmail('owner', testInfo.project.name);
   await page.goto('/signup');
@@ -135,6 +379,11 @@ test('owner sign-up creates an empty club membership and sign-in restores it', a
   await page.getByRole('button', { name: 'Create your workspace' }).click();
   await expect(page.getByRole('heading', { name: /Your day, in a good place/ })).toBeVisible();
   await expect(page.getByText('A few small steps. A whole new rhythm.')).toBeVisible();
+  const navigation = await visibleWorkspaceNavigation(page);
+  await expect(navigation.getByRole('button')).toHaveCount(5);
+  await navigation.getByRole('button', { name: 'Profile', exact: true }).click();
+  await expect(page.getByText('Workspace owner', { exact: true })).toBeVisible();
+  await navigation.getByRole('button', { name: 'Home', exact: true }).click();
 
   const workspace = await (await page.request.get('/api/workspace')).json();
   expect(workspace.business.isDemo).toBe(false);
@@ -192,4 +441,51 @@ test('self-registered coach is linked to a club by its owner', async ({ page }, 
   expect(instructor).toBeTruthy();
   expect(coachWorkspace.business.id).toBe(ownerWorkspace.business.id);
   expect(coachWorkspace.membership).toMatchObject({ role: 'COACH', instructorId: instructor.id });
+
+  const coachNavigation = await visibleWorkspaceNavigation(page);
+  await expect(coachNavigation.getByRole('button')).toHaveCount(5);
+  await expect(page.getByRole('region', { name: 'Coach snapshot' })).toBeVisible();
+  await expect(page.getByText("This week's sessions", { exact: true })).toBeVisible();
+  await expect(page.getByText('Assigned students', { exact: true })).toBeVisible();
+  await expect(page.locator('main').getByText("This week's earnings", { exact: true })).toHaveCount(0);
+  await expect(page.locator('main').getByText('Outstanding', { exact: true })).toHaveCount(0);
+  await expect(page.locator('main')).not.toContainText(coachWorkspace.business.currency);
+  await expect(page.locator('main').getByRole('button', { name: 'Booking page', exact: true })).toHaveCount(0);
+  await expect(page.locator('main').getByText('Your booking page', { exact: true })).toHaveCount(0);
+  await coachNavigation.getByRole('button', { name: 'Explore', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
+  await expect(page.getByText(/Your coach access keeps business setup and financial records private/)).toBeVisible();
+  for (const label of ['Calendar', 'Bookings', 'Customers', 'Availability']) {
+    await expect(page.getByRole('button', { name: `Open ${label}`, exact: true })).toBeEnabled();
+  }
+  for (const label of ['Services', 'Locations', 'Your team', 'Lesson packages', 'Payments', 'Insights']) {
+    await expect(page.getByRole('button', { name: `${label}, owner or administrator access required`, exact: true })).toBeDisabled();
+  }
+
+  await coachNavigation.getByRole('button', { name: 'Create', exact: true }).click();
+  const createDialog = page.getByRole('dialog', { name: 'Create' });
+  await expect(createDialog.getByRole('heading', { name: 'Create', exact: true })).toBeVisible();
+  for (const action of ['New booking', 'Customers', 'Availability']) {
+    await expect(createDialog.getByRole('button', { name: new RegExp(`^${action}\\b`) })).toBeVisible();
+  }
+  for (const action of ['Services', 'Locations', 'Payments']) {
+    await expect(createDialog.getByRole('button', { name: new RegExp(`^${action}\\b`) })).toHaveCount(0);
+  }
+  await createDialog.getByRole('button', { name: 'Close dialog' }).click();
+
+  await page.goto('/?tab=explore&view=payments');
+  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/\?tab=explore$/);
+  await expect(page.locator('main')).not.toContainText('A clear picture of money');
+
+  const refreshedNavigation = await visibleWorkspaceNavigation(page);
+  await refreshedNavigation.getByRole('button', { name: 'Profile', exact: true }).click();
+  await expect(page.locator('main').getByRole('heading', { name: 'Casey Coach', exact: true })).toBeVisible();
+  await expect(page.locator('main').getByText('Coach', { exact: true })).toBeVisible();
+  await expect(page.locator('main').getByRole('button', { name: 'Business settings', exact: true })).toHaveCount(0);
+
+  await page.goto('/?tab=profile&view=settings');
+  await expect(page.locator('main').getByRole('heading', { name: 'Casey Coach', exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/\?tab=profile$/);
+  await expect(page.locator('main').getByRole('button', { name: 'Business settings', exact: true })).toHaveCount(0);
 });

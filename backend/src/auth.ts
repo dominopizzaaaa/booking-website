@@ -223,6 +223,37 @@ authRouter.get('/me', requireAuth, asyncRoute(async (req, res) => {
   res.json(await authState(req.auth.user.id, req.auth.membership?.id ?? null));
 }));
 
+const editableProfile = z.object({
+  name: z.string().trim().min(2).max(120).optional(),
+  phone: z.string().trim().max(40).optional(),
+  parentName: z.string().trim().max(120).optional(),
+}).strict().refine(value => Object.keys(value).length > 0, { message: 'Provide at least one profile field' });
+
+authRouter.patch('/me', requireAuth, asyncRoute(async (req, res) => {
+  const input = editableProfile.parse(req.body);
+  await prisma.$transaction(async tx => {
+    await tx.user.update({ where: { id: req.auth.user.id }, data: input });
+    if (input.name !== undefined) {
+      // A provider can belong to more than one workspace. Keep every roster
+      // identity explicitly linked through one of this user's memberships in
+      // step with the global profile, without touching unrelated instructors.
+      await tx.instructor.updateMany({
+        where: { membership: { is: { userId: req.auth.user.id } } },
+        data: { name: input.name, initials: initials(input.name) },
+      });
+    }
+    await tx.customer.updateMany({
+      where: { userId: req.auth.user.id },
+      data: {
+        ...(input.name !== undefined ? { name: input.name, initials: initials(input.name) } : {}),
+        ...(input.phone !== undefined ? { phone: input.phone } : {}),
+        ...(input.parentName !== undefined ? { parentName: input.parentName } : {}),
+      },
+    });
+  });
+  res.json(await authState(req.auth.user.id, req.auth.membership?.id ?? null));
+}));
+
 const switchWorkspace = asyncRoute(async (req, res) => {
   const { membershipId } = z.object({ membershipId: z.string().trim().min(1).max(200).nullable() }).strict().parse(req.body);
   if (membershipId === null) {

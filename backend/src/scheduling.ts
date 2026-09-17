@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { prisma } from './db.js';
 import { HttpError, initials } from './http.js';
 import { bookingInclude, bookingJson } from './serializers.js';
+import { createBookingAccountAlerts } from './account-notifications.js';
 
 const bookingSelection = {
   serviceId: z.string().min(1), instructorId: z.string().min(1), locationId: z.string().min(1),
@@ -216,6 +217,11 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
   }
   const venuePending = ctx.location.requiresApproval || ctx.location.type === 'RENTED';
   await tx.notification.create({ data: { businessId, instructorId: input.instructorId, title: `${booked.length > 1 ? 'Recurring booking' : 'New booking'} · ${customer.name}`, message: `${ctx.service.name} with ${ctx.instructor.name}. ${venuePending ? 'Venue approval is required; no external court has been reserved. ' : ''}Booking confirmation and 24-hour reminder queued in Courtly; external delivery is not configured.` } });
+  for (const booking of booked) {
+    await createBookingAccountAlerts(
+      tx, booking.id, booking.status === 'PENDING' ? 'REQUESTED' : 'CREATED', [customer.userId],
+    );
+  }
   return { bookings: booked };
 }
 export const createBookings = (businessId: string, input: BookingInput, options: CreateBookingsOptions = { requireLinkedCustomer: true }) => prisma.$transaction(tx => createBookingsInTransaction(tx, businessId, input, options), { timeout: 30_000 });
@@ -236,21 +242,32 @@ export async function cancelBooking(tx: Tx, businessId: string, bookingId: strin
   for (const participant of current.participants) await refundParticipant(tx, participant);
   await tx.booking.update({ where: { id: bookingId }, data: { status: 'CANCELLED' } });
   await tx.notification.create({ data: { businessId, instructorId: current.instructorId, title: 'Session cancelled', message: 'Package credits were restored. Cancellation notification queued; no external message has been sent.' } });
+  await createBookingAccountAlerts(tx, bookingId, 'PROVIDER_CANCELLED');
 }
 
 export async function rescheduleBooking(tx: Tx, businessId: string, bookingId: string, changes: { startAt: string }) {
   const original = await tx.booking.findFirst({ where: { id: bookingId, businessId } });
   if (!original) throw new HttpError(404, 'Booking not found');
   await lockInstructors(tx, [original.instructorId]);
-  const booking = await tx.booking.findUniqueOrThrow({ where: { id: bookingId }, include: { participants: { include: { package: true }, where: { cancelledAt: null } } } });
+  const booking = await tx.booking.findUniqueOrThrow({
+    where: { id: bookingId },
+    include: {
+      service: true, instructor: true, location: true,
+      participants: { include: { customer: true, package: true }, where: { cancelledAt: null } },
+    },
+  });
   if (booking.instructorId !== original.instructorId) throw new HttpError(409, 'Session changed concurrently. Please retry.');
   if (['CANCELLED', 'COMPLETED'].includes(booking.status)) throw new HttpError(400, 'Only active sessions can be rescheduled');
-  const ctx = await schedulingContext(tx, businessId, booking.serviceId, booking.instructorId, booking.locationId);
   const startAt = new Date(changes.startAt);
+  // Equivalent ISO offsets represent the same instant. Return the existing
+  // booking before availability evaluation or writes so retries are harmless.
+  if (startAt.getTime() === booking.startAt.getTime()) return bookingJson(booking);
+  const ctx = await schedulingContext(tx, businessId, booking.serviceId, booking.instructorId, booking.locationId);
   const slot = await evaluateSlot(tx, ctx, startAt, booking.id, { duration: booking.duration, bufferMinutes: booking.bufferMinutes });
   if (!slot.available || slot.groupId) throw new HttpError(409, 'Requested time is unavailable', { conflicts: [{ date: changes.startAt, reason: slot.reason || 'A group already occupies that time' }] });
   if (booking.participants.some(p => p.package && p.package.expiresAt < startAt)) throw new HttpError(400, 'Package would expire before the rescheduled session');
   const updated = await tx.booking.update({ where: { id: booking.id }, data: { startAt, endAt: slot.endAt, instructorId: ctx.instructor.id, locationId: ctx.location.id, status: (ctx.location.requiresApproval || ctx.location.type === 'RENTED') ? 'PENDING' : 'CONFIRMED' }, include: bookingInclude });
   await tx.notification.create({ data: { businessId, instructorId: updated.instructorId, title: 'Session rescheduled', message: 'Schedule updated. Change notification and reminder queued in Courtly; external delivery is not configured.' } });
+  await createBookingAccountAlerts(tx, booking.id, 'RESCHEDULED');
   return bookingJson(updated);
 }

@@ -31,6 +31,7 @@ model Business {
   bookings          Booking[]
   payments          Payment[]
   notifications     Notification[]
+  accountNotifications AccountNotification[]
 }
 
 model User {
@@ -44,6 +45,7 @@ model User {
   memberships  Membership[]
   sessions     AuthSession[]
   customers    Customer[]
+  accountNotifications AccountNotification[]
   createdAt    DateTime      @default(now())
 }
 
@@ -262,6 +264,7 @@ model Booking {
   createdAt     DateTime      @default(now())
   participants  Participant[]
   payments      Payment[]
+  accountNotifications AccountNotification[]
 
   @@index([businessId, startAt])
   @@index([instructorId, startAt, endAt])
@@ -319,4 +322,27 @@ model Notification {
   createdAt    DateTime @default(now())
 
   @@index([businessId])
+}
+
+// Customer-facing account alerts are deliberately separate from provider
+// workspace notifications. An account can therefore only read its own alerts,
+// while deleting a business or booking preserves the historical alert text.
+model AccountNotification {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  businessId   String?
+  business     Business? @relation(fields: [businessId], references: [id], onDelete: SetNull)
+  bookingId    String?
+  booking      Booking?  @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  type         String
+  title        String
+  message      String
+  read         Boolean   @default(false)
+  actionNeeded Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([businessId])
+  @@index([bookingId])
 }
