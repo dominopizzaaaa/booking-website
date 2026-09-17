@@ -462,7 +462,7 @@ describe.sequential('Global account authentication and workspace memberships', (
     });
     const { cookie } = await createSession(first, account.id);
 
-    const updated = await request(app).patch('/api/auth/me').set('Cookie', cookie).send({
+    const updated = await request(app).patch('/api/account/profile').set('Cookie', cookie).send({
       name: 'Ada Lovelace Byron', phone: '+65 6999 9999', parentName: 'Annabella Byron',
     }).expect(200);
     expect(updated.body).toMatchObject({
@@ -488,10 +488,10 @@ describe.sequential('Global account authentication and workspace memberships', (
     expect((await request(app).get('/api/auth/me').set('Cookie', cookie).expect(200)).body.user)
       .toMatchObject({ phone: '+65 6999 9999', parentName: 'Annabella Byron' });
 
-    await request(app).patch('/api/auth/me').set('Cookie', cookie)
+    await request(app).patch('/api/account/profile').set('Cookie', cookie)
       .send({ email: 'attacker@example.test' }).expect(400);
-    await request(app).patch('/api/auth/me').set('Cookie', cookie).send({}).expect(400);
-    await request(app).patch('/api/auth/me').send({ name: 'No Session' }).expect(401);
+    await request(app).patch('/api/account/profile').set('Cookie', cookie).send({}).expect(400);
+    await request(app).patch('/api/account/profile').send({ name: 'No Session' }).expect(401);
     expect(await prisma.user.findUniqueOrThrow({ where: { id: account.id } })).toMatchObject({ email: account.email });
   });
 

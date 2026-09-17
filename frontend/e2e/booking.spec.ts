@@ -176,8 +176,13 @@ test('customer creates an account, books, views history, and cancels', async ({ 
   const updatedGuardian = 'Robin Browser Updated';
   await profilePhone.fill(updatedPhone);
   await profileGuardian.fill(updatedGuardian);
+  const profileSaveResponse = page.waitForResponse(response =>
+    response.request().method() === 'PATCH'
+      && new URL(response.url()).pathname === '/api/account/profile',
+  );
   await page.getByRole('button', { name: 'Save profile', exact: true }).click();
-  await expect(page.locator('#customer-profile-panel').getByRole('status')).toContainText('Your profile has been updated.');
+  expect((await profileSaveResponse).status()).toBe(200);
+  await expect(page.locator('#customer-profile-save-status')).toHaveText('Your profile has been updated.');
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Profile', exact: true })).toBeVisible();
   await expect(page.getByLabel('Email address', { exact: true })).toHaveValue(customerEmail);

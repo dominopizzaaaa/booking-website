@@ -136,7 +136,8 @@ test('a demo provider can open a booking from Explore with the keyboard', async 
   await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
 
   const openBookings = page.getByRole('button', { name: 'Open Bookings', exact: true });
-  await openBookings.focus();
+  await expect(openBookings).toBeVisible();
+  await openBookings.evaluate(element => element.focus());
   await expect(openBookings).toBeFocused();
   await openBookings.press('Enter');
   await expect(page.getByRole('heading', { name: 'Bookings', exact: true })).toBeVisible();

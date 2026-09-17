@@ -1364,7 +1364,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
     setProfileError('');
     setProfileNotice('');
     try {
-      const value = await api<unknown>('/auth/me', {
+      const value = await api<unknown>('/account/profile', {
         method: 'PATCH',
         body: JSON.stringify({
           name,
@@ -2116,7 +2116,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
               </div>
               {profileError && <div className="mt-5"><ErrorNotice message={profileError} /></div>}
               {profileNotice && (
-                <div role="status" className="mt-5 flex items-center gap-2 rounded-xl bg-[#edf5e4] p-4 text-sm text-[#66834d]">
+                <div id="customer-profile-save-status" role="status" className="mt-5 flex items-center gap-2 rounded-xl bg-[#edf5e4] p-4 text-sm text-[#66834d]">
                   <Check size={16} /> {profileNotice}
                 </div>
               )}
