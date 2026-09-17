@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 1.0.0** · Last updated 2026-09-17
+**Version 2.1.11** · Last updated 2026-09-18
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -11,16 +11,23 @@ correction, minor for new behaviour, major for a reshaped model).
 
 ## 1. What Courtly is
 
-A booking platform for racket-sport coaching. Three kinds of people use it:
+A booking platform for racket-sport coaching. There are exactly three account
+types; this is the complete role vocabulary:
 
 | Who | Signs up as | Gets |
 | --- | --- | --- |
-| **Player / student** | `CUSTOMER` | One global account, books with any club |
+| **Player / student** | `STUDENT` | One global account, books with any club |
 | **Coach** | `COACH` | One portable account; clubs add them to a roster |
-| **Club or academy owner** | `OWNER` | Creates a workspace at sign-up |
+| **Club or academy** | `CLUB` | One institutional account that runs one club |
 
-A **club admin** never signs up. The club creates that login from its own
-workspace (Team → Staff access), and it belongs to that club alone.
+There is no owner or club-admin account type. A `CLUB` account *is the club*,
+not a person, and never teaches. A founder who also coaches uses a separate
+`COACH` account which the club adds to its roster.
+
+`Membership` is only an affiliation link. It has no role: a club has one
+membership to its own business; a coach has one per club that added them and
+optionally one to their own `SOLO` practice; a student has none. Permissions
+come from `User.accountType` plus `Business.kind`.
 
 ### The two money paths — the single most important rule
 
@@ -31,10 +38,11 @@ every booking as `Booking.paymentRoute`** at creation time.
   records a payout to the coach (`Payment.kind: 'CLUB_TO_COACH'`). Money never
   goes student → coach for a club lesson.
 - `SOLO` → `paymentRoute: 'DIRECT'`. A coach's own practice; the student pays
-  the coach (`Payment.kind: 'CUSTOMER_TO_COACH'`).
+  the coach (`Payment.kind: 'STUDENT_TO_COACH'`).
 
-Never re-derive the route from the business at read time — a business can
-change kind, and old bookings must keep the terms they were booked under.
+Never re-derive the route from the business at read time. `Business.kind` is
+immutable after creation, and the booking snapshot remains the contractual
+record of the terms under which that lesson was booked.
 
 ### The club safeguard
 
@@ -55,24 +63,24 @@ backend/           Express + Prisma API (TypeScript, ESM)
     app.ts         Express wiring, middleware order, /api/health capabilities
     config.ts      Environment reading; every env var enters here
     auth.ts        Sessions, register/login, workspace switching, /auth/practice
-    http.ts        HttpError, asyncRoute, adminOnly, coachScope, initials()
+    http.ts        Errors, manager/club guards, coachScope, initials()
     serializers.ts authState, bookingJson, membershipJson, isClubAccount
     scheduling.ts  Slot evaluation, conflict/travel rules, booking creation
     reschedule.ts  Two-sided reschedule requests
     integrity.ts   Club safeguard: detection + review routes
     notifications.ts  Typed workspace alerts (notifyWorkspace)
-    account-notifications.ts  Customer alert copy + /api/account/*
+    account-notifications.ts  Student alert copy + /api/account/*
     bookings.ts    Bookings, coach acceptance, payments, payouts, reversal
-    crud.ts        Services, instructors, locations, customers, packages, …
-    staff.ts       Club staff memberships (owner-only)
+    crud.ts        Services, instructors, locations, students, packages, …
+    staff.ts       Club-created coach affiliations
     venues.ts      Google Maps venue lookup
     workspace.ts   The single GET /api/workspace payload
-    public.ts      Public booking page + customer self-service
-    admin.ts       Platform-owner console (ADMIN_PASSWORD gated)
+    public.ts      Public booking page + student self-service
+    admin.ts       Platform console (ADMIN_PASSWORD gated; not an account type)
   tests/           Vitest; integration tests need a local PostgreSQL
 
 frontend/          Next.js App Router (TypeScript, Tailwind)
-  src/app/         Routes: / (workspace), /manage (customer), /book/[slug],
+  src/app/         Routes: / (workspace), /manage (student), /book/[slug],
                    /login, /signup, /account, /admin, /manage/[token]
   src/lib/
     types.ts       Shared API contract types — change with the backend
@@ -80,7 +88,7 @@ frontend/          Next.js App Router (TypeScript, Tailwind)
     alerts.ts      Alert icon/tone vocabulary shared by both apps
     utils.ts       cn, money, dates, initials()
   src/components/
-    customer-app.tsx        The customer app (/manage) — five-tab shell
+    student-app.tsx         The student app (/manage) — five-tab shell
     workspace/              The provider workspace (/)
     public-booking.tsx      Public booking page for /book/[slug]
     legacy-booking.tsx      Pre-account management links (/manage/[token])
@@ -99,7 +107,7 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
 | Change the data model | `backend/prisma/schema.prisma`, then a migration |
 | Add an API route | The matching `backend/src/*.ts` router, then `app.ts` |
 | Change what the workspace shows | `backend/src/workspace.ts` **and** `frontend/src/lib/types.ts` |
-| Change customer booking UI | `frontend/src/components/customer-app.tsx` |
+| Change student booking UI | `frontend/src/components/student-app.tsx` |
 | Change provider UI | `frontend/src/components/workspace/` |
 | Change slot / conflict rules | `backend/src/scheduling.ts` |
 | Change alert icons or ordering | `frontend/src/lib/alerts.ts` |
@@ -110,18 +118,35 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
 ## 4. Data model notes that are easy to get wrong
 
 - **Money is integer minor units (cents) everywhere.** Never a float.
-- **`Business` ≠ account.** A person's `User` joins businesses through
-  `Membership`, which carries the workspace `role` (`OWNER` / `ADMIN` /
-  `COACH`). `Customer` is a *club-specific* record linked to a global `User`.
+- **`Business` ≠ account.** A `CLUB` account has one business; a `COACH`
+  account can be affiliated with several. `Membership` stores that link, not
+  a role. `Student` is a *business-specific* record linked to a global `User`.
+- **A linked student's identity belongs to `User`.** When `Student.userId` is
+  set, managers may edit only business-local fields such as `Student.notes`;
+  `name`, `email`, `phone`, and `parentName` come from the student's account.
+  Connecting a student accepts an account email plus local notes and copies
+  the canonical profile. Unlinked historical rows retain local profile edits.
+  The database only permits a linked `User` whose account type is `STUDENT`.
+- **Permission derivation has one definition.** `managesBusiness()` and
+  `coachScoped()` in `http.ts` distinguish a club, a coach running their own
+  `SOLO` practice, and a coach working inside a club. Do not recreate these
+  checks from membership counts or instructor presence.
 - **An instructor row is not bookable on its own.** `bookableInstructorWhere()`
   in `scheduling.ts` is the shared predicate: active roster row + active
   membership + registered provider account. Use it, do not re-implement it.
-- **`Participant` is the customer's place in a booking**, and is what customer
+- **`Participant` is the student's place in a booking**, and is what student
   self-service acts on — not the booking.
-- A **club-admin account is single-club**, enforced in `staff.ts` in both
-  directions (cannot be added elsewhere, cannot be promoted if already
-  elsewhere). `isClubAccount()` in `serializers.ts` is the one definition;
-  the workspace payload exposes it as `clubAccount`.
+- A **`CLUB` account is single-club and has no instructor**. `staff.ts` only
+  adds registered `COACH` accounts; coaches may appear on several rosters.
+  `isClubAccount()` in `serializers.ts` is the shared identity check.
+- Removing a coach from a club is a soft deactivation, not a deleted
+  affiliation. Keep the membership and instructor IDs so historical lessons
+  still identify the coach for the club safeguard; re-adding the same account
+  restores those retained records.
+- A coach working in a club may create a teaching venue, including through the
+  Google Maps finder, and sees the club's active venues so a new one remains
+  visible after saving. Editing, archiving, and service assignment remain with
+  the club; the coach still receives no service prices or financial records.
 
 ### Booking lifecycle
 
@@ -137,14 +162,17 @@ created ──► coachAcceptance PENDING?   (club assigned it to a coach)
 
 A student never accepts an assignment; the coach does (`POST
 /api/bookings/:id/accept` | `/decline`). Declining cancels and asks the club to
-reassign.
+reassign. The generic booking patch cannot bypass that decision: `PENDING` may
+only become `CONFIRMED` after coach acceptance, and `COMPLETED` may only follow
+`CONFIRMED` after the lesson ends. `CANCELLED` and `COMPLETED` are terminal,
+although internal notes may still be corrected.
 
 ### Rescheduling is a negotiation, not an edit
 
 Either side proposes; the other accepts. Nothing moves until then.
 
-- Customer proposes: `POST /api/account/bookings/:participantId/reschedule-requests`
-- Customer answers: `POST /api/account/reschedule-requests/:id/accept|decline`
+- Student proposes: `POST /api/account/bookings/:participantId/reschedule-requests`
+- Student answers: `POST /api/account/reschedule-requests/:id/accept|decline`
 - Provider proposes: `POST /api/bookings/:id/reschedule-requests`
 - Provider answers: `POST /api/reschedule-requests/:id/accept|decline|withdraw`
 
@@ -154,14 +182,24 @@ coach's own protection, floored by the club's policy. `rescheduleNoticeHours()`
 in `reschedule.ts` is the one definition.
 
 `POST /api/bookings/:id/reschedule` (one-sided) still exists but **refuses any
-booking with a registered customer**. Do not reach for it.
+booking with a registered student**. Do not reach for it.
 
 ### Payments are reversible, never deleted
 
 `DELETE /api/payments/:id` sets `reversedAt` and recomputes `participant.paid` /
 `package.paid`. Every balance query must filter `reversedAt: null`. Coach
 payouts are `POST /api/payouts` (`kind: 'CLUB_TO_COACH'`, club businesses only)
-and are excluded from "collected from students" totals.
+and are excluded from "collected from students" totals. Student-originated
+payments have a `studentId` and no `instructorId`; coach payouts have an
+`instructorId` and no `studentId`. The database enforces this exclusive shape
+and requires the named student, coach, and optional booking to belong to the
+payment's business. Packages are likewise pinned to a student in their own
+business, and payments can only name packages from that same business. A
+booking-linked student receipt follows the booking's snapshotted
+`paymentRoute`; an unbound receipt follows immutable `Business.kind`, and a
+coach payout is valid only for a `CLUB`. A booking with payment history cannot
+be deleted independently because that would erase the contractual route; the
+explicit business teardown deletes payments before bookings.
 
 ---
 
@@ -173,7 +211,8 @@ with `paymentRoute: 'CLUB'` at a different business.
 
 It **reports, and does not block**. One `IntegrityFlag` per
 club + coach + student pair; repeats raise `occurrences`. A `DISMISSED` flag
-stays dismissed. Only owners/admins can read or resolve flags — never coaches.
+stays dismissed. Only the `CLUB` account can read or resolve flags — never a
+coach working in that club.
 
 ---
 
@@ -182,7 +221,7 @@ stays dismissed. Only owners/admins can read or resolve flags — never coaches.
 Two stores, one vocabulary (`backend/src/notifications.ts`):
 
 - `Notification` — provider workspace. Always write through `notifyWorkspace()`.
-- `AccountNotification` — customer. Always write through
+- `AccountNotification` — student. Always write through
   `createBookingAccountAlerts()`, which owns all the copy.
 
 `frontend/src/lib/alerts.ts` maps a type to an icon and tone, falling back to
@@ -198,9 +237,11 @@ a detail dialog that links through to the subject.
 - Errors are user-facing sentences, thrown as `HttpError(status, message)`.
 - Zod `.strict()` on every request body; unknown fields are a 400.
 - Provider routes are mounted behind `requireAuth` + `requireWorkspace`;
-  `adminOnly` for owner/admin, `coachScope()` to keep a coach in their lane.
+  use `requireBusinessManager` for a club or own-practice manager,
+  `requireClubAccount` for club-only actions, and `coachScope()` to keep a
+  coach working in a club in their lane.
 - Concurrency: `lockInstructors()` (advisory lock) before any read-then-write
-  on a schedule. Financial writes take a per-customer advisory lock.
+  on a schedule. Financial writes take a per-student advisory lock.
 - Tenancy: every query filters by `businessId`. There is no global read.
 - Frontend API calls go in `src/lib/api.ts`, typed against `src/lib/types.ts`.
 - New UI must work at 390px wide; the Playwright suite runs three viewports.
@@ -232,8 +273,10 @@ npx playwright test --prefix frontend # needs both servers running
 1. Next.js bakes `BACKEND_URL` into the build at `next build` time. Run the API
    on **port 4000** (the default), or rebuild the frontend with the port you
    want.
-2. `/api/auth/*` is rate-limited to 30 requests per 15 minutes. Repeated local
-   suite runs will start failing sign-up tests; restart the API to reset it.
+2. Registration and failed-login attempts each have their own 30-request,
+   15-minute limit. Successful logins do not consume the failed-login budget.
+   Repeated local suite runs can still exhaust registration; restart the API
+   to reset its in-memory limiter.
 
 ---
 
@@ -249,16 +292,18 @@ npx playwright test --prefix frontend # needs both servers running
 | `BACKEND_URL` | frontend | Server-side rewrite target; build-time |
 
 Without `GOOGLE_MAPS_API_KEY`, venue lookup still works: a pasted Google Maps
-link is parsed server-side by `parseMapsLink()`. Never put the key in the
-browser. `/api/health` reports `capabilities.venueSearch` as `google-places` or
-`maps-link`, which is the quickest way to tell which mode a deployment is in.
+link is parsed server-side by `parseMapsLink()`. Opaque `maps.app.goo.gl` share
+links are expanded through bounded, manually validated Google-only redirects.
+Never put the key in the browser. `/api/health` reports
+`capabilities.venueSearch` as `google-places` or `maps-link`, which is the
+quickest way to tell which mode a deployment is in.
 
 ---
 
 ## 10. Known rough edges
 
-- `CustomerBookings` in `public-booking.tsx` is a **superseded** customer
-  booking list that nothing renders (`/manage` uses `customer-app.tsx`). It is
+- `StudentBookings` in `public-booking.tsx` is a **superseded** student
+  booking list that nothing renders (`/manage` uses `student-app.tsx`). It is
   kept compiling but should not gain features. Delete it when convenient.
 - `legacy-booking.tsx` and `/manage/[token]` serve management links issued
   before account-only booking. No new tokens are minted.
@@ -270,6 +315,82 @@ browser. `/api/health` reports `capabilities.venueSearch` as `google-places` or
 ---
 
 ## Changelog
+
+### 2.1.11 — 2026-09-18
+
+Marked which roster profiles may accept a new coach account so the club UI
+cannot offer a departed coach's history-bearing identity for reassignment.
+
+### 2.1.10 — 2026-09-18
+
+Pinned any booking-linked club-to-coach payout to a booking whose contractual
+payment route is `CLUB`.
+
+### 2.1.9 — 2026-09-18
+
+Bound package ownership and package payments to one tenant, and retained the
+booking contract behind every booking-linked payment by restricting deletion.
+
+### 2.1.8 — 2026-09-18
+
+Made the final account migration preserve legacy admin people as coach-scoped
+affiliations while selecting only the owner as the club identity, and pinned
+payment kinds to their booking contract or immutable business money path.
+
+### 2.1.7 — 2026-09-17
+
+Separated registration throttling from failed-login protection so legitimate
+successful sign-ins do not consume the brute-force budget.
+
+### 2.1.6 — 2026-09-17
+
+Exposed the add-only venue workflow to club coaches while retaining club-only
+venue management, service assignment, and financial controls.
+
+### 2.1.5 — 2026-09-17
+
+Added keyless support for shortened Google Maps share links, with bounded
+server-side expansion and strict redirect validation.
+
+### 2.1.4 — 2026-09-17
+
+Pinned linked students to `STUDENT` accounts and payment parties to their own
+business at the database boundary, including data-preserving migration audits.
+
+### 2.1.3 — 2026-09-17
+
+Made avatar initials ignore parenthesized role qualifiers, including unfinished
+ones, consistently in the API and browser.
+
+### 2.1.2 — 2026-09-17
+
+Clarified the enforced booking lifecycle: coach acceptance cannot be bypassed,
+completion waits until the lesson has ended, and terminal bookings may receive
+notes but cannot change status.
+
+### 2.1.1 — 2026-09-17
+
+Made the payment party match the money path: student receipts belong only to a
+student, while club-to-coach payouts belong only to the coach.
+
+### 2.1.0 — 2026-09-17
+
+Made booking status changes follow the documented lifecycle: coach acceptance
+cannot be bypassed, completion waits until the lesson has ended, and cancelled
+or completed bookings cannot be reopened.
+
+### 2.0.1 — 2026-09-17
+
+Made the global student account canonical for linked identity and contact
+details; business managers now edit only their own notes on linked students.
+
+### 2.0.0 — 2026-09-17
+
+Replaced the overlapping account and membership-role systems with exactly
+three account types: `STUDENT`, `COACH`, and `CLUB`. Membership is now an
+affiliation only; a club account never teaches, coaches remain portable across
+clubs and may run one solo practice, and the data/API vocabulary is `Student`
+and `studentId` throughout.
 
 ### 1.0.0 — 2026-09-17
 

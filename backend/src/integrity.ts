@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from './db.js';
-import { adminOnly, asyncRoute, HttpError } from './http.js';
+import { requireClubAccount, asyncRoute, HttpError } from './http.js';
 import { notifyWorkspace } from './notifications.js';
 
 type Tx = Prisma.TransactionClient;
@@ -35,7 +35,7 @@ export async function flagPrivateSessionsAfterClub(
       instructor: { select: { id: true, name: true, membership: { select: { userId: true } } } },
       participants: {
         where: { cancelledAt: null },
-        select: { customer: { select: { userId: true, name: true } } },
+        select: { student: { select: { userId: true, name: true } } },
       },
     },
   });
@@ -45,8 +45,8 @@ export async function flagPrivateSessionsAfterClub(
   const coachUserId = booking.instructor.membership?.userId;
   if (!coachUserId) return 0;
   const students = booking.participants
-    .map(participant => participant.customer)
-    .filter((customer): customer is { userId: string; name: string } => typeof customer.userId === 'string');
+    .map(participant => participant.student)
+    .filter((student): student is { userId: string; name: string } => typeof student.userId === 'string');
   if (!students.length) return 0;
 
   let flagged = 0;
@@ -60,7 +60,7 @@ export async function flagPrivateSessionsAfterClub(
         paymentRoute: 'CLUB',
         status: { not: 'CANCELLED' },
         instructor: { membership: { is: { userId: coachUserId } } },
-        participants: { some: { cancelledAt: null, customer: { userId: student.userId } } },
+        participants: { some: { cancelledAt: null, student: { userId: student.userId } } },
       },
       select: {
         businessId: true, startAt: true,
@@ -89,8 +89,8 @@ export async function flagPrivateSessionsAfterClub(
       // raises the count instead of burying the club in duplicates.
       const existing = await tx.integrityFlag.findUnique({
         where: {
-          businessId_coachUserId_customerUserId_type: {
-            businessId: clubBusinessId, coachUserId, customerUserId: student.userId,
+          businessId_coachUserId_studentUserId_type: {
+            businessId: clubBusinessId, coachUserId, studentUserId: student.userId,
             type: 'PRIVATE_SESSION_AFTER_CLUB',
           },
         },
@@ -117,9 +117,9 @@ export async function flagPrivateSessionsAfterClub(
           businessId: clubBusinessId,
           instructorId: club.instructorId,
           coachUserId,
-          customerUserId: student.userId,
+          studentUserId: student.userId,
           coachName: club.coachName,
-          customerName: student.name,
+          studentName: student.name,
           bookingId: booking.id,
           outsideBusinessId: booking.businessId,
           outsideBusinessName: booking.business.name,
@@ -128,7 +128,10 @@ export async function flagPrivateSessionsAfterClub(
       });
       await notifyWorkspace(tx, {
         businessId: clubBusinessId,
-        instructorId: club.instructorId,
+        // Integrity review belongs to the club account. Leaving this
+        // business-wide keeps it out of every coach-scoped workspace,
+        // including the implicated coach's.
+        instructorId: null,
         type: 'INTEGRITY',
         title: 'Private session flagged for review',
         message: `${club.coachName} and ${student.name}, who train together through your club, now have a private session booked outside it. Open Integrity to review.`,
@@ -150,7 +153,7 @@ export const integrityFlagJson = (flag: FullIntegrityFlag) => ({
   id: flag.id,
   instructorId: flag.instructorId,
   coachName: flag.coachName,
-  customerName: flag.customerName,
+  studentName: flag.studentName,
   type: flag.type,
   status: flag.status,
   detail: flag.detail,
@@ -175,7 +178,7 @@ const resolutionInput = z.object({
   note: z.string().trim().max(1000).default(''),
 }).strict();
 
-integrityRouter.get('/integrity-flags', adminOnly, asyncRoute(async (req, res) => {
+integrityRouter.get('/integrity-flags', requireClubAccount, asyncRoute(async (req, res) => {
   const flags = await prisma.integrityFlag.findMany({
     where: { businessId: req.auth.business.id },
     include: flagInclude,
@@ -185,7 +188,7 @@ integrityRouter.get('/integrity-flags', adminOnly, asyncRoute(async (req, res) =
   res.json({ flags: flags.map(integrityFlagJson) });
 }));
 
-integrityRouter.patch('/integrity-flags/:id', adminOnly, asyncRoute(async (req, res) => {
+integrityRouter.patch('/integrity-flags/:id', requireClubAccount, asyncRoute(async (req, res) => {
   const input = resolutionInput.parse(req.body);
   const flag = await prisma.integrityFlag.findFirst({
     where: { id: req.params.id, businessId: req.auth.business.id },

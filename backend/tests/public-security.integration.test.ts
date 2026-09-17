@@ -3,7 +3,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { app } from '../src/app.js';
 import {
-  createAccount, createSession, prisma, publicInputFor, TestTenants, verifyTestDatabase, type Fixture,
+  createAccount, createSession, createStudent, prisma, publicInputFor, TestTenants, verifyTestDatabase, type Fixture,
 } from './fixtures.js';
 
 beforeAll(verifyTestDatabase, 15_000);
@@ -100,7 +100,7 @@ describe.sequential('Public API security regressions', () => {
     });
     f.tracker.ownUser(unclaimedUser.id);
     await prisma.membership.create({
-      data: { userId: unclaimedUser.id, businessId: f.business.id, role: 'COACH', instructorId: unclaimedInstructor.id },
+      data: { userId: unclaimedUser.id, businessId: f.business.id, instructorId: unclaimedInstructor.id },
     });
     await prisma.service.create({
       data: {
@@ -120,8 +120,8 @@ describe.sequential('Public API security regressions', () => {
 
   it('hides active unclaimed instructors and rejects their slots and account bookings', async () => {
     // Model a migrated roster entry: both instructor and membership remain active,
-    // but the deterministic global account has never been claimed with a password.
-    await prisma.user.update({ where: { id: f.user.id }, data: { passwordHash: null } });
+    // but the coach's account behind it has never been claimed with a password.
+    await prisma.user.update({ where: { id: f.coachUser.id }, data: { passwordHash: null } });
     const { cookie } = await accountSession({ name: 'Registered Player' });
 
     const catalog = await request(app).get(`/api/public/${f.business.slug}`).expect(200);
@@ -138,7 +138,7 @@ describe.sequential('Public API security regressions', () => {
       .set('Cookie', cookie).send(publicInputFor(f)).expect(404);
 
     expect(await prisma.booking.count({ where: { businessId: f.business.id } })).toBe(0);
-    expect(await prisma.customer.count({ where: { businessId: f.business.id } })).toBe(0);
+    expect(await prisma.student.count({ where: { businessId: f.business.id } })).toBe(0);
   });
 
   it('requires an authenticated account to book and stores no management credential', async () => {
@@ -158,6 +158,56 @@ describe.sequential('Public API security regressions', () => {
     const persisted = await prisma.participant.findUniqueOrThrow({ where: { id: participant.id } });
     expect(persisted).toMatchObject({
       managementTokenHash: null, managementTokenExpiresAt: null, managementTokenRevokedAt: null,
+    });
+  });
+
+  it('saves booking contact edits to the account and every linked student profile atomically', async () => {
+    const otherClub = await tenants.fixture();
+    const { account, cookie } = await accountSession({
+      name: 'Canonical Player', phone: '+65 6000 0000', parentName: 'Original Guardian',
+    });
+    const bookingProfile = await createStudent(f, {
+      userId: account.id, name: account.name, email: account.email,
+      phone: account.phone, parentName: account.parentName,
+    });
+    const otherClubProfile = await createStudent(otherClub, {
+      userId: account.id, name: account.name, email: account.email,
+      phone: account.phone, parentName: account.parentName,
+    });
+    const unrelatedAccount = await createAccount(otherClub, {
+      name: 'Unrelated Player', phone: '+65 6111 1111', parentName: 'Unrelated Guardian',
+    });
+    const unrelatedProfile = await createStudent(otherClub, {
+      userId: unrelatedAccount.id, name: unrelatedAccount.name, email: unrelatedAccount.email,
+      phone: unrelatedAccount.phone, parentName: unrelatedAccount.parentName,
+    });
+
+    await request(app).post(`/api/public/${f.business.slug}/bookings`)
+      .set('Cookie', cookie).send(publicInputFor(f, {
+        student: { phone: '+65 6999 9999', parentName: '' },
+      })).expect(201);
+
+    expect(await prisma.user.findUniqueOrThrow({ where: { id: account.id } })).toMatchObject({
+      phone: '+65 6999 9999', parentName: '',
+    });
+    for (const profileId of [bookingProfile.id, otherClubProfile.id]) {
+      expect(await prisma.student.findUniqueOrThrow({ where: { id: profileId } })).toMatchObject({
+        phone: '+65 6999 9999', parentName: '',
+      });
+    }
+    expect(await prisma.student.findUniqueOrThrow({ where: { id: unrelatedProfile.id } })).toMatchObject({
+      phone: '+65 6111 1111', parentName: 'Unrelated Guardian',
+    });
+
+    await request(app).post(`/api/public/${f.business.slug}/bookings`)
+      .set('Cookie', cookie).send(publicInputFor(f, {
+        student: { phone: '+65 6888 8888', parentName: 'Must Roll Back' },
+      })).expect(409);
+    expect(await prisma.user.findUniqueOrThrow({ where: { id: account.id } })).toMatchObject({
+      phone: '+65 6999 9999', parentName: '',
+    });
+    expect(await prisma.student.findUniqueOrThrow({ where: { id: otherClubProfile.id } })).toMatchObject({
+      phone: '+65 6999 9999', parentName: '',
     });
   });
 
@@ -364,12 +414,12 @@ describe.sequential('Public API security regressions', () => {
     const requested = await request(app).post(`/api/account/bookings/${participantId}/reschedule-requests`)
       .set('Cookie', cookie).send({ startAt: movedStart }).expect(201);
     expect(requested.body.rescheduleRequest).toMatchObject({
-      status: 'PENDING', requestedByRole: 'CUSTOMER', proposedStartAt: f.starts.plus({ days: 1 }).toUTC().toISO(),
+      status: 'PENDING', requestedByRole: 'STUDENT', proposedStartAt: f.starts.plus({ days: 1 }).toUTC().toISO(),
     });
     expect(await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } }))
       .toMatchObject({ startAt: f.starts.toJSDate() });
 
-    // The customer cannot accept their own request; the provider side does.
+    // The student cannot accept their own request; the provider side does.
     const requestId = requested.body.rescheduleRequest.id as string;
     await request(app).post(`/api/account/reschedule-requests/${requestId}/accept`)
       .set('Cookie', cookie).send({}).expect(403);

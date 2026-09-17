@@ -1,4 +1,4 @@
-import type { Workspace, PublicBusiness, Slot, BookingInput, PublicBookingInput, BookingResult, AuthSession, AccountBooking, AccountBookingsResult, Booking, IntegrityFlag, RescheduleRequest, VenueSearchResult } from './types';
+import { isManagerWorkspace, type WorkspaceResponse, type WorkspaceBooking, type PublicBusiness, type Slot, type BookingInput, type PublicBookingInput, type BookingResult, type ProviderBookingResult, type AuthSession, type AccountBooking, type AccountBookingsResult, type IntegrityFlag, type RescheduleRequest, type VenueSearchResult } from './types';
 
 export class ApiError extends Error {
   constructor(message: string, public status: number, public details?: unknown) { super(message); }
@@ -18,13 +18,10 @@ export async function api<T = unknown>(path: string, options: RequestInit = {}):
  * collection should not blank the page, so the arrays this build reads are
  * normalised here rather than guarded at every use.
  */
-export async function loadWorkspace(): Promise<Workspace> {
-  const workspace = await api<Workspace>('/workspace');
-  return {
-    ...workspace,
+export async function loadWorkspace(): Promise<WorkspaceResponse> {
+  const workspace = await api<WorkspaceResponse>('/workspace');
+  const common = {
     rescheduleRequests: workspace.rescheduleRequests ?? [],
-    integrityFlags: workspace.integrityFlags ?? [],
-    clubAccount: workspace.clubAccount ?? workspace.membership?.role === 'ADMIN',
     notifications: (workspace.notifications ?? []).map(notification => ({
       ...notification,
       type: notification.type ?? 'NOTICE',
@@ -32,14 +29,18 @@ export async function loadWorkspace(): Promise<Workspace> {
       bookingId: notification.bookingId ?? null,
     })),
   };
+  if (isManagerWorkspace(workspace)) {
+    return { ...workspace, ...common, integrityFlags: workspace.integrityFlags ?? [] };
+  }
+  return { ...workspace, ...common, clubAccount: false, packages: [], payments: [], integrityFlags: [] };
 }
 export const loadPublicBusiness = (slug: string) => api<PublicBusiness>(`/public/${encodeURIComponent(slug)}`);
 export const loadSlots = (slug: string, values: { serviceId: string; instructorId: string; locationId: string; date: string }) => api<{ slots: Slot[] }>(`/public/${encodeURIComponent(slug)}/slots?${new URLSearchParams(values)}`);
-export const createBooking = (values: BookingInput) => api<BookingResult>('/bookings', { method: 'POST', body: JSON.stringify(values) });
+export const createBooking = (values: BookingInput) => api<ProviderBookingResult>('/bookings', { method: 'POST', body: JSON.stringify(values) });
 export const createPublicBooking = (slug: string, values: PublicBookingInput) => api<BookingResult>(`/public/${encodeURIComponent(slug)}/bookings`, { method: 'POST', body: JSON.stringify(values) });
 export const loadAuthSession = () => api<AuthSession>('/auth/me');
-export const loginCustomerAccount = (values: { email: string; password: string }) => api<AuthSession>('/auth/login', { method: 'POST', body: JSON.stringify(values) });
-export const registerCustomerAccount = (values: { name: string; email: string; password: string; phone?: string; parentName?: string }) => api<AuthSession>('/auth/register', { method: 'POST', body: JSON.stringify({ ...values, accountType: 'CUSTOMER' }) });
+export const loginStudentAccount = (values: { email: string; password: string }) => api<AuthSession>('/auth/login', { method: 'POST', body: JSON.stringify(values) });
+export const registerStudentAccount = (values: { name: string; email: string; password: string; phone?: string; parentName?: string }) => api<AuthSession>('/auth/register', { method: 'POST', body: JSON.stringify({ ...values, accountType: 'STUDENT' }) });
 export const logoutAccount = () => api<{ ok: true }>('/auth/logout', { method: 'POST', body: JSON.stringify({}) });
 export async function loadAccountBookings(businessSlug?: string): Promise<AccountBookingsResult> {
   const query = businessSlug ? `?${new URLSearchParams({ businessSlug })}` : '';
@@ -48,7 +49,7 @@ export async function loadAccountBookings(businessSlug?: string): Promise<Accoun
 }
 export const cancelAccountBooking = (participantId: string) => api(`/account/bookings/${encodeURIComponent(participantId)}/cancel`, { method: 'POST', body: JSON.stringify({}) });
 
-// A customer proposes a new time; the coach's side decides. Nothing moves
+// A student proposes a new time; the coach's side decides. Nothing moves
 // until the request is accepted, so all three of these return the booking in
 // its current state rather than a moved one.
 export const requestAccountReschedule = (participantId: string, startAt: string, message = '') =>
@@ -71,11 +72,11 @@ export const proposeWorkspaceReschedule = (bookingId: string, startAt: string, m
     method: 'POST', body: JSON.stringify({ startAt, message }),
   });
 export const respondToRescheduleRequest = (requestId: string, action: 'accept' | 'decline' | 'withdraw', message = '') =>
-  api<{ request: RescheduleRequest; booking?: Booking }>(`/reschedule-requests/${encodeURIComponent(requestId)}/${action}`, {
+  api<RescheduleRequest | { request: RescheduleRequest; booking: WorkspaceBooking }>(`/reschedule-requests/${encodeURIComponent(requestId)}/${action}`, {
     method: 'POST', body: JSON.stringify(action === 'withdraw' ? {} : { message }),
   });
 export const respondToAssignment = (bookingId: string, action: 'accept' | 'decline', message = '') =>
-  api<Booking>(`/bookings/${encodeURIComponent(bookingId)}/${action}`, {
+  api<WorkspaceBooking>(`/bookings/${encodeURIComponent(bookingId)}/${action}`, {
     method: 'POST', body: JSON.stringify({ message }),
   });
 
@@ -99,9 +100,9 @@ export const createOwnPractice = (name: string) =>
 export const mutate = <T = unknown>(path: string, method: 'POST' | 'PATCH' | 'DELETE', values?: unknown) => api<T>(path, { method, body: values ? JSON.stringify(values) : undefined });
 
 export type AdminSession = { configured: boolean; authenticated: boolean };
-export type AdminTotals = { businesses: number; demoBusinesses: number; realBusinesses: number; users: number; customers: number; bookings: number; upcomingBookings: number; bookingsLast7Days: number; packages: number; paymentsCount: number; paymentsTotal: number };
+export type AdminTotals = { businesses: number; demoBusinesses: number; realBusinesses: number; users: number; memberships: number; students: number; bookings: number; upcomingBookings: number; bookingsLast7Days: number; packages: number; paymentsCount: number; paymentsTotal: number };
 export type AdminOverview = { generatedAt: string; totals: AdminTotals };
-export type AdminBusinessCounts = { users: number; customers: number; bookings: number; locations: number; services: number; instructors: number };
+export type AdminBusinessCounts = { users: number; students: number; bookings: number; locations: number; services: number; instructors: number };
 export type AdminBusiness = { id: string; name: string; slug: string; ownerName: string; email: string; currency: string; timezone: string; isDemo: boolean; createdAt: string; counts: AdminBusinessCounts };
 export const adminSession = () => api<AdminSession>('/admin/session');
 export const adminLogin = (password: string) => api<{ ok: true }>('/admin/login', { method: 'POST', body: JSON.stringify({ password }) });

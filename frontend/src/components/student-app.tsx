@@ -60,12 +60,12 @@ import type {
 } from '@/lib/types';
 import { cn, dateKey, initials, money, shortDate, time } from '@/lib/utils';
 
-type CustomerTab = 'home' | 'explore' | 'book' | 'alerts' | 'profile';
+type StudentTab = 'home' | 'explore' | 'book' | 'alerts' | 'profile';
 /** Which step the booking dialog is showing. */
 type BookingDialogMode = 'details' | 'cancel' | 'reschedule';
 type BookingFilter = 'all' | 'upcoming' | 'completed' | 'cancelled';
 type Conflict = { date: string; reason: string };
-type CustomerNotification = {
+type StudentNotification = {
   id: string;
   type?: string;
   bookingId?: string;
@@ -92,17 +92,17 @@ const panel =
 const field =
   '!min-h-12 !rounded-xl !border-[#dfe5df] !px-3.5 !text-base sm:!text-sm';
 
-const tabs: Array<{ id: CustomerTab; label: string; icon: typeof Home }> = [
+const tabs: Array<{ id: StudentTab; label: string; icon: typeof Home }> = [
   { id: 'home', label: 'Home', icon: Home },
   { id: 'explore', label: 'Explore', icon: Compass },
   { id: 'book', label: 'Book', icon: Plus },
   { id: 'alerts', label: 'Alerts', icon: Bell },
   { id: 'profile', label: 'Profile', icon: UserRound },
 ];
-const customerTabIds = new Set<CustomerTab>(tabs.map((tab) => tab.id));
+const studentTabIds = new Set<StudentTab>(tabs.map((tab) => tab.id));
 
-function customerTab(value: string | null): CustomerTab {
-  return value && customerTabIds.has(value as CustomerTab) ? (value as CustomerTab) : 'home';
+function studentTab(value: string | null): StudentTab {
+  return value && studentTabIds.has(value as StudentTab) ? (value as StudentTab) : 'home';
 }
 
 function messageOf(error: unknown) {
@@ -127,11 +127,8 @@ function conflictList(error: unknown): Conflict[] {
     : [];
 }
 
-function isCustomerSession(session: AuthSession | null) {
-  if (!session) return false;
-  if (session.user.accountType) return session.user.accountType === 'CUSTOMER';
-  if (session.user.role) return session.user.role === 'CUSTOMER';
-  return !session.membership && !session.business;
+function isStudentSession(session: AuthSession | null) {
+  return session?.user.accountType === 'STUDENT';
 }
 
 function bookingCancelled(item: AccountBooking) {
@@ -207,17 +204,17 @@ function canChangeBooking(
   );
 }
 
-/** A proposal the customer has to answer, rather than one they raised. */
+/** A proposal the student has to answer, rather than one they raised. */
 function incomingRequest(item: AccountBooking) {
   const request = item.rescheduleRequest;
-  return request && request.status === 'PENDING' && request.requestedByRole !== 'CUSTOMER'
+  return request && request.status === 'PENDING' && request.requestedByRole !== 'STUDENT'
     ? request
     : null;
 }
 
 function outgoingRequest(item: AccountBooking) {
   const request = item.rescheduleRequest;
-  return request && request.status === 'PENDING' && request.requestedByRole === 'CUSTOMER'
+  return request && request.status === 'PENDING' && request.requestedByRole === 'STUDENT'
     ? request
     : null;
 }
@@ -236,7 +233,7 @@ function notificationArray(value: unknown): unknown[] | null {
   return null;
 }
 
-function parseNotifications(value: unknown): CustomerNotification[] | null {
+function parseNotifications(value: unknown): StudentNotification[] | null {
   const values = notificationArray(value);
   if (!values) return null;
   return values.flatMap((candidate, index) => {
@@ -292,9 +289,9 @@ function notificationTime(value?: string) {
   return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
 }
 
-function derivedBookingActivity(bookings: AccountBooking[], now = Date.now()): CustomerNotification[] {
+function derivedBookingActivity(bookings: AccountBooking[], now = Date.now()): StudentNotification[] {
   return bookings
-    .map((item): CustomerNotification => {
+    .map((item): StudentNotification => {
       const state = bookingState(item, now);
       const scheduled = `${shortDate(item.booking.startAt, item.business.timezone)} at ${time(
         item.booking.startAt,
@@ -602,7 +599,7 @@ function BookingRow({
   const outgoing = outgoingRequest(item);
   return (
     <article
-      id={`customer-booking-${item.booking.id}`}
+      id={`student-booking-${item.booking.id}`}
       tabIndex={-1}
       className={cn(panel, 'scroll-mt-24 outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a]')}
     >
@@ -992,7 +989,7 @@ function AlertDialog({
   onClose,
   onOpenBooking,
 }: {
-  alert: CustomerNotification | null;
+  alert: StudentNotification | null;
   club?: KnownClub;
   onClose: () => void;
   onOpenBooking: (bookingId: string) => void;
@@ -1076,15 +1073,15 @@ function AppHeader({
   onOpenProfile,
 }: {
   userName: string;
-  activeTab: CustomerTab;
+  activeTab: StudentTab;
   homeHref: string;
   onOpenProfile: () => void;
 }) {
   const title = tabs.find((tab) => tab.id === activeTab)?.label ?? 'Home';
   return (
-    <header className="customer-header sticky top-0 z-40 border-b border-[#e7ebe4] bg-white/90 backdrop-blur-xl">
+    <header className="student-header sticky top-0 z-40 border-b border-[#e7ebe4] bg-white/90 backdrop-blur-xl">
       <div className="mx-auto flex min-h-16 max-w-3xl items-center justify-between gap-4 px-4 sm:min-h-[72px] sm:px-6">
-        <Link href={homeHref} aria-label="Courtly customer home" className="inline-flex min-h-11 items-center">
+        <Link href={homeHref} aria-label="Courtly student home" className="inline-flex min-h-11 items-center">
           <CourtlyLogo />
         </Link>
         <div className="flex items-center gap-2">
@@ -1110,14 +1107,14 @@ function BottomNavigation({
   onChange,
   unread,
 }: {
-  activeTab: CustomerTab;
-  onChange: (tab: CustomerTab) => void;
+  activeTab: StudentTab;
+  onChange: (tab: StudentTab) => void;
   unread: number;
 }) {
   return (
     <nav
-      aria-label="Customer navigation"
-      className="customer-bottom-nav fixed inset-x-0 bottom-0 z-50 mx-auto w-full max-w-3xl border-x border-t border-[#dfe5dc] bg-white/95 pb-[max(0.35rem,env(safe-area-inset-bottom))] shadow-[0_-12px_35px_rgba(25,55,40,0.08)] backdrop-blur-xl sm:bottom-4 sm:rounded-2xl sm:border sm:px-2 sm:pb-1"
+      aria-label="Student navigation"
+      className="student-bottom-nav fixed inset-x-0 bottom-0 z-50 mx-auto w-full max-w-3xl border-x border-t border-[#dfe5dc] bg-white/95 pb-[max(0.35rem,env(safe-area-inset-bottom))] shadow-[0_-12px_35px_rgba(25,55,40,0.08)] backdrop-blur-xl sm:bottom-4 sm:rounded-2xl sm:border sm:px-2 sm:pb-1"
     >
       <div className="grid min-h-[68px] grid-cols-5 items-end">
         {tabs.map((tab) => {
@@ -1172,18 +1169,18 @@ function BottomNavigation({
   );
 }
 
-export function CustomerApp({ slug }: { slug?: string }) {
+export function StudentApp({ slug }: { slug?: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedTab = searchParams.get('tab');
-  const activeTab = customerTab(requestedTab);
+  const activeTab = studentTab(requestedTab);
   const [session, setSession] = useState<AuthSession | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState('');
   const [bookings, setBookings] = useState<AccountBooking[]>([]);
   const [bookingsLoading, setBookingsLoading] = useState(false);
   const [bookingsError, setBookingsError] = useState('');
-  const [notifications, setNotifications] = useState<CustomerNotification[]>([]);
+  const [notifications, setNotifications] = useState<StudentNotification[]>([]);
   const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [notificationsFallback, setNotificationsFallback] = useState(false);
   const [notificationError, setNotificationError] = useState('');
@@ -1219,7 +1216,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
   const previousTabRouteRef = useRef(requestedTab);
   const pendingBookingIdRef = useRef<string | null>(null);
 
-  const tabHref = useCallback((tab: CustomerTab) => {
+  const tabHref = useCallback((tab: StudentTab) => {
     const params = new URLSearchParams();
     if (slug) params.set('slug', slug);
     params.set('tab', tab);
@@ -1234,7 +1231,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
   loginHrefRef.current = loginHref;
 
   useEffect(() => {
-    if (requestedTab === null || customerTabIds.has(requestedTab as CustomerTab)) return;
+    if (requestedTab === null || studentTabIds.has(requestedTab as StudentTab)) return;
     router.replace(tabHref('home'), { scroll: false });
   }, [requestedTab, router, tabHref]);
 
@@ -1259,7 +1256,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
     if (activeTab !== 'home' || !bookingId || bookingsLoading || bookingsError) return;
     pendingBookingIdRef.current = null;
     const frame = window.requestAnimationFrame(() => {
-      const bookingCard = document.getElementById(`customer-booking-${bookingId}`);
+      const bookingCard = document.getElementById(`student-booking-${bookingId}`);
       if (bookingCard instanceof HTMLElement) {
         bookingCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
         bookingCard.focus({ preventScroll: true });
@@ -1339,7 +1336,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
   }, [refreshSession]);
 
   useEffect(() => {
-    if (!isCustomerSession(session)) return;
+    if (!isStudentSession(session)) return;
     setProfile({
       name: session!.user.name ?? '',
       phone: session!.user.phone ?? '',
@@ -1444,7 +1441,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
     };
   }, [dialogMode, actionBooking, rescheduleDate, slotsVersion]);
 
-  function selectTab(tab: CustomerTab) {
+  function selectTab(tab: StudentTab) {
     setNotice('');
     setBookingNavigationStatus('');
     if (tab !== 'alerts') setAlertsStatus('');
@@ -1580,7 +1577,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
   function respondToRequest(accept: boolean) {
     const request = actionBooking?.rescheduleRequest;
     if (!request) return;
-    const mine = request.requestedByRole === 'CUSTOMER';
+    const mine = request.requestedByRole === 'STUDENT';
     void runBookingAction(
       () => (accept ? acceptAccountReschedule(request.id) : declineAccountReschedule(request.id)),
       accept
@@ -1620,7 +1617,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
    * The shading clears immediately so the list responds to the tap; if the
    * server refuses, the next refresh restores the unread state honestly.
    */
-  function openAlertDetails(alert: CustomerNotification) {
+  function openAlertDetails(alert: StudentNotification) {
     setOpenAlertId(alert.id);
     if (notificationsFallback || alert.read) return;
     setNotifications((current) =>
@@ -1734,7 +1731,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
   if (authLoading) {
     return (
       <main className="min-h-screen bg-[#f6f7f4] text-[#1c3029]">
-        <LoadingScreen text="Opening your Courtly account…" />
+        <LoadingScreen text="Opening your student account…" />
       </main>
     );
   }
@@ -1749,7 +1746,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
           <div className="mt-16">
             <EmptyState
               icon={<ShieldCheck size={23} />}
-              title={authError ? 'We couldn’t open your account' : 'Sign in to your Courtly account'}
+              title={authError ? 'We couldn’t open your account' : 'Sign in to your student account'}
               action={
                 <div className="flex flex-wrap justify-center gap-3">
                   <Link href={loginHref} className={primaryButton}>
@@ -1771,7 +1768,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
     );
   }
 
-  if (!isCustomerSession(session)) {
+  if (!isStudentSession(session)) {
     return (
       <main className="min-h-screen bg-[#f6f7f4] px-5 py-12 text-[#1c3029]">
         <div className="mx-auto max-w-lg">
@@ -1779,7 +1776,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
           <div className="mt-16">
             <EmptyState
               icon={<UserRound size={23} />}
-              title="Customer account required"
+              title="Student account required"
               action={
                 <div className="space-y-3">
                   <button type="button" className={primaryButton} disabled={signingOut} onClick={() => void signOut()}>
@@ -1790,7 +1787,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
                 </div>
               }
             >
-              {session.user.email} is signed in as a provider. Switch to your customer account to view personal bookings.
+              {session.user.email} is signed in as a coach or club account. Switch to your student account to view personal bookings.
             </EmptyState>
           </div>
         </div>
@@ -1813,7 +1810,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
     );
 
   return (
-    <div className="customer-shell min-h-screen overflow-x-clip bg-[#f6f7f4] pb-32 text-[#1c3029] sm:pb-36">
+    <div className="student-shell min-h-screen overflow-x-clip bg-[#f6f7f4] pb-32 text-[#1c3029] sm:pb-36">
       <AppHeader
         userName={session.user.name}
         activeTab={activeTab}
@@ -1823,7 +1820,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
       <main
         ref={mainRef}
         tabIndex={-1}
-        className="customer-content mx-auto w-full max-w-3xl px-4 py-7 outline-none sm:px-6 sm:py-10"
+        className="student-content mx-auto w-full max-w-3xl px-4 py-7 outline-none sm:px-6 sm:py-10"
       >
         <p role="status" className="sr-only">{bookingNavigationStatus}</p>
         {bookingsError && (
@@ -1836,7 +1833,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
         )}
 
         {activeTab === 'home' && (
-          <section id="customer-home-panel" aria-label="Home" className="customer-tab-panel customer-tab-home">
+          <section id="student-home-panel" aria-label="Home" className="student-tab-panel student-tab-home">
             <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#8c9980]">
@@ -1894,7 +1891,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
                         Open booking page <ArrowRight size={15} />
                       </Link>
                     ) : (
-                      <BookingLinkForm id="customer-home-booking-link" />
+                      <BookingLinkForm id="student-home-booking-link" />
                     )
                   }
                 >
@@ -2021,7 +2018,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
         )}
 
         {activeTab === 'explore' && (
-          <section id="customer-explore-panel" aria-label="Explore" className="customer-tab-panel customer-tab-explore">
+          <section id="student-explore-panel" aria-label="Explore" className="student-tab-panel student-tab-explore">
             <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#8c9980]">Your courts</p>
             <h1 className="mt-1.5 text-[30px] font-medium tracking-[-1px] text-[#20382d] sm:text-[36px]">Explore</h1>
             <p className="mt-2 max-w-xl text-sm leading-relaxed text-[#849080]">
@@ -2051,7 +2048,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
                         Open booking page <ArrowRight size={15} />
                       </Link>
                     ) : (
-                      <BookingLinkForm id="customer-explore-booking-link" />
+                      <BookingLinkForm id="student-explore-booking-link" />
                     )
                   }
                 >
@@ -2107,7 +2104,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
         )}
 
         {activeTab === 'book' && (
-          <section id="customer-book-panel" aria-label="Book" className="customer-tab-panel customer-tab-book">
+          <section id="student-book-panel" aria-label="Book" className="student-tab-panel student-tab-book">
             <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#8c9980]">Make time to play</p>
             <h1 className="mt-1.5 text-[30px] font-medium tracking-[-1px] text-[#20382d] sm:text-[36px]">
               Book a session
@@ -2139,7 +2136,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
                         Continue to booking <ArrowRight size={15} />
                       </Link>
                     ) : (
-                      <BookingLinkForm id="customer-book-booking-link" />
+                      <BookingLinkForm id="student-book-booking-link" />
                     )
                   }
                 >
@@ -2167,7 +2164,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
                         >
                           <input
                             type="radio"
-                            name="customer-booking-club"
+                            name="student-booking-club"
                             value={club.business.slug}
                             checked={selected}
                             onChange={() => setSelectedClubSlug(club.business.slug)}
@@ -2210,7 +2207,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
         )}
 
         {activeTab === 'alerts' && (
-          <section id="customer-alerts-panel" aria-label="Alerts" className="customer-tab-panel customer-tab-alerts">
+          <section id="student-alerts-panel" aria-label="Alerts" className="student-tab-panel student-tab-alerts">
             <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#8c9980]">Stay in the loop</p>
@@ -2334,8 +2331,8 @@ export function CustomerApp({ slug }: { slug?: string }) {
         )}
 
         {activeTab === 'profile' && (
-          <section id="customer-profile-panel" aria-label="Profile" className="customer-tab-panel customer-tab-profile">
-            <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#8c9980]">Your Courtly account</p>
+          <section id="student-profile-panel" aria-label="Profile" className="student-tab-panel student-tab-profile">
+            <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#8c9980]">Your student account</p>
             <h1 className="mt-1.5 text-[30px] font-medium tracking-[-1px] text-[#20382d] sm:text-[36px]">Profile</h1>
             <p className="mt-2 text-sm text-[#849080]">Keep your details current across every club.</p>
             {/*
@@ -2344,13 +2341,13 @@ export function CustomerApp({ slug }: { slug?: string }) {
               and a page of live inputs invites accidental edits. Editing is a
               deliberate step, in a dialog.
             */}
-            <section className={cn(panel, 'mt-8 p-5 sm:p-6')} aria-labelledby="customer-personal-details">
+            <section className={cn(panel, 'mt-8 p-5 sm:p-6')} aria-labelledby="student-personal-details">
               <div className="flex items-start gap-3 border-b border-[#edf0e9] pb-5">
                 <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-[#e8efe0] text-sm font-bold text-[#6b825b]">
                   {initials(profile.name || session.user.name)}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <h2 id="customer-personal-details" className="text-base font-semibold text-[#304b39]">Personal details</h2>
+                  <h2 id="student-personal-details" className="text-base font-semibold text-[#304b39]">Personal details</h2>
                   <p className="mt-1 text-xs leading-relaxed text-[#899583]">Shared only with clubs you book.</p>
                 </div>
                 <button
@@ -2413,14 +2410,14 @@ export function CustomerApp({ slug }: { slug?: string }) {
                   Edit personal details
                 </DialogTitle>
                 <DialogDescription className="mt-2 text-xs leading-relaxed text-[#849080]">
-                  These details belong to your Courtly account and travel with you to every club you book.
+                  These details belong to your student account and travel with you to every club you book.
                 </DialogDescription>
                 <form onSubmit={saveProfile} className="mt-5">
                   <div className="grid gap-5 sm:grid-cols-2">
                     <div>
-                      <label htmlFor="customer-profile-name">Full name</label>
+                      <label htmlFor="student-profile-name">Full name</label>
                       <input
-                        id="customer-profile-name"
+                        id="student-profile-name"
                         className={field}
                         value={profile.name}
                         onChange={(event) => {
@@ -2435,23 +2432,23 @@ export function CustomerApp({ slug }: { slug?: string }) {
                       />
                     </div>
                     <div>
-                      <label htmlFor="customer-profile-email">Email address</label>
+                      <label htmlFor="student-profile-email">Email address</label>
                       <input
-                        id="customer-profile-email"
+                        id="student-profile-email"
                         className={cn(field, '!bg-[#f5f6f3] !text-[#7f8b80]')}
                         value={session.user.email}
                         readOnly
-                        aria-describedby="customer-profile-email-note"
+                        aria-describedby="student-profile-email-note"
                         autoComplete="email"
                       />
-                      <p id="customer-profile-email-note" className="mt-1.5 text-[10px] text-[#9ba49b]">
+                      <p id="student-profile-email-note" className="mt-1.5 text-[10px] text-[#9ba49b]">
                         Email is your sign-in identity and cannot be changed here.
                       </p>
                     </div>
                     <div>
-                      <label htmlFor="customer-profile-phone">Phone</label>
+                      <label htmlFor="student-profile-phone">Phone</label>
                       <input
-                        id="customer-profile-phone"
+                        id="student-profile-phone"
                         className={field}
                         type="tel"
                         value={profile.phone}
@@ -2466,9 +2463,9 @@ export function CustomerApp({ slug }: { slug?: string }) {
                       />
                     </div>
                     <div>
-                      <label htmlFor="customer-profile-parent">Parent or guardian</label>
+                      <label htmlFor="student-profile-parent">Parent or guardian</label>
                       <input
-                        id="customer-profile-parent"
+                        id="student-profile-parent"
                         className={field}
                         value={profile.parentName}
                         onChange={(event) => {

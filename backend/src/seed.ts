@@ -6,7 +6,7 @@ import { DateTime } from 'luxon';
 export type SeedBusinessOptions = {
   slug?: string;
   isDemo?: boolean;
-  ownerEmail?: string;
+  clubEmail?: string;
   businessName?: string;
 };
 
@@ -15,14 +15,14 @@ const initials = (name: string) => name.split(/\s+/).map(part => part[0]).slice(
 
 // A client starts an atomic seed; an existing transaction remains owned by its caller.
 export async function seedBusiness(prismaOrTx: PrismaClient | Prisma.TransactionClient, options: SeedBusinessOptions = {}) {
-  const password = (!options.isDemo && process.env.SEED_OWNER_PASSWORD) || randomBytes(32).toString('base64url');
+  const password = (!options.isDemo && process.env.SEED_CLUB_PASSWORD) || randomBytes(32).toString('base64url');
   if (password.length < 8 || Buffer.byteLength(password, 'utf8') > 72) {
-    throw new Error('SEED_OWNER_PASSWORD must contain at least 8 characters and at most 72 UTF-8 bytes.');
+    throw new Error('SEED_CLUB_PASSWORD must contain at least 8 characters and at most 72 UTF-8 bytes.');
   }
   const passwordHash = await bcrypt.hash(password, 12);
   // Demo/sample people still receive real account credentials in the data
   // model. Their random password is deliberately not returned or shared; the
-  // only interactive seed credential is the owner password above.
+  // only interactive seed credential is the club password above.
   const samplePasswordHash = await bcrypt.hash(randomBytes(32).toString('base64url'), 12);
   if ('$transaction' in prismaOrTx) {
     return prismaOrTx.$transaction(tx => populateBusiness(tx, options, passwordHash, samplePasswordHash), { timeout: 60_000 });
@@ -40,7 +40,7 @@ async function populateBusiness(
   const weekStart = now.startOf('week');
   const todayIndex = now.weekday - 1;
   const tenantKey = randomBytes(12).toString('hex');
-  const email = options.ownerEmail?.trim().toLowerCase() || `marcus+${tenantKey}@courtly.example`;
+  const email = options.clubEmail?.trim().toLowerCase() || `marcus+${tenantKey}@courtly.example`;
   const business = await tx.business.create({
     data: {
       name: options.businessName?.trim() || 'Marcus Tan Racket Club',
@@ -52,25 +52,30 @@ async function populateBusiness(
       color: '#214e3e',
       tagline: 'Good coaching. Great possibilities.',
       cancellationHours: 24,
+      kind: 'CLUB',
       isDemo: options.isDemo ?? false,
       createdAt: now.minus({ months: 6 }).toJSDate(),
     },
   });
   const businessId = business.id;
+  const paymentRoute = business.kind === 'SOLO' ? 'DIRECT' : 'CLUB';
+  const studentPaymentKind = paymentRoute === 'DIRECT' ? 'STUDENT_TO_COACH' : 'STUDENT_TO_CLUB';
   const instructors = await Promise.all([
-    { name: 'Marcus Tan', color: '#527a5b', email, specialty: 'Tennis · technique and match play' },
+    { name: 'Marcus Tan', color: '#527a5b', email: `marcus.${tenantKey}@sample.courtly.invalid`, specialty: 'Tennis · technique and match play' },
     { name: 'Sarah Lim', color: '#5c7f91', email: `sarah.${tenantKey}@sample.courtly.invalid`, specialty: 'Junior tennis · confidence and fundamentals' },
     { name: 'Daniel Lee', color: '#b1854f', email: `daniel.${tenantKey}@sample.courtly.invalid`, specialty: 'Badminton · footwork and doubles' },
   ].map(instructor => tx.instructor.create({ data: { businessId, ...instructor, initials: initials(instructor.name) } })));
-  const owner = await tx.user.create({
+  // The club's own operating login. It runs the club and never teaches, so it
+  // holds no roster entry; every coach below has their own account.
+  const clubAccount = await tx.user.create({
     data: {
-      name: 'Marcus Tan', email, passwordHash, accountType: 'OWNER', phone: '', parentName: '', createdAt: business.createdAt,
+      name: business.name, email, passwordHash, accountType: 'CLUB', phone: '', parentName: '', createdAt: business.createdAt,
     },
   });
-  const ownerMembership = await tx.membership.create({
-    data: { userId: owner.id, businessId, role: 'OWNER', instructorId: instructors[0].id, createdAt: business.createdAt },
+  const clubMembership = await tx.membership.create({
+    data: { userId: clubAccount.id, businessId, createdAt: business.createdAt },
   });
-  await Promise.all(instructors.slice(1).map(async instructor => {
+  await Promise.all(instructors.map(async instructor => {
     const accountId = `seed-instructor-${instructor.id}`;
     const account = await tx.user.create({
       data: {
@@ -85,7 +90,7 @@ async function populateBusiness(
       },
     });
     await tx.membership.create({
-      data: { id: `seed-membership-${instructor.id}`, userId: account.id, businessId, role: 'COACH', instructorId: instructor.id, createdAt: business.createdAt },
+      data: { id: `seed-membership-${instructor.id}`, userId: account.id, businessId, instructorId: instructor.id, createdAt: business.createdAt },
     });
   }));
 
@@ -147,7 +152,7 @@ async function populateBusiness(
     })))),
   });
 
-  const customerDefinitions = [
+  const studentDefinitions = [
     { name: 'Amelia Wong', notes: 'Working on a more consistent second serve.' },
     { name: 'Ethan Lim', parentName: 'Michelle Lim', notes: 'Junior player. Parent collects after class.' },
     { name: 'Chloe Tan', parentName: 'Angela Tan', notes: 'Junior player. Loves doubles games.' },
@@ -169,35 +174,35 @@ async function populateBusiness(
     { name: 'Chloe Chan', notes: 'Prefers PayNow by bank transfer.' },
     { name: 'Aarav Menon', notes: 'Building confidence at the net.' },
   ];
-  const customers = customerDefinitions.map((customer, index) => ({
-    id: randomUUID(), userId: `seed-customer-${randomUUID()}`, businessId, name: customer.name, initials: initials(customer.name),
-    email: `${customer.name.toLowerCase().replaceAll(' ', '.')}.${tenantKey}@sample.courtly.invalid`,
+  const students = studentDefinitions.map((student, index) => ({
+    id: randomUUID(), userId: `seed-student-${randomUUID()}`, businessId, name: student.name, initials: initials(student.name),
+    email: `${student.name.toLowerCase().replaceAll(' ', '.')}.${tenantKey}@sample.courtly.invalid`,
     phone: `+65 8${String(100_000 + index).padStart(7, '0')}`,
-    parentName: customer.parentName ?? '', notes: customer.notes,
+    parentName: student.parentName ?? '', notes: student.notes,
     createdAt: now.minus({ days: 90 - index * 3 }).toJSDate(),
   }));
   await tx.user.createMany({
-    data: customers.map(customer => ({
-      id: customer.userId, name: customer.name, email: customer.email,
-      passwordHash: samplePasswordHash, accountType: 'CUSTOMER',
-      phone: customer.phone, parentName: customer.parentName, createdAt: customer.createdAt,
+    data: students.map(student => ({
+      id: student.userId, name: student.name, email: student.email,
+      passwordHash: samplePasswordHash, accountType: 'STUDENT',
+      phone: student.phone, parentName: student.parentName, createdAt: student.createdAt,
     })),
   });
-  await tx.customer.createMany({ data: customers });
+  await tx.student.createMany({ data: students });
 
   const packageDefinitions = [
-    { customer: 0, service: 0, name: 'Private Tennis · 10 lessons', totalCredits: 10, price: 850, paid: true },
-    { customer: 9, service: 0, name: 'Private Tennis · 5 lessons', totalCredits: 5, price: 425, paid: true },
-    { customer: 15, service: 0, name: 'Private Tennis · 5 lessons', totalCredits: 5, price: 425, paid: false },
-    { customer: 1, service: 1, name: 'Junior Tennis · 8 lessons', totalCredits: 8, price: 280, paid: true },
-    { customer: 3, service: 1, name: 'Junior Tennis · 8 lessons', totalCredits: 8, price: 280, paid: true },
-    { customer: 5, service: 1, name: 'Junior Tennis · 8 lessons', totalCredits: 8, price: 280, paid: false },
-    { customer: 12, service: 2, name: 'Badminton · 8 lessons', totalCredits: 8, price: 280, paid: true },
-    { customer: 14, service: 3, name: 'Match Play · 6 sessions', totalCredits: 6, price: 300, paid: true },
-    { customer: 16, service: null, name: 'Racket Club · 10 flexible credits', totalCredits: 10, price: 500, paid: false },
+    { student: 0, service: 0, name: 'Private Tennis · 10 lessons', totalCredits: 10, price: 850, paid: true },
+    { student: 9, service: 0, name: 'Private Tennis · 5 lessons', totalCredits: 5, price: 425, paid: true },
+    { student: 15, service: 0, name: 'Private Tennis · 5 lessons', totalCredits: 5, price: 425, paid: false },
+    { student: 1, service: 1, name: 'Junior Tennis · 8 lessons', totalCredits: 8, price: 280, paid: true },
+    { student: 3, service: 1, name: 'Junior Tennis · 8 lessons', totalCredits: 8, price: 280, paid: true },
+    { student: 5, service: 1, name: 'Junior Tennis · 8 lessons', totalCredits: 8, price: 280, paid: false },
+    { student: 12, service: 2, name: 'Badminton · 8 lessons', totalCredits: 8, price: 280, paid: true },
+    { student: 14, service: 3, name: 'Match Play · 6 sessions', totalCredits: 6, price: 300, paid: true },
+    { student: 16, service: null, name: 'Racket Club · 10 flexible credits', totalCredits: 10, price: 500, paid: false },
   ];
   const packages = packageDefinitions.map((pkg, index) => ({
-    id: randomUUID(), businessId, customerId: customers[pkg.customer].id, name: pkg.name,
+    id: randomUUID(), businessId, studentId: students[pkg.student].id, name: pkg.name,
     serviceId: pkg.service === null ? null : services[pkg.service].id,
     totalCredits: pkg.totalCredits, usedCredits: 0, price: pkg.price * 100, paid: pkg.paid,
     expiresAt: now.plus({ days: index === 3 ? 14 : 90 }).endOf('day').toJSDate(),
@@ -205,7 +210,8 @@ async function populateBusiness(
   const bookings: Prisma.BookingCreateManyInput[] = [];
   const participants: Prisma.ParticipantCreateManyInput[] = [];
   const payments: Prisma.PaymentCreateManyInput[] = packages.filter(pkg => pkg.paid).map((pkg, index) => ({
-    id: randomUUID(), businessId, customerId: pkg.customerId, packageId: pkg.id, amount: pkg.price,
+    id: randomUUID(), businessId, studentId: pkg.studentId, packageId: pkg.id, amount: pkg.price,
+    kind: studentPaymentKind,
     method: 'BANK_TRANSFER', note: `PayNow · ${pkg.name}`,
     paidAt: now.minus({ days: index % 3, hours: 1 }).toJSDate(),
   }));
@@ -218,11 +224,11 @@ async function populateBusiness(
     // Five daily sessions always include today's 09:00, 10:00 and 11:00.
     // Marcus and Sarah change venues only after generous travel/preparation gaps.
     const sessions = [
-      { hour: 9, service: 0, instructor: 0, location: 0, customers: [adults[day % adults.length]] },
-      { hour: 10, service: 2, instructor: 2, location: 1, customers: Array.from({ length: 2 + day % 3 }, (_, seat) => adults[(day + 3 + seat) % adults.length]) },
-      { hour: 11, service: 1, instructor: 1, location: 0, customers: Array.from({ length: 4 + day % 3 }, (_, seat) => juniors[(day * 2 + seat) % juniors.length]) },
-      { hour: 14, service: 3, instructor: 0, location: 2, customers: Array.from({ length: 2 + (day + 1) % 3 }, (_, seat) => adults[(day + 6 + seat) % adults.length]) },
-      { hour: 17, service: 0, instructor: 1, location: 3, customers: [adults[(day + 7) % adults.length]] },
+      { hour: 9, service: 0, instructor: 0, location: 0, students: [adults[day % adults.length]] },
+      { hour: 10, service: 2, instructor: 2, location: 1, students: Array.from({ length: 2 + day % 3 }, (_, seat) => adults[(day + 3 + seat) % adults.length]) },
+      { hour: 11, service: 1, instructor: 1, location: 0, students: Array.from({ length: 4 + day % 3 }, (_, seat) => juniors[(day * 2 + seat) % juniors.length]) },
+      { hour: 14, service: 3, instructor: 0, location: 2, students: Array.from({ length: 2 + (day + 1) % 3 }, (_, seat) => adults[(day + 6 + seat) % adults.length]) },
+      { hour: 17, service: 0, instructor: 1, location: 3, students: [adults[(day + 7) % adults.length]] },
     ];
     for (const [slot, session] of sessions.entries()) {
       const service = services[session.service];
@@ -245,21 +251,21 @@ async function populateBusiness(
         id: bookingId, businessId, serviceId: service.id, instructorId, locationId: location.id,
         startAt: startAt.toJSDate(), endAt: endAt.toJSDate(), duration: assignment.duration,
         bufferMinutes: service.bufferMinutes, status, type: service.type, capacity: service.capacity,
-        price: assignment.price, notes, address: location.address,
+        price: assignment.price, notes, address: location.address, paymentRoute,
         createdAt: DateTime.min(startAt.minus({ days: 3 }), now.minus({ hours: 1 })).toJSDate(),
       });
       if (!cancelled && startAt > now) upcomingByCoach.set(instructorId, (upcomingByCoach.get(instructorId) ?? 0) + 1);
       if (status === 'PENDING') pendingByCoach.set(instructorId, (pendingByCoach.get(instructorId) ?? 0) + 1);
 
-      for (const [seat, customerIndex] of session.customers.entries()) {
-        const customer = customers[customerIndex];
-        const pkg = packages.find(item => item.customerId === customer.id && (!item.serviceId || item.serviceId === service.id)
+      for (const [seat, studentIndex] of session.students.entries()) {
+        const student = students[studentIndex];
+        const pkg = packages.find(item => item.studentId === student.id && (!item.serviceId || item.serviceId === service.id)
           && item.expiresAt >= startAt.toJSDate() && item.usedCredits < item.totalCredits);
         const creditConsumed = !!pkg && !cancelled;
         if (creditConsumed) pkg!.usedCredits++;
         const paid = !cancelled && (pkg ? pkg.paid : (day + slot + seat) % 3 !== 0);
         participants.push({
-          id: randomUUID(), bookingId, customerId: customer.id, price: assignment.price,
+          id: randomUUID(), bookingId, studentId: student.id, price: assignment.price,
           paid, packageId: pkg?.id ?? null, creditConsumed,
           attendance: status === 'COMPLETED' ? ((day + slot + seat) % 13 === 0 ? 'ABSENT' : 'PRESENT') : 'UNMARKED',
           managementTokenHash: null,
@@ -270,7 +276,8 @@ async function populateBusiness(
         // Package purchases are recorded once; credit redemptions are not new revenue.
         if (paid && !pkg) {
           payments.push({
-            id: randomUUID(), businessId, customerId: customer.id, bookingId, amount: assignment.price,
+            id: randomUUID(), businessId, studentId: student.id, bookingId, amount: assignment.price,
+            kind: studentPaymentKind,
             method: ['BANK_TRANSFER', 'CASH', 'OTHER'][(day + slot + seat) % 3],
             note: status === 'PENDING' ? 'Advance lesson payment; venue confirmation is still required.' : `Lesson payment · ${service.name}`,
             paidAt: DateTime.min(startAt.minus({ hours: 2 }), now.minus({ minutes: 20 + payments.length })).toJSDate(),
@@ -307,5 +314,5 @@ async function populateBusiness(
     });
   }
   await tx.notification.createMany({ data: notifications });
-  return { business, owner, ownerMembership };
+  return { business, clubAccount, clubMembership };
 }

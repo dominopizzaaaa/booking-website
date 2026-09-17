@@ -5,29 +5,29 @@ import { seedBusiness } from '../src/seed.js';
 async function main() {
   // Stable identities belong only to this explicitly invoked CLI, never to demo requests.
   const slug = process.env.SEED_BUSINESS_SLUG?.trim() || 'marcus-tan';
-  const ownerEmail = process.env.SEED_OWNER_EMAIL?.trim().toLowerCase() || 'marcus@courtly.example';
+  const clubEmail = process.env.SEED_CLUB_EMAIL?.trim().toLowerCase() || 'marcus@courtly.example';
   const businessName = process.env.SEED_BUSINESS_NAME?.trim() || 'Marcus Tan Racket Club';
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length > 80) {
     throw new Error('SEED_BUSINESS_SLUG must be a URL-safe lowercase slug of at most 80 characters.');
   }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ownerEmail)) throw new Error('SEED_OWNER_EMAIL must be a valid email address.');
-  const generatedPassword = process.env.SEED_OWNER_PASSWORD ? undefined : randomBytes(18).toString('base64url');
-  if (generatedPassword) process.env.SEED_OWNER_PASSWORD = generatedPassword;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clubEmail)) throw new Error('SEED_CLUB_EMAIL must be a valid email address.');
+  const generatedPassword = process.env.SEED_CLUB_PASSWORD ? undefined : randomBytes(18).toString('base64url');
+  if (generatedPassword) process.env.SEED_CLUB_PASSWORD = generatedPassword;
 
   const result = await prisma.$transaction(async tx => {
     // Serialize concurrent runs without ever clearing or updating an existing tenant.
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`courtly:seed:${slug}`}, 0))`;
     const existing = await tx.business.findUnique({ where: { slug } });
     if (existing) return { created: false as const, business: existing };
-    if (await tx.user.findUnique({ where: { email: ownerEmail } })) {
-      throw new Error(`The owner email ${ownerEmail} is already in use. Choose another SEED_OWNER_EMAIL; no data was changed.`);
+    if (await tx.user.findUnique({ where: { email: clubEmail } })) {
+      throw new Error(`The club email ${clubEmail} is already in use. Choose another SEED_CLUB_EMAIL; no data was changed.`);
     }
-    const seeded = await seedBusiness(tx, { slug, ownerEmail, businessName, isDemo: false });
+    const seeded = await seedBusiness(tx, { slug, clubEmail, businessName, isDemo: false });
     return {
       created: true as const,
       business: seeded.business,
-      owner: seeded.owner,
-      ownerMembership: seeded.ownerMembership,
+      clubAccount: seeded.clubAccount,
+      clubMembership: seeded.clubMembership,
     };
   }, { maxWait: 10_000, timeout: 60_000 });
 
@@ -37,9 +37,9 @@ async function main() {
   }
   console.log(`Created ${result.business.name} with 35 lessons in the current Asia/Singapore week.`);
   console.log(`Booking page: /book/${result.business.slug}`);
-  console.log(`Owner sign-in email: ${ownerEmail}`);
-  if (generatedPassword) console.log(`Generated owner password (save securely): ${generatedPassword}`);
-  else console.log('Owner password: the supplied SEED_OWNER_PASSWORD.');
+  console.log(`Club sign-in email: ${clubEmail}`);
+  if (generatedPassword) console.log(`Generated club password (save securely): ${generatedPassword}`);
+  else console.log('Club password: the supplied SEED_CLUB_PASSWORD.');
 }
 
 main().catch(error => {

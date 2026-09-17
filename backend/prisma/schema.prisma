@@ -30,7 +30,7 @@ model Business {
   services             Service[]
   availability         Availability[]
   exceptions           AvailabilityException[]
-  customers            Customer[]
+  students             Student[]
   packages             LessonPackage[]
   bookings             Booking[]
   payments             Payment[]
@@ -45,23 +45,32 @@ model User {
   name                 String
   email                String                @unique
   passwordHash         String?
-  accountType          String                @default("CUSTOMER")
+  /// The only role vocabulary in Courtly. "STUDENT" books lessons, "COACH"
+  /// teaches them, "CLUB" is a club or academy rather than a person. This one
+  /// value decides both the profile someone sees and what they may do, so
+  /// there is deliberately no second role stored per membership.
+  accountType          String                @default("STUDENT")
   phone                String                @default("")
   parentName           String                @default("")
   memberships          Membership[]
   sessions             AuthSession[]
-  customers            Customer[]
+  students             Student[]
   accountNotifications AccountNotification[]
   createdAt            DateTime              @default(now())
 }
 
+/// Which businesses an account belongs to. A coach has one row per club that
+/// added them, plus one for their own practice; a club account has exactly
+/// one. What the account may do here comes from User.accountType, so no role
+/// is stored: a coach is a coach everywhere, and a club runs its own club.
 model Membership {
   id           String        @id @default(cuid())
   userId       String
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   businessId   String
   business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  role         String
+  /// The club's roster entry for this coach. A club account never teaches, so
+  /// it never has one; a coach's own practice does, because they teach there.
   instructorId String?       @unique
   instructor   Instructor?   @relation(fields: [instructorId], references: [id], onDelete: SetNull)
   active       Boolean       @default(true)
@@ -124,7 +133,7 @@ model Location {
   requiresApproval Boolean           @default(false)
   travelMinutes    Int               @default(20)
   notes            String            @default("")
-  /// Venue provenance. A coach or admin can look a venue up on Google Maps
+  /// Venue provenance. A coach or club can look a venue up on Google Maps
   /// instead of typing an address, so the place identity is stored alongside
   /// the free-text address rather than replacing it.
   source           String            @default("MANUAL")
@@ -215,7 +224,9 @@ model AvailabilityException {
   @@index([businessId])
 }
 
-model Customer {
+/// A student's record inside one club: what that club knows about them.
+/// Their identity as a person lives on User.
+model Student {
   id           String          @id @default(cuid())
   businessId   String
   business     Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
@@ -232,6 +243,9 @@ model Customer {
   packages     LessonPackage[]
   payments     Payment[]
 
+  // Supports the database-level composite FK that keeps a payment's student
+  // party inside the payment's business.
+  @@unique([id, businessId])
   @@unique([businessId, email])
   @@unique([businessId, userId])
   @@index([userId])
@@ -241,8 +255,8 @@ model LessonPackage {
   id           String        @id @default(cuid())
   businessId   String
   business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  customerId   String
-  customer     Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  studentId    String
+  student      Student       @relation(fields: [studentId, businessId], references: [id, businessId], onDelete: Restrict)
   name         String
   serviceId    String?
   service      Service?      @relation(fields: [serviceId], references: [id], onDelete: SetNull)
@@ -255,6 +269,7 @@ model LessonPackage {
   participants Participant[]
   payments     Payment[]
 
+  @@unique([id, businessId])
   @@index([businessId])
 }
 
@@ -281,14 +296,15 @@ model Booking {
   address              String                @default("")
   /// Snapshot of Business.kind. "CLUB" means the club collects from the
   /// student and later pays the coach; "DIRECT" means the student pays the
-  /// coach. Never derive this live: a business may change kind later.
+  /// coach. Never derive this live: the snapshot is the booking's contractual
+  /// record even though Business.kind is immutable after creation.
   paymentRoute         String                @default("DIRECT")
   /// A club may assign a student to a coach without the student accepting,
   /// but the coach must accept before the lesson is confirmed.
   coachAcceptance      String                @default("NOT_REQUIRED")
   coachRespondedAt     DateTime?
   createdByUserId      String?
-  createdByRole        String                @default("CUSTOMER")
+  createdByRole        String                @default("STUDENT")
   recurringId          String?
   createdAt            DateTime              @default(now())
   participants         Participant[]
@@ -297,6 +313,9 @@ model Booking {
   rescheduleRequests   RescheduleRequest[]
   integrityFlags       IntegrityFlag[]
 
+  // Supports the database-level composite FK that keeps a payment's optional
+  // booking inside the same business.
+  @@unique([id, businessId])
   @@index([businessId, startAt])
   @@index([instructorId, startAt, endAt])
   @@index([businessId, coachAcceptance])
@@ -306,8 +325,8 @@ model Participant {
   id                       String         @id @default(cuid())
   bookingId                String
   booking                  Booking        @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  customerId               String
-  customer                 Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  studentId                String
+  student                  Student        @relation(fields: [studentId], references: [id], onDelete: Restrict)
   attendance               String         @default("UNMARKED")
   paid                     Boolean        @default(false)
   /// Integer minor units (cents), snapshotted for this participant.
@@ -321,26 +340,31 @@ model Participant {
   managementTokenExpiresAt DateTime?
   managementTokenRevokedAt DateTime?
 
-  @@unique([bookingId, customerId])
+  @@unique([bookingId, studentId])
 }
 
 model Payment {
   id               String         @id @default(cuid())
   businessId       String
   business         Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  customerId       String
-  customer         Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  /// Present only when this is money received from a student. Coach payouts
+  /// have no student party. Including businessId in the relation prevents a
+  /// ledger row from naming a student owned by another tenant.
+  studentId        String?
+  student          Student?       @relation(fields: [studentId, businessId], references: [id, businessId], onDelete: Restrict)
   bookingId        String?
-  booking          Booking?       @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  booking          Booking?       @relation(fields: [bookingId, businessId], references: [id, businessId], onDelete: Restrict)
   packageId        String?
-  package          LessonPackage? @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  package          LessonPackage? @relation(fields: [packageId, businessId], references: [id, businessId], onDelete: Restrict)
   /// Which leg of the money path this record represents. Club lessons are
-  /// CUSTOMER_TO_CLUB followed by CLUB_TO_COACH; a solo coach's own student
-  /// pays CUSTOMER_TO_COACH.
-  kind             String         @default("CUSTOMER_TO_CLUB")
-  /// Set for a CLUB_TO_COACH payout.
+  /// STUDENT_TO_CLUB followed by CLUB_TO_COACH; a solo coach's own student
+  /// pays STUDENT_TO_COACH.
+  kind             String         @default("STUDENT_TO_CLUB")
+  /// Set only for a CLUB_TO_COACH payout. Restrict deletion so an auditable
+  /// payout can never silently lose the coach it names, and include businessId
+  /// so the payee must be on this tenant's roster.
   instructorId     String?
-  instructor       Instructor?    @relation(fields: [instructorId], references: [id], onDelete: SetNull)
+  instructor       Instructor?    @relation(fields: [instructorId, businessId], references: [id, businessId], onDelete: Restrict)
   /// Integer minor units (cents).
   amount           Int
   method           String         @default("BANK_TRANSFER")
@@ -375,7 +399,7 @@ model Notification {
   @@index([businessId, read])
 }
 
-// Customer-facing account alerts are deliberately separate from provider
+// Student-facing account alerts are deliberately separate from provider
 // workspace notifications. An account can therefore only read its own alerts,
 // while deleting a business or booking preserves the historical alert text.
 model AccountNotification {
@@ -407,10 +431,10 @@ model RescheduleRequest {
   business          Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
   bookingId         String
   booking           Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  /// "CUSTOMER", "COACH" or "CLUB". Who asked for the change.
+  /// "STUDENT", "COACH" or "CLUB". Who asked for the change.
   requestedByRole   String
   requestedByUserId String?
-  /// The participant the request belongs to when a customer raised it.
+  /// The participant the request belongs to when a student raised it.
   participantId     String?
   proposedStartAt   DateTime
   proposedEndAt     DateTime
@@ -439,9 +463,9 @@ model IntegrityFlag {
   instructorId        String?
   instructor          Instructor? @relation(fields: [instructorId], references: [id], onDelete: SetNull)
   coachUserId         String
-  customerUserId      String
+  studentUserId       String
   coachName           String
-  customerName        String
+  studentName         String
   /// The private booking outside the club that triggered the flag.
   bookingId           String?
   booking             Booking?    @relation(fields: [bookingId], references: [id], onDelete: SetNull)
@@ -458,6 +482,6 @@ model IntegrityFlag {
   resolvedByUserId    String?
   resolutionNote      String      @default("")
 
-  @@unique([businessId, coachUserId, customerUserId, type])
+  @@unique([businessId, coachUserId, studentUserId, type])
   @@index([businessId, status])
 }

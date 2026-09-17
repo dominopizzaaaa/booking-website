@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { DateTime } from 'luxon';
 import { z } from 'zod';
 import { rateLimit } from 'express-rate-limit';
-import { requireAuth, requireCustomer } from './auth.js';
+import { requireAuth, requireStudent } from './auth.js';
 import { prisma } from './db.js';
 import { asyncRoute, HttpError } from './http.js';
 import { bookingInclude, bookingJson, publicBookingBusiness, publicInstructor, publicLocation, serviceJson } from './serializers.js';
@@ -87,18 +87,18 @@ publicRouter.get('/public/:slug/slots', slotLimit, asyncRoute(async (req, res) =
   res.json({ slots });
 }));
 
-publicRouter.post('/public/:slug/bookings', bookingLimit, requireAuth, requireCustomer, asyncRoute(async (req, res) => {
+publicRouter.post('/public/:slug/bookings', bookingLimit, requireAuth, requireStudent, asyncRoute(async (req, res) => {
   const input = publicBookingInput.parse(req.body);
   const business = await businessForSlug(req.params.slug);
   const result = await createBookings(business.id, {
     ...input,
-    customer: {
+    student: {
       name: req.auth.user.name,
       email: req.auth.user.email,
-      phone: input.customer?.phone,
-      parentName: input.customer?.parentName,
+      phone: input.student?.phone,
+      parentName: input.student?.parentName,
     },
-  }, { customerUserId: req.auth.user.id });
+  }, { studentUserId: req.auth.user.id });
   res.status(201).json(result);
 }));
 
@@ -125,8 +125,8 @@ const accountBookingInclude = {
 
 async function accountParticipant(participantId: string, userId: string) {
   const participant = await prisma.participant.findFirst({
-    where: { id: participantId, customer: { userId } },
-    include: { customer: true, booking: { include: accountBookingInclude } },
+    where: { id: participantId, student: { userId } },
+    include: { student: true, booking: { include: accountBookingInclude } },
   });
   if (!participant) throw new HttpError(404, 'Booking not found');
   return participant;
@@ -151,7 +151,7 @@ function canRequestReschedule(p: AccountParticipant) {
 }
 
 function accountBookingJson(p: AccountParticipant) {
-  // Serialize exactly one participant even for group lessons. Other customers'
+  // Serialize exactly one participant even for group lessons. Other students'
   // identities, contact details and participant notes stay private.
   const single = bookingJson({ ...p.booking, participants: [{ ...p, cancelledAt: null }] }, { includeNotes: false });
   if (p.cancelledAt) single.status = 'CANCELLED';
@@ -165,7 +165,7 @@ function accountBookingJson(p: AccountParticipant) {
     location: publicLocation(p.booking.location),
     canCancel: canChange,
     canReschedule,
-    // A pending proposal is the one thing a customer may need to act on, so it
+    // A pending proposal is the one thing a student may need to act on, so it
     // travels with the booking rather than requiring a second request.
     rescheduleRequest: pending ? rescheduleRequestJson(pending) : null,
     awaitingCoach: p.booking.coachAcceptance === 'PENDING',
@@ -185,11 +185,11 @@ function accountBookingJson(p: AccountParticipant) {
 const legacyTokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
 const legacyTokenSchema = z.string().length(43).regex(/^[A-Za-z0-9_-]+$/);
 const legacyParticipantInclude = {
-  customer: true,
+  student: true,
   booking: { include: {
     service: { include: { locations: { include: { instructors: true } } } },
     instructor: { include: { membership: { include: { user: true } } } },
-    location: true, participants: { include: { customer: true } }, business: true,
+    location: true, participants: { include: { student: true } }, business: true,
   } },
 } as const;
 type LegacyParticipant = Awaited<ReturnType<typeof legacyParticipant>>;
@@ -253,7 +253,7 @@ function legacyBookingJson(p: LegacyParticipant) {
       && candidate.instructors.some(candidateInstructor => candidateInstructor.instructorId === p.booking.instructorId));
   const instructorCanHost = p.booking.service.active && p.booking.location.active && p.booking.instructor.active
     && !!mapping && !!membership && membership.businessId === p.booking.businessId && membership.active
-    && membership.user.passwordHash !== null && ['COACH', 'OWNER'].includes(membership.user.accountType);
+    && membership.user.passwordHash !== null && membership.user.accountType === 'COACH';
   const { participants: _participants, ...booking } = single;
   const visibleParticipant = single.participants[0];
   return {
@@ -280,7 +280,7 @@ publicRouter.post('/manage/:token/cancel', bookingLimit, asyncRoute(async (req, 
   await prisma.$transaction(async tx => {
     await lockInstructors(tx, [initial.booking.instructorId]);
     const participant = await tx.participant.findUniqueOrThrow({
-      where: { id: initial.id }, include: { customer: true, booking: { include: { business: true } } },
+      where: { id: initial.id }, include: { student: true, booking: { include: { business: true } } },
     });
     if (participant.booking.instructorId !== initial.booking.instructorId) throw new HttpError(409, 'Session changed. Please refresh and try again');
     if (participant.cancelledAt || participant.booking.status === 'CANCELLED') return;
@@ -295,10 +295,10 @@ publicRouter.post('/manage/:token/cancel', bookingLimit, asyncRoute(async (req, 
     await notifyWorkspace(tx, {
       businessId: participant.booking.businessId, instructorId: participant.booking.instructorId,
       bookingId: participant.bookingId, type: 'CANCELLATION', actionNeeded: true,
-      title: 'Customer cancelled a booking',
-      message: 'The customer cancelled through an existing private booking link. Any consumed package credit was restored.',
+      title: 'Student cancelled a booking',
+      message: 'The student cancelled through an existing private booking link. Any consumed package credit was restored.',
     });
-    await createBookingAccountAlerts(tx, participant.bookingId, 'CUSTOMER_CANCELLED', [participant.customer.userId]);
+    await createBookingAccountAlerts(tx, participant.bookingId, 'STUDENT_CANCELLED', [participant.student.userId]);
   });
   res.json(legacyBookingJson(await legacyParticipant(req.params.token)));
 }));
@@ -323,26 +323,26 @@ publicRouter.post('/manage/:token/reschedule', bookingLimit, asyncRoute(async (r
   res.json(legacyBookingJson(await legacyParticipant(req.params.token)));
 }));
 
-publicRouter.get('/account/bookings', requireAuth, requireCustomer, asyncRoute(async (req, res) => {
+publicRouter.get('/account/bookings', requireAuth, requireStudent, asyncRoute(async (req, res) => {
   const query = z.object({ businessSlug: z.string().trim().min(1).optional() }).strict().parse(req.query);
   const participants = await prisma.participant.findMany({
     where: {
-      customer: { userId: req.auth.user.id },
+      student: { userId: req.auth.user.id },
       ...(query.businessSlug ? { booking: { business: { slug: query.businessSlug } } } : {}),
     },
-    include: { customer: true, booking: { include: accountBookingInclude } },
+    include: { student: true, booking: { include: accountBookingInclude } },
     orderBy: { booking: { startAt: 'asc' } },
   });
   res.json({ bookings: participants.map(accountBookingJson) });
 }));
 
-publicRouter.post('/account/bookings/:participantId/cancel', bookingLimit, requireAuth, requireCustomer, asyncRoute(async (req, res) => {
+publicRouter.post('/account/bookings/:participantId/cancel', bookingLimit, requireAuth, requireStudent, asyncRoute(async (req, res) => {
   z.object({}).strict().parse(req.body ?? {});
   const initial = await accountParticipant(req.params.participantId, req.auth.user.id);
   await prisma.$transaction(async tx => {
     await lockInstructors(tx, [initial.booking.instructorId]);
     const participant = await tx.participant.findFirst({
-      where: { id: initial.id, customer: { userId: req.auth.user.id } },
+      where: { id: initial.id, student: { userId: req.auth.user.id } },
       include: { booking: { include: { business: true } } },
     });
     if (!participant) throw new HttpError(404, 'Booking not found');
@@ -355,28 +355,28 @@ publicRouter.post('/account/bookings/:participantId/cancel', bookingLimit, requi
     await tx.participant.update({ where: { id: participant.id }, data: { cancelledAt: new Date() } });
     const remaining = await tx.participant.count({ where: { bookingId: participant.bookingId, cancelledAt: null } });
     if (!remaining) await tx.booking.update({ where: { id: participant.bookingId }, data: { status: 'CANCELLED' } });
-    await notifyWorkspace(tx, { businessId: participant.booking.businessId, instructorId: participant.booking.instructorId, bookingId: participant.bookingId, type: 'CANCELLATION', actionNeeded: true, title: 'Customer cancelled a booking', message: 'The customer cancelled through their account. Any consumed package credit was restored. Cancellation notice queued; no external message sent.' });
-    await createBookingAccountAlerts(tx, participant.bookingId, 'CUSTOMER_CANCELLED', [req.auth.user.id]);
+    await notifyWorkspace(tx, { businessId: participant.booking.businessId, instructorId: participant.booking.instructorId, bookingId: participant.bookingId, type: 'CANCELLATION', actionNeeded: true, title: 'Student cancelled a booking', message: 'The student cancelled through their account. Any consumed package credit was restored. Cancellation notice queued; no external message sent.' });
+    await createBookingAccountAlerts(tx, participant.bookingId, 'STUDENT_CANCELLED', [req.auth.user.id]);
   });
   res.json(accountBookingJson(await accountParticipant(req.params.participantId, req.auth.user.id)));
 }));
 
-// Rescheduling from the customer side is a request, not a change. The coach
+// Rescheduling from the student side is a request, not a change. The coach
 // has to agree before a session actually moves.
-publicRouter.post('/account/bookings/:participantId/reschedule-requests', bookingLimit, requireAuth, requireCustomer, asyncRoute(async (req, res) => {
+publicRouter.post('/account/bookings/:participantId/reschedule-requests', bookingLimit, requireAuth, requireStudent, asyncRoute(async (req, res) => {
   const input = rescheduleRequestInput.parse(req.body);
   const initial = await accountParticipant(req.params.participantId, req.auth.user.id);
   if (initial.booking.type !== 'PRIVATE') throw new HttpError(400, 'Please contact your coach to move your place in a group session');
   await prisma.$transaction(async tx => {
     const participant = await tx.participant.findFirst({
-      where: { id: initial.id, customer: { userId: req.auth.user.id } },
+      where: { id: initial.id, student: { userId: req.auth.user.id } },
       select: { id: true, bookingId: true, booking: { select: { businessId: true } } },
     });
     if (!participant) throw new HttpError(404, 'Booking not found');
     await createRescheduleRequest(tx, {
       bookingId: participant.bookingId,
       businessId: participant.booking.businessId,
-      role: 'CUSTOMER',
+      role: 'STUDENT',
       userId: req.auth.user.id,
       participantId: participant.id,
       startAt: input.startAt,
@@ -387,40 +387,46 @@ publicRouter.post('/account/bookings/:participantId/reschedule-requests', bookin
 }));
 
 // Answering a proposal the provider side raised.
-publicRouter.post('/account/reschedule-requests/:requestId/accept', bookingLimit, requireAuth, requireCustomer, asyncRoute(async (req, res) => {
+publicRouter.post('/account/reschedule-requests/:requestId/accept', bookingLimit, requireAuth, requireStudent, asyncRoute(async (req, res) => {
   const body = rescheduleResponseInput.parse(req.body ?? {});
-  const participantId = await prisma.$transaction(async tx => {
+  const result = await prisma.$transaction(async tx => {
     const request = await tx.rescheduleRequest.findFirst({
-      where: { id: req.params.requestId, booking: { participants: { some: { cancelledAt: null, customer: { userId: req.auth.user.id } } } } },
+      where: { id: req.params.requestId, booking: { participants: { some: { cancelledAt: null, student: { userId: req.auth.user.id } } } } },
       select: { id: true, bookingId: true },
     });
     if (!request) throw new HttpError(404, 'Reschedule request not found');
-    await acceptRescheduleRequest(tx, request.id, { role: 'CUSTOMER', userId: req.auth.user.id, message: body.message });
+    const acceptance = await acceptRescheduleRequest(tx, request.id, {
+      role: 'STUDENT', userId: req.auth.user.id, message: body.message,
+    });
+    if (acceptance.outcome === 'EXPIRED') return acceptance;
     const participant = await tx.participant.findFirst({
-      where: { bookingId: request.bookingId, cancelledAt: null, customer: { userId: req.auth.user.id } },
+      where: { bookingId: request.bookingId, cancelledAt: null, student: { userId: req.auth.user.id } },
       select: { id: true },
     });
-    return participant?.id ?? null;
+    return { ...acceptance, participantId: participant?.id ?? null };
   }, { timeout: 30_000 });
-  if (!participantId) throw new HttpError(404, 'Booking not found');
-  res.json(accountBookingJson(await accountParticipant(participantId, req.auth.user.id)));
+  if (result.outcome === 'EXPIRED') {
+    throw new HttpError(result.error.status, result.error.message, result.error.details);
+  }
+  if (!result.participantId) throw new HttpError(404, 'Booking not found');
+  res.json(accountBookingJson(await accountParticipant(result.participantId, req.auth.user.id)));
 }));
 
-publicRouter.post('/account/reschedule-requests/:requestId/decline', bookingLimit, requireAuth, requireCustomer, asyncRoute(async (req, res) => {
+publicRouter.post('/account/reschedule-requests/:requestId/decline', bookingLimit, requireAuth, requireStudent, asyncRoute(async (req, res) => {
   const body = rescheduleResponseInput.parse(req.body ?? {});
   const participantId = await prisma.$transaction(async tx => {
     const request = await tx.rescheduleRequest.findFirst({
-      where: { id: req.params.requestId, booking: { participants: { some: { cancelledAt: null, customer: { userId: req.auth.user.id } } } } },
+      where: { id: req.params.requestId, booking: { participants: { some: { cancelledAt: null, student: { userId: req.auth.user.id } } } } },
       select: { id: true, bookingId: true, requestedByRole: true },
     });
     if (!request) throw new HttpError(404, 'Reschedule request not found');
-    if (request.requestedByRole === 'CUSTOMER') {
-      await withdrawRescheduleRequest(tx, request.id, { role: 'CUSTOMER', userId: req.auth.user.id });
+    if (request.requestedByRole === 'STUDENT') {
+      await withdrawRescheduleRequest(tx, request.id, { role: 'STUDENT', userId: req.auth.user.id });
     } else {
-      await declineRescheduleRequest(tx, request.id, { role: 'CUSTOMER', userId: req.auth.user.id, message: body.message });
+      await declineRescheduleRequest(tx, request.id, { role: 'STUDENT', userId: req.auth.user.id, message: body.message });
     }
     const participant = await tx.participant.findFirst({
-      where: { bookingId: request.bookingId, cancelledAt: null, customer: { userId: req.auth.user.id } },
+      where: { bookingId: request.bookingId, cancelledAt: null, student: { userId: req.auth.user.id } },
       select: { id: true },
     });
     return participant?.id ?? null;

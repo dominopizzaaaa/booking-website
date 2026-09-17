@@ -6,7 +6,7 @@ import { rateLimit } from 'express-rate-limit';
 import { ZodError } from 'zod';
 import { Prisma } from '@prisma/client';
 import { config, production } from './config.js';
-import { authRouter, requireAuth, requireCustomer, requireWorkspace } from './auth.js';
+import { authRouter, requireAuth, requireStudent, requireWorkspace } from './auth.js';
 import { adminRouter } from './admin.js';
 import { publicRouter } from './public.js';
 import { workspaceRouter } from './workspace.js';
@@ -39,7 +39,7 @@ app.use('/api', (req, res, next) => {
 });
 app.get('/api/health', async (_req, res) => {
   try { await prisma.$queryRaw`SELECT 1`; res.json({
-    ok: true, service: 'courtly', database: 'connected', accountModel: 'global-memberships',
+    ok: true, service: 'courtly', database: 'connected', accountModel: 'student-coach-club-affiliations',
     capabilities: {
       accountProfile: true, rescheduleRequests: true, coachAcceptance: true,
       paymentReversal: true, integrityFlags: true,
@@ -51,7 +51,7 @@ app.get('/api/health', async (_req, res) => {
 app.use('/api/auth', authRouter);
 app.use('/api', adminRouter);
 app.use('/api', publicRouter);
-app.use('/api/account', requireAuth, requireCustomer, accountRouter);
+app.use('/api/account', requireAuth, requireStudent, accountRouter);
 // Account-only public booking management installs its own authentication
 // middleware. Every provider route below additionally requires an active,
 // non-revoked membership selected on the session.

@@ -3,35 +3,33 @@ import type { Prisma } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { prisma } from './db.js';
-import { asyncRoute, HttpError, initials, type AuthRequest } from './http.js';
+import { asyncRoute, HttpError, initials, requireClubAccount, type AuthRequest } from './http.js';
 
 export const staffRouter = Router();
 
-const ownerOnly = asyncRoute((req, _res, next) => {
-  if (!req.auth) throw new HttpError(401, 'Please sign in to continue');
-  if (req.auth.membership?.role !== 'OWNER') throw new HttpError(403, 'Only the owner can manage staff access');
-  next();
-});
-
 const idSchema = z.string().trim().min(1).max(200);
-const roleSchema = z.enum(['ADMIN', 'COACH']);
 const instructorIdSchema = idSchema.nullable().optional();
+// Everyone a club adds is a coach: there is no other thing to be. The club
+// account is the club, and it is created with the club rather than invited.
 const createStaffSchema = z.object({
   email: z.string().trim().max(254).email().transform(value => value.toLowerCase()),
-  role: roleSchema,
   instructorId: instructorIdSchema,
 }).strict();
 const updateStaffSchema = z.object({
-  role: roleSchema.optional(),
   instructorId: instructorIdSchema,
-}).strict().refine(value => Object.keys(value).length > 0, 'Provide a role or instructor to update');
+}).strict();
 
 // Select identity fields explicitly so password hashes never enter a staff response.
 const staffSelect = {
-  id: true, userId: true, role: true, instructorId: true, active: true, createdAt: true,
+  id: true, userId: true, instructorId: true, active: true, createdAt: true,
   user: { select: { name: true, email: true, accountType: true } },
 } satisfies Prisma.MembershipSelect;
 type StaffMembership = Prisma.MembershipGetPayload<{ select: typeof staffSelect }>;
+type InstructorAffiliation = {
+  id: string;
+  userId: string;
+  user: { id: string; email: string; passwordHash: string | null; accountType: string };
+};
 
 const staffJson = (membership: StaffMembership) => ({
   id: membership.id,
@@ -39,15 +37,38 @@ const staffJson = (membership: StaffMembership) => ({
   name: membership.user.name,
   email: membership.user.email,
   accountType: membership.user.accountType,
-  role: membership.role,
   instructorId: membership.instructorId,
   active: membership.active,
   createdAt: membership.createdAt,
 });
 
-function ownerBusinessId(req: AuthRequest) {
+// Only deterministic credential-less placeholders may give their roster row
+// to a newly registered coach. A deactivated real affiliation stays attached
+// forever because historical lessons use it to identify that coach.
+export function isReplaceableInstructorPlaceholder(
+  instructorId: string,
+  membership: InstructorAffiliation | null | undefined,
+) {
+  if (!membership) return false;
+  const migrated = membership.id === `legacy-membership-${instructorId}`
+    && membership.userId === `legacy-instructor-${instructorId}`
+    && membership.user.id === `legacy-instructor-${instructorId}`
+    && membership.user.email === `legacy-instructor-${createHash('md5').update(instructorId).digest('hex')}@unclaimed.courtly.invalid`;
+  const seeded = membership.id === `seed-membership-${instructorId}`
+    && membership.userId === `seed-instructor-${instructorId}`
+    && membership.user.id === `seed-instructor-${instructorId}`
+    && membership.user.email === `seed-instructor-${instructorId}@unclaimed.courtly.invalid`;
+  return (migrated || seeded)
+    && membership.user.passwordHash === null
+    && membership.user.accountType === 'COACH';
+}
+
+function clubBusinessId(req: AuthRequest) {
   const membership = req.auth?.membership;
-  if (!membership || membership.role !== 'OWNER') throw new HttpError(403, 'Only the owner can manage staff access');
+  if (!membership || req.auth?.user.accountType !== 'CLUB'
+    || req.auth.business?.kind !== 'CLUB' || membership.instructorId !== null) {
+    throw new HttpError(403, 'Only the club account can manage its coaches');
+  }
   return membership.businessId;
 }
 
@@ -63,29 +84,18 @@ async function validateInstructor(
     select: {
       id: true,
       membership: { select: {
-        id: true, userId: true, role: true,
+        id: true, userId: true,
         user: { select: { id: true, email: true, passwordHash: true, accountType: true } },
       } },
     },
   });
   if (!instructor) throw new HttpError(400, 'Choose an instructor from this business');
   if (instructor.membership && instructor.membership.id !== membershipId) {
-    const migrated = instructor.membership.id === `legacy-membership-${instructor.id}`
-      && instructor.membership.userId === `legacy-instructor-${instructor.id}`
-      && instructor.membership.user.id === `legacy-instructor-${instructor.id}`
-      && instructor.membership.user.email === `legacy-instructor-${createHash('md5').update(instructor.id).digest('hex')}@unclaimed.courtly.invalid`;
-    const seeded = instructor.membership.id === `seed-membership-${instructor.id}`
-      && instructor.membership.userId === `seed-instructor-${instructor.id}`
-      && instructor.membership.user.id === `seed-instructor-${instructor.id}`
-      && instructor.membership.user.email === `seed-instructor-${instructor.id}@unclaimed.courtly.invalid`;
-    const placeholder = (migrated || seeded)
-      && instructor.membership.role === 'COACH'
-      && instructor.membership.user.passwordHash === null
-      && instructor.membership.user.accountType === 'COACH';
+    const placeholder = isReplaceableInstructorPlaceholder(instructor.id, instructor.membership);
     if (replacePlaceholder && placeholder) {
       return { membershipId: instructor.membership.id, userId: instructor.membership.userId };
     }
-    throw new HttpError(409, 'This instructor already has a staff membership');
+    throw new HttpError(409, 'This instructor is already linked to a coach affiliation');
   }
   return null;
 }
@@ -112,18 +122,22 @@ const newInstructor = (businessId: string, user: { name: string; email: string }
   initials: initials(user.name),
 });
 
-staffRouter.get('/staff', ownerOnly, asyncRoute(async (req, res) => {
+staffRouter.get('/staff', requireClubAccount, asyncRoute(async (req, res) => {
   const staff = await prisma.membership.findMany({
-    where: { businessId: ownerBusinessId(req), user: { passwordHash: { not: null } } },
+    // A removed affiliation remains in the database to preserve the coach
+    // identity behind historical lessons. This endpoint is the access roster,
+    // however, so only memberships that can currently enter the club belong
+    // in the list. Re-adding the same email restores the retained row below.
+    where: { businessId: clubBusinessId(req), active: true, user: { passwordHash: { not: null } } },
     select: staffSelect,
     orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
   });
   res.json(staff.map(staffJson));
 }));
 
-staffRouter.post('/staff', ownerOnly, asyncRoute(async (req, res) => {
+staffRouter.post('/staff', requireClubAccount, asyncRoute(async (req, res) => {
   const input = createStaffSchema.parse(req.body);
-  const businessId = ownerBusinessId(req);
+  const businessId = clubBusinessId(req);
   const staff = await prisma.$transaction(async tx => {
     const user = await tx.user.findUnique({
       where: { email: input.email },
@@ -132,29 +146,45 @@ staffRouter.post('/staff', ownerOnly, asyncRoute(async (req, res) => {
     if (!user || user.passwordHash === null) {
       throw new HttpError(404, 'No registered Courtly account was found for this email. Ask this person to self-register first');
     }
-    if (user.accountType === 'CUSTOMER') {
-      throw new HttpError(400, 'This account is registered as a customer, not a provider');
+    if (user.accountType === 'STUDENT') {
+      throw new HttpError(400, 'This account is registered as a student, not a coach');
     }
 
     const existing = await tx.membership.findUnique({
       where: { userId_businessId: { userId: user.id, businessId } },
-      select: { id: true },
+      select: { id: true, active: true, instructorId: true },
     });
-    if (existing) throw new HttpError(409, 'This account already has access to this business');
+    if (existing?.active) throw new HttpError(409, 'This account already has access to this business');
 
-    // A club-admin login is the club's own operating account, not a person's
-    // portable identity. One admin account therefore belongs to exactly one
-    // club, in both directions: an account that already works somewhere else
-    // cannot become an admin here, and an admin here cannot be added
-    // elsewhere later.
-    const elsewhere = await tx.membership.findMany({
-      where: { userId: user.id }, select: { role: true, business: { select: { name: true } } },
-    });
-    if (input.role === 'ADMIN' && elsewhere.length) {
-      throw new HttpError(409, `This account already belongs to ${elsewhere[0].business.name}. A club admin account is created by the club and belongs to that club alone.`);
+    // Only a coach joins a club's roster. A club account is the club itself,
+    // created with it, and belongs to that one club alone.
+    if (user.accountType !== 'COACH') {
+      throw new HttpError(400, 'Only a coach account can be added to a club. Ask them to register as a coach first.');
     }
-    if (elsewhere.some(membership => membership.role === 'ADMIN')) {
-      throw new HttpError(409, 'This account is a club admin account elsewhere and cannot be added to a second club.');
+
+    if (existing) {
+      if (!existing.instructorId) {
+        throw new HttpError(409, 'This former coach affiliation is missing its retained coach profile. Contact support before restoring access.');
+      }
+      // Re-using the retained roster identity is what keeps old club lessons
+      // attributable to this coach account. A new or different profile here
+      // would silently sever that history and bypass the club safeguard.
+      if (input.instructorId && input.instructorId !== existing.instructorId) {
+        throw new HttpError(409, 'This coach has a retained profile with lesson history. Re-add them without choosing a different coach profile.');
+      }
+      const restored = await tx.membership.update({
+        where: { id: existing.id },
+        data: { active: true },
+        select: staffSelect,
+      });
+      const activated = await tx.instructor.updateMany({
+        where: { id: existing.instructorId, businessId },
+        data: { active: true, name: user.name, email: user.email, initials: initials(user.name) },
+      });
+      if (activated.count !== 1) {
+        throw new HttpError(409, 'This former coach affiliation is missing its retained coach profile. Contact support before restoring access.');
+      }
+      return { staff: restored, restored: true };
     }
 
     const placeholder = input.instructorId
@@ -165,13 +195,12 @@ staffRouter.post('/staff', ownerOnly, asyncRoute(async (req, res) => {
       data: {
         user: { connect: { id: user.id } },
         business: { connect: { id: businessId } },
-        role: input.role,
         active: true,
+        // Every coach on a roster has a roster entry; one is created unless the
+        // club is reconnecting an existing profile with history behind it.
         ...(input.instructorId
           ? { instructor: { connect: { id: input.instructorId } } }
-          : input.role === 'COACH'
-            ? { instructor: { create: newInstructor(businessId, user) } }
-            : {}),
+          : { instructor: { create: newInstructor(businessId, user) } }),
       },
       select: staffSelect,
     });
@@ -183,41 +212,48 @@ staffRouter.post('/staff', ownerOnly, asyncRoute(async (req, res) => {
         data: { active: true, name: created.user.name, email: created.user.email, initials: initials(created.user.name) },
       });
     }
-    return created;
+    return { staff: created, restored: false };
   }, { isolationLevel: 'Serializable' });
-  res.status(201).json(staffJson(staff));
+  res.status(staff.restored ? 200 : 201).json(staffJson(staff.staff));
 }));
 
-staffRouter.patch('/staff/:membershipId', ownerOnly, asyncRoute(async (req, res) => {
+staffRouter.patch('/staff/:membershipId', requireClubAccount, asyncRoute(async (req, res) => {
   const membershipId = idSchema.parse(req.params.membershipId);
   const input = updateStaffSchema.parse(req.body);
-  const businessId = ownerBusinessId(req);
+  const businessId = clubBusinessId(req);
   const staff = await prisma.$transaction(async tx => {
     const current = await tx.membership.findFirst({
       where: { id: membershipId, businessId },
       select: staffSelect,
     });
     if (!current) throw new HttpError(404, 'Staff membership not found');
-    if (current.role === 'OWNER' || current.userId === req.auth.user.id) {
-      throw new HttpError(403, 'Owner access cannot be changed here');
+    if (current.userId === req.auth.user.id) {
+      throw new HttpError(403, 'The club account cannot change its own access here');
+    }
+    if (!current.active) {
+      throw new HttpError(409, 'Coach access has been removed. Add the coach again to restore it.');
     }
 
-    const role = input.role ?? current.role;
-    if (role === 'ADMIN' && current.role !== 'ADMIN') {
-      const elsewhere = await tx.membership.count({ where: { userId: current.userId, id: { not: current.id } } });
-      if (elsewhere) throw new HttpError(409, 'This account belongs to another club, so it cannot become this club\u2019s admin account.');
-    }
     const requestedInstructorId = input.instructorId === undefined ? current.instructorId : input.instructorId;
+    if (current.instructorId && requestedInstructorId !== current.instructorId) {
+      const historicalLessons = await tx.booking.count({
+        where: { businessId, instructorId: current.instructorId },
+      });
+      if (historicalLessons) {
+        throw new HttpError(409, 'This coach profile has lesson history and cannot be replaced. Edit its roster details instead.');
+      }
+    }
     const placeholder = input.instructorId
       ? await validateInstructor(tx, businessId, input.instructorId, current.id, true)
       : null;
     if (placeholder) await removePlaceholder(tx, placeholder);
-    const createRoster = role === 'COACH' && requestedInstructorId === null;
+    // A coach without a roster entry cannot be scheduled, so detaching one
+    // immediately creates a fresh profile in its place.
+    const createRoster = requestedInstructorId === null;
 
     const updated = await tx.membership.update({
       where: { id: current.id },
       data: {
-        role,
         ...(createRoster
           ? { instructor: { create: newInstructor(businessId, current.user) } }
           : input.instructorId === undefined
@@ -247,24 +283,29 @@ staffRouter.patch('/staff/:membershipId', ownerOnly, asyncRoute(async (req, res)
   res.json(staffJson(staff));
 }));
 
-staffRouter.delete('/staff/:membershipId', ownerOnly, asyncRoute(async (req, res) => {
+staffRouter.delete('/staff/:membershipId', requireClubAccount, asyncRoute(async (req, res) => {
   const membershipId = idSchema.parse(req.params.membershipId);
-  const businessId = ownerBusinessId(req);
+  const businessId = clubBusinessId(req);
   await prisma.$transaction(async tx => {
     const current = await tx.membership.findFirst({
       where: { id: membershipId, businessId },
-      select: { id: true, userId: true, role: true, instructorId: true },
+      select: { id: true, userId: true, instructorId: true },
     });
     if (!current) throw new HttpError(404, 'Staff membership not found');
-    if (current.role === 'OWNER' || current.userId === req.auth.user.id) {
-      throw new HttpError(403, 'Owner access cannot be removed');
+    if (current.userId === req.auth.user.id) {
+      throw new HttpError(403, 'The club account cannot remove its own access');
     }
 
     await tx.authSession.updateMany({
       where: { activeMembershipId: current.id },
       data: { activeMembershipId: null },
     });
-    await tx.membership.delete({ where: { id: current.id } });
+    // Access revocation must not erase the affiliation: historical bookings
+    // resolve their coach account through this link for the club safeguard.
+    await tx.membership.update({
+      where: { id: current.id },
+      data: { active: false },
+    });
     if (current.instructorId) {
       await tx.instructor.updateMany({
         where: { id: current.instructorId, businessId }, data: { active: false },

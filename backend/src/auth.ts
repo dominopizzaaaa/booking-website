@@ -21,7 +21,12 @@ function selectedMembership(
   memberships: MembershipWithBusiness[],
   requestedId?: string | null,
 ) {
-  if (accountType === 'CUSTOMER') return null;
+  if (accountType === 'STUDENT') return null;
+  // A club belongs to one club. Ignore any request to select another.
+  if (accountType === 'CLUB') {
+    return memberships.find(membership => membership.active
+      && membership.business.kind === 'CLUB' && membership.instructorId === null) ?? null;
+  }
   const requested = requestedId ? memberships.find(membership => membership.id === requestedId && membership.active) : null;
   return requested ?? memberships.find(membership => membership.active) ?? null;
 }
@@ -58,7 +63,7 @@ export const requireAuth: RequestHandler = asyncRoute(async (req, _res, next) =>
     throw new HttpError(401, 'Session expired. Please sign in again');
   }
   const { memberships, ...user } = session.user;
-  const membership = user.accountType === 'CUSTOMER'
+  const membership = user.accountType === 'STUDENT'
     ? null
     : memberships.find(candidate => candidate.id === session.activeMembershipId && candidate.active
       && candidate.userId === user.id && candidate.businessId === candidate.business.id) ?? null;
@@ -80,25 +85,33 @@ export const requireWorkspace: RequestHandler = (req, _res, next) => {
   const auth = (req as AccountRequest).auth;
   if (!auth) return next(new HttpError(401, 'Please sign in to continue'));
   const { user, membership, business } = auth;
-  if (!user.passwordHash || user.accountType === 'CUSTOMER' || !membership || !business || !membership.active
+  if (!user.passwordHash || user.accountType === 'STUDENT' || !membership || !business || !membership.active
     || membership.userId !== user.id || membership.businessId !== business.id) {
     return next(new HttpError(403, 'Select a business workspace to continue'));
   }
   next();
 };
 
-export const requireCustomer: RequestHandler = (req, _res, next) => {
+export const requireStudent: RequestHandler = (req, _res, next) => {
   const auth = (req as AccountRequest).auth;
   if (!auth) return next(new HttpError(401, 'Please sign in to continue'));
-  if (!auth.user.passwordHash || auth.user.accountType !== 'CUSTOMER') {
-    return next(new HttpError(403, 'A customer account is required to book or manage personal bookings'));
+  if (!auth.user.passwordHash || auth.user.accountType !== 'STUDENT') {
+    return next(new HttpError(403, 'A student account is required to book or manage personal bookings'));
   }
   next();
 };
 
 const authRouter = Router();
-const authLimit = rateLimit({
+const registrationLimit = rateLimit({
   windowMs: 15 * 60_000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false,
+  message: { error: 'Too many attempts. Please try again later.' },
+});
+const loginLimit = rateLimit({
+  windowMs: 15 * 60_000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false,
+  // Only failed credentials should spend the brute-force budget. Successful
+  // sign-ins are ordinary use and must not lock out a shared office or test
+  // runner that legitimately signs several accounts in from one address.
+  skipSuccessfulRequests: true,
   message: { error: 'Too many attempts. Please try again later.' },
 });
 const credentials = z.object({
@@ -107,14 +120,10 @@ const credentials = z.object({
 }).strict();
 const registration = z.object({
   // Account type must always be an explicit choice. Silently creating an
-  // owner workspace when an older or custom client omits this field is both
+  // club workspace when an older or custom client omits this field is both
   // surprising and difficult for the user to undo.
-  accountType: z.enum(['CUSTOMER', 'COACH', 'OWNER']),
+  accountType: z.enum(['STUDENT', 'COACH', 'CLUB']),
   businessName: z.string().trim().min(2).max(120).optional(),
-  // A club or academy collects lesson money and later pays its coaches; an
-  // independent coach is paid by their students directly. This choice sets
-  // the money path for every lesson booked in the new workspace.
-  businessKind: z.enum(['CLUB', 'SOLO']).default('CLUB'),
   name: z.string().trim().min(2).max(120),
   email: z.string().trim().max(254).email().transform(value => value.toLowerCase()),
   password: z.string().min(12, 'Use a password with at least 12 characters').max(72)
@@ -122,45 +131,45 @@ const registration = z.object({
   phone: z.string().trim().max(40).optional(),
   parentName: z.string().trim().max(120).optional(),
 }).strict().superRefine((value, context) => {
-  if (value.accountType === 'OWNER' && !value.businessName) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ['businessName'], message: 'Business name is required for an owner account' });
+  if (value.accountType === 'CLUB' && !value.businessName) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['businessName'], message: 'A club or academy name is required' });
   }
 });
 
-authRouter.post('/register', authLimit, asyncRoute(async (req, res) => {
+authRouter.post('/register', registrationLimit, asyncRoute(async (req, res) => {
   const body = registration.parse(req.body);
   const passwordHash = await bcrypt.hash(body.password, 12);
   const result = await prisma.$transaction(async tx => {
     const userData = {
-      name: body.name, email: body.email, passwordHash, accountType: body.accountType,
+      name: body.accountType === 'CLUB' ? body.businessName! : body.name,
+      email: body.email, passwordHash, accountType: body.accountType,
       phone: body.phone ?? '', parentName: body.parentName ?? '',
     };
-    if (body.accountType !== 'OWNER') {
+    if (body.accountType !== 'CLUB') {
       const user = await tx.user.create({ data: userData });
       return { user, membershipId: null as string | null };
     }
     const businessName = body.businessName!;
     const business = await tx.business.create({
       data: {
-        name: businessName, ownerName: body.name, email: body.email, kind: body.businessKind,
+        name: businessName, ownerName: body.name, email: body.email, kind: 'CLUB',
         slug: `${businessName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 45) || 'courtly'}-${randomBytes(4).toString('hex')}`,
       },
     });
-    const instructor = await tx.instructor.create({
-      data: { businessId: business.id, name: body.name, initials: initials(body.name), email: body.email },
-    });
     const user = await tx.user.create({ data: userData });
+    // A club account is the club, not a person, so it gets no roster entry of
+    // its own. Whoever coaches here — including the founder — registers a coach
+    // account and is added to the roster like anyone else.
     const membership = await tx.membership.create({
-      data: { userId: user.id, businessId: business.id, role: 'OWNER', instructorId: instructor.id },
+      data: { userId: user.id, businessId: business.id },
     });
-    if (membership.businessId !== instructor.businessId) throw new HttpError(400, 'Instructor membership must belong to this business');
     return { user, membershipId: membership.id };
   });
   await issueSession(result.user.id, res, result.membershipId, req.cookies?.[config.sessionCookie]);
   res.status(201).json(await authState(result.user.id, result.membershipId));
 }));
 
-authRouter.post('/login', authLimit, asyncRoute(async (req, res) => {
+authRouter.post('/login', loginLimit, asyncRoute(async (req, res) => {
   const body = credentials.parse(req.body);
   const user = await prisma.user.findUnique({
     where: { email: body.email },
@@ -210,8 +219,8 @@ authRouter.post('/demo', rateLimit({
     tx => seedBusiness(tx, { isDemo: true, slug: `marcus-tan-${randomBytes(6).toString('hex')}` }),
     { timeout: 60_000 },
   );
-  await issueSession(result.owner.id, res, result.ownerMembership.id, typeof previous === 'string' ? previous : undefined);
-  res.status(201).json(await authState(result.owner.id, result.ownerMembership.id));
+  await issueSession(result.clubAccount.id, res, result.clubMembership.id, typeof previous === 'string' ? previous : undefined);
+  res.status(201).json(await authState(result.clubAccount.id, result.clubMembership.id));
 }));
 
 authRouter.post('/logout', asyncRoute(async (req, res) => {
@@ -232,6 +241,9 @@ authRouter.get('/me', requireAuth, asyncRoute(async (req, res) => {
 }));
 
 authRouter.patch('/me', requireAuth, asyncRoute(async (req, res) => {
+  if (req.auth.user.accountType === 'CLUB') {
+    throw new HttpError(403, 'Edit the club profile from club settings');
+  }
   const input = editablePersonalProfile.parse(req.body);
   await updatePersonalProfile(req.auth.user.id, input);
   res.json(await authState(req.auth.user.id, req.auth.membership?.id ?? null));
@@ -242,19 +254,20 @@ authRouter.patch('/me', requireAuth, asyncRoute(async (req, res) => {
  *
  * Coaches take personal students who have nothing to do with a club, and
  * those students pay the coach directly. This creates a SOLO workspace where
- * the coach is the owner, alongside any club memberships they already hold.
+ * the coach manages it directly, alongside any club affiliations they hold.
  * Clubs are never joined this way: a club adds a coach, never the reverse.
  */
 authRouter.post('/practice', requireAuth, asyncRoute(async (req, res) => {
   const body = z.object({ name: z.string().trim().min(2).max(120) }).strict().parse(req.body);
-  if (req.auth.user.accountType === 'CUSTOMER') throw new HttpError(403, 'A coach or owner account is required to run a practice');
+  if (req.auth.user.accountType !== 'COACH') throw new HttpError(403, 'Only a coach account can run its own practice');
   if (!req.auth.user.passwordHash) throw new HttpError(403, 'This account cannot create a workspace');
-  const existing = await prisma.membership.findFirst({
-    where: { userId: req.auth.user.id, role: 'OWNER', business: { kind: 'SOLO' } },
-    select: { id: true, business: { select: { name: true } } },
-  });
-  if (existing) throw new HttpError(409, `You already run ${existing.business.name} as your own practice.`);
   const result = await prisma.$transaction(async tx => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`solo-practice:${req.auth.user.id}`}, 0))`;
+    const existing = await tx.membership.findFirst({
+      where: { userId: req.auth.user.id, business: { kind: 'SOLO' } },
+      select: { id: true, business: { select: { name: true } } },
+    });
+    if (existing) throw new HttpError(409, `You already run ${existing.business.name} as your own practice.`);
     const business = await tx.business.create({
       data: {
         name: body.name, ownerName: req.auth.user.name, email: req.auth.user.email, kind: 'SOLO',
@@ -265,10 +278,10 @@ authRouter.post('/practice', requireAuth, asyncRoute(async (req, res) => {
       data: { businessId: business.id, name: req.auth.user.name, initials: initials(req.auth.user.name), email: req.auth.user.email },
     });
     const membership = await tx.membership.create({
-      data: { userId: req.auth.user.id, businessId: business.id, role: 'OWNER', instructorId: instructor.id },
+      data: { userId: req.auth.user.id, businessId: business.id, instructorId: instructor.id },
     });
     return membership;
-  });
+  }, { timeout: 30_000 });
   await prisma.authSession.update({
     where: { id: req.auth.session.id, userId: req.auth.user.id },
     data: { activeMembershipId: result.id },
@@ -278,6 +291,9 @@ authRouter.post('/practice', requireAuth, asyncRoute(async (req, res) => {
 
 const switchWorkspace = asyncRoute(async (req, res) => {
   const { membershipId } = z.object({ membershipId: z.string().trim().min(1).max(200).nullable() }).strict().parse(req.body);
+  if (req.auth.user.accountType === 'CLUB') {
+    throw new HttpError(403, 'A club account belongs to one club and cannot switch workspaces');
+  }
   if (membershipId === null) {
     await prisma.authSession.update({
       where: { id: req.auth.session.id, userId: req.auth.user.id },
@@ -286,7 +302,7 @@ const switchWorkspace = asyncRoute(async (req, res) => {
     res.json(await authState(req.auth.user.id, null));
     return;
   }
-  if (req.auth.user.accountType === 'CUSTOMER') throw new HttpError(403, 'This account cannot access business workspaces');
+  if (req.auth.user.accountType === 'STUDENT') throw new HttpError(403, 'This account cannot access business workspaces');
   const membership = await prisma.membership.findUnique({
     where: { id: membershipId },
     include: { business: true },
