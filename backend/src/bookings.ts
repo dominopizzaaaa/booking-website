@@ -3,19 +3,30 @@ import { z } from 'zod';
 import { prisma } from './db.js';
 import { adminOnly, asyncRoute, coachScope, HttpError } from './http.js';
 import { bookingInput, cancelBooking, createBookings, lockInstructors, rescheduleBooking } from './scheduling.js';
-import { bookingInclude, bookingJson } from './serializers.js';
+import { bookingInclude, bookingJson, withoutBookingFinancials } from './serializers.js';
+import { createBookingAccountAlerts } from './account-notifications.js';
 export const bookingsRouter = Router();
 bookingsRouter.post('/bookings', asyncRoute(async (req, res) => {
   const input = bookingInput.parse(req.body);
   coachScope(req, input.instructorId);
+  if (req.auth.membership!.role === 'COACH' && input.packageId) {
+    throw new HttpError(403, 'Coaches cannot apply lesson packages');
+  }
   // Provider-created bookings may select an existing customer, but they may
   // never mint a guest/contact-only identity. The scheduler enforces that the
   // selected Customer is linked to a registered global account.
-  res.status(201).json(await createBookings(req.auth.business!.id, input, { requireLinkedCustomer: true }));
+  const result = await createBookings(req.auth.business!.id, input, { requireLinkedCustomer: true });
+  res.status(201).json(req.auth.membership!.role === 'COACH'
+    ? { ...result, bookings: result.bookings.map(withoutBookingFinancials) }
+    : result);
 }));
 bookingsRouter.get('/bookings', asyncRoute(async (req, res) => {
-  const bookings = await prisma.booking.findMany({ where: { businessId: req.auth.business!.id, instructorId: req.auth.membership!.role === 'COACH' ? req.auth.membership!.instructorId || '__none__' : undefined }, include: bookingInclude, orderBy: { startAt: 'asc' } });
-  res.json(bookings.map(b => bookingJson(b)));
+  const coach = req.auth.membership!.role === 'COACH';
+  const bookings = await prisma.booking.findMany({ where: { businessId: req.auth.business!.id, instructorId: coach ? req.auth.membership!.instructorId || '__none__' : undefined }, include: bookingInclude, orderBy: { startAt: 'asc' } });
+  res.json(bookings.map(b => {
+    const json = bookingJson(b);
+    return coach ? withoutBookingFinancials(json) : json;
+  }));
 }));
 bookingsRouter.patch('/bookings/:id', asyncRoute(async (req, res) => {
   const body = z.object({ status: z.enum(['CONFIRMED', 'PENDING', 'CANCELLED', 'COMPLETED']).optional(), notes: z.string().max(2000).optional() }).strict().parse(req.body);
@@ -27,19 +38,28 @@ bookingsRouter.patch('/bookings/:id', asyncRoute(async (req, res) => {
     const current = await tx.booking.findUniqueOrThrow({ where: { id: initial.id } });
     coachScope(req, current.instructorId);
     if (current.instructorId !== initial.instructorId) throw new HttpError(409, 'Session changed. Please retry.');
-    if (body.status && current.status === 'CANCELLED' && body.status !== 'CANCELLED') throw new HttpError(400, 'Cancelled sessions cannot be reopened. Create a new booking.');
-    if (body.status === 'CONFIRMED') {
+    const statusChanged = body.status !== undefined && body.status !== current.status;
+    if (statusChanged && current.status === 'CANCELLED') throw new HttpError(400, 'Cancelled sessions cannot be reopened. Create a new booking.');
+    if (statusChanged && body.status === 'CONFIRMED') {
       const location = await tx.location.findUniqueOrThrow({ where: { id: current.locationId } });
       if ((location.type === 'RENTED' || location.requiresApproval) && req.auth.membership!.role === 'COACH') {
         throw new HttpError(403, 'Only an owner or admin can confirm a lesson that requires venue approval');
       }
     }
-    if (body.status === 'CANCELLED') await cancelBooking(tx, req.auth.business.id, current.id);
-    else if (body.status) await tx.booking.update({ where: { id: current.id }, data: { status: body.status } });
+    if (statusChanged && body.status === 'CANCELLED') await cancelBooking(tx, req.auth.business.id, current.id);
+    else if (statusChanged && body.status) {
+      await tx.booking.update({ where: { id: current.id }, data: { status: body.status } });
+      const event = body.status === 'CONFIRMED' ? 'CONFIRMED'
+        : body.status === 'PENDING' ? 'PENDING'
+          : body.status === 'COMPLETED' ? 'COMPLETED'
+            : null;
+      if (event) await createBookingAccountAlerts(tx, current.id, event);
+    }
     if (body.notes !== undefined) await tx.booking.update({ where: { id: current.id }, data: { notes: body.notes } });
     return tx.booking.findUniqueOrThrow({ where: { id: current.id }, include: bookingInclude });
   });
-  res.json(bookingJson(result));
+  const json = bookingJson(result);
+  res.json(req.auth.membership!.role === 'COACH' ? withoutBookingFinancials(json) : json);
 }));
 bookingsRouter.patch('/bookings/:id/participants/:participantId', asyncRoute(async (req, res) => {
   const body = z.object({ attendance: z.enum(['UNMARKED', 'PRESENT', 'ABSENT']) }).strict().parse(req.body);
@@ -69,7 +89,7 @@ bookingsRouter.post('/bookings/:id/reschedule', asyncRoute(async (req, res) => {
     if (current.instructorId !== initial.instructorId) throw new HttpError(409, 'Session changed. Please retry.');
     return rescheduleBooking(tx, req.auth.business.id, req.params.id, changes);
   }, { timeout: 30_000 });
-  res.json(result);
+  res.json(req.auth.membership!.role === 'COACH' ? withoutBookingFinancials(result) : result);
 }));
 bookingsRouter.post('/payments', adminOnly, asyncRoute(async (req, res) => {
   const input = z.object({ customerId: z.string().min(1), bookingId: z.string().min(1).optional(), packageId: z.string().min(1).optional(), participantId: z.string().min(1).optional(), amount: z.number().int().positive().max(100_000_000), method: z.enum(['CASH', 'BANK_TRANSFER', 'OTHER']), note: z.string().max(1000).default('') }).refine(x => !(x.bookingId && x.packageId), { message: 'Record a payment against a booking or a package, not both' }).parse(req.body);

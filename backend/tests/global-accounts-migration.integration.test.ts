@@ -18,6 +18,7 @@ const migrationFiles = [
   '20260916030000_private_management_tokens',
   '20260916040000_global_accounts',
   '20260916050000_membership_instructor_business_invariant',
+  '20260917000000_account_notifications',
 ].map(name => fileURLToPath(new URL(`../prisma/migrations/${name}/migration.sql`, import.meta.url)));
 const prismaCli = fileURLToPath(new URL('../node_modules/prisma/build/index.js', import.meta.url));
 

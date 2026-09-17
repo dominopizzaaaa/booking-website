@@ -12,7 +12,7 @@ import { Empty, PageHeading, Stat, type ManagementProps } from './management-ui'
 
 export function ManagementView({ view, data, refresh }: { view: string; data: Workspace; refresh: () => Promise<void> }) {
   const props = { data, refresh };
-  if (data.user.role === 'COACH' && !['customers', 'settings', 'availability'].includes(view)) return <div className="panel"><Empty title="Owner or administrator access required">Your account can view assigned customers and availability. Business management and financial records are restricted.</Empty></div>;
+  if (data.user.role === 'COACH' && !['customers', 'availability'].includes(view)) return <div className="panel"><Empty title="Owner or administrator access required">Your account can view assigned customers and availability. Business management and financial records are restricted.</Empty></div>;
   switch (view) {
     case 'services': return <ServicesView {...props} />;
     case 'locations': return <LocationsView {...props} />;

@@ -1,4 +1,4 @@
-import { CustomerBookings } from '@/components/public-booking';
+import { CustomerApp } from '@/components/customer-app';
 
 export default async function CustomerBookingsPage({
   searchParams,
@@ -7,5 +7,5 @@ export default async function CustomerBookingsPage({
 }) {
   const params = await searchParams;
   const slug = Array.isArray(params.slug) ? params.slug[0] : params.slug;
-  return <CustomerBookings slug={slug} />;
+  return <CustomerApp slug={slug} />;
 }

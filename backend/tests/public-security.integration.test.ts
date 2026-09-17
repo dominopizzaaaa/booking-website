@@ -85,6 +85,39 @@ describe.sequential('Public API security regressions', () => {
     expect(JSON.stringify(response.body)).not.toContain(privateLocationNotes);
   });
 
+  it('returns only locations referenced by a filtered bookable service', async () => {
+    const unusedLocation = await prisma.location.create({
+      data: { businessId: f.business.id, name: 'Private operations office', active: true },
+    });
+    const unavailableLocation = await prisma.location.create({
+      data: { businessId: f.business.id, name: 'Unavailable roster court', active: true },
+    });
+    const unclaimedInstructor = await prisma.instructor.create({
+      data: { businessId: f.business.id, name: 'Unclaimed Coach', initials: 'UC', active: true },
+    });
+    const unclaimedUser = await prisma.user.create({
+      data: { name: 'Unclaimed Coach', email: `${randomUUID()}@unclaimed.courtly.invalid`, accountType: 'COACH' },
+    });
+    f.tracker.ownUser(unclaimedUser.id);
+    await prisma.membership.create({
+      data: { userId: unclaimedUser.id, businessId: f.business.id, role: 'COACH', instructorId: unclaimedInstructor.id },
+    });
+    await prisma.service.create({
+      data: {
+        businessId: f.business.id, name: 'Unavailable service', active: true,
+        locations: { create: {
+          locationId: unavailableLocation.id, price: 9000, duration: 60,
+          instructors: { create: { instructorId: unclaimedInstructor.id } },
+        } },
+      },
+    });
+
+    const response = await request(app).get(`/api/public/${f.business.slug}`).expect(200);
+    expect(response.body.locations.map((location: { id: string }) => location.id)).toEqual([f.location.id]);
+    expect(JSON.stringify(response.body)).not.toContain(unusedLocation.id);
+    expect(JSON.stringify(response.body)).not.toContain(unavailableLocation.id);
+  });
+
   it('hides active unclaimed instructors and rejects their slots and account bookings', async () => {
     // Model a migrated roster entry: both instructor and membership remain active,
     // but the deterministic global account has never been claimed with a password.

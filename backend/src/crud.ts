@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { prisma } from './db.js';
 import { asyncRoute, HttpError, adminOnly, coachScope, initials, type AuthRequest } from './http.js';
 import { bookableInstructorWhere } from './scheduling.js';
+import { withoutServiceFinancials } from './serializers.js';
 
 export const crudRouter = Router();
 type Tx = Prisma.TransactionClient;
@@ -102,8 +103,25 @@ const mappingData = (mapping: ServiceLocationInput) => ({ price: mapping.price, 
   instructors: { create: mapping.instructorIds.map(instructorId => ({ instructorId })) } });
 
 crudRouter.get('/services', asyncRoute(async (req, res) => {
-  const services = await prisma.service.findMany({ where: { businessId: req.auth.business.id }, include: serviceLocationsInclude, orderBy: { name: 'asc' } });
-  res.json(services.map(serviceJson));
+  const coach = req.auth.membership?.role === 'COACH';
+  const instructorId = coach ? scopedInstructor(req) : undefined;
+  const assignedLocationScope = { instructors: { some: { instructorId } } };
+  const services = await prisma.service.findMany({
+    where: {
+      businessId: req.auth.business.id,
+      ...(coach ? { locations: { some: assignedLocationScope } } : {}),
+    },
+    include: {
+      locations: coach
+        ? { where: assignedLocationScope, include: { instructors: { where: { instructorId } } } }
+        : serviceLocationsInclude.locations,
+    },
+    orderBy: { name: 'asc' },
+  });
+  res.json(services.map(service => {
+    const json = serviceJson(service);
+    return coach ? withoutServiceFinancials(json) : json;
+  }));
 }));
 crudRouter.post('/services', adminOnly, asyncRoute(async (req, res) => {
   const { locations, ...input } = serviceSchema.parse(req.body);
