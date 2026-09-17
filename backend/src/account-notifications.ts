@@ -4,6 +4,8 @@ import { DateTime } from 'luxon';
 import { z } from 'zod';
 import { prisma } from './db.js';
 import { asyncRoute, HttpError } from './http.js';
+import { editablePersonalProfile, updatePersonalProfile } from './account-profile.js';
+import { authState } from './serializers.js';
 
 export const accountRouter = Router();
 export type BookingAccountAlert =
@@ -121,6 +123,15 @@ export async function createBookingAccountAlerts(
   });
   return result.count;
 }
+
+// Personal details belong to the customer account, not to a selected club.
+// This router is mounted behind requireAuth + requireCustomer and deliberately
+// sits before every provider-only workspace guard in app.ts.
+accountRouter.patch('/profile', asyncRoute(async (req, res) => {
+  const input = editablePersonalProfile.parse(req.body);
+  await updatePersonalProfile(req.auth.user.id, input);
+  res.json(await authState(req.auth.user.id, null));
+}));
 
 accountRouter.get('/notifications', asyncRoute(async (req, res) => {
   const notifications = await prisma.accountNotification.findMany({
