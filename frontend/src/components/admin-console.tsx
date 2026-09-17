@@ -158,10 +158,10 @@ export function AdminConsole() {
 
         <section className="!mt-6 grid grid-cols-2 gap-3 sm:!mt-7 sm:grid-cols-3 lg:grid-cols-4">
           <StatCard icon={<Building2 size={16} />} label="Businesses" value={t?.businesses} hint={t ? `${t.realBusinesses} real · ${t.demoBusinesses} demo` : undefined} />
-          <StatCard icon={<Users size={16} />} label="Customers" value={t?.customers} hint={t ? `${t.users} staff logins` : undefined} />
+          <StatCard icon={<Users size={16} />} label="Students" value={t?.students} hint={t ? `${t.memberships} business affiliations` : undefined} />
           <StatCard icon={<CalendarClock size={16} />} label="Bookings" value={t?.bookings} hint={t ? `${t.upcomingBookings} upcoming` : undefined} />
           <StatCard icon={<TrendingUp size={16} />} label="New this week" value={t?.bookingsLast7Days} hint="bookings created" />
-          <StatCard icon={<Wallet size={16} />} label="Payments logged" value={t?.paymentsCount} hint={t ? formatMoney(t.paymentsTotal) : undefined} />
+          <StatCard icon={<Wallet size={16} />} label="Student payments" value={t?.paymentsCount} hint={t ? `${formatMoney(t.paymentsTotal)} collected` : undefined} />
           <StatCard icon={<Layers3 size={16} />} label="Packages" value={t?.packages} hint="prepaid plans" />
         </section>
 
@@ -174,7 +174,7 @@ export function AdminConsole() {
             <div className="flex flex-wrap items-center gap-2">
               <div className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
                 <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#9aa48e]" />
-                <input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search name, owner, email…" className="!min-h-11 !rounded-xl !border-[#dfe5dd] !pl-9 !pr-3 !text-base sm:!text-sm" />
+                <input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search name, contact, email…" className="!min-h-11 !rounded-xl !border-[#dfe5dd] !pl-9 !pr-3 !text-base sm:!text-sm" />
               </div>
               <div className="flex rounded-xl border border-[#dce4d4] bg-white p-1">
                 {(['all', 'real', 'demo'] as Filter[]).map(option => (
@@ -197,8 +197,8 @@ export function AdminConsole() {
                   <thead>
                     <tr className="border-b border-[#eef0e9] text-[10px] uppercase tracking-[0.6px] text-[#a1a794]">
                       <th className="px-5 py-3 font-medium">Business</th>
-                      <th className="px-3 py-3 font-medium">Owner</th>
-                      <th className="px-3 py-3 text-center font-medium">Customers</th>
+                      <th className="px-3 py-3 font-medium">Contact</th>
+                      <th className="px-3 py-3 text-center font-medium">Students</th>
                       <th className="px-3 py-3 text-center font-medium">Bookings</th>
                       <th className="px-3 py-3 text-center font-medium">Places</th>
                       <th className="px-3 py-3 font-medium">Created</th>
@@ -216,7 +216,7 @@ export function AdminConsole() {
                           <p className="!mt-0.5 truncate text-[11px] text-[#98a08e]">/{business.slug}</p>
                         </td>
                         <td className="px-3 py-3.5"><p className="truncate text-[13px] text-[#4d5e51]">{business.ownerName}</p><p className="truncate text-[11px] text-[#98a08e]">{business.email}</p></td>
-                        <td className="px-3 py-3.5 text-center tabular-nums text-[#4d5e51]">{business.counts.customers}</td>
+                        <td className="px-3 py-3.5 text-center tabular-nums text-[#4d5e51]">{business.counts.students}</td>
                         <td className="px-3 py-3.5 text-center tabular-nums text-[#4d5e51]">{business.counts.bookings}</td>
                         <td className="px-3 py-3.5 text-center tabular-nums text-[#4d5e51]">{business.counts.locations}</td>
                         <td className="px-3 py-3.5 text-[12px] text-[#818c78]">{relative(business.createdAt)}</td>
@@ -242,7 +242,7 @@ export function AdminConsole() {
                         <button onClick={() => setConfirm(business)} aria-label={`Delete ${business.name}`} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-[#f0dcd7] bg-[#fdf3f0] text-[#b0654f]"><Trash2 size={15} /></button>
                       </div>
                       <div className="!mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[#818c78]">
-                        <span><b className="font-semibold text-[#4d5e51]">{business.counts.customers}</b> customers</span>
+                        <span><b className="font-semibold text-[#4d5e51]">{business.counts.students}</b> students</span>
                         <span><b className="font-semibold text-[#4d5e51]">{business.counts.bookings}</b> bookings</span>
                         <span><b className="font-semibold text-[#4d5e51]">{business.counts.locations}</b> places</span>
                         <span>{relative(business.createdAt)}</span>
@@ -268,7 +268,7 @@ export function AdminConsole() {
             <p className="!mt-2 text-sm leading-relaxed text-[#7c8878]">
               {confirm === 'demos'
                 ? 'This permanently deletes every demo business and all of their data. Real provider accounts are untouched.'
-                : 'This permanently deletes the business and every customer, booking, package and payment it owns. This cannot be undone.'}
+                : 'This permanently deletes the business and every student, booking, package and payment it owns. This cannot be undone.'}
             </p>
             <div className="!mt-6 flex gap-3">
               <button onClick={() => setConfirm(null)} disabled={working} className="inline-flex min-h-12 flex-1 items-center justify-center rounded-xl border border-[#dce4d4] bg-white text-sm font-semibold text-[#5b6c53] transition hover:bg-[#f2f5ec] disabled:opacity-60">Cancel</button>

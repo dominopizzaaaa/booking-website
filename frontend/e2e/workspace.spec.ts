@@ -62,7 +62,7 @@ test('demo workspace loads, persists, and adapts to the screen', async ({ page }
   expect(errors).toEqual([]);
 });
 
-test('provider can inspect lessons and open booking form', async ({ page }) => {
+test('club can inspect lessons and open booking form', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: /Your day, in a good place/ })).toBeVisible({ timeout: 45_000 });
   const lesson = page.locator('.lesson-card').first();
@@ -83,7 +83,7 @@ test('provider can inspect lessons and open booking form', async ({ page }) => {
   await create.click();
   const createDialog = page.getByRole('dialog', { name: 'Create' });
   await expect(createDialog.getByRole('heading', { name: 'Quick actions', exact: true })).toBeVisible();
-  for (const action of ['New booking', 'Customers', 'Availability', 'Services', 'Locations', 'Payments']) {
+  for (const action of ['New booking', 'Students', 'Availability', 'Services', 'Locations', 'Payments']) {
     await expect(createDialog.getByRole('button', { name: new RegExp(`^${action}\\b`) })).toBeVisible();
   }
   await createDialog.getByRole('button', { name: /^New booking\b/ }).click();
@@ -93,8 +93,45 @@ test('provider can inspect lessons and open booking form', async ({ page }) => {
   await expect(bookingDialog.getByLabel('Location', { exact: true })).toBeVisible();
   await bookingDialog.getByRole('button', { name: 'Close dialog' }).click();
   await page.getByRole('button', { name: 'Search workspace' }).click();
-  await page.getByRole('textbox', { name: 'Search customers and bookings' }).fill('tennis');
+  await page.getByRole('textbox', { name: 'Search students and bookings' }).fill('tennis');
   await expect(page.getByRole('dialog').getByRole('button', { name: /Tennis/i }).first()).toBeVisible();
+});
+
+test('booking states distinguish coach and venue waits and keep completed lessons terminal', async ({ page }) => {
+  const response = await page.request.get('/api/workspace');
+  expect(response.ok()).toBeTruthy();
+  const workspace = await response.json();
+  expect(workspace.bookings.length).toBeGreaterThanOrEqual(3);
+  const [coachSource, venueSource, completedSource] = workspace.bookings;
+  const bookings = workspace.bookings.map((booking: typeof coachSource) => {
+    if (booking.id === coachSource.id) {
+      return { ...booking, serviceName: 'Coach response status check', status: 'PENDING', coachAcceptance: 'PENDING' };
+    }
+    if (booking.id === venueSource.id) {
+      return { ...booking, serviceName: 'Venue status check', status: 'PENDING', coachAcceptance: 'ACCEPTED' };
+    }
+    if (booking.id === completedSource.id) {
+      return { ...booking, serviceName: 'Completed status check', status: 'COMPLETED', coachAcceptance: 'NOT_REQUIRED' };
+    }
+    return booking;
+  });
+  await page.route('**/api/workspace', route => route.fulfill({ json: { ...workspace, bookings } }));
+
+  await page.goto('/?tab=explore&view=bookings');
+  await expect(page.locator('main').getByRole('heading', { name: 'Bookings', exact: true })).toBeVisible();
+
+  const coachRow = page.getByRole('row').filter({ hasText: 'Coach response status check' });
+  const venueRow = page.getByRole('row').filter({ hasText: 'Venue status check' });
+  const completedRow = page.getByRole('row').filter({ hasText: 'Completed status check' });
+  await expect(coachRow.getByText('Awaiting coach', { exact: true })).toBeVisible();
+  await expect(venueRow.getByText('Venue pending', { exact: true })).toBeVisible();
+  await expect(completedRow.getByText('Completed', { exact: true })).toBeVisible();
+
+  await completedRow.getByRole('button', { name: /Open booking details/ }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('heading', { name: 'Completed status check', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Propose a new time', exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Cancel lesson', exact: true })).toHaveCount(0);
 });
 
 test('navigation shows every connected management screen', async ({ page }) => {
@@ -132,7 +169,7 @@ test('navigation shows every connected management screen', async ({ page }) => {
   const destinations = [
     ['calendar', 'Calendar', 'Your calendar'],
     ['bookings', 'Bookings', 'Bookings'],
-    ['customers', 'Customers', 'Customers'],
+    ['students', 'Students', 'Students'],
     ['services', 'Services', 'Services'],
     ['locations', 'Locations', 'Locations'],
     ['team', 'My coaches', 'My coaches'],
@@ -160,10 +197,10 @@ test('navigation shows every connected management screen', async ({ page }) => {
   await expect(workspaceTab(await visibleWorkspaceNavigation(page), 'Alerts')).toHaveAttribute('aria-current', 'page');
 
   await openWorkspaceTab(page, 'Profile');
-  await expect(page.locator('main').getByText('Workspace owner', { exact: true })).toBeVisible();
+  await expect(page.locator('main').getByText('Club account', { exact: true })).toBeVisible();
   await expect(page).toHaveURL(/\?tab=profile$/);
   await expect(workspaceTab(await visibleWorkspaceNavigation(page), 'Profile')).toHaveAttribute('aria-current', 'page');
-  await page.locator('main').getByRole('button', { name: 'Business settings', exact: true }).click();
+  await page.locator('main').getByRole('button', { name: 'Club settings', exact: true }).click();
   await expect(page.locator('main').getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/\?tab=profile&view=settings$/);
   await expect(workspaceTab(await visibleWorkspaceNavigation(page), 'Profile')).toHaveAttribute('aria-current', 'page');

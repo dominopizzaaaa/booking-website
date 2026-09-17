@@ -2,22 +2,28 @@
 
 import { useState } from 'react';
 import { Banknote, CalendarCheck2, CircleCheck, TrendingUp, Users } from 'lucide-react';
-import type { Workspace } from '@/lib/types';
+import { isManagerWorkspace, type WorkspaceResponse } from '@/lib/types';
 import { addDaysKey, dateKey, money, shortDate } from '@/lib/utils';
 import { LocationsView, ServicesView, TeamView } from './management-catalog';
-import { CustomersView } from './management-customers';
+import { StudentsView } from './management-students';
 import { PackagesView, PaymentsView } from './management-finance';
 import { AvailabilityView, SettingsView } from './management-operations';
 import { IntegrityView } from './management-integrity';
 import { Empty, PageHeading, Stat, type ManagementProps } from './management-ui';
 
-export function ManagementView({ view, data, refresh }: { view: string; data: Workspace; refresh: () => Promise<void> }) {
+export function ManagementView({ view, data, refresh }: { view: string; data: WorkspaceResponse; refresh: () => Promise<void> }) {
+  if (!isManagerWorkspace(data)) {
+    const sharedProps = { data, refresh };
+    if (view === 'students') return <StudentsView {...sharedProps} />;
+    if (view === 'availability') return <AvailabilityView {...sharedProps} />;
+    if (view === 'locations') return <LocationsView {...sharedProps} />;
+    return <div className="panel"><Empty title="Club management access required">Your account can view assigned students, add teaching venues, and manage your availability. Business management and financial records stay with the club.</Empty></div>;
+  }
   const props = { data, refresh };
-  if (data.user.role === 'COACH' && !['customers', 'availability'].includes(view)) return <div className="panel"><Empty title="Owner or administrator access required">Your account can view assigned customers and availability. Business management and financial records are restricted.</Empty></div>;
   switch (view) {
     case 'services': return <ServicesView {...props} />;
     case 'locations': return <LocationsView {...props} />;
-    case 'customers': return <CustomersView {...props} />;
+    case 'students': return <StudentsView {...props} />;
     case 'packages': return <PackagesView {...props} />;
     case 'payments': return <PaymentsView {...props} />;
     case 'team': return <TeamView {...props} />;
@@ -25,7 +31,7 @@ export function ManagementView({ view, data, refresh }: { view: string; data: Wo
     case 'availability': return <AvailabilityView {...props} />;
     case 'insights': return <InsightsView {...props} />;
     case 'integrity': return <IntegrityView {...props} />;
-    default: return <div className="panel"><Empty title="Choose a workspace page">Use the navigation to open your schedule, customers, or business settings.</Empty></div>;
+    default: return <div className="panel"><Empty title="Choose a workspace page">Use the navigation to open your schedule, students, or business settings.</Empty></div>;
   }
 }
 
@@ -37,7 +43,7 @@ function InsightsView({ data }: ManagementProps) {
   const weeks = Array.from({ length: weekCount }, (_, index) => {
     const start = addDaysKey(thisMonday, (index - weekCount + 1) * 7);
     const end = addDaysKey(start, 7);
-    const payments = data.payments.filter(p => dateKey(p.paidAt) >= start && dateKey(p.paidAt) < end);
+    const payments = data.payments.filter(p => !p.reversedAt && p.kind !== 'CLUB_TO_COACH' && dateKey(p.paidAt) >= start && dateKey(p.paidAt) < end);
     const bookings = data.bookings.filter(b => b.status !== 'CANCELLED' && dateKey(b.startAt) >= start && dateKey(b.startAt) < end && new Date(b.endAt).getTime() <= Date.now());
     const participants = bookings.flatMap(b => b.participants);
     return { start, end, revenue: payments.reduce((sum, p) => sum + p.amount, 0), sessions: bookings.length, present: participants.filter(p => p.attendance === 'PRESENT').length, absent: participants.filter(p => p.attendance === 'ABSENT').length, unmarked: participants.filter(p => p.attendance === 'UNMARKED').length };
@@ -55,7 +61,7 @@ function InsightsView({ data }: ManagementProps) {
     const bookings = periodBookings.filter(b => b.serviceId === service.id);
     const participants = bookings.flatMap(b => b.participants);
     const bookingIds = new Set(bookings.map(b => b.id));
-    const linkedPayments = data.payments.filter(p => p.bookingId && bookingIds.has(p.bookingId));
+    const linkedPayments = data.payments.filter(p => !p.reversedAt && p.kind !== 'CLUB_TO_COACH' && p.bookingId && bookingIds.has(p.bookingId));
     return { ...service, count: bookings.length, participants: participants.length, present: participants.filter(p => p.attendance === 'PRESENT').length, received: linkedPayments.reduce((sum, p) => sum + p.amount, 0) };
   }).filter(s => s.count > 0).sort((a, b) => b.count - a.count);
   const reversedWeeks = [...weeks].reverse();
@@ -65,7 +71,7 @@ function InsightsView({ data }: ManagementProps) {
       <p className="text-xs text-stone-500">{shortDate(periodStart + 'T12:00:00+08:00')} – {shortDate(today + 'T12:00:00+08:00')} <span className="text-stone-400">· Singapore time</span></p>
       <select aria-label="Insights reporting period" value={weekCount} onChange={e => setWeekCount(Number(e.target.value))} className="text-xs max-sm:w-full sm:max-w-44"><option value="4">Last 4 weeks</option><option value="8">Last 8 weeks</option><option value="12">Last 12 weeks</option></select>
     </div>
-    <div className="stat-grid"><Stat label="Recorded receipts" value={money(revenue)} detail="Payment records dated in this period" icon={Banknote} /><Stat label="Elapsed lessons" value={periodBookings.length} detail="Non-cancelled lessons that have ended" icon={CalendarCheck2} /><Stat label="Attendance rate" value={recorded ? `${Math.round(attended / recorded * 100)}%` : '—'} detail={recorded ? `${attended} present of ${recorded} marked participants` : 'No attendance has been marked'} icon={CircleCheck} /><Stat label="Customers taught" value={new Set(periodBookings.flatMap(b => b.participants.filter(p => p.attendance === 'PRESENT').map(p => p.customerId))).size} detail="Unique customers marked present" icon={Users} /></div>
+    <div className="stat-grid"><Stat label="Recorded receipts" value={money(revenue)} detail="Payment records dated in this period" icon={Banknote} /><Stat label="Elapsed lessons" value={periodBookings.length} detail="Non-cancelled lessons that have ended" icon={CalendarCheck2} /><Stat label="Attendance rate" value={recorded ? `${Math.round(attended / recorded * 100)}%` : '—'} detail={recorded ? `${attended} present of ${recorded} marked participants` : 'No attendance has been marked'} icon={CircleCheck} /><Stat label="Students taught" value={new Set(periodBookings.flatMap(b => b.participants.filter(p => p.attendance === 'PRESENT').map(p => p.studentId))).size} detail="Unique students marked present" icon={Users} /></div>
     <div className="grid gap-5 xl:grid-cols-2">
       <section className="panel overflow-hidden">
         <div className="panel-heading"><div><h2 className="text-[#294735]">Weekly receipts</h2><p className="mt-1 text-[11px] text-stone-500">Recorded payments · SGD</p></div><TrendingUp size={17} className="text-[#94a37f]" /></div>

@@ -17,7 +17,7 @@ import {
  * One alert vocabulary, two audiences.
  *
  * The server sends a `type` on every alert, but the two streams grew separate
- * vocabularies: workspace alerts use short names (PAYMENT), customer alerts
+ * vocabularies: workspace alerts use short names (PAYMENT), student alerts
  * use event names (BOOKING_RESCHEDULED), and rows written before typed alerts
  * shipped carry only a title. Matching on the type first and falling back to
  * the wording keeps every one of those readable, and an unrecognised type
@@ -65,7 +65,7 @@ const byType: Record<string, AlertKind> = {
   INTEGRITY: 'integrity',
   ATTENDANCE: 'attendance',
   NOTICE: 'notice',
-  // Customer account vocabulary.
+  // Student account vocabulary.
   BOOKING_CREATED: 'booking',
   BOOKING_CONFIRMED: 'booking',
   BOOKING_COMPLETED: 'booking',
@@ -73,6 +73,7 @@ const byType: Record<string, AlertKind> = {
   BOOKING_PENDING: 'pending',
   BOOKING_ASSIGNED: 'pending',
   BOOKING_CANCELLED: 'cancellation',
+  STUDENT_CANCELLED: 'cancellation',
   BOOKING_RESCHEDULED: 'reschedule',
   RESCHEDULE_REQUESTED: 'reschedule',
   RESCHEDULE_ACCEPTED: 'reschedule',

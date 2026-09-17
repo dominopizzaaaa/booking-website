@@ -9,7 +9,7 @@ import { bookingInclude, bookingJson } from './serializers.js';
 
 type Tx = Prisma.TransactionClient;
 
-export type RequesterRole = 'CUSTOMER' | 'COACH' | 'CLUB';
+export type RequesterRole = 'STUDENT' | 'COACH' | 'CLUB';
 
 export const rescheduleRequestInput = z.object({
   startAt: z.string().datetime({ offset: true }),
@@ -81,11 +81,20 @@ export function assertInsideRescheduleWindow(
 
 /**
  * Who must answer a request. A request never travels back to the side that
- * raised it, and a customer always negotiates with the coach's side rather
- * than with another customer in a group.
+ * raised it, and a student always negotiates with the coach's side rather
+ * than with another student in a group.
  */
-export function responderFor(role: RequesterRole): 'PROVIDER' | 'CUSTOMER' {
-  return role === 'CUSTOMER' ? 'PROVIDER' : 'CUSTOMER';
+export function responderFor(role: RequesterRole): 'PROVIDER' | 'STUDENT' {
+  return role === 'STUDENT' ? 'PROVIDER' : 'STUDENT';
+}
+
+const sideFor = (role: RequesterRole): 'PROVIDER' | 'STUDENT' =>
+  role === 'STUDENT' ? 'STUDENT' : 'PROVIDER';
+
+function assertOtherSide(requestedByRole: string, responderRole: RequesterRole, ownRequestMessage: string) {
+  if (sideFor(responderRole) !== responderFor(requestedByRole as RequesterRole)) {
+    throw new HttpError(403, ownRequestMessage);
+  }
 }
 
 async function loadRequest(tx: Tx, requestId: string) {
@@ -115,7 +124,7 @@ export async function createRescheduleRequest(
     where: { id: options.bookingId, businessId: options.businessId },
     include: {
       business: true, instructor: true, service: true, location: true,
-      participants: { where: { cancelledAt: null }, include: { customer: true } },
+      participants: { where: { cancelledAt: null }, include: { student: true } },
     },
   });
   if (!booking) throw new HttpError(404, 'Booking not found');
@@ -171,8 +180,8 @@ export async function createRescheduleRequest(
   const when = DateTime.fromJSDate(proposedStart, { zone: booking.business.timezone })
     .setLocale('en-SG').toFormat("ccc, d LLL yyyy 'at' h:mm a");
   if (responderFor(options.role) === 'PROVIDER') {
-    const asker = booking.participants.find(p => p.id === options.participantId)?.customer.name
-      ?? 'A customer';
+    const asker = booking.participants.find(p => p.id === options.participantId)?.student.name
+      ?? 'A student';
     await notifyWorkspace(tx, {
       businessId: options.businessId,
       instructorId: booking.instructorId,
@@ -185,7 +194,7 @@ export async function createRescheduleRequest(
   } else {
     await createBookingAccountAlerts(
       tx, booking.id, 'RESCHEDULE_REQUESTED',
-      booking.participants.map(p => p.customer.userId),
+      booking.participants.map(p => p.student.userId),
       { whenAt: proposedStart },
     );
     // The club still wants this on its own board even when its coach raised it.
@@ -194,8 +203,8 @@ export async function createRescheduleRequest(
       instructorId: booking.instructorId,
       bookingId: booking.id,
       type: 'RESCHEDULE',
-      title: 'Reschedule proposed to the customer',
-      message: `${booking.instructor.name} proposed moving ${booking.service.name} to ${when}. Waiting for the customer to respond.`,
+      title: 'Reschedule proposed to the student',
+      message: `${booking.instructor.name} proposed moving ${booking.service.name} to ${when}. Waiting for the student to respond.`,
     });
   }
   return created;
@@ -213,13 +222,12 @@ export async function acceptRescheduleRequest(
 ) {
   const request = await loadRequest(tx, requestId);
   if (request.status !== 'PENDING') throw new HttpError(409, 'This reschedule request has already been answered');
-  if (request.requestedByRole === responder.role) {
-    throw new HttpError(403, 'A reschedule request is accepted by the other side, not by the side that raised it');
-  }
+  assertOtherSide(request.requestedByRole, responder.role,
+    'A reschedule request is accepted by the other side, not by the side that raised it');
 
   const booking = await tx.booking.findUniqueOrThrow({
     where: { id: request.bookingId },
-    include: { business: true, instructor: true, participants: { where: { cancelledAt: null }, include: { customer: true, package: true } } },
+    include: { business: true, instructor: true, participants: { where: { cancelledAt: null }, include: { student: true, package: true } } },
   });
   await lockInstructors(tx, [booking.instructorId]);
   if (['CANCELLED', 'COMPLETED'].includes(booking.status)) throw new HttpError(400, 'Only an active session can be rescheduled');
@@ -231,17 +239,26 @@ export async function acceptRescheduleRequest(
   });
   if (!slot.available || slot.groupId) {
     // The proposal went stale. Close it rather than leaving a request that can
-    // never be accepted, and say why.
+    // never be accepted, and say why. Return the rejection as data so the
+    // caller can commit this state transition before sending the 409.
+    const reason = slot.reason || 'That time is no longer available';
     await tx.rescheduleRequest.update({
       where: { id: request.id },
       data: {
         status: 'EXPIRED', respondedAt: new Date(), respondedByUserId: responder.userId,
-        responseMessage: slot.reason || 'That time is no longer available',
+        responseMessage: reason,
       },
     });
-    throw new HttpError(409, 'That time is no longer available. Ask for another time.', {
-      conflicts: [{ date: request.proposedStartAt.toISOString(), reason: slot.reason || 'No longer available' }],
-    });
+    return {
+      outcome: 'EXPIRED' as const,
+      error: {
+        status: 409,
+        message: 'That time is no longer available. Ask for another time.',
+        details: {
+          conflicts: [{ date: request.proposedStartAt.toISOString(), reason: slot.reason || 'No longer available' }],
+        },
+      },
+    };
   }
   if (booking.participants.some(p => p.package && p.package.expiresAt < request.proposedStartAt)) {
     throw new HttpError(400, 'A lesson package would expire before the proposed time');
@@ -271,10 +288,14 @@ export async function acceptRescheduleRequest(
   });
   await createBookingAccountAlerts(
     tx, booking.id,
-    request.requestedByRole === 'CUSTOMER' ? 'RESCHEDULE_ACCEPTED' : 'RESCHEDULED',
-    booking.participants.map(p => p.customer.userId),
+    request.requestedByRole === 'STUDENT' ? 'RESCHEDULE_ACCEPTED' : 'RESCHEDULED',
+    booking.participants.map(p => p.student.userId),
   );
-  return { request: await loadRequest(tx, request.id), booking: bookingJson(updated) };
+  return {
+    outcome: 'ACCEPTED' as const,
+    request: await loadRequest(tx, request.id),
+    booking: bookingJson(updated),
+  };
 }
 
 export async function declineRescheduleRequest(
@@ -284,9 +305,7 @@ export async function declineRescheduleRequest(
 ) {
   const request = await loadRequest(tx, requestId);
   if (request.status !== 'PENDING') throw new HttpError(409, 'This reschedule request has already been answered');
-  if (request.requestedByRole === responder.role) {
-    throw new HttpError(403, 'Withdraw your own request instead of declining it');
-  }
+  assertOtherSide(request.requestedByRole, responder.role, 'Withdraw your own request instead of declining it');
   await tx.rescheduleRequest.update({
     where: { id: request.id },
     data: {
@@ -296,15 +315,15 @@ export async function declineRescheduleRequest(
   });
   const booking = await tx.booking.findUniqueOrThrow({
     where: { id: request.bookingId },
-    include: { participants: { where: { cancelledAt: null }, include: { customer: true } } },
+    include: { participants: { where: { cancelledAt: null }, include: { student: true } } },
   });
-  if (request.requestedByRole === 'CUSTOMER') {
-    await createBookingAccountAlerts(tx, booking.id, 'RESCHEDULE_DECLINED', booking.participants.map(p => p.customer.userId));
+  if (request.requestedByRole === 'STUDENT') {
+    await createBookingAccountAlerts(tx, booking.id, 'RESCHEDULE_DECLINED', booking.participants.map(p => p.student.userId));
   } else {
     await notifyWorkspace(tx, {
       businessId: request.businessId, instructorId: booking.instructorId, bookingId: booking.id,
       type: 'RESCHEDULE', title: 'Reschedule declined',
-      message: `${request.booking.service.name} keeps its original time. The customer declined the proposed change.`,
+      message: `${request.booking.service.name} keeps its original time. The student declined the proposed change.`,
       actionNeeded: true,
     });
   }
@@ -327,16 +346,16 @@ export async function withdrawRescheduleRequest(
   });
   const booking = await tx.booking.findUniqueOrThrow({
     where: { id: request.bookingId },
-    include: { participants: { where: { cancelledAt: null }, include: { customer: true } } },
+    include: { participants: { where: { cancelledAt: null }, include: { student: true } } },
   });
-  if (requester.role === 'CUSTOMER') {
+  if (requester.role === 'STUDENT') {
     await notifyWorkspace(tx, {
       businessId: request.businessId, instructorId: booking.instructorId, bookingId: booking.id,
       type: 'RESCHEDULE', title: 'Reschedule request withdrawn',
-      message: `${request.booking.service.name} keeps its original time. The customer withdrew their request.`,
+      message: `${request.booking.service.name} keeps its original time. The student withdrew their request.`,
     });
   } else {
-    await createBookingAccountAlerts(tx, booking.id, 'RESCHEDULE_WITHDRAWN', booking.participants.map(p => p.customer.userId));
+    await createBookingAccountAlerts(tx, booking.id, 'RESCHEDULE_WITHDRAWN', booking.participants.map(p => p.student.userId));
   }
   return loadRequest(tx, request.id);
 }

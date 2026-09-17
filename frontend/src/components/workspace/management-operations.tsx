@@ -33,6 +33,7 @@ import {
   text,
   useManagementAction,
   type ManagementProps,
+  type WorkspaceProps,
 } from "./management-ui";
 
 const weekdays = [
@@ -90,14 +91,14 @@ function RescheduleWindow({
   isCoach,
   data,
   refresh,
-}: ManagementProps & { instructor: { id: string; name: string; rescheduleNoticeHours: number }; isCoach: boolean }) {
+}: WorkspaceProps & { instructor: { id: string; name: string; rescheduleNoticeHours: number }; isCoach: boolean }) {
   const [hours, setHours] = useState(String(instructor.rescheduleNoticeHours));
   const [busy, setBusy] = useState(false);
   const effective = Math.max(Number(hours) || 0, data.business.cancellationHours);
   const dirty = Number(hours) !== instructor.rescheduleNoticeHours;
-  // A coach sets their own window; an owner or admin can set it for anyone on
+  // A coach sets their own window; the club account can set it for anyone on
   // the roster. Nobody else can.
-  const canEdit = isCoach || data.membership.role !== "COACH";
+  const canEdit = isCoach || data.user.accountType === "CLUB";
 
   async function save() {
     const value = Number(hours);
@@ -166,8 +167,8 @@ function RescheduleWindow({
   );
 }
 
-export function AvailabilityView({ data, refresh }: ManagementProps) {
-  const isCoach = data.membership.role === "COACH";
+export function AvailabilityView({ data, refresh }: WorkspaceProps) {
+  const isCoach = data.user.accountType === "COACH";
   const [selectedInstructorId, setSelectedInstructor] = useState(
     data.instructors.find((i) => i.active)?.id || "",
   );
@@ -263,7 +264,7 @@ export function AvailabilityView({ data, refresh }: ManagementProps) {
               icon={CalendarDays}
             >
               {isCoach
-                ? "Ask an owner or administrator to link your coach account to an instructor profile."
+                ? "Ask the club to link your coach account to a coach profile."
                 : "Add an instructor in Team, then set their weekly working hours here."}
             </Empty>
           ) : (
@@ -610,6 +611,9 @@ export function AvailabilityView({ data, refresh }: ManagementProps) {
 export function SettingsView({ data, refresh }: ManagementProps) {
   const [editing, setEditing] = useState(false);
   const business = data.business;
+  const canManageBusiness =
+    data.user.accountType === "CLUB" ||
+    (data.user.accountType === "COACH" && business.kind === "SOLO");
   const bookingPath = `/book/${encodeURIComponent(business.slug)}`;
   const bookingUrl =
     typeof window !== "undefined"
@@ -641,7 +645,7 @@ export function SettingsView({ data, refresh }: ManagementProps) {
                 <Settings2 size={16} className="text-[#8da078]" />
                 <h2 className="text-[#294735]">Business details</h2>
               </div>
-              {data.user.role !== "COACH" && (
+              {canManageBusiness && (
                 <Button
                   size="sm"
                   variant="outline"
@@ -671,7 +675,7 @@ export function SettingsView({ data, refresh }: ManagementProps) {
               </div>
               <dl className="grid grid-cols-1 gap-5 border-t border-[#edf0e8] pt-5 text-xs sm:grid-cols-2">
                 <div>
-                  <dt className="text-[10px] text-stone-400">Business owner</dt>
+                  <dt className="text-[10px] text-stone-400">Primary contact</dt>
                   <dd className="mt-1.5 font-medium">{business.ownerName}</dd>
                 </div>
                 <div>
@@ -688,7 +692,7 @@ export function SettingsView({ data, refresh }: ManagementProps) {
                 </div>
                 <div className="sm:col-span-2">
                   <dt className="text-[10px] text-stone-400">
-                    Customer cancellation notice
+                    Student cancellation notice
                   </dt>
                   <dd className="mt-1.5">
                     {business.cancellationHours} hours before the lesson
@@ -711,7 +715,7 @@ export function SettingsView({ data, refresh }: ManagementProps) {
             </div>
             <div className="px-4 pb-5 sm:px-6 sm:pb-6">
               <p className="mb-4 text-xs leading-relaxed text-stone-500">
-                Share a single link so customers can see your services and book
+                Share a single link so students can see your services and book
                 an available lesson.
               </p>
               <label htmlFor="settings-booking-link">Public booking URL</label>
@@ -764,7 +768,7 @@ export function SettingsView({ data, refresh }: ManagementProps) {
                 {
                   name: "Email & SMS delivery",
                   description:
-                    "External message delivery is not connected. Check in-app notifications and contact customers directly.",
+                    "External message delivery is not connected. Check in-app notifications and contact students directly.",
                 },
               ].map((integration) => (
                 <div
@@ -797,10 +801,10 @@ export function SettingsView({ data, refresh }: ManagementProps) {
             />
             <h2 className="text-[#294735]">Workspace access</h2>
             <p className="mt-2 text-xs leading-relaxed text-[#7e8c72]">
-              Signed in as {data.user.name} ({data.user.role.toLowerCase()}).
-              Instructor profiles do not grant account access. Owners manage
-              staff logins in Your team; email invitations and subscription
-              billing are not connected.
+              Signed in as {data.user.name} ({data.user.accountType === "CLUB" ? "club account" : "coach account"}).
+              Coach profiles do not grant account access. Clubs manage coach
+              access in My coaches; email invitations and subscription billing
+              are not connected.
             </p>
             {business.isDemo && (
               <p className="mt-3 text-[11px] leading-relaxed text-[#7e8c72]">
@@ -825,7 +829,6 @@ export function SettingsView({ data, refresh }: ManagementProps) {
               color: text(form, "color"),
               tagline: text(form, "tagline"),
               cancellationHours: numeric(form, "cancellationHours"),
-              kind: text(form, "business-kind"),
             })
           }
         >
@@ -838,7 +841,7 @@ export function SettingsView({ data, refresh }: ManagementProps) {
               wide
             />
             <Field
-              label="Owner name"
+              label="Contact name"
               name="ownerName"
               required
               defaultValue={business.ownerName}
@@ -867,30 +870,11 @@ export function SettingsView({ data, refresh }: ManagementProps) {
               required
               defaultValue={business.cancellationHours}
             />
-            <Field label="How lessons are paid for" name="business-kind" wide>
-              <select
-                id="business-kind"
-                name="business-kind"
-                defaultValue={business.kind}
-                required
-              >
-                <option value="CLUB">
-                  Club or academy · students pay the club, the club pays its coaches
-                </option>
-                <option value="SOLO">
-                  Independent coach · students pay the coach directly
-                </option>
-              </select>
-            </Field>
           </div>
           <p className="text-[11px] leading-relaxed text-stone-500">
-            Customers can self-cancel until this many hours before their lesson.
+            Students can self-cancel until this many hours before their lesson.
             This updates the policy; it does not cancel or change existing
             lessons.
-          </p>
-          <p className="text-[11px] leading-relaxed text-stone-500">
-            Lessons keep the money path they were booked under, so changing this
-            affects new bookings only and never rewrites your ledger.
           </p>
         </Editor>
       )}

@@ -42,9 +42,9 @@ import {
   loadAuthSession,
   loadPublicBusiness,
   loadSlots,
-  loginCustomerAccount,
+  loginStudentAccount,
   logoutAccount,
-  registerCustomerAccount,
+  registerStudentAccount,
   requestAccountReschedule,
 } from "@/lib/api";
 import type {
@@ -72,7 +72,7 @@ const steps = [
   "Lesson",
   "Coach & place",
   "Date & time",
-  "Your account",
+  "Student account",
   "Review",
 ];
 
@@ -129,11 +129,8 @@ function LocationIcon({
   return <Icon size={size} strokeWidth={1.7} />;
 }
 
-function isCustomerSession(session: AuthSession | null): boolean {
-  if (!session) return false;
-  if (session.user.accountType) return session.user.accountType === "CUSTOMER";
-  if (session.user.role) return session.user.role === "CUSTOMER";
-  return !session.membership && !session.business;
+function isStudentSession(session: AuthSession | null): boolean {
+  return session?.user.accountType === "STUDENT";
 }
 
 function useAccountSession() {
@@ -171,7 +168,7 @@ function useAccountSession() {
   return { session, setSession, loading, error, refresh, signOut, signingOut };
 }
 
-function CustomerAccountAccess({
+function StudentAccountAccess({
   onAuthenticated,
   formId,
   externalSubmit = false,
@@ -211,8 +208,8 @@ function CustomerAccountAccess({
       const email = values.email.trim().toLowerCase();
       const session =
         mode === "login"
-          ? await loginCustomerAccount({ email, password: values.password })
-          : await registerCustomerAccount({
+          ? await loginStudentAccount({ email, password: values.password })
+          : await registerStudentAccount({
               name: values.name.trim(),
               email,
               password: values.password,
@@ -231,7 +228,7 @@ function CustomerAccountAccess({
   return (
     <section className={cn(panel, "overflow-hidden")}>
       <div className="border-b border-[#edf0e8] bg-[#fafbf7] p-2">
-        <div className="grid grid-cols-2 gap-1" role="tablist" aria-label="Account access">
+        <div className="grid grid-cols-2 gap-1" role="tablist" aria-label="Student account access">
           {(["login", "register"] as const).map((value) => (
             <button
               key={value}
@@ -259,7 +256,7 @@ function CustomerAccountAccess({
       <form id={formId} role="tabpanel" aria-labelledby={formId + "-" + mode + "-tab"} onSubmit={submitAccount} className="space-y-5 p-5 sm:p-7">
         <div>
           <h2 className="!text-base">
-            {mode === "login" ? "Welcome back" : "Your Courtly account"}
+            {mode === "login" ? "Welcome back" : "Your student account"}
           </h2>
           <p className="!mt-2 text-xs leading-relaxed text-[#89957f]">
             {mode === "login"
@@ -418,7 +415,7 @@ export function PublicShell({
             </span>
             <span className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full border border-[#e5e9e4] bg-[#f6f8f2] px-2.5 py-1.5 text-[10px] font-medium text-[#617455] sm:px-3 sm:text-[11px]">
               <ShieldCheck size={13} />{" "}
-              {business ? "Account required" : "Made for coaches"}
+              {business ? "Student account required" : "Made for coaches"}
             </span>
           </div>
         </div>
@@ -758,7 +755,7 @@ export function PublicBooking({ slug }: { slug: string }) {
   }, [load]);
   useEffect(() => {
     const session = account.session;
-    if (!session || !isCustomerSession(session)) return;
+    if (!session || !isStudentSession(session)) return;
     setBookingContact({
       phone: session.user.phone ?? "",
       parentName: session.user.parentName ?? "",
@@ -822,7 +819,7 @@ export function PublicBooking({ slug }: { slug: string }) {
         : step === 2
           ? !!slot && !slotsLoading
           : step === 3
-            ? isCustomerSession(account.session)
+            ? isStudentSession(account.session)
             : true;
   const continueHint = step === 0 && !serviceId
     ? "Choose a lesson above to continue."
@@ -918,7 +915,7 @@ export function PublicBooking({ slug }: { slug: string }) {
       !instructor ||
       !slot ||
       !agreed ||
-      !isCustomerSession(account.session) ||
+      !isStudentSession(account.session) ||
       saving
     )
       return;
@@ -931,13 +928,9 @@ export function PublicBooking({ slug }: { slug: string }) {
         locationId,
         instructorId,
         startAt: slot.startAt,
-        customer: {
-          ...(bookingContact.phone.trim()
-            ? { phone: bookingContact.phone.trim() }
-            : {}),
-          ...(bookingContact.parentName.trim()
-            ? { parentName: bookingContact.parentName.trim() }
-            : {}),
+        student: {
+          phone: bookingContact.phone.trim(),
+          parentName: bookingContact.parentName.trim(),
         },
         repeatWeeks,
         notes: notes.trim(),
@@ -994,7 +987,7 @@ export function PublicBooking({ slug }: { slug: string }) {
         <BookingReceipt
           data={data}
           result={result}
-          customerName={account.session?.user.name ?? "Player"}
+          studentName={account.session?.user.name ?? "Student"}
           location={location}
           onBookAgain={() => {
             setResult(null);
@@ -1435,8 +1428,8 @@ export function PublicBooking({ slug }: { slug: string }) {
                 ) : !account.session ? (
                   <>
                     {account.error && <ErrorNotice message={account.error} />}
-                    <CustomerAccountAccess
-                      formId="customer-account"
+                    <StudentAccountAccess
+                      formId="student-account"
                       externalSubmit
                       onAuthenticated={(session) => {
                         account.setSession(session);
@@ -1447,13 +1440,13 @@ export function PublicBooking({ slug }: { slug: string }) {
                       }}
                     />
                   </>
-                ) : !isCustomerSession(account.session) ? (
+                ) : !isStudentSession(account.session) ? (
                   <section className={cn(panel, "p-5 sm:p-7")}>
                     <ShieldCheck size={26} className="text-[#8da179]" />
-                    <h2 className="!mt-4 !text-base">Use a customer account to book</h2>
+                    <h2 className="!mt-4 !text-base">Use a student account to book</h2>
                     <p className="!mt-2 text-xs leading-relaxed text-[#89957f]">
-                      You’re signed in as {account.session.user.email}, a provider account.
-                      Sign out here, then use or create your personal customer account.
+                      You’re signed in as {account.session.user.email}, a coach or club account.
+                      Sign out here, then use or create your personal student account.
                     </p>
                     {account.error && <div className="!mt-4"><ErrorNotice message={account.error} /></div>}
                     <button
@@ -1528,11 +1521,14 @@ export function PublicBooking({ slug }: { slug: string }) {
                             onChange={(event) => setBookingContact({ ...bookingContact, parentName: event.target.value })}
                           />
                         </div>
+                        <p className="sm:col-span-2 text-xs leading-relaxed text-[#89957f]">
+                          Changes here are saved to your student profile for future bookings.
+                        </p>
                         {location?.type === "HOME" && (
                           <div className="sm:col-span-2">
-                            <label htmlFor="customer-address">Session address <span className="text-[#9aa58f]">*</span></label>
+                            <label htmlFor="student-address">Session address <span className="text-[#9aa58f]">*</span></label>
                             <textarea
-                              id="customer-address"
+                              id="student-address"
                               className={field}
                               required
                               maxLength={500}
@@ -1659,7 +1655,7 @@ export function PublicBooking({ slug }: { slug: string }) {
                           : location?.address}
                       </p>
                     </DetailRow>
-                    <DetailRow icon={<UserRound size={18} />} title="Player">
+                    <DetailRow icon={<UserRound size={18} />} title="Student">
                       {account.session?.user.name}
                       <p className="break-all text-xs text-[#8b9781]">
                         {account.session?.user.email}
@@ -1792,11 +1788,11 @@ export function PublicBooking({ slug }: { slug: string }) {
               {step === 3 ? (
                 <button
                   type="submit"
-                  form={isCustomerSession(account.session) ? "booking-details" : "customer-account"}
+                  form={isStudentSession(account.session) ? "booking-details" : "student-account"}
                   className={button}
-                  disabled={account.loading || (!!account.session && !isCustomerSession(account.session))}
+                  disabled={account.loading || (!!account.session && !isStudentSession(account.session))}
                 >
-                  {isCustomerSession(account.session) ? "Review booking" : "Continue with account"} <ArrowRight size={15} />
+                  {isStudentSession(account.session) ? "Review booking" : "Continue with account"} <ArrowRight size={15} />
                 </button>
               ) : step === 4 ? (
                 <button
@@ -1957,11 +1953,11 @@ export function PublicBooking({ slug }: { slug: string }) {
               {step === 3 ? (
                 <button
                   type="submit"
-                  form={isCustomerSession(account.session) ? "booking-details" : "customer-account"}
+                  form={isStudentSession(account.session) ? "booking-details" : "student-account"}
                   className={cn(button, "!min-h-12 !min-w-0 !flex-1 !px-4")}
-                  disabled={account.loading || (!!account.session && !isCustomerSession(account.session))}
+                  disabled={account.loading || (!!account.session && !isStudentSession(account.session))}
                 >
-                  {isCustomerSession(account.session) ? "Review booking" : "Continue with account"} <ArrowRight size={15} />
+                  {isStudentSession(account.session) ? "Review booking" : "Continue with account"} <ArrowRight size={15} />
                 </button>
               ) : step === 4 ? (
                 <button
@@ -1997,13 +1993,13 @@ export function PublicBooking({ slug }: { slug: string }) {
 function BookingReceipt({
   data,
   result,
-  customerName,
+  studentName,
   location,
   onBookAgain,
 }: {
   data: PublicBusiness;
   result: BookingResult;
-  customerName: string;
+  studentName: string;
   location?: PublicLocation;
   onBookAgain: () => void;
 }) {
@@ -2030,8 +2026,8 @@ function BookingReceipt({
         </h1>
         <p className="!mx-auto mt-3 max-w-md text-sm leading-relaxed text-[#85927a]">
           {pending
-            ? `Thanks, ${customerName.split(" ")[0]}. Your coach will review your request. Check this page for the latest status.`
-            : `Looking forward to seeing you, ${customerName.split(" ")[0]}. Here’s to finding your rhythm, one session at a time.`}
+            ? `Thanks, ${studentName.split(" ")[0]}. Your coach will review your request. Check this page for the latest status.`
+            : `Looking forward to seeing you, ${studentName.split(" ")[0]}. Here’s to finding your rhythm, one session at a time.`}
         </p>
       </div>
       <div className={cn(panel, "overflow-hidden")}>
@@ -2184,7 +2180,7 @@ function accountBookingCanChange(item: AccountBooking, kind: "cancel" | "resched
     : (item.canReschedule ?? (fallback && booking.type === "PRIVATE"));
 }
 
-export function CustomerBookings({ slug }: { slug?: string }) {
+export function StudentBookings({ slug }: { slug?: string }) {
   const account = useAccountSession();
   const [bookings, setBookings] = useState<AccountBooking[]>([]);
   const [loading, setLoading] = useState(false);
@@ -2225,7 +2221,7 @@ export function CustomerBookings({ slug }: { slug?: string }) {
   }, [slug, account.refresh]);
 
   useEffect(() => {
-    if (isCustomerSession(account.session)) void loadBookings();
+    if (isStudentSession(account.session)) void loadBookings();
     else {
       setBookings([]);
       setLoading(false);
@@ -2352,7 +2348,7 @@ export function CustomerBookings({ slug }: { slug?: string }) {
             </h1>
           </div>
           {account.error && <div className="!mb-5"><ErrorNotice message={account.error} /></div>}
-          <CustomerAccountAccess
+          <StudentAccountAccess
             formId="manage-account"
             onAuthenticated={account.setSession}
           />
@@ -2360,16 +2356,16 @@ export function CustomerBookings({ slug }: { slug?: string }) {
       </PublicShell>
     );
 
-  if (!isCustomerSession(account.session))
+  if (!isStudentSession(account.session))
     return (
       <PublicShell>
         <main className="!mx-auto max-w-lg px-5 py-16">
           <section className={cn(panel, "p-7")}>
             <ShieldCheck size={30} className="text-[#93a582]" />
-            <h1 className="!mt-5 !text-2xl">Customer account required</h1>
+            <h1 className="!mt-5 !text-2xl">Student account required</h1>
             <p className="!mt-3 text-sm leading-relaxed text-[#86947a]">
-              {account.session.user.email} is signed in as a provider. Switch to
-              your customer account to view personal bookings.
+              {account.session.user.email} is signed in as a coach or club account. Switch to
+              your student account to view personal bookings.
             </p>
             {account.error && <div className="!mt-5"><ErrorNotice message={account.error} /></div>}
             <button
@@ -2549,7 +2545,7 @@ export function CustomerBookings({ slug }: { slug?: string }) {
                 <ArrowLeft size={14} /> Back to booking
               </Link>
             )}
-            <p className="!mb-2 text-[10px] font-semibold uppercase tracking-[2px] text-[#8d9b80]">Your Courtly account</p>
+            <p className="!mb-2 text-[10px] font-semibold uppercase tracking-[2px] text-[#8d9b80]">Your student account</p>
             <h1 className="!text-3xl !font-medium !tracking-tight sm:!text-4xl">My bookings</h1>
             <p className="!mt-3 text-sm text-[#86937c]">Upcoming sessions and lesson history for {account.session.user.name}.</p>
           </div>

@@ -22,7 +22,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { api, ApiError, loadWorkspace, mutate } from '@/lib/api';
-import type { AuthSession, Booking, Membership, MembershipRole, Workspace } from '@/lib/types';
+import type { AccountType, AuthSession, BusinessKind, Membership, WorkspaceResponse } from '@/lib/types';
 import { initials, shortDate } from '@/lib/utils';
 import Dashboard, { CalendarView } from './dashboard';
 import { ManagementView } from './management';
@@ -46,7 +46,7 @@ const viewTitles: Record<string, string> = {
   profile: 'Profile',
   calendar: 'Calendar',
   bookings: 'Bookings',
-  customers: 'Customers',
+  students: 'Students',
   services: 'Services',
   locations: 'Locations',
   team: 'My coaches',
@@ -65,16 +65,17 @@ function primaryTabForView(view: string): PrimaryTab {
   return 'explore';
 }
 
-function routeView(role: MembershipRole) {
+function routeView(accountType: AccountType, businessKind: BusinessKind) {
+  const isClubCoach = accountType === 'COACH' && businessKind === 'CLUB';
   const parameters = new URLSearchParams(window.location.search);
   const tab = parameters.get('tab');
   const nestedView = parameters.get('view');
   if (tab === 'alerts') return 'alerts';
-  if (tab === 'profile') return nestedView === 'settings' && role !== 'COACH' ? 'settings' : 'profile';
-  if (tab === 'explore') return nestedView && canAccessExploreView(role, nestedView) ? nestedView : 'explore';
+  if (tab === 'profile') return nestedView === 'settings' && !isClubCoach ? 'settings' : 'profile';
+  if (tab === 'explore') return nestedView && canAccessExploreView({ accountType, businessKind }, nestedView) ? nestedView : 'explore';
   if (!tab && nestedView) {
-    if (nestedView === 'settings') return role === 'COACH' ? 'profile' : 'settings';
-    if (canAccessExploreView(role, nestedView)) return nestedView;
+    if (nestedView === 'settings') return isClubCoach ? 'profile' : 'settings';
+    if (canAccessExploreView({ accountType, businessKind }, nestedView)) return nestedView;
   }
   return 'overview';
 }
@@ -92,11 +93,11 @@ function updateRoute(view: string, businessId: string, replace = false) {
 
 export default function WorkspaceApp() {
   const router = useRouter();
-  const [data, setData] = useState<Workspace | null>(null);
+  const [data, setData] = useState<WorkspaceResponse | null>(null);
   const [error, setError] = useState('');
   const [view, setView] = useState('overview');
   const [bookingOpen, setBookingOpen] = useState(false);
-  const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
+  const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
@@ -112,10 +113,6 @@ export default function WorkspaceApp() {
 
   const refresh = useCallback(async () => {
     const workspace = await loadWorkspace();
-    if (workspace.user.accountType === 'CUSTOMER') {
-      router.replace('/manage');
-      return;
-    }
     setData(workspace);
   }, [router]);
 
@@ -129,7 +126,7 @@ export default function WorkspaceApp() {
       } else if (cause instanceof ApiError && cause.status === 403) {
         try {
           const auth = await api<AuthSession>('/auth/me');
-          router.replace(auth.user.accountType === 'CUSTOMER' ? '/manage' : auth.membership && auth.business ? '/' : '/account');
+          router.replace(auth.user.accountType === 'STUDENT' ? '/manage' : auth.membership && auth.business ? '/' : '/account');
         } catch (authError) {
           if (authError instanceof ApiError && authError.status === 401) router.replace('/login');
           else setError((authError as Error).message);
@@ -153,7 +150,7 @@ export default function WorkspaceApp() {
     const historyBusinessId = window.history.state?.workspaceBusinessId;
     const next = typeof historyBusinessId === 'string' && historyBusinessId !== data.business.id
       ? 'overview'
-      : routeView(data.membership.role);
+      : routeView(data.user.accountType, data.business.kind);
     setView(next);
     updateRoute(next, data.business.id, true);
   }, [data]);
@@ -162,7 +159,7 @@ export default function WorkspaceApp() {
     if (!data) return;
     const handleHistory = () => {
       setBookingOpen(false);
-      setSelectedBooking(null);
+      setSelectedBookingId(null);
       setSearchOpen(false);
       setSearch('');
       setCreateOpen(false);
@@ -174,7 +171,7 @@ export default function WorkspaceApp() {
       const historyBusinessId = window.history.state?.workspaceBusinessId;
       const next = typeof historyBusinessId === 'string' && historyBusinessId !== data.business.id
         ? 'overview'
-        : routeView(data.membership.role);
+        : routeView(data.user.accountType, data.business.kind);
       if (next !== view) {
         setView(next);
         setMainFocusRequest(request => request + 1);
@@ -220,19 +217,20 @@ export default function WorkspaceApp() {
 
   /** Open a booking named by an alert, so an alert can lead somewhere. */
   function openBookingById(bookingId: string) {
-    const found = data?.bookings.find(booking => booking.id === bookingId);
+    const found = data?.bookings.some(booking => booking.id === bookingId);
     if (!found) {
       toast.error('That booking is no longer in this workspace.');
       return;
     }
-    setSelectedBooking(found);
+    setSelectedBookingId(bookingId);
   }
 
   function navigate(nextView: string) {
     if (!data) return;
-    const safeView = data.membership.role === 'COACH' && nextView === 'settings'
+    const isClubCoach = data.user.accountType === 'COACH' && data.business.kind === 'CLUB';
+    const safeView = isClubCoach && nextView === 'settings'
       ? 'profile'
-      : isExploreView(nextView) && !canAccessExploreView(data.membership.role, nextView)
+      : isExploreView(nextView) && !canAccessExploreView({ accountType: data.user.accountType, businessKind: data.business.kind }, nextView)
         ? 'explore'
         : nextView;
     setCreateOpen(false);
@@ -265,7 +263,7 @@ export default function WorkspaceApp() {
       setView('overview');
       updateRoute('overview', auth.business.id, true);
       setBookingOpen(false);
-      setSelectedBooking(null);
+      setSelectedBookingId(null);
       setSearch('');
       setSearchOpen(false);
       setCreateOpen(false);
@@ -304,24 +302,25 @@ export default function WorkspaceApp() {
   }
 
   const unread = data.notifications.filter(notification => !notification.read).length;
-  const clubAccount = data.clubAccount;
-  const currentRole = data.membership.role;
+  const accountType = data.user.accountType;
+  const isCoach = accountType === 'COACH';
+  const clubAccount = accountType === 'CLUB';
   const memberships = data.memberships;
-  const title = currentRole === 'COACH' && view === 'availability' ? 'Your availability' : viewTitles[view] || 'Workspace';
+  const title = isCoach && view === 'availability' ? 'Your availability' : viewTitles[view] || 'Workspace';
   const primaryTab = primaryTabForView(view);
-  const searchResults = search.trim().length > 0 ? data.customers.filter(customer => `${customer.name} ${customer.email}`.toLowerCase().includes(search.toLowerCase())).slice(0, 5) : [];
+  const searchResults = search.trim().length > 0 ? data.students.filter(student => `${student.name} ${student.email}`.toLowerCase().includes(search.toLowerCase())).slice(0, 5) : [];
   const bookingResults = search.trim().length > 0 ? data.bookings.filter(booking => `${booking.serviceName} ${booking.locationName} ${booking.participants.map(participant => participant.name).join(' ')}`.toLowerCase().includes(search.toLowerCase())).slice(0, 5) : [];
-  const helpSteps = currentRole === 'COACH'
+  const helpSteps = isCoach
     ? [
-        ['1', 'Review your schedule', 'Use Calendar and Bookings to see your assigned lessons, times, customers, and venue status.'],
-        ['2', 'Know your customers', 'Open Customers to review the players assigned to you and the context you need for each lesson.'],
+        ['1', 'Review your schedule', 'Use Calendar and Bookings to see your assigned lessons, times, students, and venue status.'],
+        ['2', 'Know your students', 'Open Students to review the players assigned to you and the context you need for each lesson.'],
         ['3', 'Set your availability', 'Shape your weekly teaching hours and block dates when you are away.'],
-        ['4', 'Record attendance', 'Open a booking after the lesson to mark each customer as attended or a no-show.'],
+        ['4', 'Record attendance', 'Open a booking after the lesson to mark each student as attended or a no-show.'],
       ]
     : [
-        ['1', 'Make yourself at home', 'Add the places you teach, then create your services. Set duration, pricing, and instructors for each location.'],
+        ['1', 'Make yourself at home', 'Add the places your coaches teach, then create your services. Set duration, pricing, and coaches for each location.'],
         ['2', 'Give your week some shape', 'Set location-specific working hours in Availability. Travel buffers protect time between venues; blocked dates keep your days off clear.'],
-        ['3', 'Let the bookings come to you', 'Share your booking link. Customers see only available slots. Recurring lessons are checked together, so conflicts never silently slip through.'],
+        ['3', 'Let the bookings come to you', 'Share your booking link. Students see only available slots. Recurring lessons are checked together, so conflicts never silently slip through.'],
         ['4', 'Keep the real world in the loop', 'A pending lesson holds instructor time, but does not reserve a court. Secure your venue separately, then confirm it. Payments and messages are manual in this MVP.'],
       ];
 
@@ -335,11 +334,11 @@ export default function WorkspaceApp() {
   return <div className="app-shell workspace-shell">
     <aside className="sidebar workspace-sidebar desktop-only" aria-label="Workspace navigation" aria-hidden={isMobile ? true : undefined} inert={isMobile ? true : undefined}>
       <button className="wordmark" onClick={() => navigate('overview')} aria-label="Courtly home"><span className="brand-mark" />courtly<span className="ml-[-6px] text-[#9cad76]">.</span></button>
-      {/* A club-admin login operates one club, so the sidebar shows the club
+      {/* A club account operates one club, so the sidebar shows the club
           rather than a switcher that can only lead back to itself. */}
       {clubAccount
         ? <div className="workspace-switch text-left"><span className="business-avatar">{initials(data.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-[11px] font-semibold">{data.business.name}</span><span className="mt-1 block text-[9px] text-[#a4ab99]">{data.business.isDemo ? 'Demo workspace' : data.business.kind === 'SOLO' ? 'Coaching practice' : 'Club account'}</span></span></div>
-        : <button className="workspace-switch text-left" aria-haspopup="dialog" onClick={() => setWorkspaceOpen(true)}><span className="business-avatar">{initials(data.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-[11px] font-semibold">{data.business.name}</span><span className="mt-1 block text-[9px] text-[#a4ab99]">{data.business.isDemo ? 'Demo workspace' : memberships.length > 1 ? `${memberships.length} clubs and academies` : `${currentRole.toLowerCase()} workspace`}</span></span><ChevronsUpDown size={12} className="text-[#a4ab99]" /></button>}
+        : <button className="workspace-switch text-left" aria-haspopup="dialog" onClick={() => setWorkspaceOpen(true)}><span className="business-avatar">{initials(data.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-[11px] font-semibold">{data.business.name}</span><span className="mt-1 block text-[9px] text-[#a4ab99]">{data.business.isDemo ? 'Demo workspace' : data.business.kind === 'SOLO' ? 'Own practice' : memberships.length > 1 ? `${memberships.length} workspaces` : 'Coach workspace'}</span></span><ChevronsUpDown size={12} className="text-[#a4ab99]" /></button>}
       <nav className="workspace-primary-nav workspace-primary-nav-desktop mt-5 flex-1" aria-label="Primary">
         {primaryNavigation.slice(0, 2).map(item => <button key={item.id} type="button" className={`nav-link workspace-primary-tab workspace-primary-tab-${item.id} ${primaryTab === item.id ? 'active' : ''}`} aria-current={primaryTab === item.id ? 'page' : undefined} onClick={item.action}><item.icon size={18} strokeWidth={1.65} /><span>{item.label}</span></button>)}
         <button type="button" className="nav-link workspace-primary-tab workspace-primary-tab-create" aria-haspopup="dialog" aria-expanded={createOpen} onClick={() => setCreateOpen(true)}><Plus size={19} strokeWidth={1.8} /><span>Create</span></button>
@@ -361,11 +360,11 @@ export default function WorkspaceApp() {
             </Button>
           </nav>
         )}
-        {view === 'overview' ? <Dashboard key={data.business.id} data={data} onNavigate={navigate} onNew={() => setBookingOpen(true)} onBooking={setSelectedBooking} />
+        {view === 'overview' ? <Dashboard key={data.business.id} data={data} onNavigate={navigate} onNew={() => setBookingOpen(true)} onBooking={setSelectedBookingId} />
           : view === 'explore' ? <ExploreHub data={data} onNavigate={navigate} />
           : view === 'alerts' ? <AlertsView data={data} refresh={refresh} onOpenBooking={openBookingById} onNavigate={navigate} />
           : view === 'profile' ? <ProfileView data={data} onEditProfile={() => setProfileEditorOpen(true)} onSwitchWorkspace={() => setWorkspaceOpen(true)} onBusinessSettings={() => navigate('settings')} onHelp={() => setHelpOpen(true)} onSignOut={() => void signOut()} onNavigate={navigate} />
-          : view === 'calendar' || view === 'bookings' ? <CalendarView key={`${data.business.id}:${view}`} data={data} onNew={() => setBookingOpen(true)} onBooking={setSelectedBooking} listOnly={view === 'bookings'} />
+          : view === 'calendar' || view === 'bookings' ? <CalendarView key={`${data.business.id}:${view}`} data={data} onNew={() => setBookingOpen(true)} onBooking={setSelectedBookingId} listOnly={view === 'bookings'} />
           : <ManagementView key={`${data.business.id}:${view}`} view={view} data={data} refresh={refresh} />}
       </main>
     </div>
@@ -380,13 +379,13 @@ export default function WorkspaceApp() {
 
     <CreateDialog open={createOpen} onOpenChange={setCreateOpen} data={data} onNewBooking={() => setBookingOpen(true)} onNavigate={navigate} />
     <NewBookingDialog data={data} open={bookingOpen} onClose={() => setBookingOpen(false)} refresh={refresh} />
-    <BookingDetail booking={selectedBooking} data={data} onClose={() => setSelectedBooking(null)} refresh={refresh} />
+    <BookingDetail bookingId={selectedBookingId} data={data} onClose={() => setSelectedBookingId(null)} refresh={refresh} />
     <PersonalProfileDialog open={profileEditorOpen} onOpenChange={setProfileEditorOpen} user={data.user} refresh={refresh} />
 
-    <Dialog open={searchOpen} onOpenChange={setSearchOpen}><DialogContent><DialogTitle className="text-lg font-semibold">Search workspace</DialogTitle><DialogDescription className="mt-2 text-xs text-stone-400">Search customers and bookings.</DialogDescription><div className="relative mt-5"><Search className="absolute left-3 top-3 text-stone-400" size={17} /><input aria-label="Search customers and bookings" autoFocus value={search} onChange={event => setSearch(event.target.value)} placeholder="A customer or booking detail…" className="!pl-10" /></div><div className="mt-4 max-h-80 space-y-1 overflow-y-auto">{searchResults.map(customer => <button key={customer.id} className="flex w-full items-center gap-3 rounded-lg p-3 text-left hover:bg-stone-50" onClick={() => { navigate('customers'); setSearchOpen(false); }}><Users size={16} className="text-stone-400" /><span className="text-xs">{customer.name}<span className="mt-1 block text-[10px] text-stone-400">{customer.email}</span></span></button>)}{bookingResults.map(booking => <button key={booking.id} className="flex w-full items-center gap-3 rounded-lg p-3 text-left hover:bg-stone-50" onClick={() => { setSelectedBooking(booking); setSearchOpen(false); }}><CalendarDays size={16} className="text-stone-400" /><span className="text-xs">{booking.serviceName}<span className="mt-1 block text-[10px] text-stone-400">{booking.locationName} · {shortDate(booking.startAt)}</span></span></button>)}{search && !bookingResults.length && !searchResults.length && <p className="py-7 text-center text-xs text-stone-400">No matches just yet. Try another search.</p>}{!search && <p className="py-5 text-center text-xs text-stone-400">Tip: press Ctrl/Command+K to search from anywhere.</p>}</div></DialogContent></Dialog>
+    <Dialog open={searchOpen} onOpenChange={setSearchOpen}><DialogContent><DialogTitle className="text-lg font-semibold">Search workspace</DialogTitle><DialogDescription className="mt-2 text-xs text-stone-400">Search students and bookings.</DialogDescription><div className="relative mt-5"><Search className="absolute left-3 top-3 text-stone-400" size={17} /><input aria-label="Search students and bookings" autoFocus value={search} onChange={event => setSearch(event.target.value)} placeholder="A student or booking detail…" className="!pl-10" /></div><div className="mt-4 max-h-80 space-y-1 overflow-y-auto">{searchResults.map(student => <button key={student.id} className="flex w-full items-center gap-3 rounded-lg p-3 text-left hover:bg-stone-50" onClick={() => { navigate('students'); setSearchOpen(false); }}><Users size={16} className="text-stone-400" /><span className="text-xs">{student.name}<span className="mt-1 block text-[10px] text-stone-400">{student.email}</span></span></button>)}{bookingResults.map(booking => <button key={booking.id} className="flex w-full items-center gap-3 rounded-lg p-3 text-left hover:bg-stone-50" onClick={() => { setSelectedBookingId(booking.id); setSearchOpen(false); }}><CalendarDays size={16} className="text-stone-400" /><span className="text-xs">{booking.serviceName}<span className="mt-1 block text-[10px] text-stone-400">{booking.locationName} · {shortDate(booking.startAt)}</span></span></button>)}{search && !bookingResults.length && !searchResults.length && <p className="py-7 text-center text-xs text-stone-400">No matches just yet. Try another search.</p>}{!search && <p className="py-5 text-center text-xs text-stone-400">Tip: press Ctrl/Command+K to search from anywhere.</p>}</div></DialogContent></Dialog>
 
-    <Dialog open={helpOpen} onOpenChange={setHelpOpen}><DialogContent><DialogTitle className="text-lg font-semibold">{currentRole === 'COACH' ? 'Help with your coaching workspace' : 'A little help to get going'}</DialogTitle><DialogDescription className="mt-2 text-xs text-stone-400">{currentRole === 'COACH' ? 'Your schedule, customers, availability, and attendance—all in one place.' : 'Less admin. More time doing what you love.'}</DialogDescription><div className="mt-6 space-y-5 text-xs leading-relaxed">{helpSteps.map(([number, heading, body]) => <div className="flex gap-3" key={number}><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#edf2e5] text-[#7e926c]">{number}</span><div><h3>{heading}</h3><p className="mt-1 text-stone-500">{body}</p></div></div>)}</div></DialogContent></Dialog>
+    <Dialog open={helpOpen} onOpenChange={setHelpOpen}><DialogContent><DialogTitle className="text-lg font-semibold">{isCoach ? 'Help with your coaching workspace' : 'A little help to get going'}</DialogTitle><DialogDescription className="mt-2 text-xs text-stone-400">{isCoach ? 'Your schedule, students, availability, and attendance—all in one place.' : 'Less admin. More time doing what you love.'}</DialogDescription><div className="mt-6 space-y-5 text-xs leading-relaxed">{helpSteps.map(([number, heading, body]) => <div className="flex gap-3" key={number}><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#edf2e5] text-[#7e926c]">{number}</span><div><h3>{heading}</h3><p className="mt-1 text-stone-500">{body}</p></div></div>)}</div></DialogContent></Dialog>
 
-    <Dialog open={workspaceOpen && !clubAccount} onOpenChange={open => { if (!switchingMembershipId) setWorkspaceOpen(open); }}><DialogContent onEscapeKeyDown={event => { if (switchingMembershipId) event.preventDefault(); }} onPointerDownOutside={event => { if (switchingMembershipId) event.preventDefault(); }}><DialogTitle className="text-lg font-semibold">Switch club or academy</DialogTitle><DialogDescription className="mt-2 text-xs leading-relaxed text-stone-500">Use the same Courtly account across every club and academy that has added you. A club adds you to its roster; you cannot join one yourself.</DialogDescription><div className="mt-5 space-y-2">{memberships.map(membership => { const current = membership.id === data.membership?.id || membership.business.id === data.business.id; return <button key={membership.id} type="button" disabled={!!switchingMembershipId || !membership.active} onClick={() => void switchWorkspace(membership)} className={`flex min-h-16 w-full items-center gap-3 rounded-xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-55 ${current ? 'border-[#cbd9bf] bg-[#f0f5e9]' : 'border-[#e3e8df] hover:bg-[#f8faf6]'}`}><span className="business-avatar shrink-0">{initials(membership.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-semibold text-[#344b39]">{membership.business.name}</span><span className="mt-1 block text-[10px] capitalize text-stone-500">{membership.active ? membership.role.toLowerCase() : `${membership.role.toLowerCase()} · inactive`}</span></span>{switchingMembershipId === membership.id ? <Loader2 size={16} className="shrink-0 animate-spin text-[#69805e]" /> : current ? <span className="flex items-center gap-1 text-[10px] font-semibold text-[#66805a]"><Check size={13} />Current</span> : null}</button>; })}{!memberships.length && <p className="rounded-xl bg-stone-50 p-4 text-xs leading-relaxed text-stone-500">This is your only available workspace.</p>}</div></DialogContent></Dialog>
+    <Dialog open={workspaceOpen && !clubAccount} onOpenChange={open => { if (!switchingMembershipId) setWorkspaceOpen(open); }}><DialogContent onEscapeKeyDown={event => { if (switchingMembershipId) event.preventDefault(); }} onPointerDownOutside={event => { if (switchingMembershipId) event.preventDefault(); }}><DialogTitle className="text-lg font-semibold">Switch workspace</DialogTitle><DialogDescription className="mt-2 text-xs leading-relaxed text-stone-500">Use the same Courtly coach account for your own practice and every club or academy that adds you to its roster.</DialogDescription><div className="mt-5 space-y-2">{memberships.map(membership => { const current = membership.id === data.membership?.id || membership.business.id === data.business.id; const kind = membership.business.kind === 'SOLO' ? 'Own practice' : 'Club or academy'; return <button key={membership.id} type="button" disabled={!!switchingMembershipId || !membership.active} onClick={() => void switchWorkspace(membership)} className={`flex min-h-16 w-full items-center gap-3 rounded-xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-55 ${current ? 'border-[#cbd9bf] bg-[#f0f5e9]' : 'border-[#e3e8df] hover:bg-[#f8faf6]'}`}><span className="business-avatar shrink-0">{initials(membership.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-semibold text-[#344b39]">{membership.business.name}</span><span className="mt-1 block text-[10px] text-stone-500">{membership.active ? kind : `${kind} · inactive`}</span></span>{switchingMembershipId === membership.id ? <Loader2 size={16} className="shrink-0 animate-spin text-[#69805e]" /> : current ? <span className="flex items-center gap-1 text-[10px] font-semibold text-[#66805a]"><Check size={13} />Current</span> : null}</button>; })}{!memberships.length && <p className="rounded-xl bg-stone-50 p-4 text-xs leading-relaxed text-stone-500">This is your only available workspace.</p>}</div></DialogContent></Dialog>
   </div>;
 }

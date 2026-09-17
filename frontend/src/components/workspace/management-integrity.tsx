@@ -86,7 +86,7 @@ export function IntegrityView({ data, refresh }: ManagementProps) {
       {flags.map(flag => <article key={flag.id} className="panel p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-base text-[#294735]">{flag.coachName} &amp; {flag.customerName}</h2>
+            <h2 className="text-base text-[#294735]">{flag.coachName} &amp; {flag.studentName}</h2>
             <p className="mt-1 text-[11px] text-stone-500">
               First seen {shortDate(flag.firstSeenAt)} · {flag.occurrences} private session{flag.occurrences === 1 ? '' : 's'} noticed
             </p>

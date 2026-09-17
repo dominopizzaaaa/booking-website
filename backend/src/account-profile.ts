@@ -13,7 +13,7 @@ export type PersonalProfileInput = z.infer<typeof editablePersonalProfile>;
 
 /**
  * Update identity-level details without requiring or selecting a business.
- * Linked customer and instructor records are synchronized explicitly so each
+ * Linked student and instructor records are synchronized explicitly so each
  * workspace sees the current account details on future bookings.
  */
 export async function updatePersonalProfile(userId: string, input: PersonalProfileInput) {
@@ -25,7 +25,7 @@ export async function updatePersonalProfile(userId: string, input: PersonalProfi
         data: { name: input.name, initials: initials(input.name) },
       });
     }
-    await tx.customer.updateMany({
+    await tx.student.updateMany({
       where: { userId },
       data: {
         ...(input.name !== undefined ? { name: input.name, initials: initials(input.name) } : {}),

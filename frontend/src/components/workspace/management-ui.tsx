@@ -6,10 +6,11 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { mutate } from '@/lib/api';
-import type { Workspace } from '@/lib/types';
+import type { ManagerWorkspace, WorkspaceResponse } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
-export type ManagementProps = { data: Workspace; refresh: () => Promise<void> };
+export type WorkspaceProps = { data: WorkspaceResponse; refresh: () => Promise<void> };
+export type ManagementProps = { data: ManagerWorkspace; refresh: () => Promise<void> };
 export const text = (form: FormData, key: string) => String(form.get(key) || '').trim();
 export const numeric = (form: FormData, key: string) => Number(form.get(key));
 export function cents(value: string | number) {

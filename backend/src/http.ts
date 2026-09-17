@@ -29,33 +29,69 @@ export class HttpError extends Error {
 export const asyncRoute = (fn: (req: WorkspaceRequest, res: Response, next: NextFunction) => unknown): RequestHandler =>
   (req, res, next) => { Promise.resolve(fn(req as WorkspaceRequest, res, next)).catch(next); };
 
-export const adminOnly: RequestHandler = (req, _res, next) => {
-  const membership = (req as AuthRequest).auth?.membership;
-  if (!membership) return next(new HttpError(403, 'Select a business workspace to continue'));
-  if (!['OWNER', 'ADMIN'].includes(membership.role)) return next(new HttpError(403, 'Owner or admin access required'));
+export type AccountType = 'STUDENT' | 'COACH' | 'CLUB';
+
+/**
+ * Who runs this business.
+ *
+ * There is no stored role to consult: what an account may do follows from what
+ * it is. A club account runs its club. A coach runs their own practice, where
+ * there is no club to answer to, but inside someone else's club they are a
+ * coach and nothing more.
+ */
+export function managesBusiness(auth: Pick<AuthContext, 'user' | 'business'>) {
+  if (!auth.business) return false;
+  return (auth.user.accountType === 'CLUB' && auth.business.kind === 'CLUB')
+    || (auth.user.accountType === 'COACH' && auth.business.kind === 'SOLO');
+}
+
+/**
+ * Whether this request should be narrowed to one coach's own schedule, hiding
+ * the rest of the club's roster, students and money from them.
+ */
+export function coachScoped(auth: Pick<AuthContext, 'user' | 'business'>) {
+  return auth.user.accountType === 'COACH' && auth.business?.kind === 'CLUB';
+}
+
+export const requireBusinessManager: RequestHandler = (req, _res, next) => {
+  const auth = (req as AuthRequest).auth;
+  if (!auth?.membership) return next(new HttpError(403, 'Select a business workspace to continue'));
+  if (!managesBusiness(auth)) return next(new HttpError(403, 'Only the club account can do this'));
+  next();
+};
+
+/**
+ * Staff belongs to a club. A coach's own practice has exactly one member — the
+ * coach — so it never grows a roster.
+ */
+export const requireClubAccount: RequestHandler = (req, _res, next) => {
+  const auth = (req as AuthRequest).auth;
+  if (!auth?.membership || !auth.business) return next(new HttpError(403, 'Select a business workspace to continue'));
+  if (auth.user.accountType !== 'CLUB' || auth.business.kind !== 'CLUB' || auth.membership.instructorId !== null) {
+    return next(new HttpError(403, 'Only the club account can manage its coaches'));
+  }
   next();
 };
 
 export function coachScope(req: AuthRequest, instructorId: string) {
   const membership = req.auth.membership;
   if (!membership) throw new HttpError(403, 'Select a business workspace to continue');
-  if (membership.role === 'COACH' && membership.instructorId !== instructorId) {
+  if (coachScoped(req.auth) && membership.instructorId !== instructorId) {
     throw new HttpError(403, 'Coaches can only access their own schedule');
   }
 }
 
-// Initials come from the letters people actually read in a name. Splitting on
-// whitespace alone turns "Dominic (Coach)" into "D(", so punctuation is
-// stripped from the front of each word first and words left with nothing are
-// dropped. Internal punctuation is kept inside a word, so a hyphenated first
-// name still counts as one word. Falls back to the first letter or digit
-// present, so a name written entirely in punctuation still shows something.
+// Parenthesized text is descriptive rather than part of a person's name (for
+// example, "Dominic (Coach)"). Remove complete and unfinished qualifiers
+// before reading the first two words, while retaining internal punctuation in
+// real names such as Mary-Jane.
 export function initials(name: string) {
-  const words = name
-    .normalize('NFC')
+  const normalized = name.normalize('NFC');
+  const withoutQualifiers = normalized.replace(/[(（][^)）]*(?:[)）]|$)/gu, ' ');
+  const words = withoutQualifiers
     .split(/\s+/)
     .map(word => word.replace(/^[^\p{L}\p{N}]+/u, ''))
     .filter(word => word.length > 0);
   const letters = words.slice(0, 2).map(word => [...word][0]).join('');
-  return (letters || [...name.normalize('NFC')].find(character => /[\p{L}\p{N}]/u.test(character)) || '?').toUpperCase();
+  return (letters || [...withoutQualifiers].find(character => /[\p{L}\p{N}]/u.test(character)) || '?').toUpperCase();
 }

@@ -1,11 +1,11 @@
 import type { Business, Membership, Prisma, User } from '@prisma/client';
 import { prisma } from './db.js';
+import type { AccountType } from './http.js';
 
-export const bookingInclude = { service: true, instructor: true, location: true, participants: { include: { customer: true } } } satisfies Prisma.BookingInclude;
+export const bookingInclude = { service: true, instructor: true, location: true, participants: { include: { student: true } } } satisfies Prisma.BookingInclude;
 export type FullBooking = Prisma.BookingGetPayload<{ include: typeof bookingInclude }>;
 export type MembershipWithBusiness = Membership & { business: Business };
-export type AccountType = 'CUSTOMER' | 'COACH' | 'OWNER';
-export type MembershipRole = 'OWNER' | 'ADMIN' | 'COACH';
+export type { AccountType } from './http.js';
 
 export const publicBusiness = (b: Business) => ({
   id: b.id, name: b.name, slug: b.slug, ownerName: b.ownerName, email: b.email, timezone: b.timezone,
@@ -30,21 +30,21 @@ export const userJson = (user: User) => ({
   id: user.id, name: user.name, email: user.email, phone: user.phone, parentName: user.parentName,
   accountType: user.accountType as AccountType,
 });
-export const workspaceUserJson = (user: User, membership: Pick<Membership, 'role' | 'instructorId'>) => ({
-  ...userJson(user), role: membership.role as MembershipRole, instructorId: membership.instructorId,
+export const workspaceUserJson = (user: User, membership: Pick<Membership, 'instructorId'>) => ({
+  ...userJson(user), instructorId: membership.instructorId,
 });
 export const membershipJson = (membership: MembershipWithBusiness) => ({
-  id: membership.id, userId: membership.userId, businessId: membership.businessId, role: membership.role as MembershipRole,
+  id: membership.id, userId: membership.userId, businessId: membership.businessId,
   instructorId: membership.instructorId, active: membership.active, createdAt: membership.createdAt.toISOString(),
   business: publicBusiness(membership.business),
 });
 
 /**
- * A club-admin login is the club's own operating account, not a person's
- * portable identity: it belongs to exactly one club and never switches
- * between them. Owners and coaches keep a personal account that can.
+ * A club account is the club itself, not a person: it belongs to exactly one
+ * club and never switches between them. Coaches keep a personal account that
+ * moves with them between the clubs that add them.
  */
-export const isClubAccount = (membership: Pick<Membership, 'role'>) => membership.role === 'ADMIN';
+export const isClubAccount = (user: Pick<User, 'accountType'>) => user.accountType === 'CLUB';
 
 export type AuthState = {
   user: ReturnType<typeof userJson>;
@@ -63,7 +63,7 @@ export async function authState(userId: string, activeMembershipId?: string | nu
     include: { memberships: { include: { business: true }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] } },
   });
   const { memberships, ...user } = account;
-  const selected = account.accountType === 'CUSTOMER' || activeMembershipId === null
+  const selected = account.accountType === 'STUDENT' || activeMembershipId === null
     ? null
     : activeMembershipId === undefined
       ? memberships.find(candidate => candidate.active && candidate.userId === account.id
@@ -120,6 +120,16 @@ export function withoutBookingFinancials<T extends BookingFinancials>(booking: T
 }
 export function bookingJson(b: FullBooking, options: { includeNotes?: boolean } = {}) {
   return { id: b.id, serviceId: b.serviceId, serviceName: b.service.name, instructorId: b.instructorId, instructorName: b.instructor.name, locationId: b.locationId, locationName: b.location.name, locationColor: b.location.color, startAt: b.startAt.toISOString(), endAt: b.endAt.toISOString(), status: b.status, type: b.type, capacity: b.capacity, price: b.price, paymentRoute: b.paymentRoute, coachAcceptance: b.coachAcceptance, createdByRole: b.createdByRole, ...(options.includeNotes === false ? {} : { notes: b.notes }), address: b.address, recurringId: b.recurringId,
-    participants: b.participants.filter(p => !p.cancelledAt).map(p => ({ id: p.id, customerId: p.customerId, name: p.customer.name, email: p.customer.email, attendance: p.attendance, paid: p.paid, price: p.price, packageId: p.packageId, notes: p.notes })) };
+    participants: b.participants.filter(p => !p.cancelledAt).map(p => ({ id: p.id, studentId: p.studentId, name: p.student.name, email: p.student.email, attendance: p.attendance, paid: p.paid, price: p.price, packageId: p.packageId, notes: p.notes })) };
 }
-export const packageJson = (p: any) => ({ id: p.id, customerId: p.customerId, customerName: p.customer.name, name: p.name, serviceId: p.serviceId, totalCredits: p.totalCredits, usedCredits: p.usedCredits, price: p.price, expiresAt: p.expiresAt.toISOString(), paid: p.paid });
+export const packageJson = (p: any) => ({ id: p.id, studentId: p.studentId, studentName: p.student.name, name: p.name, serviceId: p.serviceId, totalCredits: p.totalCredits, usedCredits: p.usedCredits, price: p.price, expiresAt: p.expiresAt.toISOString(), paid: p.paid });
+
+/** One wire shape for receipts and payouts; the party is determined by kind. */
+export const paymentJson = (p: any) => {
+  const { student, instructor, ...payment } = p;
+  return {
+    ...payment,
+    studentName: student?.name ?? null,
+    instructorName: instructor?.name ?? null,
+  };
+};

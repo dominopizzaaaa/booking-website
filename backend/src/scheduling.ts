@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { prisma } from './db.js';
-import { HttpError, initials } from './http.js';
+import { HttpError, initials, type AccountType } from './http.js';
 import { bookingInclude, bookingJson } from './serializers.js';
 import { createBookingAccountAlerts } from './account-notifications.js';
 import { notifyWorkspace } from './notifications.js';
@@ -14,21 +14,21 @@ const bookingSelection = {
   startAt: z.string().datetime({ offset: true }),
   repeatWeeks: z.number().int().min(1).max(12).default(1), packageId: z.string().min(1).optional(), notes: z.string().max(2000).default(''), address: z.string().max(500).default(''),
 };
-const customerContact = z.object({
+const studentContact = z.object({
   phone: z.string().trim().max(40).optional(),
   parentName: z.string().trim().max(120).optional(),
 }).strict();
 export const bookingInput = z.object({
   ...bookingSelection,
-  customerId: z.string().min(1).optional(),
-  customer: customerContact.extend({
+  studentId: z.string().min(1).optional(),
+  student: studentContact.extend({
     name: z.string().trim().min(2).max(120),
     email: z.string().trim().email().transform(s => s.toLowerCase()),
   }).strict().optional(),
-}).strict().refine(x => !!x.customerId || !!x.customer, { message: 'Customer details are required' });
+}).strict().refine(x => !!x.studentId || !!x.student, { message: 'Student details are required' });
 export const publicBookingInput = z.object({
   ...bookingSelection,
-  customer: customerContact.optional(),
+  student: studentContact.optional(),
 }).strict();
 export type BookingInput = z.infer<typeof bookingInput>;
 export type PublicBookingInput = z.infer<typeof publicBookingInput>;
@@ -37,14 +37,14 @@ export type Tx = Prisma.TransactionClient;
  * Who is creating this booking, which decides two things that cannot be
  * derived later: whether the coach still has to accept it, and whose name
  * goes on the audit trail.
- *  - `customerUserId`  the student booked it themselves
+ *  - `studentUserId`  the student booked it themselves
  *  - `actor`           a provider created it inside a workspace
  */
 export type CreateBookingsOptions =
-  | { customerUserId: string }
+  | { studentUserId: string }
   | {
-      requireLinkedCustomer: true;
-      actor?: { userId: string; role: 'OWNER' | 'ADMIN' | 'COACH'; instructorId: string | null };
+      requireLinkedStudent: true;
+      actor?: { userId: string; accountType: AccountType; instructorId: string | null };
     };
 
 /** "CLUB" money runs through the club's books; "DIRECT" goes to the coach. */
@@ -60,10 +60,10 @@ export function coachAcceptanceFor(
   options: CreateBookingsOptions,
   instructorId: string,
 ): 'NOT_REQUIRED' | 'PENDING' {
-  if ('customerUserId' in options) return 'NOT_REQUIRED';
+  if ('studentUserId' in options) return 'NOT_REQUIRED';
   const actor = options.actor;
   if (!actor) return 'NOT_REQUIRED';
-  if (actor.role === 'COACH' && actor.instructorId === instructorId) return 'NOT_REQUIRED';
+  if (actor.accountType === 'COACH' && actor.instructorId === instructorId) return 'NOT_REQUIRED';
   return 'PENDING';
 }
 
@@ -82,7 +82,9 @@ export const bookableInstructorWhere = (businessId: string): Prisma.InstructorWh
       user: {
         is: {
           passwordHash: { not: null },
-          accountType: { in: ['COACH', 'OWNER'] },
+          // Only a coach account teaches. A club account is the club itself
+          // and never appears on its own roster.
+          accountType: 'COACH',
         },
       },
     },
@@ -149,67 +151,80 @@ export async function evaluateSlot(tx: Tx, ctx: Context, startAt: Date, excludeB
 
 const normalizeEmail = (email: string) => email.trim().toLowerCase();
 
-async function updateAccountContact(tx: Tx, customerId: string, contact: BookingInput['customer']) {
-  if (!contact || (contact.phone === undefined && contact.parentName === undefined)) {
-    return tx.customer.findUniqueOrThrow({ where: { id: customerId } });
-  }
-  return tx.customer.update({
-    where: { id: customerId },
-    data: {
-      ...(contact.phone !== undefined ? { phone: contact.phone } : {}),
-      ...(contact.parentName !== undefined ? { parentName: contact.parentName } : {}),
-    },
+async function syncAccountContact(tx: Tx, userId: string, contact: BookingInput['student']) {
+  // Booking details edit the student's personal profile, so serialize them
+  // with profile edits and keep every club-local projection in lockstep.
+  await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${userId} FOR UPDATE`;
+  const changed = contact && (contact.phone !== undefined || contact.parentName !== undefined);
+  const account = changed
+    ? await tx.user.update({
+        where: { id: userId },
+        data: {
+          ...(contact.phone !== undefined ? { phone: contact.phone } : {}),
+          ...(contact.parentName !== undefined ? { parentName: contact.parentName } : {}),
+        },
+        select: { name: true, email: true, phone: true, parentName: true },
+      })
+    : await tx.user.findUniqueOrThrow({
+        where: { id: userId },
+        select: { name: true, email: true, phone: true, parentName: true },
+      });
+  await tx.student.updateMany({
+    where: { userId },
+    data: { phone: account.phone, parentName: account.parentName },
   });
+  return account;
 }
 
-async function resolveAccountCustomer(tx: Tx, businessId: string, userId: string, profile: NonNullable<BookingInput['customer']>) {
+async function resolveAccountStudent(tx: Tx, businessId: string, userId: string, profile: NonNullable<BookingInput['student']>) {
   // Serializing first-time resolution makes creating the account-backed club
   // profile race-safe. Legacy email-only rows are intentionally never claimed:
   // registration alone does not prove ownership of an old contact address.
-  const lockKey = `account-customer:${businessId}:${userId}`;
+  const lockKey = `account-student:${businessId}:${userId}`;
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
 
-  const linked = await tx.customer.findFirst({ where: { businessId, userId } });
-  if (linked) return updateAccountContact(tx, linked.id, profile);
+  const account = await syncAccountContact(tx, userId, profile);
+  const linked = await tx.student.findFirst({ where: { businessId, userId } });
+  if (linked) return linked;
 
-  const email = normalizeEmail(profile.email);
-  const legacyContact = await tx.customer.findUnique({
+  const email = normalizeEmail(account.email);
+  const legacyContact = await tx.student.findUnique({
     where: { businessId_email: { businessId, email } },
     select: { id: true, userId: true },
   });
   if (legacyContact) {
     throw new HttpError(409, legacyContact.userId
-      ? 'This email is already connected to another customer account for this business'
+      ? 'This email is already connected to another student account for this business'
       : 'This business already has unclaimed history for this email. Ask the club to verify and connect your account before booking');
   }
 
-  return tx.customer.create({ data: {
-    businessId, userId, name: profile.name, email, initials: initials(profile.name),
-    phone: profile.phone ?? '', parentName: profile.parentName ?? '',
+  return tx.student.create({ data: {
+    businessId, userId, name: account.name, email, initials: initials(account.name),
+    phone: account.phone, parentName: account.parentName,
   } });
 }
 
-async function resolveBookingCustomer(tx: Tx, businessId: string, input: BookingInput, options: CreateBookingsOptions) {
-  if ('customerUserId' in options) {
-    if (input.customerId) throw new HttpError(400, 'Account bookings cannot select a customer identity');
-    if (!input.customer) throw new HttpError(400, 'Customer account details are required');
-    return resolveAccountCustomer(tx, businessId, options.customerUserId, input.customer);
+async function resolveBookingStudent(tx: Tx, businessId: string, input: BookingInput, options: CreateBookingsOptions) {
+  if ('studentUserId' in options) {
+    if (input.studentId) throw new HttpError(400, 'Account bookings cannot select a student identity');
+    if (!input.student) throw new HttpError(400, 'Student account details are required');
+    return resolveAccountStudent(tx, businessId, options.studentUserId, input.student);
   }
 
-  // Provider bookings must select an existing account-backed customer. They
-  // cannot silently create an email-only customer from request contact data.
-  if (!input.customerId || input.customer) throw new HttpError(400, 'Select an existing account-linked customer');
-  const customer = await tx.customer.findFirst({ where: { id: input.customerId, businessId } });
-  if (!customer) throw new HttpError(404, 'Customer not found');
-  if (!customer.userId) throw new HttpError(400, 'Customer must be linked to a registered account');
-  return customer;
+  // Provider bookings must select an existing account-backed student. They
+  // cannot silently create an email-only student from request contact data.
+  if (!input.studentId || input.student) throw new HttpError(400, 'Select an existing account-linked student');
+  const student = await tx.student.findFirst({ where: { id: input.studentId, businessId } });
+  if (!student) throw new HttpError(404, 'Student not found');
+  if (!student.userId) throw new HttpError(400, 'Student must be linked to a registered account');
+  return student;
 }
 
-export async function createBookingsInTransaction(tx: Tx, businessId: string, input: BookingInput, options: CreateBookingsOptions = { requireLinkedCustomer: true }) {
+export async function createBookingsInTransaction(tx: Tx, businessId: string, input: BookingInput, options: CreateBookingsOptions = { requireLinkedStudent: true }) {
   await lockInstructors(tx, [input.instructorId]);
   const ctx = await schedulingContext(tx, businessId, input.serviceId, input.instructorId, input.locationId);
-  const accountBooking = 'customerUserId' in options;
-  const customer = await resolveBookingCustomer(tx, businessId, input, options);
+  const accountBooking = 'studentUserId' in options;
+  const student = await resolveBookingStudent(tx, businessId, input, options);
   const first = DateTime.fromISO(input.startAt, { zone: ctx.business.timezone });
   const occurrences = [];
   const conflicts = [];
@@ -217,15 +232,15 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
     const date = first.plus({ weeks: week }).toJSDate();
     const slot = await evaluateSlot(tx, ctx, date);
     if (!slot.available) conflicts.push({ date: date.toISOString(), reason: slot.reason });
-    if (slot.groupId && await tx.participant.findFirst({ where: { bookingId: slot.groupId, customerId: customer.id, cancelledAt: null } })) conflicts.push({ date: date.toISOString(), reason: 'Customer is already enrolled in this group' });
+    if (slot.groupId && await tx.participant.findFirst({ where: { bookingId: slot.groupId, studentId: student.id, cancelledAt: null } })) conflicts.push({ date: date.toISOString(), reason: 'Student is already enrolled in this group' });
     occurrences.push(slot);
   }
   if (conflicts.length) throw new HttpError(409, 'One or more requested sessions are unavailable. No bookings were created.', { conflicts });
   let pkg = null;
   if (input.packageId) {
     await tx.$queryRaw`SELECT id FROM "LessonPackage" WHERE id = ${input.packageId} AND "businessId" = ${businessId} FOR UPDATE`;
-    pkg = await tx.lessonPackage.findFirst({ where: { id: input.packageId, businessId, customerId: customer.id } });
-    if (!pkg || (pkg.serviceId && pkg.serviceId !== input.serviceId)) throw new HttpError(400, 'Package does not belong to this customer or service');
+    pkg = await tx.lessonPackage.findFirst({ where: { id: input.packageId, businessId, studentId: student.id } });
+    if (!pkg || (pkg.serviceId && pkg.serviceId !== input.serviceId)) throw new HttpError(400, 'Package does not belong to this student or service');
     if (occurrences.some(s => s.startAt > pkg!.expiresAt) || pkg.expiresAt < new Date()) throw new HttpError(400, 'Package expires before one or more sessions');
     const updated = await tx.lessonPackage.updateMany({ where: { id: pkg.id, usedCredits: { lte: pkg.totalCredits - occurrences.length } }, data: { usedCredits: { increment: occurrences.length } } });
     if (!updated.count) throw new HttpError(409, 'Not enough package credits for all sessions');
@@ -233,9 +248,9 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
   const recurringId = occurrences.length > 1 ? randomUUID() : null;
   const paymentRoute = paymentRouteFor(ctx.business);
   const coachAcceptance = coachAcceptanceFor(options, input.instructorId);
-  const actor = 'customerUserId' in options ? null : options.actor ?? null;
-  const createdByRole = accountBooking ? 'CUSTOMER' : actor?.role === 'COACH' ? 'COACH' : 'CLUB';
-  const createdByUserId = accountBooking ? options.customerUserId : actor?.userId ?? null;
+  const actor = 'studentUserId' in options ? null : options.actor ?? null;
+  const createdByRole = accountBooking ? 'STUDENT' : actor?.accountType === 'COACH' ? 'COACH' : 'CLUB';
+  const createdByUserId = accountBooking ? options.studentUserId : actor?.userId ?? null;
   // A lesson the coach has not accepted yet is not a confirmed lesson, even at
   // a venue that needs no approval.
   const venuePendingStatus = (ctx.location.requiresApproval || ctx.location.type === 'RENTED') ? 'PENDING' : 'CONFIRMED';
@@ -247,37 +262,42 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
       const booking = await tx.booking.create({ data: { businessId, serviceId: input.serviceId, instructorId: input.instructorId, locationId: input.locationId, startAt: slot.startAt, endAt: slot.endAt, duration: ctx.assignment.duration, bufferMinutes: ctx.service.bufferMinutes, price: ctx.assignment.price, type: ctx.service.type, capacity: ctx.service.type === 'PRIVATE' ? 1 : ctx.service.capacity, status: initialStatus, paymentRoute, coachAcceptance, createdByRole, createdByUserId, recurringId, notes: accountBooking ? '' : input.notes, address: input.address } });
       bookingId = booking.id;
     }
-    const existing = await tx.participant.findUnique({ where: { bookingId_customerId: { bookingId, customerId: customer.id } } });
+    const existing = await tx.participant.findUnique({ where: { bookingId_studentId: { bookingId, studentId: student.id } } });
     const sessionSnapshot = await tx.booking.findUniqueOrThrow({ where: { id: bookingId }, select: { price: true } });
     const participantData = { managementTokenHash: null, managementTokenExpiresAt: null, managementTokenRevokedAt: null, notes: accountBooking ? input.notes : '', price: sessionSnapshot.price, packageId: pkg?.id ?? null, paid: pkg?.paid ?? false, creditConsumed: !!pkg, cancelledAt: null, attendance: 'UNMARKED' };
     if (existing) await tx.participant.update({ where: { id: existing.id }, data: participantData });
-    else await tx.participant.create({ data: { bookingId, customerId: customer.id, ...participantData } });
+    else await tx.participant.create({ data: { bookingId, studentId: student.id, ...participantData } });
     const booking = await tx.booking.findUniqueOrThrow({ where: { id: bookingId }, include: bookingInclude });
     const json = bookingJson(booking, { includeNotes: !accountBooking });
     booked.push(accountBooking
-      ? { ...json, participants: json.participants.filter(participant => participant.customerId === customer.id) }
+      ? { ...json, participants: json.participants.filter(participant => participant.studentId === student.id) }
       : json);
   }
-  const venuePending = ctx.location.requiresApproval || ctx.location.type === 'RENTED';
-  const awaitingCoach = coachAcceptance === 'PENDING';
+  // An enrollment can join an existing group whose coach decision was made
+  // by an earlier creator. Summarize the persisted first session, not this
+  // actor's creation defaults, while retaining one workspace alert per request.
+  const summaryBooking = booked[0];
+  const awaitingCoach = summaryBooking?.coachAcceptance === 'PENDING';
+  const confirmationPending = summaryBooking?.status === 'PENDING' && !awaitingCoach;
   await notifyWorkspace(tx, {
     businessId,
     instructorId: input.instructorId,
-    bookingId: booked[0]?.id ?? null,
+    bookingId: summaryBooking?.id ?? null,
     type: awaitingCoach ? 'PENDING_ACTION' : 'BOOKING',
     actionNeeded: awaitingCoach,
     title: awaitingCoach
-      ? `Lesson awaiting your acceptance · ${customer.name}`
-      : `${booked.length > 1 ? 'Recurring booking' : 'New booking'} · ${customer.name}`,
+      ? `Lesson awaiting your acceptance · ${student.name}`
+      : `${booked.length > 1 ? 'Recurring booking' : 'New booking'} · ${student.name}`,
     message: awaitingCoach
-      ? `${ctx.service.name} with ${customer.name} was assigned to ${ctx.instructor.name}. It is confirmed once the coach accepts it.`
-      : `${ctx.service.name} with ${ctx.instructor.name}. ${venuePending ? 'Venue approval is required; no external court has been reserved. ' : ''}Booking confirmation and 24-hour reminder queued in Courtly; external delivery is not configured.`,
+      ? `${ctx.service.name} with ${student.name} was assigned to ${ctx.instructor.name}. It is confirmed once the coach accepts it.`
+      : `${ctx.service.name} with ${ctx.instructor.name}. ${confirmationPending ? 'Venue approval is required; no external court has been reserved. ' : ''}Booking confirmation and 24-hour reminder queued in Courtly; external delivery is not configured.`,
   });
   for (const booking of booked) {
     await createBookingAccountAlerts(
       tx, booking.id,
-      awaitingCoach ? 'CLUB_ASSIGNED' : booking.status === 'PENDING' ? 'REQUESTED' : 'CREATED',
-      [customer.userId],
+      booking.coachAcceptance === 'PENDING' ? 'CLUB_ASSIGNED'
+        : booking.status === 'PENDING' ? 'REQUESTED' : 'CREATED',
+      [student.userId],
     );
     // Only a lesson that skips the club's books can bypass a club, so the
     // safeguard is evaluated exactly where that money path is decided.
@@ -285,7 +305,7 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
   }
   return { bookings: booked };
 }
-export const createBookings = (businessId: string, input: BookingInput, options: CreateBookingsOptions = { requireLinkedCustomer: true }) => prisma.$transaction(tx => createBookingsInTransaction(tx, businessId, input, options), { timeout: 30_000 });
+export const createBookings = (businessId: string, input: BookingInput, options: CreateBookingsOptions = { requireLinkedStudent: true }) => prisma.$transaction(tx => createBookingsInTransaction(tx, businessId, input, options), { timeout: 30_000 });
 
 export async function refundParticipant(tx: Tx, participant: { id: string; packageId: string | null; creditConsumed: boolean }) {
   if (!participant.creditConsumed || !participant.packageId) return;
@@ -314,7 +334,7 @@ export async function rescheduleBooking(tx: Tx, businessId: string, bookingId: s
     where: { id: bookingId },
     include: {
       service: true, instructor: true, location: true,
-      participants: { include: { customer: true, package: true }, where: { cancelledAt: null } },
+      participants: { include: { student: true, package: true }, where: { cancelledAt: null } },
     },
   });
   if (booking.instructorId !== original.instructorId) throw new HttpError(409, 'Session changed concurrently. Please retry.');

@@ -3,7 +3,7 @@ import type { Prisma } from '@prisma/client';
 /**
  * The shared alert vocabulary for both audiences.
  *
- * Provider `Notification` rows and customer `AccountNotification` rows are
+ * Provider `Notification` rows and student `AccountNotification` rows are
  * stored separately on purpose, but they are read by the same kind of person
  * doing the same kind of triage, so they draw their `type` from one list. The
  * frontend maps each value to an icon; an unknown value falls back to NOTICE

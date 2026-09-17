@@ -4,7 +4,7 @@ Courtly is a full-stack booking platform for coaching businesses. This repositor
 
 [![CI](https://github.com/dominopizzaaaa/booking-website/actions/workflows/ci.yml/badge.svg)](https://github.com/dominopizzaaaa/booking-website/actions/workflows/ci.yml)
 
-The working MVP includes global customer and provider accounts, club memberships, multi-location and instructor-aware availability, travel and preparation buffers, private and capacity-limited group lessons, atomic recurring bookings, pending venue approval, account-backed customer booking and self-service, packages, manual payment records, attendance, customer/parent details, staff roles, and a responsive provider workspace. Defaults are SGD and Asia/Singapore.
+The working MVP includes global student and coach accounts, dedicated club accounts, portable coach affiliations, multi-location and coach-aware availability, travel and preparation buffers, private and capacity-limited group lessons, atomic recurring bookings, pending venue approval, account-backed student booking and self-service, packages, manual payment records, attendance, student/parent details, coach rosters, and responsive business workspaces. Defaults are SGD and Asia/Singapore.
 
 It also covers how a club and its coaches actually work together: a club assigns a student to a coach and the coach accepts before the lesson is confirmed; either side proposes a new time and the other agrees before a session moves; lessons booked through a club are paid to the club, which then records what it pays each coach; a coach can run their own practice alongside their club work, where students pay them directly; and a club is told when a coach and a student it introduced start training privately outside it.
 
@@ -12,18 +12,17 @@ Agents working on this repository should read [AGENTS.md](AGENTS.md) first.
 
 ## Accounts, clubs, and bookings
 
-An account belongs to a person, not to one club. Customers use the same global account to book with different clubs. Provider accounts gain access to individual club workspaces through memberships, and can switch between the clubs they belong to. A membership carries the workspace role (`OWNER`, `ADMIN`, or `COACH`) rather than duplicating the person's login for each club.
+Courtly has exactly three account types: `STUDENT`, `COACH`, and `CLUB`. Students and coaches are people with portable global identities. A club account represents the organisation itself, belongs to its one club workspace, and is never a teaching profile.
 
-- **Customers** create or sign in to a customer account from a club's booking page. Signing in is required before a booking can be submitted. The resulting club customer record is linked to the global account, so the customer can return to the booking page to view their receipt and club-specific booking history, then cancel or reschedule eligible sessions. New guest bookings and private management links are not supported; already-issued legacy links remain available only for their existing bookings.
-- **Owners** choose the owner account type at sign-up and create their first club workspace. They manage the club's services, locations, instructor roster, schedules, bookings, customers, and staff access.
-- **Coaches** create their own coach account first. A club owner then adds that existing account to the club and links its membership to the matching instructor profile. A coach never joins a club themselves. Every new coach roster entry or customer record must resolve to a registered account; creating an instructor profile alone does not grant sign-in access, and an owner does not create or share a coach password. A coach can also create one practice of their own, for personal students who have nothing to do with a club.
-- **Club administrators** do not sign up. The club creates the login from its own workspace, and that account belongs to one club: it cannot be added to a second club, and it has no business switcher. Its profile leads with the club's name and its day-to-day tools.
+- **Students** create or sign in to a student account from a club's booking page. Signing in is required before a booking can be submitted. The resulting club-specific student record is linked to the global account, so the student can return to view receipts and booking history, then cancel or propose a reschedule for eligible sessions. New guest bookings and private management links are not supported; already-issued legacy links remain available only for their existing bookings.
+- **Coaches** register their own coach account. A club then adds that existing account to its roster; the resulting affiliation links the account to a coach profile in that club. Coaches can carry the same identity across multiple clubs and switch between those affiliations. They can also create one independent practice for personal students who have nothing to do with a club.
+- **Clubs** choose the club account type at sign-up, which creates their one club workspace. The business name becomes the club account's identity, while the person's name supplied at sign-up is kept as the club contact. The club account manages services, locations, coach affiliations, schedules, bookings, students, packages, payments, and settings. It has no coach profile and cannot teach a lesson; even a founder who coaches uses a separate `COACH` account and joins the roster like every other coach.
 
-Club membership and customer membership are separate concerns: provider memberships grant workspace permissions, while each account-backed customer record holds that customer's club-specific booking, package, attendance, and payment context.
+Memberships are affiliations only: they connect an account to a business and, for a club coach, to that coach's roster profile. They do not contain workspace roles. Authority comes from the account type and workspace kind: the `CLUB` account manages its club, a `COACH` manages their own independent practice, and a coach inside a club is scoped to their own work. Each account-backed student record separately holds that student's club-specific booking, package, attendance, and payment context.
 
 ## How lessons are paid for
 
-A workspace is either a **club or academy** or an **independent coach's practice**, chosen at sign-up and changeable in settings. Every booking records the arrangement it was made under, so changing the setting affects new bookings only.
+A `CLUB` account creates a **club or academy** workspace at sign-up. A `COACH` can separately create one **independent practice**. The workspace kind is immutable, and every booking snapshots its payment route so the original arrangement remains explicit.
 
 - In a club, the student pays the club. The club then records what it pays each coach, so both legs of the money path stay in one ledger.
 - In an independent practice, the student pays the coach directly.
@@ -77,9 +76,9 @@ Because a club invests in introducing its coaches to its students, Courtly flags
 
    Open [http://localhost:3000](http://localhost:3000). The Next.js server rewrites same-origin `/api/*` requests to the API at `http://127.0.0.1:4000`.
 
-To create a persistent sample club and owner membership instead of using the demo workspace, optionally set `SEED_OWNER_EMAIL`, `SEED_OWNER_PASSWORD`, `SEED_BUSINESS_NAME`, and `SEED_BUSINESS_SLUG` in `backend/.env`, then run `npm run seed --prefix backend`. If `SEED_OWNER_PASSWORD` is omitted, the command prints a generated password once.
+To create a persistent sample club and club account instead of using the demo workspace, optionally set `SEED_CLUB_EMAIL`, `SEED_CLUB_PASSWORD`, `SEED_BUSINESS_NAME`, and `SEED_BUSINESS_SLUG` in `backend/.env`, then run `npm run seed --prefix backend`. If `SEED_CLUB_PASSWORD` is omitted, the command prints a generated password once.
 
-For a temporary investor showcase on an already deployed account-aware environment, run `npm run demo:investors` with an explicit `INVESTOR_DEMO_BASE_URL` plus separate `INVESTOR_DEMO_OWNER_PASSWORD`, `INVESTOR_DEMO_CLUB_ADMIN_PASSWORD`, `INVESTOR_DEMO_COACH_PASSWORD`, `INVESTOR_DEMO_CUSTOMER_PASSWORD`, and undisclosed `INVESTOR_DEMO_BACKGROUND_PASSWORD` values in the invoking shell. First-time provisioning also requires `INVESTOR_DEMO_ALLOW_CREATE=true`; later runs require the exact `INVESTOR_DEMO_EXPECTED_BUSINESS_ID` and `INVESTOR_DEMO_EXPECTED_BUSINESS_SLUG` printed by the first run. The builder uses normal authenticated APIs to create the `Courtly Investor Showcase` workspace and representative schedules, rentals, group classes, packages, payments, cancellations, and venue approvals. It never stores supplied passwords in the repository, never retries mutations automatically, requires HTTPS outside loopback development, and anchors dates to workspace creation so reconciliation does not append a new schedule each day. Because normal owner registration creates a non-demo workspace, delete the exact printed workspace ID from the platform admin console when the showcase is no longer needed; do not use the bulk demo purge action.
+For a temporary investor showcase on an already deployed account-aware environment, run `npm run demo:investors` with an explicit `INVESTOR_DEMO_BASE_URL` plus distinct `INVESTOR_DEMO_CLUB_PASSWORD`, `INVESTOR_DEMO_COACH_PASSWORD`, `INVESTOR_DEMO_STUDENT_PASSWORD`, and undisclosed `INVESTOR_DEMO_BACKGROUND_PASSWORD` values in the invoking shell. First-time provisioning also requires `INVESTOR_DEMO_ALLOW_CREATE=true`; later runs require the exact `INVESTOR_DEMO_EXPECTED_BUSINESS_ID` and `INVESTOR_DEMO_EXPECTED_BUSINESS_SLUG` printed by the first run. The builder uses normal authenticated APIs to create one `CLUB` account, portable `COACH` accounts, `STUDENT` accounts, and a `Courtly Investor Showcase` workspace with representative schedules, hosted court sessions, group classes, packages, payments, cancellations, coach acceptances, and venue approvals. It never stores supplied passwords in the repository, never retries mutations automatically, requires HTTPS outside loopback development, and anchors dates to workspace creation so reconciliation does not append a new schedule each day. Because normal club registration creates a non-demo workspace, delete the exact printed workspace ID from the platform admin console when the showcase is no longer needed; do not use the bulk demo purge action.
 
 ## Checks
 
@@ -127,31 +126,31 @@ Deploy the backend to Railway first, then point the Vercel frontend at the Railw
 4. Deploy the project and note its canonical production URL.
 5. Return to the Railway API variables, add `APP_ORIGIN` with that exact Vercel origin (for example `https://courtly.example.com`, with no trailing slash), and redeploy the API. If a custom frontend domain is added later, update `APP_ORIGIN` to the domain users actually visit. For more than one allowed origin, use a comma-separated list.
 6. Redeploy Vercel whenever `BACKEND_URL` changes because Next.js resolves the rewrite configuration during the build.
-7. Open the Vercel application, register or sign in with a customer account, and complete a booking. Confirm that it appears in the customer's self-service history. In browser developer tools, `/api/*` requests should target the Vercel hostname, not the Railway hostname.
+7. Open the Vercel application, register or sign in with a student account, and complete a booking. Confirm that it appears in the student's self-service history. In browser developer tools, `/api/*` requests should target the Vercel hostname, not the Railway hostname.
 
 Preview deployments have a different origin on every build. If previews need authenticated mutations, add the desired preview origins to Railway's `APP_ORIGIN`; otherwise keep previews connected only for read-only checks or omit the Preview `BACKEND_URL`.
 
 ## Production operations
 
 - Commit a new Prisma migration for every schema change. Railway runs `prisma migrate deploy` through `npm run db:migrate`; it does not run destructive development migrations or seed production automatically.
-- Set `DEMO_ENABLED=false` when public demo creation is not wanted. Global customer and provider account registration and sign-in remain available.
-- To create an initial known business deliberately, run the Railway service's `npm run seed` command once with strong `SEED_OWNER_PASSWORD`, `SEED_OWNER_EMAIL`, `SEED_BUSINESS_NAME`, and `SEED_BUSINESS_SLUG` variables. The seed is idempotent for an existing slug and is not part of deployment.
+- Set `DEMO_ENABLED=false` when public demo creation is not wanted. Global student, coach, and club account registration and sign-in remain available.
+- To create an initial known club deliberately, run the Railway service's `npm run seed` command once with strong `SEED_CLUB_PASSWORD`, `SEED_CLUB_EMAIL`, `SEED_BUSINESS_NAME`, and `SEED_BUSINESS_SLUG` variables. The seed is idempotent for an existing slug and is not part of deployment.
 - Check the Railway health endpoint after releases. It returns `503` if PostgreSQL cannot be reached.
 - Treat Railway and Vercel environment changes as production changes. Never copy the generated `DATABASE_URL` into GitHub, Vercel, or committed files; only the backend needs database access.
 
 ## Platform admin console
 
-Courtly ships a platform-owner console at `/admin`, separate from global customer/provider accounts and club memberships. It is gated by a single `ADMIN_PASSWORD` environment variable on the backend, not by a user account.
+Courtly ships a platform admin console at `/admin`, separate from `STUDENT`, `COACH`, and `CLUB` accounts and their affiliations. It is gated by a single `ADMIN_PASSWORD` environment variable on the backend, not by an `ADMIN` account type (there is no such account type).
 
 - Set `ADMIN_PASSWORD` in the Railway API service to a long, random secret, then redeploy. Leaving it unset disables `/admin` (the page shows a "not configured" notice and every admin API returns `401`/`503`).
-- Visit `https://YOUR-FRONTEND-DOMAIN/admin`, enter the password, and you get a platform overview (businesses, customers, bookings, payments) plus a searchable, filterable list of every workspace.
-- From the console you can permanently delete any business (cascading to all of its customers, bookings, packages, and payments) or purge every demo workspace at once. These actions are irreversible.
+- Visit `https://YOUR-FRONTEND-DOMAIN/admin`, enter the password, and you get a platform overview (businesses, students, bookings, payments) plus a searchable, filterable list of every workspace.
+- From the console you can permanently delete any business (cascading to all of its students, bookings, packages, and payments) or purge every demo workspace at once. These actions are irreversible.
 - The admin session is a stateless, HMAC-signed cookie keyed by the password itself, so rotating `ADMIN_PASSWORD` immediately invalidates all existing admin sessions. The page carries `noindex` so it stays out of search results.
 
 ## MVP boundaries
 
-- Courtly reserves instructor time; it does not reserve an external court or room. Rented or approval-required venues stay pending until the provider secures them separately.
+- Courtly reserves coach time; it does not reserve an external court or room. Rented or approval-required venues stay pending until the club or independent coach secures them separately.
 - Venues can be looked up on Google Maps. Set `GOOGLE_MAPS_API_KEY` on the backend for live Places search; without it, pasting a Google Maps link still fills in the venue. The key stays server-side and never reaches the browser.
-- Lesson payments are tracked manually. No customer payment gateway or provider subscription checkout is connected.
+- Lesson payments are tracked manually. No student payment gateway or business subscription checkout is connected.
 - Confirmations and reminders are queued as in-app records. Email, SMS, and automated WhatsApp delivery are not connected.
 - External calendar sync, route-based travel calculations, waitlists, and marketplace discovery are intentionally left for later integrations.

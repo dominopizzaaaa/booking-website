@@ -15,7 +15,7 @@ export type BookingAccountAlert =
   | 'PENDING'
   | 'COMPLETED'
   | 'PROVIDER_CANCELLED'
-  | 'CUSTOMER_CANCELLED'
+  | 'STUDENT_CANCELLED'
   | 'RESCHEDULED'
   | 'CLUB_ASSIGNED'
   | 'COACH_ACCEPTED'
@@ -53,7 +53,7 @@ export const accountNotificationJson = (notification: FullAccountNotification) =
 
 /**
  * Persist an account-scoped booking alert. Callers can provide explicit users
- * for a new group enrollment or customer cancellation; otherwise every active
+ * for a new group enrollment or student cancellation; otherwise every active
  * account-backed participant receives the event exactly once.
  */
 export async function createBookingAccountAlerts(
@@ -75,12 +75,12 @@ export async function createBookingAccountAlerts(
       location: { select: { name: true } },
       participants: {
         where: { cancelledAt: null },
-        select: { customer: { select: { userId: true } } },
+        select: { student: { select: { userId: true } } },
       },
     },
   });
   const userIds = [...new Set((explicitUserIds
-    ?? booking.participants.map(participant => participant.customer.userId))
+    ?? booking.participants.map(participant => participant.student.userId))
     .filter((userId): userId is string => typeof userId === 'string'))];
   if (!userIds.length) return 0;
 
@@ -114,7 +114,7 @@ export async function createBookingAccountAlerts(
       type: 'BOOKING_CANCELLED', title: 'Booking cancelled',
       message: `${booking.business.name} cancelled ${lesson}, previously scheduled for ${when}.`, actionNeeded: true,
     },
-    CUSTOMER_CANCELLED: {
+    STUDENT_CANCELLED: {
       type: 'BOOKING_CANCELLED', title: 'Booking cancelled',
       message: `You cancelled ${lesson}, previously scheduled for ${when}.`, actionNeeded: false,
     },
@@ -179,8 +179,8 @@ export async function createBookingAccountAlerts(
   return result.count;
 }
 
-// Personal details belong to the customer account, not to a selected club.
-// This router is mounted behind requireAuth + requireCustomer and deliberately
+// Personal details belong to the student account, not to a selected club.
+// This router is mounted behind requireAuth + requireStudent and deliberately
 // sits before every provider-only workspace guard in app.ts.
 accountRouter.patch('/profile', asyncRoute(async (req, res) => {
   const input = editablePersonalProfile.parse(req.body);
