@@ -1,10 +1,10 @@
 'use client';
 
 import { useState } from 'react';
-import { Clock3, MapPin, Users, Pencil, Layers3, Globe2, Home, Building2, ArrowUpRight, Mail, CalendarDays } from 'lucide-react';
+import { Clock3, MapPin, Users, Pencil, Layers3, Globe2, Home, Building2, ArrowUpRight, Mail, CalendarDays, Search, Loader2, ExternalLink, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { mutate } from '@/lib/api';
-import type { Instructor, Location, Service, ServiceLocation } from '@/lib/types';
+import { mutate, searchVenues } from '@/lib/api';
+import type { Instructor, Location, Service, ServiceLocation, VenueCandidate } from '@/lib/types';
 import { initials, money } from '@/lib/utils';
 import { CheckField, Editor, Empty, Field, PageHeading, StateBadge, cents, numeric, text, type ManagementProps } from './management-ui';
 import { StaffAccess } from './staff-access';
@@ -35,14 +35,126 @@ const locationNames: Record<Location['type'], string> = { FACILITY: 'Own facilit
 const locationIcons = { FACILITY: Building2, RENTED: MapPin, HOME: Home, ONLINE: Globe2 };
 export function LocationsView({ data, refresh }: ManagementProps) {
   const [editing, setEditing] = useState<Location | null | undefined>();
-  return <><PageHeading title="Locations" description="A home for every lesson. Keep venue details, travel time, and approvals in one place." action={() => setEditing(null)} actionLabel="Add location" /><div className="mb-5 flex items-center gap-2 rounded-xl border border-[#e5e9e0] bg-white px-4 py-3 text-xs text-stone-500"><MapPin size={14} /><strong className="font-semibold text-[#405941]">{data.locations.filter(l => l.active).length}</strong> active locations</div>{data.locations.length ? <div className="cards-grid">{data.locations.map(location => { const Icon = locationIcons[location.type]; return <article className="panel flex flex-col p-5 transition-shadow hover:shadow-sm" key={location.id}><div className="mb-5 flex items-center justify-between"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#f1f5ec]" style={{ color: location.color }}><Icon size={23} strokeWidth={1.4} /></span><StateBadge active={location.active} /></div><p className="eyebrow mb-2">{locationNames[location.type]}</p><h2 className="text-base text-[#294735]">{location.name}</h2><p className="mt-2 min-h-10 text-xs leading-relaxed text-stone-500">{location.address || (location.type === 'HOME' ? 'Address is provided by the customer.' : location.type === 'ONLINE' ? 'Online session details are arranged separately.' : 'No address added yet.')}</p><div className="mt-5 space-y-2 text-[11px] text-stone-500"><p className="flex items-center gap-2"><Clock3 size={13} />{location.travelMinutes} min travel allowance</p><p className="flex items-center gap-2"><Layers3 size={13} />{data.services.filter(s => s.locations.some(l => l.locationId === location.id)).length} connected services</p>{location.requiresApproval && <span className="badge pending">Venue confirmation required</span>}</div>{location.notes && <p className="mt-4 border-l-2 border-[#dfe7d3] pl-3 text-[11px] leading-relaxed text-stone-500">{location.notes}</p>}<div className="mt-auto pt-5"><Button variant="outline" size="sm" className="w-full" onClick={() => setEditing(location)}><Pencil size={13} />Edit location<ArrowUpRight size={13} className="ml-auto" /></Button></div></article>; })}</div> : <div className="panel"><Empty title="Every lesson starts somewhere" icon={MapPin}>Add your facility, a rented venue, customer homes, or an online location.</Empty></div>}{editing !== undefined && <LocationEditor location={editing} data={data} refresh={refresh} onClose={() => setEditing(undefined)} />}</>;
+  return <><PageHeading title="Locations" description="A home for every lesson. Search Google Maps for a venue, or add one by hand, and keep travel time and approvals with it." action={() => setEditing(null)} actionLabel="Add location" /><div className="mb-5 flex items-center gap-2 rounded-xl border border-[#e5e9e0] bg-white px-4 py-3 text-xs text-stone-500"><MapPin size={14} /><strong className="font-semibold text-[#405941]">{data.locations.filter(l => l.active).length}</strong> active locations</div>{data.locations.length ? <div className="cards-grid">{data.locations.map(location => { const Icon = locationIcons[location.type]; return <article className="panel flex flex-col p-5 transition-shadow hover:shadow-sm" key={location.id}><div className="mb-5 flex items-center justify-between"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#f1f5ec]" style={{ color: location.color }}><Icon size={23} strokeWidth={1.4} /></span><StateBadge active={location.active} /></div><p className="eyebrow mb-2">{locationNames[location.type]}</p><h2 className="text-base text-[#294735]">{location.name}</h2><p className="mt-2 min-h-10 text-xs leading-relaxed text-stone-500">{location.address || (location.type === 'HOME' ? 'Address is provided by the customer.' : location.type === 'ONLINE' ? 'Online session details are arranged separately.' : 'No address added yet.')}</p><div className="mt-5 space-y-2 text-[11px] text-stone-500"><p className="flex items-center gap-2"><Clock3 size={13} />{location.travelMinutes} min travel allowance</p><p className="flex items-center gap-2"><Layers3 size={13} />{data.services.filter(s => s.locations.some(l => l.locationId === location.id)).length} connected services</p>{location.requiresApproval && <span className="badge pending">Venue confirmation required</span>}{location.mapsUrl && <a href={location.mapsUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[11px] font-medium text-[#5d7a52]">Open in Google Maps <ExternalLink size={11} /></a>}</div>{location.notes && <p className="mt-4 border-l-2 border-[#dfe7d3] pl-3 text-[11px] leading-relaxed text-stone-500">{location.notes}</p>}<div className="mt-auto pt-5"><Button variant="outline" size="sm" className="w-full" onClick={() => setEditing(location)}><Pencil size={13} />Edit location<ArrowUpRight size={13} className="ml-auto" /></Button></div></article>; })}</div> : <div className="panel"><Empty title="Every lesson starts somewhere" icon={MapPin}>Add your facility, a rented venue, customer homes, or an online location.</Empty></div>}{editing !== undefined && <LocationEditor location={editing} data={data} refresh={refresh} onClose={() => setEditing(undefined)} />}</>;
+}
+
+/**
+ * Find a venue on Google Maps instead of typing it.
+ *
+ * Two paths, because only one of them always works. When the server has a
+ * Places key, a search returns real venues. When it does not, a pasted Maps
+ * link is read locally — people already share venues as links, so this is the
+ * dependable route rather than a degraded one. Either way the place name,
+ * address and coordinates fill the form, and typing an address by hand stays
+ * available for somewhere Maps has never heard of.
+ */
+function VenueFinder({ onPick }: { onPick: (venue: VenueCandidate) => void }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<VenueCandidate[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [error, setError] = useState('');
+  const [searched, setSearched] = useState(false);
+
+  async function run() {
+    const value = query.trim();
+    if (value.length < 2) return;
+    setSearching(true);
+    setError('');
+    setResults([]);
+    try {
+      const found = await searchVenues(value);
+      setResults(found.results);
+      setSearched(true);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Venue search is unavailable right now.');
+      setSearched(true);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  return <section className="rounded-xl border border-[#e6eae3] bg-[#fafbf8] p-4">
+    <h3 className="flex items-center gap-2 text-sm text-[#294735]"><MapPin size={15} />Find it on Google Maps</h3>
+    <p className="mt-1 text-[11px] leading-relaxed text-stone-500">Search for the venue, or paste a Google Maps link. The name, address, and location fill in below.</p>
+    <div className="mt-3 flex gap-2 max-sm:flex-col">
+      <input
+        aria-label="Search for a venue"
+        value={query}
+        onChange={event => { setQuery(event.target.value); setError(''); }}
+        onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); void run(); } }}
+        placeholder="e.g. Kallang Tennis Centre, or a Maps link"
+        className="min-w-0 flex-1"
+      />
+      <Button type="button" variant="outline" className="shrink-0" disabled={searching || query.trim().length < 2} onClick={() => void run()}>
+        {searching ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}Search
+      </Button>
+    </div>
+    {error && <p className="mt-3 rounded-lg bg-amber-50 p-3 text-[11px] leading-relaxed text-amber-800">{error}</p>}
+    {results.length > 0 && <ul className="mt-3 space-y-2">{results.map(venue => <li key={`${venue.placeId}:${venue.name}`}>
+      <button
+        type="button"
+        onClick={() => onPick(venue)}
+        className="flex w-full items-start gap-2.5 rounded-lg border border-[#e3e8df] bg-white p-3 text-left transition hover:border-[#cbd8c5] hover:bg-[#f7f9f4]"
+      >
+        <MapPin size={15} className="mt-0.5 shrink-0 text-[#839677]" />
+        <span className="min-w-0 flex-1">
+          <span className="block text-xs font-semibold text-[#344b39]">{venue.name}</span>
+          {venue.address && <span className="mt-1 block text-[10px] leading-relaxed text-stone-500">{venue.address}</span>}
+        </span>
+        <Check size={14} className="mt-0.5 shrink-0 text-[#7a9367]" />
+      </button>
+    </li>)}</ul>}
+    {searched && !searching && !error && !results.length && <p className="mt-3 text-[11px] text-stone-500">No venues matched. Try a fuller name, or type the address in by hand below.</p>}
+  </section>;
 }
 
 function LocationEditor({ location, refresh, onClose }: ManagementProps & { location: Location | null; onClose: () => void }) {
-  return <Editor title={location ? 'Edit location' : 'Add a location'} description="Venue approval is a scheduling workflow, not an external venue reservation." onClose={onClose} refresh={refresh} success="Location saved" submitLabel="Save location" onSubmit={form => mutate(`/locations${location ? `/${location.id}` : ''}`, location ? 'PATCH' : 'POST', { name: text(form, 'name'), address: text(form, 'address'), type: text(form, 'location-type'), color: text(form, 'color'), requiresApproval: form.has('requiresApproval'), travelMinutes: numeric(form, 'travelMinutes'), notes: text(form, 'notes'), active: form.has('active') })}><div className="form-grid max-sm:grid-cols-1!"><Field name="name" label="Location name" defaultValue={location?.name} required wide /><Field name="location-type" label="Location type"><select id="location-type" name="location-type" defaultValue={location?.type || 'FACILITY'} required>{Object.entries(locationNames).map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select></Field><Field name="travelMinutes" label="Travel allowance (minutes)" type="number" min="0" max="240" step="5" defaultValue={location?.travelMinutes ?? 15} required /><Field name="address" label="Address or meeting details" defaultValue={location?.address} wide hint="For home visits, the customer supplies their address when booking." /><Field name="color" label="Calendar colour" type="color" defaultValue={location?.color || '#8fa875'} /><Field name="location-notes" label="Venue notes" wide><textarea id="location-notes" name="notes" defaultValue={location?.notes} rows={3} placeholder="Access details, equipment, or booking instructions" /></Field></div><CheckField label="Require venue confirmation" name="requiresApproval" defaultChecked={location?.requiresApproval ?? false} hint="Bookings stay pending until you confirm the venue has been secured separately." /><CheckField label="Active location" name="active" defaultChecked={location?.active ?? true} hint="Archive to hide this location from new public bookings. Existing lessons are kept." /></Editor>;
+  // The venue identity a Maps lookup filled in, kept separate from the free
+  // text so an edited address never silently claims to be a Maps result.
+  const [name, setName] = useState(location?.name ?? '');
+  const [address, setAddress] = useState(location?.address ?? '');
+  const [place, setPlace] = useState<VenueCandidate | null>(
+    location?.source === 'GOOGLE_MAPS'
+      ? {
+        placeId: location.placeId, name: location.name, address: location.address,
+        mapsUrl: location.mapsUrl, latitude: location.latitude, longitude: location.longitude,
+        source: 'GOOGLE_MAPS',
+      }
+      : null,
+  );
+
+  function pick(venue: VenueCandidate) {
+    setPlace(venue);
+    setName(venue.name);
+    if (venue.address) setAddress(venue.address);
+  }
+
+  return <Editor title={location ? 'Edit location' : 'Add a location'} description="Venue approval is a scheduling workflow, not an external venue reservation." onClose={onClose} refresh={refresh} success="Location saved" submitLabel="Save location" onSubmit={form => mutate(`/locations${location ? `/${location.id}` : ''}`, location ? 'PATCH' : 'POST', {
+    name: text(form, 'name'), address: text(form, 'address'), type: text(form, 'location-type'),
+    color: text(form, 'color'), requiresApproval: form.has('requiresApproval'),
+    travelMinutes: numeric(form, 'travelMinutes'), notes: text(form, 'notes'), active: form.has('active'),
+    source: place ? 'GOOGLE_MAPS' : 'MANUAL',
+    placeId: place?.placeId ?? '',
+    mapsUrl: place?.mapsUrl ?? '',
+    latitude: place?.latitude ?? null,
+    longitude: place?.longitude ?? null,
+  })}>
+    <VenueFinder onPick={pick} />
+    {place && <div className="flex items-start gap-3 rounded-xl border border-[#dfe7d3] bg-[#f3f7ed] p-3">
+      <MapPin size={16} className="mt-0.5 shrink-0 text-[#6f875e]" />
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-semibold text-[#344b39]">Linked to a Google Maps place</p>
+        <p className="mt-1 text-[10px] leading-relaxed text-stone-500">{place.latitude !== null && place.longitude !== null ? `${place.latitude.toFixed(5)}, ${place.longitude.toFixed(5)}` : 'Coordinates were not included in this result.'}</p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {place.mapsUrl && <a href={place.mapsUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#5d7a52]">Open in Maps <ExternalLink size={10} /></a>}
+          <button type="button" className="text-[10px] font-semibold text-stone-500 underline underline-offset-2" onClick={() => setPlace(null)}>Unlink</button>
+        </div>
+      </div>
+    </div>}
+    <div className="form-grid max-sm:grid-cols-1!"><Field name="name" label="Location name" value={name} onChange={event => setName(event.target.value)} required wide /><Field name="location-type" label="Location type"><select id="location-type" name="location-type" defaultValue={location?.type || 'FACILITY'} required>{Object.entries(locationNames).map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select></Field><Field name="travelMinutes" label="Travel allowance (minutes)" type="number" min="0" max="240" step="5" defaultValue={location?.travelMinutes ?? 15} required /><Field name="address" label="Address or meeting details" value={address} onChange={event => setAddress(event.target.value)} wide hint="For home visits, the customer supplies their address when booking." /><Field name="color" label="Calendar colour" type="color" defaultValue={location?.color || '#8fa875'} /><Field name="location-notes" label="Venue notes" wide><textarea id="location-notes" name="notes" defaultValue={location?.notes} rows={3} placeholder="Access details, equipment, or booking instructions" /></Field></div><CheckField label="Require venue confirmation" name="requiresApproval" defaultChecked={location?.requiresApproval ?? false} hint="Bookings stay pending until you confirm the venue has been secured separately." /><CheckField label="Active location" name="active" defaultChecked={location?.active ?? true} hint="Archive to hide this location from new public bookings. Existing lessons are kept." /></Editor>;
 }
 
 export function TeamView({ data, refresh }: ManagementProps) {
   const [editing, setEditing] = useState<Instructor | null | undefined>();
-  return <><PageHeading title="Your team" description="Good lessons start with good people. Manage the instructors on your booking roster." action={() => setEditing(null)} actionLabel="Add coach account" /><div className="mb-6 flex items-start gap-3 rounded-xl border border-[#e3e9db] bg-[#eff3e9] p-4"><Users size={18} className="mt-0.5 shrink-0 text-[#7a8d69]" /><p className="text-xs leading-relaxed text-[#6d7d62]">Every instructor is connected to a <strong className="font-semibold">registered Courtly coach account</strong>. Ask the coach to create their own account first, then add the exact email they registered. Their name and sign-in identity stay theirs.</p></div>{data.instructors.length ? <div className="cards-grid">{data.instructors.map(instructor => <article className="panel p-5 transition-shadow hover:shadow-sm" key={instructor.id}><div className="flex items-start justify-between"><span className="flex h-14 w-14 items-center justify-center rounded-full bg-[#edf2e6] text-lg font-medium" style={{ color: instructor.color }}>{instructor.initials || initials(instructor.name)}</span><StateBadge active={instructor.active} /></div><h2 className="mt-4 text-base text-[#294735]">{instructor.name}</h2><p className="mt-1 text-xs text-stone-500">{instructor.specialty || 'Instructor'}</p><p className="mt-5 flex items-center gap-2 break-all text-[11px] text-stone-500"><Mail size={13} className="shrink-0" />{instructor.email || 'No email added'}</p><p className="mt-2 flex items-center gap-2 text-[11px] text-stone-500"><CalendarDays size={13} />{data.availability.filter(a => a.instructorId === instructor.id).length} weekly availability windows</p><div className="mt-5 border-t border-[#edf0e8] pt-4"><Button variant="outline" size="sm" className="w-full" onClick={() => setEditing(instructor)}><Pencil size={13} />Edit roster details</Button></div></article>)}</div> : <div className="panel"><Empty title="Make room for your team" icon={Users}>Connect an existing coach account, then add availability and services for them.</Empty></div>}{data.user.role === 'OWNER' && <StaffAccess data={data} refresh={refresh} />}{editing !== undefined && <Editor title={editing ? 'Edit instructor details' : 'Add a registered coach'} description={editing ? 'Update workspace-only roster details. The coach owns their name, email, password, and account identity.' : 'Enter the exact email of an existing registered Courtly coach account. This grants access to this business; it does not create a login or password.'} onClose={() => setEditing(undefined)} refresh={refresh} success={editing ? 'Instructor details saved' : 'Coach account added'} submitLabel={editing ? 'Save roster details' : 'Add coach account'} onSubmit={form => mutate(`/instructors${editing ? `/${editing.id}` : ''}`, editing ? 'PATCH' : 'POST', editing ? { specialty: text(form, 'specialty'), color: text(form, 'color'), active: form.has('active') } : { name: text(form, 'email'), email: text(form, 'email'), specialty: text(form, 'specialty'), color: text(form, 'color'), active: form.has('active') })}><div className="form-grid max-sm:grid-cols-1!">{editing ? <div className="field-wide flex items-center gap-3 rounded-xl border border-[#e3e9db] bg-[#f8faf6] p-4"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#e9f0e2] text-[#617851]"><Mail size={17} /></span><div className="min-w-0"><p className="text-xs font-semibold text-[#344b39]">{editing.name}</p><p className="mt-1 break-all text-[11px] text-stone-500">{editing.email}</p><p className="mt-1 text-[10px] text-stone-400">Account identity is managed by the coach.</p></div></div> : <Field label="Registered coach account email" name="email" type="email" required wide autoComplete="email" hint="Must exactly match an existing Courtly coach account." />}<Field label="Specialty" name="specialty" defaultValue={editing?.specialty} placeholder="e.g. Junior tennis" /><Field label="Calendar colour" name="color" type="color" defaultValue={editing?.color || '#8fa875'} /></div><CheckField name="active" label="Active instructor" defaultChecked={editing?.active ?? true} hint="Inactive instructors are hidden from new public bookings. Existing bookings are kept." /></Editor>}</>;
+  return <><PageHeading title="My coaches" description="Good lessons start with good people. A club adds a coach to its roster; a coach cannot join a club themselves." action={() => setEditing(null)} actionLabel="Add coach account" /><div className="mb-6 flex items-start gap-3 rounded-xl border border-[#e3e9db] bg-[#eff3e9] p-4"><Users size={18} className="mt-0.5 shrink-0 text-[#7a8d69]" /><p className="text-xs leading-relaxed text-[#6d7d62]">Every instructor is connected to a <strong className="font-semibold">registered Courtly coach account</strong>. Ask the coach to create their own account first, then add the exact email they registered. Their name and sign-in identity stay theirs.</p></div>{data.instructors.length ? <div className="cards-grid">{data.instructors.map(instructor => <article className="panel p-5 transition-shadow hover:shadow-sm" key={instructor.id}><div className="flex items-start justify-between"><span className="flex h-14 w-14 items-center justify-center rounded-full bg-[#edf2e6] text-lg font-medium" style={{ color: instructor.color }}>{instructor.initials || initials(instructor.name)}</span><StateBadge active={instructor.active} /></div><h2 className="mt-4 text-base text-[#294735]">{instructor.name}</h2><p className="mt-1 text-xs text-stone-500">{instructor.specialty || 'Instructor'}</p><p className="mt-5 flex items-center gap-2 break-all text-[11px] text-stone-500"><Mail size={13} className="shrink-0" />{instructor.email || 'No email added'}</p><p className="mt-2 flex items-center gap-2 text-[11px] text-stone-500"><CalendarDays size={13} />{data.availability.filter(a => a.instructorId === instructor.id).length} weekly availability windows</p><div className="mt-5 border-t border-[#edf0e8] pt-4"><Button variant="outline" size="sm" className="w-full" onClick={() => setEditing(instructor)}><Pencil size={13} />Edit roster details</Button></div></article>)}</div> : <div className="panel"><Empty title="Make room for your team" icon={Users}>Connect an existing coach account, then add availability and services for them.</Empty></div>}{data.user.role === 'OWNER' && <StaffAccess data={data} refresh={refresh} />}{editing !== undefined && <Editor title={editing ? 'Edit instructor details' : 'Add a registered coach'} description={editing ? 'Update workspace-only roster details. The coach owns their name, email, password, and account identity.' : 'Enter the exact email of an existing registered Courtly coach account. This grants access to this business; it does not create a login or password.'} onClose={() => setEditing(undefined)} refresh={refresh} success={editing ? 'Instructor details saved' : 'Coach account added'} submitLabel={editing ? 'Save roster details' : 'Add coach account'} onSubmit={form => mutate(`/instructors${editing ? `/${editing.id}` : ''}`, editing ? 'PATCH' : 'POST', editing ? { specialty: text(form, 'specialty'), color: text(form, 'color'), active: form.has('active') } : { name: text(form, 'email'), email: text(form, 'email'), specialty: text(form, 'specialty'), color: text(form, 'color'), active: form.has('active') })}><div className="form-grid max-sm:grid-cols-1!">{editing ? <div className="field-wide flex items-center gap-3 rounded-xl border border-[#e3e9db] bg-[#f8faf6] p-4"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#e9f0e2] text-[#617851]"><Mail size={17} /></span><div className="min-w-0"><p className="text-xs font-semibold text-[#344b39]">{editing.name}</p><p className="mt-1 break-all text-[11px] text-stone-500">{editing.email}</p><p className="mt-1 text-[10px] text-stone-400">Account identity is managed by the coach.</p></div></div> : <Field label="Registered coach account email" name="email" type="email" required wide autoComplete="email" hint="Must exactly match an existing Courtly coach account." />}<Field label="Specialty" name="specialty" defaultValue={editing?.specialty} placeholder="e.g. Junior tennis" /><Field label="Calendar colour" name="color" type="color" defaultValue={editing?.color || '#8fa875'} /></div><CheckField name="active" label="Active instructor" defaultChecked={editing?.active ?? true} hint="Inactive instructors are hidden from new public bookings. Existing bookings are kept." /></Editor>}</>;
 }

@@ -9,11 +9,12 @@ export type MembershipRole = 'OWNER' | 'ADMIN' | 'COACH';
 
 export const publicBusiness = (b: Business) => ({
   id: b.id, name: b.name, slug: b.slug, ownerName: b.ownerName, email: b.email, timezone: b.timezone,
-  currency: b.currency, color: b.color, tagline: b.tagline, cancellationHours: b.cancellationHours, isDemo: b.isDemo,
+  currency: b.currency, color: b.color, tagline: b.tagline, cancellationHours: b.cancellationHours,
+  kind: b.kind, isDemo: b.isDemo,
 });
 export const publicBookingBusiness = (b: Business) => ({
   name: b.name, slug: b.slug, ownerName: b.ownerName, timezone: b.timezone, currency: b.currency,
-  color: b.color, tagline: b.tagline, cancellationHours: b.cancellationHours,
+  color: b.color, tagline: b.tagline, cancellationHours: b.cancellationHours, kind: b.kind,
 });
 export const publicInstructor = (instructor: any) => ({
   id: instructor.id, name: instructor.name, initials: instructor.initials, color: instructor.color,
@@ -21,7 +22,7 @@ export const publicInstructor = (instructor: any) => ({
 });
 export const publicLocation = (location: any) => ({
   id: location.id, name: location.name, address: location.address, type: location.type, color: location.color,
-  requiresApproval: location.requiresApproval, active: location.active,
+  requiresApproval: location.requiresApproval, mapsUrl: location.mapsUrl, active: location.active,
 });
 
 // Account identity and workspace authorization are deliberately serialized separately.
@@ -37,6 +38,13 @@ export const membershipJson = (membership: MembershipWithBusiness) => ({
   instructorId: membership.instructorId, active: membership.active, createdAt: membership.createdAt.toISOString(),
   business: publicBusiness(membership.business),
 });
+
+/**
+ * A club-admin login is the club's own operating account, not a person's
+ * portable identity: it belongs to exactly one club and never switches
+ * between them. Owners and coaches keep a personal account that can.
+ */
+export const isClubAccount = (membership: Pick<Membership, 'role'>) => membership.role === 'ADMIN';
 
 export type AuthState = {
   user: ReturnType<typeof userJson>;
@@ -111,7 +119,7 @@ export function withoutBookingFinancials<T extends BookingFinancials>(booking: T
   } as BookingWithoutFinancials<T>;
 }
 export function bookingJson(b: FullBooking, options: { includeNotes?: boolean } = {}) {
-  return { id: b.id, serviceId: b.serviceId, serviceName: b.service.name, instructorId: b.instructorId, instructorName: b.instructor.name, locationId: b.locationId, locationName: b.location.name, locationColor: b.location.color, startAt: b.startAt.toISOString(), endAt: b.endAt.toISOString(), status: b.status, type: b.type, capacity: b.capacity, price: b.price, ...(options.includeNotes === false ? {} : { notes: b.notes }), address: b.address, recurringId: b.recurringId,
+  return { id: b.id, serviceId: b.serviceId, serviceName: b.service.name, instructorId: b.instructorId, instructorName: b.instructor.name, locationId: b.locationId, locationName: b.location.name, locationColor: b.location.color, startAt: b.startAt.toISOString(), endAt: b.endAt.toISOString(), status: b.status, type: b.type, capacity: b.capacity, price: b.price, paymentRoute: b.paymentRoute, coachAcceptance: b.coachAcceptance, createdByRole: b.createdByRole, ...(options.includeNotes === false ? {} : { notes: b.notes }), address: b.address, recurringId: b.recurringId,
     participants: b.participants.filter(p => !p.cancelledAt).map(p => ({ id: p.id, customerId: p.customerId, name: p.customer.name, email: p.customer.email, attendance: p.attendance, paid: p.paid, price: p.price, packageId: p.packageId, notes: p.notes })) };
 }
 export const packageJson = (p: any) => ({ id: p.id, customerId: p.customerId, customerName: p.customer.name, name: p.name, serviceId: p.serviceId, totalCredits: p.totalCredits, usedCredits: p.usedCredits, price: p.price, expiresAt: p.expiresAt.toISOString(), paid: p.paid });

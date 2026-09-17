@@ -45,7 +45,7 @@ import {
   loginCustomerAccount,
   logoutAccount,
   registerCustomerAccount,
-  rescheduleAccountBooking,
+  requestAccountReschedule,
 } from "@/lib/api";
 import type {
   AccountBooking,
@@ -2287,14 +2287,16 @@ export function CustomerBookings({ slug }: { slug?: string }) {
     try {
       if (action.kind === "cancel")
         await cancelAccountBooking(action.participantId);
-      else await rescheduleAccountBooking(action.participantId, slot!.startAt);
+      // Rescheduling is a request: the coach's side has to accept before the
+      // session actually moves.
+      else await requestAccountReschedule(action.participantId, slot!.startAt);
       const completedAction = action.kind;
       setAction(null);
       setSlot(null);
       setNotice(
         completedAction === "cancel"
           ? "Your booking has been cancelled."
-          : "Your session has been rescheduled.",
+          : "Your request was sent. The session moves once your coach accepts.",
       );
       await loadBookings();
     } catch (err) {

@@ -1,0 +1,151 @@
+import { Router } from 'express';
+import { rateLimit } from 'express-rate-limit';
+import { z } from 'zod';
+import { config } from './config.js';
+import { asyncRoute, HttpError } from './http.js';
+
+export const venuesRouter = Router();
+
+export type VenueCandidate = {
+  placeId: string;
+  name: string;
+  address: string;
+  mapsUrl: string;
+  latitude: number | null;
+  longitude: number | null;
+  source: 'GOOGLE_MAPS' | 'MANUAL';
+};
+
+const searchLimit = rateLimit({
+  windowMs: 5 * 60_000, limit: 60, standardHeaders: 'draft-8', legacyHeaders: false,
+  message: { error: 'Too many venue searches. Please wait a moment.' },
+});
+
+const mapsUrlFor = (placeId: string, query: string) => placeId
+  ? `https://www.google.com/maps/place/?q=place_id:${encodeURIComponent(placeId)}`
+  : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+
+/**
+ * Read a venue out of a pasted Google Maps link.
+ *
+ * This is the path that always works: no API key, no quota, and no outbound
+ * request. People already share venues as links, and every common Maps URL
+ * shape carries either coordinates in the path or a query parameter naming
+ * the place. Anything it cannot read is reported honestly rather than guessed.
+ */
+export function parseMapsLink(raw: string): VenueCandidate | null {
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+  const host = url.hostname.toLowerCase().replace(/^www\./, '');
+  const googleHost = host === 'maps.app.goo.gl' || host === 'goo.gl' || host === 'maps.google.com'
+    || host === 'google.com' || host.startsWith('google.') || host.endsWith('.google.com');
+  if (!googleHost) return null;
+
+  const decodedPath = decodeURIComponent(url.pathname);
+  // /maps/place/Some+Tennis+Centre/@1.2345,103.8,17z/...
+  const placeName = decodedPath.match(/\/maps\/place\/([^/@]+)/)?.[1]?.replace(/\+/g, ' ').trim();
+  const at = decodedPath.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
+  const queryParam = url.searchParams.get('q') || url.searchParams.get('query') || '';
+  const coordinateQuery = queryParam.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+  const placeId = url.searchParams.get('query_place_id')
+    || queryParam.match(/^place_id:(.+)$/)?.[1]
+    || '';
+
+  const latitude = at ? Number(at[1]) : coordinateQuery ? Number(coordinateQuery[1]) : null;
+  const longitude = at ? Number(at[2]) : coordinateQuery ? Number(coordinateQuery[2]) : null;
+  const name = placeName || (coordinateQuery ? '' : queryParam.trim());
+  // A shortened maps.app.goo.gl link carries nothing readable without
+  // following a redirect, so it is only useful if it still names a place.
+  if (!name && latitude === null) return null;
+
+  return {
+    placeId,
+    name: name || `${latitude}, ${longitude}`,
+    address: name && latitude !== null ? `${name}` : name || '',
+    mapsUrl: url.toString(),
+    latitude: Number.isFinite(latitude) ? latitude : null,
+    longitude: Number.isFinite(longitude) ? longitude : null,
+    source: 'GOOGLE_MAPS',
+  };
+}
+
+type PlacesResponse = {
+  places?: Array<{
+    id?: string;
+    displayName?: { text?: string };
+    formattedAddress?: string;
+    location?: { latitude?: number; longitude?: number };
+    googleMapsUri?: string;
+  }>;
+  error?: { message?: string };
+};
+
+/**
+ * Look a venue up through the Google Places Text Search API. The key lives
+ * only on the server: the browser never sees it, and the response is narrowed
+ * to the fields a venue record actually stores.
+ */
+export async function searchGooglePlaces(query: string, signal?: AbortSignal): Promise<VenueCandidate[]> {
+  if (!config.googleMapsApiKey) {
+    throw new HttpError(503, 'Google Maps venue search is not configured on this server. Paste a Google Maps link for the venue instead.');
+  }
+  const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': config.googleMapsApiKey,
+      'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.googleMapsUri',
+    },
+    body: JSON.stringify({ textQuery: query, maxResultCount: 8 }),
+    signal,
+  });
+  const data = await response.json().catch(() => null) as PlacesResponse | null;
+  if (!response.ok) {
+    throw new HttpError(response.status === 429 ? 429 : 502,
+      data?.error?.message || 'Google Maps could not be reached. Try again, or paste a Maps link instead.');
+  }
+  return (data?.places ?? []).flatMap(place => {
+    const name = place.displayName?.text?.trim();
+    if (!name) return [];
+    return [{
+      placeId: place.id ?? '',
+      name,
+      address: place.formattedAddress ?? '',
+      mapsUrl: place.googleMapsUri || mapsUrlFor(place.id ?? '', `${name} ${place.formattedAddress ?? ''}`),
+      latitude: typeof place.location?.latitude === 'number' ? place.location.latitude : null,
+      longitude: typeof place.location?.longitude === 'number' ? place.location.longitude : null,
+      source: 'GOOGLE_MAPS' as const,
+    }];
+  });
+}
+
+const searchQuery = z.object({
+  q: z.string().trim().min(2).max(200),
+}).strict();
+
+venuesRouter.get('/venues/search', searchLimit, asyncRoute(async (req, res) => {
+  const { q } = searchQuery.parse(req.query);
+  // A pasted link is answered locally, whether or not a key is configured.
+  const pasted = parseMapsLink(q);
+  if (pasted) {
+    res.json({ configured: !!config.googleMapsApiKey, results: [pasted] });
+    return;
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+  try {
+    const results = await searchGooglePlaces(q, controller.signal);
+    res.json({ configured: true, results });
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    if (controller.signal.aborted) throw new HttpError(504, 'Google Maps took too long to respond. Try again, or paste a Maps link instead.');
+    throw new HttpError(502, 'Google Maps could not be reached. Try again, or paste a Maps link instead.');
+  } finally {
+    clearTimeout(timeout);
+  }
+}));

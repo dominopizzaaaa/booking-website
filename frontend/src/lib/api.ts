@@ -1,4 +1,4 @@
-import type { Workspace, PublicBusiness, Slot, BookingInput, PublicBookingInput, BookingResult, AuthSession, AccountBooking, AccountBookingsResult } from './types';
+import type { Workspace, PublicBusiness, Slot, BookingInput, PublicBookingInput, BookingResult, AuthSession, AccountBooking, AccountBookingsResult, Booking, IntegrityFlag, RescheduleRequest, VenueSearchResult } from './types';
 
 export class ApiError extends Error {
   constructor(message: string, public status: number, public details?: unknown) { super(message); }
@@ -10,7 +10,29 @@ export async function api<T = unknown>(path: string, options: RequestInit = {}):
   if (!response.ok) throw new ApiError(data.error || 'Something went wrong. Please try again.', response.status, data);
   return data;
 }
-export const loadWorkspace = () => api<Workspace>('/workspace');
+/**
+ * Load the workspace, tolerating an API that predates newer collections.
+ *
+ * The frontend and the API deploy separately, so for a few seconds after a
+ * release the browser can hold new code against an older server. A missing
+ * collection should not blank the page, so the arrays this build reads are
+ * normalised here rather than guarded at every use.
+ */
+export async function loadWorkspace(): Promise<Workspace> {
+  const workspace = await api<Workspace>('/workspace');
+  return {
+    ...workspace,
+    rescheduleRequests: workspace.rescheduleRequests ?? [],
+    integrityFlags: workspace.integrityFlags ?? [],
+    clubAccount: workspace.clubAccount ?? workspace.membership?.role === 'ADMIN',
+    notifications: (workspace.notifications ?? []).map(notification => ({
+      ...notification,
+      type: notification.type ?? 'NOTICE',
+      actionNeeded: notification.actionNeeded ?? false,
+      bookingId: notification.bookingId ?? null,
+    })),
+  };
+}
 export const loadPublicBusiness = (slug: string) => api<PublicBusiness>(`/public/${encodeURIComponent(slug)}`);
 export const loadSlots = (slug: string, values: { serviceId: string; instructorId: string; locationId: string; date: string }) => api<{ slots: Slot[] }>(`/public/${encodeURIComponent(slug)}/slots?${new URLSearchParams(values)}`);
 export const createBooking = (values: BookingInput) => api<BookingResult>('/bookings', { method: 'POST', body: JSON.stringify(values) });
@@ -25,7 +47,55 @@ export async function loadAccountBookings(businessSlug?: string): Promise<Accoun
   return Array.isArray(value) ? { bookings: value } : value;
 }
 export const cancelAccountBooking = (participantId: string) => api(`/account/bookings/${encodeURIComponent(participantId)}/cancel`, { method: 'POST', body: JSON.stringify({}) });
-export const rescheduleAccountBooking = (participantId: string, startAt: string) => api(`/account/bookings/${encodeURIComponent(participantId)}/reschedule`, { method: 'POST', body: JSON.stringify({ startAt }) });
+
+// A customer proposes a new time; the coach's side decides. Nothing moves
+// until the request is accepted, so all three of these return the booking in
+// its current state rather than a moved one.
+export const requestAccountReschedule = (participantId: string, startAt: string, message = '') =>
+  api<AccountBooking>(`/account/bookings/${encodeURIComponent(participantId)}/reschedule-requests`, {
+    method: 'POST', body: JSON.stringify({ startAt, message }),
+  });
+export const acceptAccountReschedule = (requestId: string, message = '') =>
+  api<AccountBooking>(`/account/reschedule-requests/${encodeURIComponent(requestId)}/accept`, {
+    method: 'POST', body: JSON.stringify({ message }),
+  });
+export const declineAccountReschedule = (requestId: string, message = '') =>
+  api<AccountBooking>(`/account/reschedule-requests/${encodeURIComponent(requestId)}/decline`, {
+    method: 'POST', body: JSON.stringify({ message }),
+  });
+
+// Provider side of the same negotiation, plus the coach's decision on a
+// lesson the club assigned to them.
+export const proposeWorkspaceReschedule = (bookingId: string, startAt: string, message = '') =>
+  api<RescheduleRequest>(`/bookings/${encodeURIComponent(bookingId)}/reschedule-requests`, {
+    method: 'POST', body: JSON.stringify({ startAt, message }),
+  });
+export const respondToRescheduleRequest = (requestId: string, action: 'accept' | 'decline' | 'withdraw', message = '') =>
+  api<{ request: RescheduleRequest; booking?: Booking }>(`/reschedule-requests/${encodeURIComponent(requestId)}/${action}`, {
+    method: 'POST', body: JSON.stringify(action === 'withdraw' ? {} : { message }),
+  });
+export const respondToAssignment = (bookingId: string, action: 'accept' | 'decline', message = '') =>
+  api<Booking>(`/bookings/${encodeURIComponent(bookingId)}/${action}`, {
+    method: 'POST', body: JSON.stringify({ message }),
+  });
+
+// Recording a payment is a human action, so it has to be undoable. The row is
+// kept and marked reversed rather than deleted.
+export const reversePayment = (paymentId: string, reason = '') =>
+  api<{ ok: true }>(`/payments/${encodeURIComponent(paymentId)}`, {
+    method: 'DELETE', body: JSON.stringify({ reason }),
+  });
+export const recordCoachPayout = (values: { instructorId: string; amount: number; method: string; note?: string }) =>
+  api('/payouts', { method: 'POST', body: JSON.stringify(values) });
+
+export const searchVenues = (query: string) =>
+  api<VenueSearchResult>(`/venues/search?${new URLSearchParams({ q: query })}`);
+export const resolveIntegrityFlag = (id: string, status: IntegrityFlag['status'], note = '') =>
+  api<IntegrityFlag>(`/integrity-flags/${encodeURIComponent(id)}`, {
+    method: 'PATCH', body: JSON.stringify({ status, note }),
+  });
+export const createOwnPractice = (name: string) =>
+  api<AuthSession>('/auth/practice', { method: 'POST', body: JSON.stringify({ name }) });
 export const mutate = <T = unknown>(path: string, method: 'POST' | 'PATCH' | 'DELETE', values?: unknown) => api<T>(path, { method, body: values ? JSON.stringify(values) : undefined });
 
 export type AdminSession = { configured: boolean; authenticated: boolean };

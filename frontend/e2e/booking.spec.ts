@@ -140,7 +140,9 @@ test('customer creates an account, books, views history, and cancels', async ({ 
   await expectCustomerManageUrl(page, workspace.business.slug, 'alerts');
   await expect(customerNavigation.getByRole('button', { name: /^Alerts/ })).toHaveAttribute('aria-current', 'page');
   await expect(page.getByText(/Live alerts are temporarily unavailable/)).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: /^Booking (confirmed|request received)$/ })).toBeVisible();
+  // Each alert is a row that opens its own detail dialog, so its title is the
+  // row's accessible name rather than a heading in the list.
+  await expect(page.getByRole('button', { name: /^Unread alert: Booking (confirmed|request received)$/ })).toBeVisible();
   const markAllRead = page.getByRole('button', { name: 'Mark all as read', exact: true });
   await expect(markAllRead).toBeVisible();
   await markAllRead.click();
@@ -159,59 +161,73 @@ test('customer creates an account, books, views history, and cancels', async ({ 
   await customerNavigation.getByRole('button', { name: 'Profile', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Profile', exact: true })).toBeVisible();
   await expectCustomerManageUrl(page, workspace.business.slug, 'profile');
-  await expect(page.getByRole('heading', { name: 'Personal details', exact: true })).toBeVisible();
-  const profileName = page.getByLabel('Full name', { exact: true });
-  const profileEmail = page.getByLabel('Email address', { exact: true });
-  const profilePhone = page.getByLabel('Phone', { exact: true });
-  const profileGuardian = page.getByLabel('Parent or guardian', { exact: true });
-  await expect(profileName).toHaveValue(customerName);
-  await expect(profileEmail).toHaveValue(customerEmail);
-  await expect(profileEmail).not.toBeEditable();
-  await expect(profilePhone).toHaveValue('+65 9123 4567');
-  await expect(profileGuardian).toHaveValue('Robin Browser Test');
+  // Personal details read as a record. Editing is a deliberate step in a
+  // dialog, so the page cannot be changed by brushing past an input.
+  const personalDetails = page.locator('section', { has: page.getByRole('heading', { name: 'Personal details', exact: true }) }).first();
+  await expect(personalDetails.getByRole('heading', { name: 'Personal details', exact: true })).toBeVisible();
+  await expect(personalDetails).toContainText(customerName);
+  await expect(personalDetails).toContainText(customerEmail);
+  await expect(personalDetails).toContainText('+65 9123 4567');
+  await expect(personalDetails).toContainText('Robin Browser Test');
+  await expect(page.getByLabel('Full name', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('group', { name: 'Filter booking history' })).toBeVisible();
   await expect(customerNavigation.getByRole('button', { name: 'Profile', exact: true })).toHaveAttribute('aria-current', 'page');
 
   const updatedPhone = '+65 9876 5432';
   const updatedGuardian = 'Robin Browser Updated';
-  await profilePhone.fill(updatedPhone);
-  await profileGuardian.fill(updatedGuardian);
+  await personalDetails.getByRole('button', { name: 'Edit', exact: true }).click();
+  const profileDialog = page.getByRole('dialog');
+  await expect(profileDialog.getByRole('heading', { name: 'Edit personal details' })).toBeVisible();
+  await expect(profileDialog.getByLabel('Full name', { exact: true })).toHaveValue(customerName);
+  const dialogEmail = profileDialog.getByLabel('Email address', { exact: true });
+  await expect(dialogEmail).toHaveValue(customerEmail);
+  await expect(dialogEmail).not.toBeEditable();
+  await profileDialog.getByLabel('Phone', { exact: true }).fill(updatedPhone);
+  await profileDialog.getByLabel('Parent or guardian', { exact: true }).fill(updatedGuardian);
   const profileSaveResponse = page.waitForResponse(response =>
     response.request().method() === 'PATCH'
       && new URL(response.url()).pathname === '/api/account/profile',
   );
-  await page.getByRole('button', { name: 'Save profile', exact: true }).click();
+  await profileDialog.getByRole('button', { name: 'Save changes', exact: true }).click();
   expect((await profileSaveResponse).status()).toBe(200);
-  await expect(page.locator('#customer-profile-save-status')).toHaveText('Your profile has been updated.');
+  // Saving closes the editor and the record shows the new details.
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(personalDetails).toContainText(updatedPhone);
+  await expect(personalDetails).toContainText(updatedGuardian);
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Profile', exact: true })).toBeVisible();
-  await expect(page.getByLabel('Email address', { exact: true })).toHaveValue(customerEmail);
-  await expect(page.getByLabel('Email address', { exact: true })).not.toBeEditable();
-  await expect(page.getByLabel('Phone', { exact: true })).toHaveValue(updatedPhone);
-  await expect(page.getByLabel('Parent or guardian', { exact: true })).toHaveValue(updatedGuardian);
+  const reloadedDetails = page.locator('section', { has: page.getByRole('heading', { name: 'Personal details', exact: true }) }).first();
+  await expect(reloadedDetails).toContainText(customerEmail);
+  await expect(reloadedDetails).toContainText(updatedPhone);
+  await expect(reloadedDetails).toContainText(updatedGuardian);
 
   await customerNavigation.getByRole('button', { name: 'Home', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'My bookings' })).toBeVisible();
   await expectCustomerManageUrl(page, workspace.business.slug, 'home');
-  const bookingCard = page.getByRole('article').filter({ hasText: service.name });
-  await expect(bookingCard).toContainText(customerName);
+  const bookingCard = page.getByRole('article').filter({ hasText: service.name }).first();
   await expect(bookingCard).toContainText('Confirmed');
 
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Upcoming sessions' })).toBeVisible();
   await expect(bookingCard).toContainText(service.name);
-  await bookingCard.getByRole('button', { name: 'Cancel booking' }).click();
-  await expect(bookingCard.getByRole('region', { name: 'Confirm cancellation' })).toBeVisible();
-  await bookingCard.getByRole('button', { name: 'Yes, cancel session' }).click();
+  // Opening the row shows the full booking, including who it is for.
+  await bookingCard.getByRole('button').first().click();
+  const bookingDialog = page.getByRole('dialog');
+  await expect(bookingDialog.getByRole('heading', { name: service.name })).toBeVisible();
+  await expect(bookingDialog).toContainText(customerName);
+  await bookingDialog.getByRole('button', { name: 'Cancel booking' }).click();
+  await expect(bookingDialog.getByRole('heading', { name: 'Cancel this session?' })).toBeVisible();
+  await bookingDialog.getByRole('button', { name: 'Yes, cancel session' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
   const cancellationNotice = page.getByRole('status').filter({ hasText: 'Your booking has been cancelled.' });
   await expect(cancellationNotice).toBeVisible();
   await expect(cancellationNotice).toBeFocused();
   await expect(page.getByRole('heading', { name: 'Booking history' })).toBeVisible();
-  await expect(bookingCard).toContainText('Cancelled');
+  await expect(page.getByRole('article').filter({ hasText: service.name }).first()).toContainText('Cancelled');
 
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Booking history' })).toBeVisible();
-  await expect(bookingCard).toContainText('Cancelled');
+  await expect(page.getByRole('article').filter({ hasText: service.name }).first()).toContainText('Cancelled');
   const historyResponse = await page.request.get('/api/account/bookings', {
     params: { businessSlug: workspace.business.slug },
   });
@@ -289,6 +305,9 @@ test('customer shell guards stale actions and exposes current sessions and actio
         price: 9000,
         notes: '',
         address: '1 Court Lane',
+        paymentRoute: 'CLUB',
+        coachAcceptance: 'NOT_REQUIRED',
+        createdByRole: 'CUSTOMER',
         recurringId: null,
         participants: [participant],
       },
@@ -305,6 +324,10 @@ test('customer shell guards stale actions and exposes current sessions and actio
       // Intentionally stale server snapshots: local time policy must still win.
       canCancel: true,
       canReschedule: true,
+      rescheduleRequest: null,
+      awaitingCoach: false,
+      paymentRoute: 'CLUB',
+      management: { cancellationHours: 24, rescheduleNoticeHours: 24 },
     };
   }
 
@@ -344,18 +367,32 @@ test('customer shell guards stale actions and exposes current sessions and actio
   await page.goto(`/manage?slug=${business.slug}&tab=home`);
   await expect(page.getByRole('heading', { name: 'My bookings' })).toBeVisible();
 
+  // Each booking is one summary row; its details and actions open in a dialog.
   const currentSection = page.locator('section[aria-labelledby="current-bookings"]');
   const currentCard = currentSection.getByRole('article').filter({ hasText: 'Live coaching' });
   await expect(currentSection.getByRole('heading', { name: 'In progress' })).toBeVisible();
   await expect(currentCard).toContainText('In progress');
-  await expect(currentCard.getByRole('button', { name: 'Cancel booking' })).toHaveCount(0);
-  await expect(currentCard.getByRole('button', { name: 'Reschedule' })).toHaveCount(0);
+  await currentCard.getByRole('button').first().click();
+  const currentDialog = page.getByRole('dialog');
+  await expect(currentDialog.getByRole('heading', { name: 'Live coaching' })).toBeVisible();
+  // A session already under way is past every self-service window.
+  await expect(currentDialog.getByRole('button', { name: 'Cancel booking' })).toHaveCount(0);
+  await expect(currentDialog.getByRole('button', { name: 'Ask for a new time' })).toHaveCount(0);
+  await currentDialog.getByRole('button', { name: 'Close dialog' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
 
   const upcomingSection = page.locator('section[aria-labelledby="upcoming-bookings"]');
   const cutoffCard = upcomingSection.getByRole('article').filter({ hasText: 'Tomorrow coaching' });
   await expect(cutoffCard).toBeVisible();
-  await expect(cutoffCard.getByRole('button', { name: 'Cancel booking' })).toHaveCount(0);
-  await expect(cutoffCard.getByRole('button', { name: 'Reschedule' })).toHaveCount(0);
+  await cutoffCard.getByRole('button').first().click();
+  const cutoffDialog = page.getByRole('dialog');
+  await expect(cutoffDialog.getByRole('heading', { name: 'Tomorrow coaching' })).toBeVisible();
+  // Inside the notice window, the server's stale "you may" is overruled locally.
+  await expect(cutoffDialog.getByRole('button', { name: 'Cancel booking' })).toHaveCount(0);
+  await expect(cutoffDialog.getByRole('button', { name: 'Ask for a new time' })).toHaveCount(0);
+  await expect(cutoffDialog.getByText(/Changes close 24 hours before the session/)).toBeVisible();
+  await cutoffDialog.getByRole('button', { name: 'Close dialog' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.locator('section[aria-labelledby="booking-history"]')).toHaveCount(0);
 
   const customerNavigation = page.getByRole('navigation', { name: 'Customer navigation' });
@@ -363,13 +400,25 @@ test('customer shell guards stale actions and exposes current sessions and actio
   await expect(alertsButton).toHaveAccessibleName('Alerts, 1 unread alert');
   await alertsButton.click();
 
-  const actionableAlert = page.getByRole('article').filter({ hasText: 'Schedule changed' });
-  await expect(actionableAlert.getByText('Action needed', { exact: true })).toBeVisible();
-  await expect(actionableAlert.getByRole('button', { name: 'View bookings' })).toBeVisible();
-  await expect(actionableAlert.getByRole('link', { name: `Book with ${business.name}` }))
+  // Unread alerts sit at the top and open into a dialog carrying the detail
+  // and a way through to whatever the alert is about.
+  const alertRow = page.getByRole('button', { name: /^Unread alert: Schedule changed/ });
+  await expect(alertRow).toBeVisible();
+  await expect(alertRow.getByText('Action needed', { exact: true })).toBeVisible();
+  await alertRow.click();
+  const alertDialog = page.getByRole('dialog');
+  await expect(alertDialog.getByRole('heading', { name: 'Schedule changed' })).toBeVisible();
+  await expect(alertDialog.getByText('Your coach moved this session. Review your bookings.')).toBeVisible();
+  await expect(alertDialog.getByRole('link', { name: business.name }))
     .toHaveAttribute('href', `/book/${business.slug}`);
-  await actionableAlert.getByRole('button', { name: 'View bookings' }).click();
+  await alertDialog.getByRole('button', { name: 'Go to this booking' }).click();
   await expectCustomerManageUrl(page, business.slug, 'home');
+  // Following the alert lands on that booking's details, not just the list.
+  // The dialog is modal, so the list behind it is hidden until it is closed.
+  const followedBooking = page.getByRole('dialog');
+  await expect(followedBooking.getByRole('heading', { name: 'Live coaching' })).toBeVisible();
+  await followedBooking.getByRole('button', { name: 'Close dialog' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'My bookings' })).toBeVisible();
 });
 
@@ -425,7 +474,7 @@ test('self-registered coach is linked to a club by its owner', async ({ page }, 
 
   await page.goto('/');
   await expect(page.getByRole('heading', { name: /Your day, in a good place/ })).toBeVisible();
-  await openWorkspaceView(page, 'Your team');
+  await openWorkspaceView(page, 'My coaches');
   await expect(page.getByRole('heading', { name: 'Staff workspace access' })).toBeVisible();
   await page.getByRole('button', { name: 'Add staff member' }).click();
   await page.getByLabel('Courtly account email').fill(coachEmail);
@@ -463,7 +512,7 @@ test('self-registered coach is linked to a club by its owner', async ({ page }, 
   for (const label of ['Calendar', 'Bookings', 'Customers', 'Availability']) {
     await expect(page.getByRole('button', { name: `Open ${label}`, exact: true })).toBeEnabled();
   }
-  for (const label of ['Services', 'Locations', 'Your team', 'Lesson packages', 'Payments', 'Insights']) {
+  for (const label of ['Services', 'Locations', 'My coaches', 'Lesson packages', 'Payments', 'Insights', 'Integrity']) {
     await expect(page.getByRole('button', { name: `Open ${label}`, exact: true })).toHaveCount(0);
   }
 

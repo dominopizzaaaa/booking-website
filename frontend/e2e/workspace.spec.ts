@@ -135,11 +135,12 @@ test('navigation shows every connected management screen', async ({ page }) => {
     ['customers', 'Customers', 'Customers'],
     ['services', 'Services', 'Services'],
     ['locations', 'Locations', 'Locations'],
-    ['team', 'Your team', 'Your team'],
+    ['team', 'My coaches', 'My coaches'],
     ['availability', 'Availability', 'Availability'],
     ['packages', 'Lesson packages', 'Lesson packages'],
     ['payments', 'Payments', 'Payments'],
     ['insights', 'Insights', 'Insights'],
+    ['integrity', 'Integrity', 'Integrity'],
   ] as const;
 
   for (const [view, label, heading] of destinations) {

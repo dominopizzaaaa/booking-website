@@ -111,6 +111,10 @@ const registration = z.object({
   // surprising and difficult for the user to undo.
   accountType: z.enum(['CUSTOMER', 'COACH', 'OWNER']),
   businessName: z.string().trim().min(2).max(120).optional(),
+  // A club or academy collects lesson money and later pays its coaches; an
+  // independent coach is paid by their students directly. This choice sets
+  // the money path for every lesson booked in the new workspace.
+  businessKind: z.enum(['CLUB', 'SOLO']).default('CLUB'),
   name: z.string().trim().min(2).max(120),
   email: z.string().trim().max(254).email().transform(value => value.toLowerCase()),
   password: z.string().min(12, 'Use a password with at least 12 characters').max(72)
@@ -138,7 +142,7 @@ authRouter.post('/register', authLimit, asyncRoute(async (req, res) => {
     const businessName = body.businessName!;
     const business = await tx.business.create({
       data: {
-        name: businessName, ownerName: body.name, email: body.email,
+        name: businessName, ownerName: body.name, email: body.email, kind: body.businessKind,
         slug: `${businessName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 45) || 'courtly'}-${randomBytes(4).toString('hex')}`,
       },
     });
@@ -231,6 +235,45 @@ authRouter.patch('/me', requireAuth, asyncRoute(async (req, res) => {
   const input = editablePersonalProfile.parse(req.body);
   await updatePersonalProfile(req.auth.user.id, input);
   res.json(await authState(req.auth.user.id, req.auth.membership?.id ?? null));
+}));
+
+/**
+ * A coach's own practice.
+ *
+ * Coaches take personal students who have nothing to do with a club, and
+ * those students pay the coach directly. This creates a SOLO workspace where
+ * the coach is the owner, alongside any club memberships they already hold.
+ * Clubs are never joined this way: a club adds a coach, never the reverse.
+ */
+authRouter.post('/practice', requireAuth, asyncRoute(async (req, res) => {
+  const body = z.object({ name: z.string().trim().min(2).max(120) }).strict().parse(req.body);
+  if (req.auth.user.accountType === 'CUSTOMER') throw new HttpError(403, 'A coach or owner account is required to run a practice');
+  if (!req.auth.user.passwordHash) throw new HttpError(403, 'This account cannot create a workspace');
+  const existing = await prisma.membership.findFirst({
+    where: { userId: req.auth.user.id, role: 'OWNER', business: { kind: 'SOLO' } },
+    select: { id: true, business: { select: { name: true } } },
+  });
+  if (existing) throw new HttpError(409, `You already run ${existing.business.name} as your own practice.`);
+  const result = await prisma.$transaction(async tx => {
+    const business = await tx.business.create({
+      data: {
+        name: body.name, ownerName: req.auth.user.name, email: req.auth.user.email, kind: 'SOLO',
+        slug: `${body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 45) || 'practice'}-${randomBytes(4).toString('hex')}`,
+      },
+    });
+    const instructor = await tx.instructor.create({
+      data: { businessId: business.id, name: req.auth.user.name, initials: initials(req.auth.user.name), email: req.auth.user.email },
+    });
+    const membership = await tx.membership.create({
+      data: { userId: req.auth.user.id, businessId: business.id, role: 'OWNER', instructorId: instructor.id },
+    });
+    return membership;
+  });
+  await prisma.authSession.update({
+    where: { id: req.auth.session.id, userId: req.auth.user.id },
+    data: { activeMembershipId: result.id },
+  });
+  res.status(201).json(await authState(req.auth.user.id, result.id));
 }));
 
 const switchWorkspace = asyncRoute(async (req, res) => {

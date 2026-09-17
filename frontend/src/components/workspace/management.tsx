@@ -8,6 +8,7 @@ import { LocationsView, ServicesView, TeamView } from './management-catalog';
 import { CustomersView } from './management-customers';
 import { PackagesView, PaymentsView } from './management-finance';
 import { AvailabilityView, SettingsView } from './management-operations';
+import { IntegrityView } from './management-integrity';
 import { Empty, PageHeading, Stat, type ManagementProps } from './management-ui';
 
 export function ManagementView({ view, data, refresh }: { view: string; data: Workspace; refresh: () => Promise<void> }) {
@@ -23,6 +24,7 @@ export function ManagementView({ view, data, refresh }: { view: string; data: Wo
     case 'settings': return <SettingsView {...props} />;
     case 'availability': return <AvailabilityView {...props} />;
     case 'insights': return <InsightsView {...props} />;
+    case 'integrity': return <IntegrityView {...props} />;
     default: return <div className="panel"><Empty title="Choose a workspace page">Use the navigation to open your schedule, customers, or business settings.</Empty></div>;
   }
 }

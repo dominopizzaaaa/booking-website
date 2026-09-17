@@ -10,6 +10,10 @@ export const config = {
   adminCookie: production ? '__Host-courtly_admin' : 'courtly_admin',
   adminPassword: (process.env.ADMIN_PASSWORD || '').trim(),
   adminSessionHours: 12,
+  // Optional. Enables server-side Google Places venue lookup; the key never
+  // reaches the browser. Without it, venues are added by pasting a Maps link
+  // or by typing an address.
+  googleMapsApiKey: (process.env.GOOGLE_MAPS_API_KEY || '').trim(),
   sessionDays: 14,
   demoEnabled: process.env.DEMO_ENABLED === 'true' || (!production && process.env.DEMO_ENABLED !== 'false'),
   origins: (process.env.APP_ORIGIN || (production ? '' : 'http://localhost:3000,http://127.0.0.1:3000,http://localhost:3100,http://127.0.0.1:3100,http://localhost:3107,http://127.0.0.1:3107,http://localhost:5173,http://127.0.0.1:5173,http://localhost:4000,http://127.0.0.1:4000')).split(',').map(x => x.trim()).filter(Boolean),

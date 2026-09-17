@@ -5,9 +5,11 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import {
   ArrowRight,
   Bell,
+  CalendarClock,
   CalendarDays,
   Check,
   CheckCheck,
+  ChevronRight,
   CircleDot,
   Clock3,
   Compass,
@@ -35,16 +37,20 @@ import {
   type ReactNode,
 } from 'react';
 import { CourtlyLogo } from '@/components/public-booking';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import {
   ApiError,
+  acceptAccountReschedule,
   api,
   cancelAccountBooking,
+  declineAccountReschedule,
   loadAccountBookings,
   loadAuthSession,
   loadSlots,
   logoutAccount,
-  rescheduleAccountBooking,
+  requestAccountReschedule,
 } from '@/lib/api';
+import { alertAppearance, alertPageSize, sortAlerts } from '@/lib/alerts';
 import type {
   AccountBooking,
   AuthSession,
@@ -55,10 +61,8 @@ import type {
 import { cn, dateKey, initials, money, shortDate, time } from '@/lib/utils';
 
 type CustomerTab = 'home' | 'explore' | 'book' | 'alerts' | 'profile';
-type BookingAction = {
-  kind: 'cancel' | 'reschedule';
-  participantId: string;
-} | null;
+/** Which step the booking dialog is showing. */
+type BookingDialogMode = 'details' | 'cancel' | 'reschedule';
 type BookingFilter = 'all' | 'upcoming' | 'completed' | 'cancelled';
 type Conflict = { date: string; reason: string };
 type CustomerNotification = {
@@ -149,6 +153,7 @@ function bookingState(item: AccountBooking, now = Date.now()) {
     return 'Completed';
   }
   if (startsAt <= now) return 'In progress';
+  if (item.awaitingCoach || item.booking.coachAcceptance === 'PENDING') return 'Awaiting coach';
   if (item.booking.status === 'PENDING') return 'Awaiting confirmation';
   return 'Confirmed';
 }
@@ -165,13 +170,25 @@ function isInProgress(item: AccountBooking, now = Date.now()) {
   return bookingState(item, now) === 'In progress';
 }
 
+function rescheduleNoticeHours(item: AccountBooking) {
+  // The coach's own protection window, which can be stricter than the club's
+  // cancellation notice. The server is the authority; this mirrors it so the
+  // buttons disappear at the same moment rather than a request later.
+  return Math.max(
+    item.management?.rescheduleNoticeHours ?? item.business.cancellationHours,
+    item.business.cancellationHours,
+  );
+}
+
 function canChangeBooking(
   item: AccountBooking,
   kind: 'cancel' | 'reschedule',
   now = Date.now(),
 ) {
   const startsAt = new Date(item.booking.startAt).getTime();
-  const cutoff = startsAt - item.business.cancellationHours * 3_600_000;
+  const noticeHours =
+    kind === 'cancel' ? item.business.cancellationHours : rescheduleNoticeHours(item);
+  const cutoff = startsAt - noticeHours * 3_600_000;
   const locallyAllowed =
     Number.isFinite(startsAt) &&
     !bookingCancelled(item) &&
@@ -179,11 +196,30 @@ function canChangeBooking(
     now < startsAt &&
     now <= cutoff;
   const serverAllows = kind === 'cancel' ? item.canCancel : item.canReschedule;
+  if (kind === 'reschedule' && item.awaitingCoach) return false;
+  // One live proposal at a time: while a request is open, the answer to it is
+  // the only move available.
+  if (kind === 'reschedule' && item.rescheduleRequest) return false;
   return (
     locallyAllowed &&
     serverAllows !== false &&
     (kind === 'cancel' || item.booking.type === 'PRIVATE')
   );
+}
+
+/** A proposal the customer has to answer, rather than one they raised. */
+function incomingRequest(item: AccountBooking) {
+  const request = item.rescheduleRequest;
+  return request && request.status === 'PENDING' && request.requestedByRole !== 'CUSTOMER'
+    ? request
+    : null;
+}
+
+function outgoingRequest(item: AccountBooking) {
+  const request = item.rescheduleRequest;
+  return request && request.status === 'PENDING' && request.requestedByRole === 'CUSTOMER'
+    ? request
+    : null;
 }
 
 function notificationArray(value: unknown): unknown[] | null {
@@ -344,7 +380,7 @@ function knownClubs(bookings: AccountBooking[], preferredSlug?: string, now = Da
 
 function statusClass(state: string) {
   if (state === 'Cancelled') return 'bg-[#f8e8e3] text-[#a67260]';
-  if (state === 'Awaiting confirmation') return 'bg-[#f8eed3] text-[#9b844b]';
+  if (state === 'Awaiting confirmation' || state === 'Awaiting coach') return 'bg-[#f8eed3] text-[#9b844b]';
   if (state === 'Completed') return 'bg-[#e8edf2] text-[#728696]';
   if (state === 'In progress') return 'bg-[#dfeee7] text-[#39705a]';
   return 'bg-[#e9f0df] text-[#77905c]';
@@ -543,27 +579,73 @@ function CompactBooking({ item, nowMs }: { item: AccountBooking; nowMs: number }
   );
 }
 
-function BookingCard({
+/**
+ * A booking as a single readable line.
+ *
+ * The home screen used to render every detail of every session inline, which
+ * made a handful of bookings scroll for pages and buried the one thing a
+ * person usually wants: when and where. The row carries only the headline —
+ * lesson, club, time, status — and anything asking for a decision. Everything
+ * else lives one tap away in the detail dialog.
+ */
+function BookingRow({
   item,
-  action,
-  busy,
-  actionError,
-  conflicts,
-  date,
-  setDate,
-  slots,
-  slotsLoading,
-  slotsError,
-  selectedSlot,
-  setSelectedSlot,
-  beginAction,
-  closeAction,
-  performAction,
-  retrySlots,
   nowMs,
+  onOpen,
 }: {
   item: AccountBooking;
-  action: BookingAction;
+  nowMs: number;
+  onOpen: (item: AccountBooking) => void;
+}) {
+  const state = bookingState(item, nowMs);
+  const incoming = incomingRequest(item);
+  const outgoing = outgoingRequest(item);
+  return (
+    <article
+      id={`customer-booking-${item.booking.id}`}
+      tabIndex={-1}
+      className={cn(panel, 'scroll-mt-24 outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a]')}
+    >
+      <button
+        type="button"
+        onClick={() => onOpen(item)}
+        aria-label={`Open details for ${item.booking.serviceName} at ${item.business.name}`}
+        className="flex w-full items-center gap-3.5 rounded-2xl p-4 text-left transition hover:bg-[#fafbf7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a] sm:p-5"
+      >
+        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#eaf0e2] text-[#7f966c]">
+          <CircleDot size={20} strokeWidth={1.6} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="text-[15px] font-semibold tracking-tight text-[#263e33]">
+              {item.booking.serviceName}
+            </span>
+            <span className={cn('rounded-full px-2 py-0.5 text-[9px] font-medium', statusClass(state))}>
+              {state}
+            </span>
+          </span>
+          <span className="mt-1.5 block text-xs text-[#78866f]">
+            {shortDate(item.booking.startAt, item.business.timezone)} ·{' '}
+            {time(item.booking.startAt, item.business.timezone)} · {item.business.name}
+          </span>
+          {(incoming || outgoing) && (
+            <span className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-[#f6ead2] px-2.5 py-1 text-[10px] font-semibold text-[#8d7740]">
+              <CalendarClock size={11} />
+              {incoming ? 'New time proposed · your reply needed' : 'Waiting on your coach'}
+            </span>
+          )}
+        </span>
+        <ChevronRight size={17} className="shrink-0 text-[#a8b3a4]" aria-hidden="true" />
+      </button>
+    </article>
+  );
+}
+
+type BookingDialogProps = {
+  item: AccountBooking | null;
+  onClose: () => void;
+  mode: BookingDialogMode;
+  setMode: (mode: BookingDialogMode) => void;
   busy: boolean;
   actionError: string;
   conflicts: Conflict[];
@@ -574,162 +656,235 @@ function BookingCard({
   slotsError: string;
   selectedSlot: Slot | null;
   setSelectedSlot: (slot: Slot | null) => void;
-  beginAction: (item: AccountBooking, kind: 'cancel' | 'reschedule') => void;
-  closeAction: () => void;
-  performAction: () => void;
+  performCancel: () => void;
+  performRescheduleRequest: () => void;
+  respondToRequest: (accept: boolean) => void;
   retrySlots: () => void;
   nowMs: number;
-}) {
-  const actionHeadingRef = useRef<HTMLHeadingElement>(null);
-  const cancelTriggerRef = useRef<HTMLButtonElement>(null);
-  const rescheduleTriggerRef = useRef<HTMLButtonElement>(null);
+};
+
+/**
+ * Everything about one booking, on demand.
+ *
+ * Cancelling and proposing a new time both happen here, as steps inside the
+ * same dialog, so the details stay one tap away rather than one navigation
+ * away and the person never loses their place in the list.
+ */
+function BookingDialog({
+  item,
+  onClose,
+  mode,
+  setMode,
+  busy,
+  actionError,
+  conflicts,
+  date,
+  setDate,
+  slots,
+  slotsLoading,
+  slotsError,
+  selectedSlot,
+  setSelectedSlot,
+  performCancel,
+  performRescheduleRequest,
+  respondToRequest,
+  retrySlots,
+  nowMs,
+}: BookingDialogProps) {
+  if (!item) return null;
   const state = bookingState(item, nowMs);
   const canCancel = canChangeBooking(item, 'cancel', nowMs);
   const canReschedule = canChangeBooking(item, 'reschedule', nowMs);
-  const editing = action?.participantId === item.participant.id;
-  const currentActionAllowed =
-    !editing || (action ? canChangeBooking(item, action.kind, nowMs) : false);
+  const incoming = incomingRequest(item);
+  const outgoing = outgoingRequest(item);
   const availableSlots = slots.filter(
     (candidate) => candidate.available && candidate.startAt !== item.booking.startAt,
   );
 
-  useEffect(() => {
-    if (!editing) return;
-    window.requestAnimationFrame(() => actionHeadingRef.current?.focus());
-  }, [editing, action?.kind]);
-
-  function closeAndRestoreFocus() {
-    const kind = action?.kind;
-    closeAction();
-    window.setTimeout(() => {
-      if (kind === 'cancel') cancelTriggerRef.current?.focus();
-      else rescheduleTriggerRef.current?.focus();
-    }, 0);
-  }
-
   return (
-    <article
-      id={`customer-booking-${item.booking.id}`}
-      tabIndex={-1}
-      className={cn(panel, 'scroll-mt-24 overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a]')}
-    >
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#edf0e8] bg-[#fafbf7] px-5 py-3.5 sm:px-6">
-        <Link
-          href={`/book/${encodeURIComponent(item.business.slug)}`}
-          className="inline-flex min-h-10 items-center gap-2 text-sm font-semibold text-[#31533e]"
-        >
-          <span
-            aria-hidden="true"
-            className="grid h-7 w-7 place-items-center rounded-full bg-[#e8efe0] text-[9px] font-bold text-[#70865d]"
+    <Dialog open onOpenChange={(open) => { if (!open && !busy) onClose(); }}>
+      <DialogContent
+        className="max-w-lg"
+        onEscapeKeyDown={(event) => { if (busy) event.preventDefault(); }}
+        onPointerDownOutside={(event) => { if (busy) event.preventDefault(); }}
+      >
+        <DialogTitle className="text-xl font-semibold tracking-tight text-[#20382d]">
+          {item.booking.serviceName}
+        </DialogTitle>
+        <DialogDescription className="mt-2 text-xs leading-relaxed text-[#849080]">
+          With {item.booking.instructorName} at {item.business.name}
+        </DialogDescription>
+
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <span className={cn('rounded-full px-2.5 py-1 text-[10px] font-medium', statusClass(state))}>
+            {state}
+          </span>
+          <Link
+            href={`/book/${encodeURIComponent(item.business.slug)}`}
+            className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#5d7a52]"
           >
-            {initials(item.business.name)}
-          </span>
-          {item.business.name} <ExternalLink size={12} />
-        </Link>
-        <span className={cn('rounded-full px-2.5 py-1 text-[10px] font-medium', statusClass(state))}>
-          {state}
-        </span>
-      </div>
-      <div className="p-5 sm:p-6">
-        <div className="flex items-start gap-4">
-          <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[#eaf0e2] text-[#869d6f]">
-            <CircleDot size={25} strokeWidth={1.5} />
-          </span>
-          <div className="flex-1">
-            <h3 className="text-lg font-semibold tracking-tight text-[#263e33]">
-              {item.booking.serviceName}
-            </h3>
-            <p className="mt-1 text-xs text-[#88967d]">With {item.booking.instructorName}</p>
-          </div>
+            Club booking page <ExternalLink size={11} />
+          </Link>
         </div>
-        <div className="mt-6 grid gap-5 sm:grid-cols-2">
-          <Detail icon={<CalendarDays size={18} />} label="When">
-            {shortDate(item.booking.startAt, item.business.timezone)}
-            <p className="text-xs text-[#89977d]">
-              {time(item.booking.startAt, item.business.timezone)} –{' '}
-              {time(item.booking.endAt, item.business.timezone)}
-            </p>
-          </Detail>
-          <Detail icon={<LocationIcon location={item.location} />} label="Where">
-            {item.booking.locationName}
-            {(item.booking.address || item.location?.address) && (
-              <p className="text-xs text-[#89977d]">
-                {item.booking.address || item.location?.address}
+
+        {mode === 'details' && (
+          <>
+            <div className="mt-5 grid gap-5 sm:grid-cols-2">
+              <Detail icon={<CalendarDays size={18} />} label="When">
+                {shortDate(item.booking.startAt, item.business.timezone)}
+                <p className="text-xs text-[#89977d]">
+                  {time(item.booking.startAt, item.business.timezone)} –{' '}
+                  {time(item.booking.endAt, item.business.timezone)}
+                </p>
+              </Detail>
+              <Detail icon={<LocationIcon location={item.location} />} label="Where">
+                {item.booking.locationName}
+                {(item.booking.address || item.location?.address) && (
+                  <p className="text-xs text-[#89977d]">
+                    {item.booking.address || item.location?.address}
+                  </p>
+                )}
+              </Detail>
+              <Detail icon={<ShieldCheck size={18} />} label="Session price">
+                {money(item.participant.price ?? item.booking.price, item.business.currency)}
+                <p className="text-xs text-[#89977d]">
+                  {item.participant.paid
+                    ? 'Marked paid'
+                    : item.paymentRoute === 'CLUB'
+                      ? `Paid to ${item.business.name}, who pay your coach`
+                      : 'Paid directly to your coach'}
+                </p>
+              </Detail>
+              <Detail icon={<UserRound size={18} />} label="Booked for">
+                {item.participant.name}
+              </Detail>
+            </div>
+
+            {state === 'Awaiting coach' && (
+              <div className="mt-5 flex gap-2.5 rounded-xl border border-[#eee5ce] bg-[#fcf8ec] p-4 text-xs leading-relaxed text-[#897344]">
+                <Info size={16} className="mt-0.5 shrink-0" />
+                {item.business.name} booked this lesson for you. Your coach is confirming it — nothing
+                is needed from you.
+              </div>
+            )}
+            {state === 'Awaiting confirmation' && (
+              <div className="mt-5 flex gap-2.5 rounded-xl border border-[#eee5ce] bg-[#fcf8ec] p-4 text-xs leading-relaxed text-[#897344]">
+                <Info size={16} className="mt-0.5 shrink-0" />
+                Your coach will confirm this request and any venue arrangements.
+              </div>
+            )}
+
+            {incoming && (
+              <section
+                aria-label="Proposed new time"
+                className="mt-5 rounded-xl border border-[#e7dcc1] bg-[#fcf8ee] p-4"
+              >
+                <h3 className="flex items-center gap-2 text-sm font-semibold text-[#6f5f36]">
+                  <CalendarClock size={15} /> A new time was proposed
+                </h3>
+                <p className="mt-2 text-xs leading-relaxed text-[#8a7a50]">
+                  {item.business.name} asked to move this session to{' '}
+                  <strong className="font-semibold">
+                    {shortDate(incoming.proposedStartAt, item.business.timezone)} at{' '}
+                    {time(incoming.proposedStartAt, item.business.timezone)}
+                  </strong>
+                  .
+                </p>
+                {incoming.message && (
+                  <p className="mt-2 border-l-2 border-[#e0d3b4] pl-3 text-xs italic text-[#8a7a50]">
+                    “{incoming.message}”
+                  </p>
+                )}
+                {actionError && <div className="mt-4"><ErrorNotice message={actionError} conflicts={conflicts} /></div>}
+                <div className="mt-4 flex flex-wrap gap-2.5">
+                  <button type="button" className={primaryButton} disabled={busy} onClick={() => respondToRequest(true)}>
+                    {busy ? <LoaderCircle size={15} className="animate-spin" /> : <Check size={15} />}
+                    Accept new time
+                  </button>
+                  <button type="button" className={secondaryButton} disabled={busy} onClick={() => respondToRequest(false)}>
+                    <X size={15} /> Keep original time
+                  </button>
+                </div>
+              </section>
+            )}
+
+            {outgoing && (
+              <section
+                aria-label="Your reschedule request"
+                className="mt-5 rounded-xl border border-[#dfe5dc] bg-[#f8faf6] p-4"
+              >
+                <h3 className="flex items-center gap-2 text-sm font-semibold text-[#4a6050]">
+                  <Clock3 size={15} /> Waiting on your coach
+                </h3>
+                <p className="mt-2 text-xs leading-relaxed text-[#77866f]">
+                  You asked to move this session to{' '}
+                  <strong className="font-semibold">
+                    {shortDate(outgoing.proposedStartAt, item.business.timezone)} at{' '}
+                    {time(outgoing.proposedStartAt, item.business.timezone)}
+                  </strong>
+                  . It keeps its current time until your coach accepts.
+                </p>
+                {actionError && <div className="mt-4"><ErrorNotice message={actionError} conflicts={conflicts} /></div>}
+                <button
+                  type="button"
+                  className={cn(secondaryButton, 'mt-4')}
+                  disabled={busy}
+                  onClick={() => respondToRequest(false)}
+                >
+                  {busy ? <LoaderCircle size={15} className="animate-spin" /> : <X size={15} />}
+                  Withdraw request
+                </button>
+              </section>
+            )}
+
+            {actionError && !incoming && !outgoing && (
+              <div className="mt-5"><ErrorNotice message={actionError} conflicts={conflicts} /></div>
+            )}
+
+            {(canCancel || canReschedule) && (
+              <div className="mt-6 flex flex-wrap gap-3 border-t border-[#edf0e8] pt-5">
+                {canReschedule && (
+                  <button type="button" className={secondaryButton} onClick={() => setMode('reschedule')}>
+                    <CalendarDays size={15} /> Ask for a new time
+                  </button>
+                )}
+                {canCancel && (
+                  <button
+                    type="button"
+                    className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-[#edddd7] px-4 py-2.5 text-sm font-medium text-[#a37565] transition hover:bg-[#fff7f3]"
+                    onClick={() => setMode('cancel')}
+                  >
+                    <X size={15} /> Cancel booking
+                  </button>
+                )}
+              </div>
+            )}
+            {!canCancel && !canReschedule && !incoming && !outgoing && state !== 'Cancelled' && state !== 'Completed' && (
+              <p className="mt-6 border-t border-[#edf0e8] pt-5 text-[11px] leading-relaxed text-[#939d90]">
+                Changes close {rescheduleNoticeHours(item)} hours before the session. Contact your coach
+                if something has come up.
               </p>
             )}
-          </Detail>
-          <Detail icon={<ShieldCheck size={18} />} label="Session price">
-            {money(item.participant.price ?? item.booking.price, item.business.currency)}
-            <p className="text-xs text-[#89977d]">
-              {item.participant.paid
-                ? 'Marked paid by your coach'
-                : 'Payment arranged with your coach'}
-            </p>
-          </Detail>
-          <Detail icon={<UserRound size={18} />} label="Booked for">
-            {item.participant.name}
-          </Detail>
-        </div>
-        {state === 'Awaiting confirmation' && (
-          <div className="mt-5 flex gap-2.5 rounded-xl border border-[#eee5ce] bg-[#fcf8ec] p-4 text-xs leading-relaxed text-[#897344]">
-            <Info size={16} className="mt-0.5 shrink-0" />
-            Your coach will confirm this request and any venue arrangements.
-          </div>
+          </>
         )}
-        {!editing && (canCancel || canReschedule) && (
-          <div className="mt-6 flex flex-wrap gap-3 border-t border-[#edf0e8] pt-5">
-            {canReschedule && (
-              <button
-                ref={rescheduleTriggerRef}
-                type="button"
-                className={secondaryButton}
-                onClick={() => beginAction(item, 'reschedule')}
-              >
-                <CalendarDays size={15} /> Reschedule
-              </button>
-            )}
-            {canCancel && (
-              <button
-                ref={cancelTriggerRef}
-                type="button"
-                className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-[#edddd7] px-4 py-2.5 text-sm font-medium text-[#a37565] transition hover:bg-[#fff7f3]"
-                onClick={() => beginAction(item, 'cancel')}
-              >
-                <X size={15} /> Cancel booking
-              </button>
-            )}
-          </div>
-        )}
-        {editing && action.kind === 'cancel' && (
-          <div
-            role="region"
-            aria-label="Confirm cancellation"
-            className="mt-6 rounded-xl border border-[#e7d4ca] bg-[#fffcf9] p-5"
-          >
-            <h4 ref={actionHeadingRef} tabIndex={-1} className="text-base font-semibold text-[#3d493f] outline-none">Cancel this session?</h4>
+
+        {mode === 'cancel' && (
+          <div className="mt-5 rounded-xl border border-[#e7d4ca] bg-[#fffcf9] p-5">
+            <h3 className="text-base font-semibold text-[#3d493f]">Cancel this session?</h3>
             <p className="mt-2 text-xs leading-relaxed text-[#958273]">
               Your place on {shortDate(item.booking.startAt, item.business.timezone)} at{' '}
               {time(item.booking.startAt, item.business.timezone)} will be released.
             </p>
-            {!currentActionAllowed && !actionError && (
-              <div className="mt-4">
-                <ErrorNotice message={`This booking is now inside ${item.business.cancellationHours} hours of its start. Please contact your coach.`} />
-              </div>
-            )}
-            {actionError && (
-              <div className="mt-4">
-                <ErrorNotice message={actionError} conflicts={conflicts} />
-              </div>
-            )}
+            {actionError && <div className="mt-4"><ErrorNotice message={actionError} conflicts={conflicts} /></div>}
             <div className="mt-5 flex flex-wrap gap-3">
-              <button type="button" className={secondaryButton} disabled={busy} onClick={closeAndRestoreFocus}>
+              <button type="button" className={secondaryButton} disabled={busy} onClick={() => setMode('details')}>
                 Keep booking
               </button>
               <button
                 type="button"
-                disabled={busy || !currentActionAllowed}
+                disabled={busy || !canCancel}
                 className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-[#a46d56] px-5 py-3 text-sm font-semibold text-white hover:bg-[#8b5945] disabled:opacity-50"
-                onClick={performAction}
+                onClick={performCancel}
               >
                 {busy ? <LoaderCircle size={15} className="animate-spin" /> : <X size={15} />}
                 Yes, cancel session
@@ -737,37 +892,18 @@ function BookingCard({
             </div>
           </div>
         )}
-        {editing && action.kind === 'reschedule' && (
-          <div
-            role="region"
-            aria-label="Reschedule session"
-            className="mt-6 border-t border-[#edf0e8] pt-6"
-          >
-            <div className="mb-5 flex items-start justify-between gap-3">
-              <div>
-                  <h4 ref={actionHeadingRef} tabIndex={-1} className="text-base font-semibold text-[#3d493f] outline-none">Find a better time</h4>
-                <p className="mt-1 text-xs text-[#8b987f]">Same lesson, coach, and place.</p>
-              </div>
-              {!currentActionAllowed && !actionError && (
-                <div className="mb-5">
-                  <ErrorNotice message="This booking is now outside the self-service rescheduling window. Contact your coach." />
-                </div>
-              )}
-              <button
-                type="button"
-                className={cn(secondaryButton, '!min-h-10 !px-3')}
-                aria-label="Close reschedule"
-                onClick={closeAndRestoreFocus}
-              >
-                <X size={16} />
-              </button>
-            </div>
-            <label htmlFor={`reschedule-date-${item.participant.id}`} className="text-xs font-semibold">
+
+        {mode === 'reschedule' && (
+          <div className="mt-5">
+            <h3 className="text-base font-semibold text-[#3d493f]">Ask for a new time</h3>
+            <p className="mt-1 text-xs leading-relaxed text-[#8b987f]">
+              Same lesson, coach, and place. Your coach confirms the change before the session moves.
+            </p>
+            <label htmlFor={`reschedule-date-${item.participant.id}`} className="mt-5 block text-xs font-semibold">
               Choose a date
             </label>
             <input
               id={`reschedule-date-${item.participant.id}`}
-              aria-label="Choose a date"
               type="date"
               value={date}
               min={dateKey(new Date(), item.business.timezone)}
@@ -779,7 +915,7 @@ function BookingCard({
             />
             <div className="mt-5 border-t border-[#edf0e8] pt-5">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <h5 className="text-sm font-semibold text-[#344b3a]">Available start times</h5>
+                <h4 className="text-sm font-semibold text-[#344b3a]">Available start times</h4>
                 <span className="inline-flex items-center gap-1 text-[10px] text-[#87947d]">
                   <Clock3 size={12} /> {item.business.timezone.replaceAll('_', ' ')}
                 </span>
@@ -820,29 +956,97 @@ function BookingCard({
                 </p>
               )}
             </div>
-            {actionError && (
-              <div className="mt-5">
-                <ErrorNotice message={actionError} conflicts={conflicts} />
-              </div>
-            )}
+            {actionError && <div className="mt-5"><ErrorNotice message={actionError} conflicts={conflicts} /></div>}
             <div className="mt-5 flex flex-wrap gap-3">
-              <button type="button" className={secondaryButton} disabled={busy} onClick={closeAndRestoreFocus}>
+              <button type="button" className={secondaryButton} disabled={busy} onClick={() => setMode('details')}>
                 Keep original time
               </button>
               <button
                 type="button"
                 className={primaryButton}
-                disabled={!selectedSlot || busy || slotsLoading || !currentActionAllowed}
-                onClick={performAction}
+                disabled={!selectedSlot || busy || slotsLoading || !canReschedule}
+                onClick={performRescheduleRequest}
               >
                 {busy ? <LoaderCircle size={15} className="animate-spin" /> : <Check size={15} />}
-                Confirm new time
+                Send request
               </button>
             </div>
           </div>
         )}
-      </div>
-    </article>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * One alert, opened.
+ *
+ * The list stays scannable by showing a line each; the full message and the
+ * way through to whatever the alert is about live here. "Go to this booking"
+ * is the point of the dialog — an alert that cannot take you to the thing it
+ * describes leaves the reader to go hunting.
+ */
+function AlertDialog({
+  alert,
+  club,
+  onClose,
+  onOpenBooking,
+}: {
+  alert: CustomerNotification | null;
+  club?: KnownClub;
+  onClose: () => void;
+  onOpenBooking: (bookingId: string) => void;
+}) {
+  if (!alert) return null;
+  const appearance = alertAppearance(alert);
+  const Icon = appearance.icon;
+  const timezone = club?.business.timezone;
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-md">
+        <div className="flex items-start gap-3.5">
+          <span className={cn('grid h-11 w-11 shrink-0 place-items-center rounded-2xl', appearance.tone)}>
+            <Icon size={20} strokeWidth={1.7} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <DialogTitle className="text-lg font-semibold tracking-tight text-[#20382d]">
+              {alert.title}
+            </DialogTitle>
+            <DialogDescription className="mt-1.5 text-[11px] text-[#98a296]">
+              {appearance.label}
+              {alert.createdAt && (
+                <> · {shortDate(alert.createdAt, timezone)} at {time(alert.createdAt, timezone)}</>
+              )}
+            </DialogDescription>
+          </div>
+        </div>
+        <p className="mt-5 text-sm leading-relaxed text-[#4c5c4d]">{alert.message}</p>
+        {alert.actionNeeded && (
+          <p className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-[#f6ebd5] px-3 py-1 text-[10px] font-semibold text-[#94793c]">
+            <Info size={11} /> This one needs you
+          </p>
+        )}
+        <div className="mt-6 flex flex-wrap gap-2.5 border-t border-[#edf0e8] pt-5">
+          {alert.bookingId && (
+            <button
+              type="button"
+              className={primaryButton}
+              onClick={() => onOpenBooking(alert.bookingId!)}
+            >
+              Go to this booking <ArrowRight size={15} />
+            </button>
+          )}
+          {club && (
+            <Link href={`/book/${encodeURIComponent(club.business.slug)}`} className={secondaryButton}>
+              {club.business.name} <ExternalLink size={13} />
+            </Link>
+          )}
+          <button type="button" className={secondaryButton} onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -987,7 +1191,11 @@ export function CustomerApp({ slug }: { slug?: string }) {
   const [alertsStatus, setAlertsStatus] = useState('');
   const [bookingNavigationStatus, setBookingNavigationStatus] = useState('');
   const [notice, setNotice] = useState('');
-  const [action, setAction] = useState<BookingAction>(null);
+  const [openBookingId, setOpenBookingId] = useState<string | null>(null);
+  const [dialogMode, setDialogMode] = useState<BookingDialogMode>('details');
+  const [openAlertId, setOpenAlertId] = useState<string | null>(null);
+  const [showAllAlerts, setShowAllAlerts] = useState(false);
+  const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState('');
   const [conflicts, setConflicts] = useState<Conflict[]>([]);
@@ -1187,10 +1395,21 @@ export function CustomerApp({ slug }: { slug?: string }) {
     [bookings, nowMs],
   );
   const fallbackActivity = useMemo(() => derivedBookingActivity(bookings, nowMs), [bookings, nowMs]);
-  const visibleNotifications = notificationsFallback ? fallbackActivity : notifications;
+  // Unread first, newest first — so what needs attention never sits below the
+  // fold behind a week of read confirmations.
+  const visibleNotifications = useMemo(
+    () => sortAlerts(notificationsFallback ? fallbackActivity : notifications),
+    [fallbackActivity, notifications, notificationsFallback],
+  );
   const unread = notificationsFallback ? 0 : notifications.filter((item) => !item.read).length;
-  const actionBooking = action
-    ? bookings.find((item) => item.participant.id === action.participantId)
+  const shownNotifications = showAllAlerts
+    ? visibleNotifications
+    : visibleNotifications.slice(0, alertPageSize);
+  const openAlert = openAlertId
+    ? visibleNotifications.find((item) => item.id === openAlertId) ?? null
+    : null;
+  const actionBooking = openBookingId
+    ? bookings.find((item) => item.booking.id === openBookingId)
     : undefined;
 
   useEffect(() => {
@@ -1199,7 +1418,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
   }, [clubs, selectedClubSlug]);
 
   useEffect(() => {
-    if (action?.kind !== 'reschedule' || !actionBooking || !rescheduleDate) return;
+    if (dialogMode !== 'reschedule' || !actionBooking || !rescheduleDate) return;
     let ignore = false;
     setSlotsLoading(true);
     setSlotsError('');
@@ -1223,7 +1442,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
     return () => {
       ignore = true;
     };
-  }, [action?.kind, actionBooking, rescheduleDate, slotsVersion]);
+  }, [dialogMode, actionBooking, rescheduleDate, slotsVersion]);
 
   function selectTab(tab: CustomerTab) {
     setNotice('');
@@ -1234,90 +1453,87 @@ export function CustomerApp({ slug }: { slug?: string }) {
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
-
   function openAlertBooking(bookingId: string) {
     setNotice('');
     setBookingNavigationStatus('');
-    pendingBookingIdRef.current = bookingId;
+    setOpenAlertId(null);
+    const known = bookings.some((item) => item.booking.id === bookingId);
+    if (!known) {
+      // The alert outlived its booking. Say so rather than opening an empty
+      // dialog or silently doing nothing.
+      pendingBookingIdRef.current = null;
+      setBookingNavigationStatus('That booking is no longer available.');
+      selectTab('home');
+      return;
+    }
+    pendingBookingIdRef.current = null;
+    openBooking(bookingId);
     if (activeTab !== 'home' || requestedTab === null) {
       router.push(tabHref('home'), { scroll: false });
-      return;
     }
-    const bookingCard = document.getElementById(`customer-booking-${bookingId}`);
-    if (bookingCard instanceof HTMLElement) {
-      bookingCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      bookingCard.focus({ preventScroll: true });
-      pendingBookingIdRef.current = null;
-      setBookingNavigationStatus('Booking details opened.');
-    } else {
-      pendingBookingIdRef.current = null;
-      mainRef.current?.focus({ preventScroll: true });
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-      setBookingNavigationStatus('That booking is no longer available. Showing all bookings.');
-    }
+    setBookingNavigationStatus('Booking details opened.');
   }
 
-  function beginAction(item: AccountBooking, kind: 'cancel' | 'reschedule') {
-    const currentTime = Date.now();
-    setNowMs(currentTime);
-    if (!canChangeBooking(item, kind, currentTime)) return;
-    setAction({ kind, participantId: item.participant.id });
+  const openBookingRow = (item: AccountBooking) => openBooking(item.booking.id);
+
+  function openBooking(bookingId: string) {
+    setNowMs(Date.now());
+    setOpenBookingId(bookingId);
+    setDialogMode('details');
     setActionError('');
     setConflicts([]);
+    setSelectedSlot(null);
     setNotice('');
-    setSelectedSlot(null);
-    if (kind === 'reschedule') {
-      setRescheduleDate(dateKey(new Date(), item.business.timezone));
-    }
   }
 
-  function closeAction() {
+  function closeBooking() {
     if (actionBusy) return;
-    setAction(null);
+    setOpenBookingId(null);
+    setDialogMode('details');
     setActionError('');
     setConflicts([]);
     setSelectedSlot(null);
   }
 
-  async function performAction() {
-    if (!action || !actionBooking || actionBusy) return;
-    if (action.kind === 'reschedule' && !selectedSlot) return;
-    if (!canChangeBooking(actionBooking, action.kind, Date.now())) {
-      setNowMs(Date.now());
-      setActionError(
-        action.kind === 'cancel'
-          ? `This booking is now inside ${actionBooking.business.cancellationHours} hours of its start. Please contact your coach.`
-          : 'This booking is now outside the self-service rescheduling window. Contact your coach.',
-      );
-      return;
+  function changeDialogMode(mode: BookingDialogMode) {
+    if (actionBusy || !actionBooking) return;
+    setActionError('');
+    setConflicts([]);
+    setSelectedSlot(null);
+    if (mode === 'reschedule') {
+      if (!canChangeBooking(actionBooking, 'reschedule', Date.now())) return;
+      setRescheduleDate(dateKey(new Date(), actionBooking.business.timezone));
     }
+    setDialogMode(mode);
+  }
+
+  /** Apply whichever booking the server returned, and refresh the rest. */
+  function applyUpdatedBooking(updated: AccountBooking | undefined, message: string) {
+    if (updated?.participant?.id) {
+      setBookings((current) =>
+        current.map((item) => (item.participant.id === updated.participant.id ? updated : item)),
+      );
+    }
+    setDialogMode('details');
+    setSelectedSlot(null);
+    setNotice(message);
+    void refreshBookings();
+    void refreshNotifications();
+  }
+
+  async function runBookingAction(
+    call: () => Promise<AccountBooking>,
+    successMessage: string,
+    options: { close?: boolean } = {},
+  ) {
+    if (actionBusy) return;
     setActionBusy(true);
     setActionError('');
     setConflicts([]);
     try {
-      let updated: AccountBooking;
-      if (action.kind === 'cancel') {
-        updated = await cancelAccountBooking(action.participantId) as AccountBooking;
-      } else {
-        updated = await rescheduleAccountBooking(action.participantId, selectedSlot!.startAt) as AccountBooking;
-      }
-      const completedAction = action.kind;
-      if (updated?.participant?.id) {
-        setBookings((current) =>
-          current.map((item) =>
-            item.participant.id === updated.participant.id ? updated : item,
-          ),
-        );
-      }
-      setAction(null);
-      setSelectedSlot(null);
-      setNotice(
-        completedAction === 'cancel'
-          ? 'Your booking has been cancelled.'
-          : 'Your session has been rescheduled.',
-      );
-      void refreshBookings();
-      void refreshNotifications();
+      const updated = await call();
+      applyUpdatedBooking(updated, successMessage);
+      if (options.close) setOpenBookingId(null);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         router.replace(loginHrefRef.current);
@@ -1328,6 +1544,53 @@ export function CustomerApp({ slug }: { slug?: string }) {
       setActionBusy(false);
     }
   }
+
+  function performCancel() {
+    if (!actionBooking) return;
+    if (!canChangeBooking(actionBooking, 'cancel', Date.now())) {
+      setNowMs(Date.now());
+      setActionError(`This booking is now inside ${actionBooking.business.cancellationHours} hours of its start. Please contact your coach.`);
+      return;
+    }
+    const participantId = actionBooking.participant.id;
+    void runBookingAction(
+      () => cancelAccountBooking(participantId) as Promise<AccountBooking>,
+      'Your booking has been cancelled.',
+      { close: true },
+    );
+  }
+
+  // Asking for a new time does not move the session. The coach's side has to
+  // accept first, so the copy promises a request rather than a change.
+  function performRescheduleRequest() {
+    if (!actionBooking || !selectedSlot) return;
+    if (!canChangeBooking(actionBooking, 'reschedule', Date.now())) {
+      setNowMs(Date.now());
+      setActionError('This booking is now outside the rescheduling window. Contact your coach.');
+      return;
+    }
+    const participantId = actionBooking.participant.id;
+    const startAt = selectedSlot.startAt;
+    void runBookingAction(
+      () => requestAccountReschedule(participantId, startAt),
+      'Your request was sent. The session moves once your coach accepts.',
+    );
+  }
+
+  function respondToRequest(accept: boolean) {
+    const request = actionBooking?.rescheduleRequest;
+    if (!request) return;
+    const mine = request.requestedByRole === 'CUSTOMER';
+    void runBookingAction(
+      () => (accept ? acceptAccountReschedule(request.id) : declineAccountReschedule(request.id)),
+      accept
+        ? 'The new time is confirmed.'
+        : mine
+          ? 'Your request was withdrawn.'
+          : 'The session keeps its original time.',
+    );
+  }
+
 
   async function markAllRead() {
     if (markingRead || notificationsFallback || unread === 0) return;
@@ -1350,6 +1613,25 @@ export function CustomerApp({ slug }: { slug?: string }) {
     } finally {
       setMarkingRead(false);
     }
+  }
+
+  /**
+   * Opening an alert is what marks it read, the way a message thread works.
+   * The shading clears immediately so the list responds to the tap; if the
+   * server refuses, the next refresh restores the unread state honestly.
+   */
+  function openAlertDetails(alert: CustomerNotification) {
+    setOpenAlertId(alert.id);
+    if (notificationsFallback || alert.read) return;
+    setNotifications((current) =>
+      current.map((item) => (item.id === alert.id ? { ...item, read: true } : item)),
+    );
+    void api<unknown>('/account/notifications/read', {
+      method: 'PATCH',
+      body: JSON.stringify({ ids: [alert.id] }),
+    }).catch(() => {
+      void refreshNotifications();
+    });
   }
 
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
@@ -1401,6 +1683,7 @@ export function CustomerApp({ slug }: { slug?: string }) {
         parentName: nextUser.parentName ?? '',
       });
       setProfileNotice('Your profile has been updated.');
+      setProfileEditorOpen(false);
       void refreshBookings();
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
@@ -1427,8 +1710,10 @@ export function CustomerApp({ slug }: { slug?: string }) {
     }
   }
 
-  const bookingCardProps = {
-    action,
+  const bookingDialogProps = {
+    onClose: closeBooking,
+    mode: dialogMode,
+    setMode: changeDialogMode,
     busy: actionBusy,
     actionError,
     conflicts,
@@ -1439,9 +1724,9 @@ export function CustomerApp({ slug }: { slug?: string }) {
     slotsError,
     selectedSlot,
     setSelectedSlot,
-    beginAction,
-    closeAction,
-    performAction: () => void performAction(),
+    performCancel,
+    performRescheduleRequest,
+    respondToRequest,
     retrySlots: () => setSlotsVersion((value) => value + 1),
     nowMs,
   };
@@ -1635,9 +1920,9 @@ export function CustomerApp({ slug }: { slug?: string }) {
                         <span className="h-2 w-2 animate-pulse rounded-full bg-[#5c9278]" /> Live
                       </span>
                     </div>
-                    <div className="space-y-4">
+                    <div className="space-y-3">
                       {current.map((item) => (
-                        <BookingCard key={item.participant.id} item={item} {...bookingCardProps} />
+                        <BookingRow key={item.participant.id} item={item} nowMs={nowMs} onOpen={openBookingRow} />
                       ))}
                     </div>
                   </section>
@@ -1657,9 +1942,9 @@ export function CustomerApp({ slug }: { slug?: string }) {
                         {upcoming.length} booking{upcoming.length === 1 ? '' : 's'}
                       </span>
                     </div>
-                    <div className="space-y-4">
+                    <div className="space-y-3">
                       {upcoming.map((item) => (
-                        <BookingCard key={item.participant.id} item={item} {...bookingCardProps} />
+                        <BookingRow key={item.participant.id} item={item} nowMs={nowMs} onOpen={openBookingRow} />
                       ))}
                     </div>
                   </section>
@@ -1674,9 +1959,9 @@ export function CustomerApp({ slug }: { slug?: string }) {
                         Booking history
                       </h2>
                     </div>
-                    <div className="space-y-4">
+                    <div className="space-y-3">
                       {history.map((item) => (
-                        <BookingCard key={item.participant.id} item={item} {...bookingCardProps} />
+                        <BookingRow key={item.participant.id} item={item} nowMs={nowMs} onOpen={openBookingRow} />
                       ))}
                     </div>
                   </section>
@@ -1696,17 +1981,30 @@ export function CustomerApp({ slug }: { slug?: string }) {
                     </button>
                   </div>
                   <div className={cn(panel, 'divide-y divide-[#edf0e9] overflow-hidden')}>
-                    {(visibleNotifications.length ? visibleNotifications : fallbackActivity).slice(0, 3).map((item) => (
-                      <div key={item.id} className="flex items-start gap-3 p-4 sm:p-5">
-                        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[#edf2e7] text-[#748a64]">
-                          <Bell size={15} />
+                    {(visibleNotifications.length ? visibleNotifications : fallbackActivity).slice(0, 3).map((item) => {
+                      const appearance = alertAppearance(item);
+                      const Icon = appearance.icon;
+                      return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => openAlertDetails(item)}
+                        className={cn(
+                          'flex w-full items-start gap-3 p-4 text-left transition hover:bg-[#fafbf7] sm:p-5',
+                          !item.read && 'bg-[#f8faf4]',
+                        )}
+                      >
+                        <span className={cn('grid h-9 w-9 shrink-0 place-items-center rounded-full', appearance.tone)}>
+                          <Icon size={15} />
                         </span>
-                        <div>
-                          <h3 className="text-sm font-semibold text-[#344c3b]">{item.title}</h3>
-                          <p className="mt-1 text-xs leading-relaxed text-[#849080]">{item.message}</p>
-                        </div>
-                      </div>
-                    ))}
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-semibold text-[#344c3b]">{item.title}</span>
+                          <span className="mt-1 line-clamp-2 block text-xs leading-relaxed text-[#849080]">{item.message}</span>
+                        </span>
+                        <ChevronRight size={15} className="mt-1 shrink-0 text-[#adb7a9]" aria-hidden="true" />
+                      </button>
+                      );
+                    })}
                     {visibleNotifications.length === 0 && fallbackActivity.length === 0 && (
                       <p className="p-7 text-center text-sm text-[#899487]">
                         Your booking activity will collect here.
@@ -1959,75 +2257,78 @@ export function CustomerApp({ slug }: { slug?: string }) {
                 </EmptyState>
               </div>
             ) : (
-              <div className={cn(panel, 'mt-8 divide-y divide-[#edf0e9] overflow-hidden')}>
-                {visibleNotifications.map((item) => {
-                  const alertClub = clubs.find((club) => club.business.slug === item.businessSlug);
-                  return (
-                  <article key={item.id} className={cn('flex items-start gap-3 p-4 sm:p-5', !item.read && 'bg-[#f8faf4]')}>
-                    <span className={cn(
-                      'relative grid h-10 w-10 shrink-0 place-items-center rounded-full',
-                      item.read ? 'bg-[#f0f2ed] text-[#879287]' : 'bg-[#e5eedb] text-[#678054]',
-                    )}>
-                      <Bell size={16} />
-                      {!item.read && <span aria-hidden="true" className="absolute right-0 top-0 h-2.5 w-2.5 rounded-full border-2 border-white bg-[#a86752]" />}
-                    </span>
-                    <div className="flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h2 className="text-sm font-semibold text-[#314a39]">{item.title}</h2>
-                        {!item.read && <span className="sr-only">Unread</span>}
-                        {item.actionNeeded && (
-                          <span className="rounded-full bg-[#f8eed3] px-2 py-0.5 text-[9px] font-semibold text-[#927a42]">
-                            Action needed
-                          </span>
+              <>
+                <div className={cn(panel, 'mt-8 divide-y divide-[#edf0e9] overflow-hidden')}>
+                  {shownNotifications.map((item) => {
+                    const appearance = alertAppearance(item);
+                    const Icon = appearance.icon;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => openAlertDetails(item)}
+                        aria-label={`${item.read ? 'Read' : 'Unread'} alert: ${item.title}`}
+                        className={cn(
+                          'flex w-full items-start gap-3 p-4 text-left transition hover:bg-[#fafbf7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#327a5a] sm:p-5',
+                          // Unread alerts keep a soft wash until they are
+                          // opened, the way an unread thread does.
+                          !item.read && 'bg-[#f5f9ef]',
                         )}
-                      </div>
-                      <p className="mt-1.5 text-xs leading-relaxed text-[#7f8c80]">{item.message}</p>
-                      {item.createdAt && (
-                        <p className="mt-2 text-[10px] text-[#a0a89e]">
-                          {shortDate(
-                            item.createdAt,
-                            clubs.find((club) => club.business.slug === item.businessSlug)?.business.timezone,
-                          )} ·{' '}
-                          {time(
-                            item.createdAt,
-                            clubs.find((club) => club.business.slug === item.businessSlug)?.business.timezone,
+                      >
+                        <span className={cn('relative grid h-10 w-10 shrink-0 place-items-center rounded-full', appearance.tone)}>
+                          <Icon size={17} strokeWidth={1.7} />
+                          {!item.read && (
+                            <span aria-hidden="true" className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-white bg-[#a86752]" />
                           )}
-                        </p>
-                      )}
-                      {item.actionNeeded && (
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {item.bookingId ? (
-                            <button
-                              type="button"
-                              className={cn(secondaryButton, '!min-h-9 !px-3 !py-1.5 !text-xs')}
-                              onClick={() => openAlertBooking(item.bookingId!)}
-                            >
-                              View bookings <ArrowRight size={13} />
-                            </button>
-                          ) : item.actionNeeded ? (
-                            <button
-                              type="button"
-                              className={cn(secondaryButton, '!min-h-9 !px-3 !py-1.5 !text-xs')}
-                              onClick={() => selectTab('home')}
-                            >
-                              View bookings <ArrowRight size={13} />
-                            </button>
-                          ) : null}
-                          {item.actionNeeded && alertClub && (
-                            <Link
-                              href={`/book/${encodeURIComponent(alertClub.business.slug)}`}
-                              className={cn(secondaryButton, '!min-h-9 !px-3 !py-1.5 !text-xs')}
-                            >
-                              Book with {alertClub.business.name} <ExternalLink size={12} />
-                            </Link>
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="flex flex-wrap items-center gap-2">
+                            <span className={cn('text-sm text-[#314a39]', item.read ? 'font-medium' : 'font-semibold')}>
+                              {item.title}
+                            </span>
+                            {item.actionNeeded && (
+                              <span className="rounded-full bg-[#f8eed3] px-2 py-0.5 text-[9px] font-semibold text-[#927a42]">
+                                Action needed
+                              </span>
+                            )}
+                          </span>
+                          <span className="mt-1.5 line-clamp-1 block text-xs leading-relaxed text-[#7f8c80]">
+                            {item.message}
+                          </span>
+                          {item.createdAt && (
+                            <span className="mt-1.5 block text-[10px] text-[#a0a89e]">
+                              {appearance.label} ·{' '}
+                              {shortDate(
+                                item.createdAt,
+                                clubs.find((club) => club.business.slug === item.businessSlug)?.business.timezone,
+                              )}
+                            </span>
                           )}
-                        </div>
-                      )}
-                    </div>
-                  </article>
-                  );
-                })}
-              </div>
+                        </span>
+                        <ChevronRight size={16} className="mt-1 shrink-0 text-[#adb7a9]" aria-hidden="true" />
+                      </button>
+                    );
+                  })}
+                </div>
+                {visibleNotifications.length > shownNotifications.length && (
+                  <button
+                    type="button"
+                    className={cn(secondaryButton, 'mt-4 w-full')}
+                    onClick={() => setShowAllAlerts(true)}
+                  >
+                    Show all {visibleNotifications.length} alerts
+                  </button>
+                )}
+                {showAllAlerts && visibleNotifications.length > alertPageSize && (
+                  <button
+                    type="button"
+                    className={cn(secondaryButton, 'mt-4 w-full')}
+                    onClick={() => setShowAllAlerts(false)}
+                  >
+                    Show fewer
+                  </button>
+                )}
+              </>
             )}
           </section>
         )}
@@ -2037,94 +2338,167 @@ export function CustomerApp({ slug }: { slug?: string }) {
             <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#8c9980]">Your Courtly account</p>
             <h1 className="mt-1.5 text-[30px] font-medium tracking-[-1px] text-[#20382d] sm:text-[36px]">Profile</h1>
             <p className="mt-2 text-sm text-[#849080]">Keep your details current across every club.</p>
-
-            <form onSubmit={saveProfile} className={cn(panel, 'mt-8 p-5 sm:p-6')}>
+            {/*
+              Personal details read as a record, not a form. People open this
+              tab to check what a club sees far more often than to change it,
+              and a page of live inputs invites accidental edits. Editing is a
+              deliberate step, in a dialog.
+            */}
+            <section className={cn(panel, 'mt-8 p-5 sm:p-6')} aria-labelledby="customer-personal-details">
               <div className="flex items-start gap-3 border-b border-[#edf0e9] pb-5">
                 <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-[#e8efe0] text-sm font-bold text-[#6b825b]">
                   {initials(profile.name || session.user.name)}
                 </span>
-                <div className="flex-1">
-                  <h2 className="text-base font-semibold text-[#304b39]">Personal details</h2>
+                <div className="min-w-0 flex-1">
+                  <h2 id="customer-personal-details" className="text-base font-semibold text-[#304b39]">Personal details</h2>
                   <p className="mt-1 text-xs leading-relaxed text-[#899583]">Shared only with clubs you book.</p>
                 </div>
-                <Pencil size={15} className="mt-1 text-[#91a087]" />
+                <button
+                  type="button"
+                  className={cn(secondaryButton, '!min-h-10 shrink-0 !px-3 !text-xs')}
+                  onClick={() => {
+                    setProfileError('');
+                    setProfileNotice('');
+                    setProfile({
+                      name: session.user.name ?? '',
+                      phone: session.user.phone ?? '',
+                      parentName: session.user.parentName ?? '',
+                    });
+                    setProfileEditorOpen(true);
+                  }}
+                >
+                  <Pencil size={14} /> Edit
+                </button>
               </div>
-              <div className="mt-5 grid gap-5 sm:grid-cols-2">
+              <dl className="mt-5 grid gap-5 sm:grid-cols-2">
                 <div>
-                  <label htmlFor="customer-profile-name">Full name</label>
-                  <input
-                    id="customer-profile-name"
-                    className={field}
-                    value={profile.name}
-                    onChange={(event) => {
-                      setProfile((current) => ({ ...current, name: event.target.value }));
-                      setProfileError('');
-                      setProfileNotice('');
-                    }}
-                    required
-                    minLength={2}
-                    maxLength={120}
-                    autoComplete="name"
-                  />
+                  <dt className="text-[10px] font-medium uppercase tracking-wider text-[#8a9487]">Full name</dt>
+                  <dd className="mt-1.5 text-sm text-[#415244]">{profile.name || session.user.name}</dd>
                 </div>
                 <div>
-                  <label htmlFor="customer-profile-email">Email address</label>
-                  <input
-                    id="customer-profile-email"
-                    className={cn(field, '!bg-[#f5f6f3] !text-[#7f8b80]')}
-                    value={session.user.email}
-                    readOnly
-                    aria-describedby="customer-profile-email-note"
-                    autoComplete="email"
-                  />
-                  <p id="customer-profile-email-note" className="mt-1.5 text-[10px] text-[#9ba49b]">
-                    Email is your sign-in identity and cannot be changed here.
-                  </p>
+                  <dt className="text-[10px] font-medium uppercase tracking-wider text-[#8a9487]">Email address</dt>
+                  <dd className="mt-1.5 break-all text-sm text-[#415244]">{session.user.email}</dd>
+                  <dd className="mt-1 text-[10px] text-[#9ba49b]">Your sign-in identity; it cannot be changed here.</dd>
                 </div>
                 <div>
-                  <label htmlFor="customer-profile-phone">Phone</label>
-                  <input
-                    id="customer-profile-phone"
-                    className={field}
-                    type="tel"
-                    value={profile.phone}
-                    onChange={(event) => {
-                      setProfile((current) => ({ ...current, phone: event.target.value }));
-                      setProfileError('');
-                      setProfileNotice('');
-                    }}
-                    maxLength={40}
-                    autoComplete="tel"
-                    placeholder="Optional"
-                  />
+                  <dt className="text-[10px] font-medium uppercase tracking-wider text-[#8a9487]">Phone</dt>
+                  <dd className={cn('mt-1.5 text-sm', profile.phone ? 'text-[#415244]' : 'text-[#9ba49b]')}>
+                    {profile.phone || 'Not added'}
+                  </dd>
                 </div>
                 <div>
-                  <label htmlFor="customer-profile-parent">Parent or guardian</label>
-                  <input
-                    id="customer-profile-parent"
-                    className={field}
-                    value={profile.parentName}
-                    onChange={(event) => {
-                      setProfile((current) => ({ ...current, parentName: event.target.value }));
-                      setProfileError('');
-                      setProfileNotice('');
-                    }}
-                    maxLength={120}
-                    placeholder="Optional"
-                  />
+                  <dt className="text-[10px] font-medium uppercase tracking-wider text-[#8a9487]">Parent or guardian</dt>
+                  <dd className={cn('mt-1.5 text-sm', profile.parentName ? 'text-[#415244]' : 'text-[#9ba49b]')}>
+                    {profile.parentName || 'Not added'}
+                  </dd>
                 </div>
-              </div>
-              {profileError && <div className="mt-5"><ErrorNotice message={profileError} /></div>}
-              {profileNotice && (
-                <div id="customer-profile-save-status" role="status" className="mt-5 flex items-center gap-2 rounded-xl bg-[#edf5e4] p-4 text-sm text-[#66834d]">
+              </dl>
+              {profileNotice && !profileEditorOpen && (
+                <div role="status" className="mt-5 flex items-center gap-2 rounded-xl bg-[#edf5e4] p-4 text-sm text-[#66834d]">
                   <Check size={16} /> {profileNotice}
                 </div>
               )}
-              <button type="submit" className={cn(primaryButton, 'mt-5')} disabled={profileBusy}>
-                {profileBusy ? <LoaderCircle size={15} className="animate-spin" /> : <Check size={15} />}
-                Save profile
-              </button>
-            </form>
+            </section>
+
+            <Dialog
+              open={profileEditorOpen}
+              onOpenChange={(open) => { if (!profileBusy) setProfileEditorOpen(open); }}
+            >
+              <DialogContent
+                className="max-w-lg"
+                onEscapeKeyDown={(event) => { if (profileBusy) event.preventDefault(); }}
+                onPointerDownOutside={(event) => { if (profileBusy) event.preventDefault(); }}
+              >
+                <DialogTitle className="text-xl font-semibold tracking-tight text-[#20382d]">
+                  Edit personal details
+                </DialogTitle>
+                <DialogDescription className="mt-2 text-xs leading-relaxed text-[#849080]">
+                  These details belong to your Courtly account and travel with you to every club you book.
+                </DialogDescription>
+                <form onSubmit={saveProfile} className="mt-5">
+                  <div className="grid gap-5 sm:grid-cols-2">
+                    <div>
+                      <label htmlFor="customer-profile-name">Full name</label>
+                      <input
+                        id="customer-profile-name"
+                        className={field}
+                        value={profile.name}
+                        onChange={(event) => {
+                          setProfile((current) => ({ ...current, name: event.target.value }));
+                          setProfileError('');
+                        }}
+                        required
+                        minLength={2}
+                        maxLength={120}
+                        autoComplete="name"
+                        disabled={profileBusy}
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="customer-profile-email">Email address</label>
+                      <input
+                        id="customer-profile-email"
+                        className={cn(field, '!bg-[#f5f6f3] !text-[#7f8b80]')}
+                        value={session.user.email}
+                        readOnly
+                        aria-describedby="customer-profile-email-note"
+                        autoComplete="email"
+                      />
+                      <p id="customer-profile-email-note" className="mt-1.5 text-[10px] text-[#9ba49b]">
+                        Email is your sign-in identity and cannot be changed here.
+                      </p>
+                    </div>
+                    <div>
+                      <label htmlFor="customer-profile-phone">Phone</label>
+                      <input
+                        id="customer-profile-phone"
+                        className={field}
+                        type="tel"
+                        value={profile.phone}
+                        onChange={(event) => {
+                          setProfile((current) => ({ ...current, phone: event.target.value }));
+                          setProfileError('');
+                        }}
+                        maxLength={40}
+                        autoComplete="tel"
+                        placeholder="Optional"
+                        disabled={profileBusy}
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="customer-profile-parent">Parent or guardian</label>
+                      <input
+                        id="customer-profile-parent"
+                        className={field}
+                        value={profile.parentName}
+                        onChange={(event) => {
+                          setProfile((current) => ({ ...current, parentName: event.target.value }));
+                          setProfileError('');
+                        }}
+                        maxLength={120}
+                        placeholder="Optional"
+                        disabled={profileBusy}
+                      />
+                    </div>
+                  </div>
+                  {profileError && <div className="mt-5"><ErrorNotice message={profileError} /></div>}
+                  <div className="mt-6 flex flex-wrap justify-end gap-3 border-t border-[#edf0e8] pt-5">
+                    <button
+                      type="button"
+                      className={secondaryButton}
+                      disabled={profileBusy}
+                      onClick={() => setProfileEditorOpen(false)}
+                    >
+                      Cancel
+                    </button>
+                    <button type="submit" className={primaryButton} disabled={profileBusy}>
+                      {profileBusy ? <LoaderCircle size={15} className="animate-spin" /> : <Check size={15} />}
+                      Save changes
+                    </button>
+                  </div>
+                </form>
+              </DialogContent>
+            </Dialog>
 
             <section className="mt-9" aria-labelledby="profile-booking-history">
               <div>
@@ -2187,6 +2561,13 @@ export function CustomerApp({ slug }: { slug?: string }) {
           </section>
         )}
       </main>
+      <BookingDialog item={actionBooking ?? null} {...bookingDialogProps} />
+      <AlertDialog
+        alert={openAlert}
+        club={clubs.find((club) => club.business.slug === openAlert?.businessSlug)}
+        onClose={() => setOpenAlertId(null)}
+        onOpenBooking={openAlertBooking}
+      />
       <BottomNavigation activeTab={activeTab} onChange={selectTab} unread={unread} />
     </div>
   );

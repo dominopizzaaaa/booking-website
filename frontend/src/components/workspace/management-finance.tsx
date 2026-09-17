@@ -1,9 +1,10 @@
 'use client';
 
 import { useState } from 'react';
-import { ArrowDownLeft, Banknote, CalendarDays, CreditCard, Package, Search, Wallet, CircleCheck, Clock3 } from 'lucide-react';
+import { ArrowDownLeft, Banknote, CalendarDays, CreditCard, Package, Search, Wallet, CircleCheck, Clock3, Undo2, ShieldCheck } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { mutate } from '@/lib/api';
+import { mutate, recordCoachPayout, reversePayment } from '@/lib/api';
 import type { Payment, Workspace } from '@/lib/types';
 import { addDaysKey, dateKey, money, shortDate, time } from '@/lib/utils';
 import { CheckField, Editor, Empty, Field, PageHeading, Stat, cents, numeric, text, type ManagementProps } from './management-ui';
@@ -21,7 +22,7 @@ function PaymentHistoryCards({ payments, data }: { payments: Payment[]; data: Wo
     const booking = data.bookings.find(b => b.id === payment.bookingId);
     const pkg = data.packages.find(p => p.id === payment.packageId);
     const subject = booking?.serviceName || pkg?.name || (payment.bookingId ? 'Lesson payment' : payment.packageId ? 'Package payment' : 'Unallocated payment');
-    return <article key={payment.id} className="p-4"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><h3 className="truncate text-sm text-[#294735]">{payment.customerName}</h3><p className="mt-1 text-[11px] leading-relaxed text-stone-500">{subject}</p></div><strong className="shrink-0 text-sm font-semibold text-[#254b38]">{money(payment.amount)}</strong></div><div className="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-stone-500"><span className="badge bg-[#f2f4ee]! text-[#7c8671]!">{methodNames[payment.method]}</span><span>{shortDate(payment.paidAt)} · {time(payment.paidAt)}</span></div>{payment.note && <p className="mt-3 break-words rounded-lg bg-[#f7f8f5] px-3 py-2 text-[10px] leading-relaxed text-stone-500">{payment.note}</p>}</article>;
+    return <article key={payment.id} className={`p-4 ${payment.reversedAt ? 'opacity-60' : ''}`}><div className="flex items-start justify-between gap-3"><div className="min-w-0"><h3 className="truncate text-sm text-[#294735]">{payment.kind === 'CLUB_TO_COACH' ? payment.instructorName || payment.customerName : payment.customerName}</h3><p className="mt-1 text-[11px] leading-relaxed text-stone-500">{payment.kind === 'CLUB_TO_COACH' ? 'Coach payout' : subject}</p></div><strong className={`shrink-0 text-sm font-semibold ${payment.reversedAt ? 'text-stone-400 line-through' : 'text-[#254b38]'}`}>{money(payment.amount)}</strong></div><div className="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-stone-500"><span className="badge bg-[#f2f4ee]! text-[#7c8671]!">{methodNames[payment.method]}</span><span>{kindNames[payment.kind] || 'Payment'}</span><span>{shortDate(payment.paidAt)} · {time(payment.paidAt)}</span>{payment.reversedAt && <span className="badge cancelled !text-[9px]">Reversed</span>}</div>{payment.note && <p className="mt-3 break-words rounded-lg bg-[#f7f8f5] px-3 py-2 text-[10px] leading-relaxed text-stone-500">{payment.note}</p>}</article>;
   })}</div>;
 }
 
@@ -71,22 +72,82 @@ export function PackagesView({ data, refresh }: ManagementProps) {
 
 const LayersIcon = CreditCard;
 const methodNames: Record<string, string> = { BANK_TRANSFER: 'Bank transfer', CASH: 'Cash', OTHER: 'Other' };
+const kindNames: Record<string, string> = {
+  CUSTOMER_TO_CLUB: 'Student → club',
+  CUSTOMER_TO_COACH: 'Student → coach',
+  CLUB_TO_COACH: 'Club → coach',
+};
+
+/**
+ * What the club pays a coach for work already done.
+ *
+ * A club lesson is two movements of money, not one: the student pays the club,
+ * then the club pays the coach. Recording only the first leaves a club unable
+ * to answer the question its coaches actually ask — how much am I owed?
+ */
+function PayoutEditor({ data, refresh, onClose }: ManagementProps & { onClose: () => void }) {
+  return <Editor
+    title="Record a coach payout"
+    description="Money your club has paid a coach for lessons already taught. This does not transfer funds; it records what you have paid."
+    onClose={onClose}
+    refresh={refresh}
+    success="Coach payout recorded"
+    submitLabel="Record payout"
+    disabled={!data.instructors.length}
+    onSubmit={form => recordCoachPayout({
+      instructorId: text(form, 'payout-instructor'),
+      amount: cents(text(form, 'amount')),
+      method: text(form, 'payout-method'),
+      note: text(form, 'note'),
+    })}
+  >
+    <div className="form-grid max-sm:grid-cols-1!">
+      <Field label="Coach" name="payout-instructor" wide><select id="payout-instructor" name="payout-instructor" required defaultValue=""><option value="" disabled>Select a coach</option>{data.instructors.filter(instructor => instructor.active).map(instructor => <option key={instructor.id} value={instructor.id}>{instructor.name}</option>)}</select></Field>
+      <Field label="Amount paid (SGD)" name="amount" type="number" min="0.01" step="0.01" required placeholder="0.00" />
+      <Field label="Payment method" name="payout-method"><select id="payout-method" name="payout-method" required defaultValue="BANK_TRANSFER"><option value="BANK_TRANSFER">Bank transfer / PayNow</option><option value="CASH">Cash</option><option value="OTHER">Other</option></select></Field>
+      <Field label="Reference or period (optional)" name="payout-note" wide><textarea id="payout-note" name="note" rows={2} placeholder="e.g. March lessons, 12 sessions" /></Field>
+    </div>
+  </Editor>;
+}
 export function PaymentsView({ data, refresh }: ManagementProps) {
   const [record, setRecord] = useState<{ target?: PaymentTarget }>();
+  const [payout, setPayout] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState('history');
   const [query, setQuery] = useState('');
   const targets = paymentTargets(data);
   const month = dateKey().slice(0, 7);
-  const payments = [...data.payments].sort((a, b) => b.paidAt.localeCompare(a.paidAt)).filter(p => `${p.customerName} ${p.note} ${methodNames[p.method]}`.toLowerCase().includes(query.toLowerCase()));
+  const isClub = data.business.kind !== 'SOLO';
+  // A reversed payment stays in the ledger for the audit trail but counts
+  // towards nothing, so every total here filters it out.
+  const live = data.payments.filter(payment => !payment.reversedAt);
+  const collected = live.filter(payment => payment.kind !== 'CLUB_TO_COACH');
+  const paidOut = live.filter(payment => payment.kind === 'CLUB_TO_COACH');
+  const payments = [...data.payments].sort((a, b) => b.paidAt.localeCompare(a.paidAt)).filter(p => `${p.customerName} ${p.instructorName ?? ''} ${p.note} ${methodNames[p.method]}`.toLowerCase().includes(query.toLowerCase()));
   const outstanding = targets.filter(t => `${t.customerName} ${t.label}`.toLowerCase().includes(query.toLowerCase()));
+
+  async function undo(paymentId: string) {
+    const reason = window.prompt('Reverse this payment? Say briefly why, for the ledger.', 'Recorded by mistake');
+    if (reason === null) return;
+    setBusy(true);
+    try { await reversePayment(paymentId, reason); await refresh(); toast.success('Payment reversed'); }
+    catch (error) { toast.error((error as Error).message); }
+    finally { setBusy(false); }
+  }
+
   return <>
-    <PageHeading title="Payments" description="A clear picture of money in and balances due. Record the payments you receive offline." action={() => setRecord({})} actionLabel="Record payment" />
-    <div className="stat-grid"><Stat label="Recorded this month" value={money(data.payments.filter(p => dateKey(p.paidAt).startsWith(month)).reduce((sum, p) => sum + p.amount, 0))} detail="Based on the date payments were recorded" icon={ArrowDownLeft} /><Stat label="Total recorded" value={money(data.payments.reduce((sum, p) => sum + p.amount, 0))} detail={`${data.payments.length} payment records · all time`} icon={Banknote} /><Stat label="Outstanding" value={money(targets.reduce((sum, t) => sum + t.amount, 0))} detail="Unpaid lessons and packages" icon={Wallet} /><Stat label="Items awaiting payment" value={targets.length} detail="Cancelled lessons are excluded" icon={Clock3} /></div>
+    <PageHeading title="Payments" description={isClub ? 'Money the club collects from students, and what it pays its coaches. Recorded by hand; nothing is charged or transferred here.' : 'A clear picture of money in and balances due. Record the payments you receive offline.'} action={() => setRecord({})} actionLabel="Record payment" />
+    <div className="stat-grid"><Stat label="Recorded this month" value={money(collected.filter(p => dateKey(p.paidAt).startsWith(month)).reduce((sum, p) => sum + p.amount, 0))} detail="Based on the date payments were recorded" icon={ArrowDownLeft} /><Stat label="Collected from students" value={money(collected.reduce((sum, p) => sum + p.amount, 0))} detail={`${collected.length} payment records · all time`} icon={Banknote} />{isClub ? <Stat label="Paid to coaches" value={money(paidOut.reduce((sum, p) => sum + p.amount, 0))} detail={`${paidOut.length} payout${paidOut.length === 1 ? '' : 's'} recorded`} icon={Wallet} /> : <Stat label="Outstanding" value={money(targets.reduce((sum, t) => sum + t.amount, 0))} detail="Unpaid lessons and packages" icon={Wallet} />}<Stat label="Items awaiting payment" value={targets.length} detail="Cancelled lessons are excluded" icon={Clock3} /></div>
+    {isClub && <div className="mb-5 flex flex-col gap-3 rounded-xl border border-[#e3e9db] bg-[#f4f7ef] p-4 sm:flex-row sm:items-center sm:justify-between">
+      <p className="flex items-start gap-2.5 text-xs leading-relaxed text-[#66755f]"><ShieldCheck size={16} className="mt-0.5 shrink-0" />Lessons booked through {data.business.name} are paid to the club. Record what you then pay each coach so both sides of the ledger stay complete.</p>
+      <Button variant="outline" size="sm" className="shrink-0" onClick={() => setPayout(true)}><Wallet size={13} />Record coach payout</Button>
+    </div>}
     <section className="panel overflow-hidden" aria-label="Payment records">
       <div className="panel-heading flex-wrap border-b border-[#edf0e8]"><div className="tab-bar w-full sm:w-auto" role="tablist" aria-label="Payments view"><button id="payment-history-tab" role="tab" aria-selected={tab === 'history'} aria-controls="payment-history-panel" className={`flex-1 sm:flex-none ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>Payment history</button><button id="payment-outstanding-tab" role="tab" aria-selected={tab === 'outstanding'} aria-controls="payment-outstanding-panel" className={`flex-1 sm:flex-none ${tab === 'outstanding' ? 'active' : ''}`} onClick={() => setTab('outstanding')}>Outstanding ({targets.length})</button></div><div className="relative w-full sm:max-w-72"><Search size={14} className="pointer-events-none absolute top-3.5 left-3 text-stone-400" /><input className="pl-9! text-xs!" type="search" aria-label="Search payments" placeholder="Search customer or reference…" value={query} onChange={e => setQuery(e.target.value)} /></div></div>
-      {tab === 'history' ? <div id="payment-history-panel" role="tabpanel" aria-labelledby="payment-history-tab">{payments.length ? <><div className="table-wrap max-sm:hidden"><table className="data-table"><thead><tr><th>Customer</th><th>Payment for</th><th>Received</th><th>Method</th><th className="text-right!">Amount</th></tr></thead><tbody>{payments.map(payment => { const booking = data.bookings.find(b => b.id === payment.bookingId); const pkg = data.packages.find(p => p.id === payment.packageId); return <tr key={payment.id}><td><p className="font-medium">{payment.customerName}</p><p className="mt-1 max-w-52 truncate text-[10px] text-stone-400" title={payment.note}>{payment.note || 'No reference'}</p></td><td>{booking?.serviceName || pkg?.name || (payment.bookingId ? 'Lesson payment' : payment.packageId ? 'Package payment' : 'Unallocated payment')}</td><td>{shortDate(payment.paidAt)} {dateKey(payment.paidAt).slice(0, 4)}<p className="mt-1 text-[10px] text-stone-400">{time(payment.paidAt)}</p></td><td><span className="badge bg-[#f2f4ee]! text-[#7c8671]!">{methodNames[payment.method]}</span></td><td className="text-right! font-semibold text-[#254b38]">{money(payment.amount)}</td></tr>; })}</tbody></table></div><PaymentHistoryCards payments={payments} data={data} /></> : <Empty title={query ? 'No matching payments' : 'Your payment ledger starts here'} icon={Banknote}>{query ? 'Try a different customer name or reference.' : 'Record a payment when a customer pays by cash, bank transfer, or another offline method.'}</Empty>}</div> : <div id="payment-outstanding-panel" role="tabpanel" aria-labelledby="payment-outstanding-tab">{outstanding.length ? <><div className="table-wrap max-sm:hidden"><table className="data-table"><thead><tr><th>Customer</th><th>Unpaid item</th><th>Balance</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{outstanding.map(target => <tr key={target.key}><td className="font-medium">{target.customerName}</td><td>{target.label}<p className="mt-1 text-[10px] text-stone-400">{target.packageId ? 'Package purchase' : 'Participant lesson price'}</p></td><td className="font-semibold text-[#254b38]">{money(target.amount)}</td><td className="text-right!"><Button variant="outline" size="sm" onClick={() => setRecord({ target })}>Record payment</Button></td></tr>)}</tbody></table></div><OutstandingCards targets={outstanding} onRecord={target => setRecord({ target })} /></> : <Empty title={query ? 'No matching balances' : 'All caught up'} icon={CircleCheck}>{query ? 'Try a different customer name.' : 'There are no unpaid lessons or packages to collect.'}</Empty>}</div>}
+      {tab === 'history' ? <div id="payment-history-panel" role="tabpanel" aria-labelledby="payment-history-tab">{payments.length ? <><div className="table-wrap max-sm:hidden"><table className="data-table"><thead><tr><th>Customer</th><th>Payment for</th><th>Received</th><th>Method</th><th className="text-right!">Amount</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{payments.map(payment => { const booking = data.bookings.find(b => b.id === payment.bookingId); const pkg = data.packages.find(p => p.id === payment.packageId); const reversed = !!payment.reversedAt; return <tr key={payment.id} className={reversed ? 'opacity-60' : undefined}><td><p className="font-medium">{payment.kind === 'CLUB_TO_COACH' ? payment.instructorName || payment.customerName : payment.customerName}</p><p className="mt-1 max-w-52 truncate text-[10px] text-stone-400" title={payment.note}>{payment.note || 'No reference'}</p></td><td>{payment.kind === 'CLUB_TO_COACH' ? 'Coach payout' : booking?.serviceName || pkg?.name || (payment.bookingId ? 'Lesson payment' : payment.packageId ? 'Package payment' : 'Unallocated payment')}<p className="mt-1 text-[10px] text-stone-400">{kindNames[payment.kind] || 'Payment'}</p></td><td>{shortDate(payment.paidAt)} {dateKey(payment.paidAt).slice(0, 4)}<p className="mt-1 text-[10px] text-stone-400">{time(payment.paidAt)}</p></td><td><span className="badge bg-[#f2f4ee]! text-[#7c8671]!">{methodNames[payment.method]}</span></td><td className={`text-right! font-semibold ${reversed ? 'text-stone-400 line-through' : 'text-[#254b38]'}`}>{money(payment.amount)}</td><td className="text-right!">{reversed ? <span className="badge cancelled !text-[9px]" title={payment.reversedReason}>Reversed</span> : <Button variant="ghost" size="sm" disabled={busy} onClick={() => void undo(payment.id)}><Undo2 size={12} />Undo</Button>}</td></tr>; })}</tbody></table></div><PaymentHistoryCards payments={payments} data={data} /></> : <Empty title={query ? 'No matching payments' : 'Your payment ledger starts here'} icon={Banknote}>{query ? 'Try a different customer name or reference.' : 'Record a payment when a customer pays by cash, bank transfer, or another offline method.'}</Empty>}</div> : <div id="payment-outstanding-panel" role="tabpanel" aria-labelledby="payment-outstanding-tab">{outstanding.length ? <><div className="table-wrap max-sm:hidden"><table className="data-table"><thead><tr><th>Customer</th><th>Unpaid item</th><th>Balance</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{outstanding.map(target => <tr key={target.key}><td className="font-medium">{target.customerName}</td><td>{target.label}<p className="mt-1 text-[10px] text-stone-400">{target.packageId ? 'Package purchase' : 'Participant lesson price'}</p></td><td className="font-semibold text-[#254b38]">{money(target.amount)}</td><td className="text-right!"><Button variant="outline" size="sm" onClick={() => setRecord({ target })}>Record payment</Button></td></tr>)}</tbody></table></div><OutstandingCards targets={outstanding} onRecord={target => setRecord({ target })} /></> : <Empty title={query ? 'No matching balances' : 'All caught up'} icon={CircleCheck}>{query ? 'Try a different customer name.' : 'There are no unpaid lessons or packages to collect.'}</Empty>}</div>}
     </section>
     <p className="mt-4 text-[10px] leading-relaxed text-stone-400">Amounts are in SGD. Recorded receipts are not a bank reconciliation. Unallocated payments do not automatically settle lesson or package balances.</p>
     {record && <PaymentEditor data={data} refresh={refresh} target={record.target} onClose={() => setRecord(undefined)} />}
+    {payout && <PayoutEditor data={data} refresh={refresh} onClose={() => setPayout(false)} />}
   </>;
 }

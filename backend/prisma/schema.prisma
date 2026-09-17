@@ -8,45 +8,51 @@ datasource db {
 }
 
 model Business {
-  id                String                  @id @default(cuid())
-  name              String
-  slug              String                  @unique
-  ownerName         String
-  email             String
-  timezone          String                  @default("Asia/Singapore")
-  currency          String                  @default("SGD")
-  color             String                  @default("sage")
-  tagline           String                  @default("Good coaching. Great possibilities.")
-  cancellationHours Int                     @default(24)
-  isDemo            Boolean                 @default(false)
-  createdAt         DateTime                @default(now())
-  memberships       Membership[]
-  instructors       Instructor[]
-  locations         Location[]
-  services          Service[]
-  availability      Availability[]
-  exceptions        AvailabilityException[]
-  customers         Customer[]
-  packages          LessonPackage[]
-  bookings          Booking[]
-  payments          Payment[]
-  notifications     Notification[]
+  id                   String                  @id @default(cuid())
+  name                 String
+  slug                 String                  @unique
+  ownerName            String
+  email                String
+  timezone             String                  @default("Asia/Singapore")
+  currency             String                  @default("SGD")
+  color                String                  @default("sage")
+  tagline              String                  @default("Good coaching. Great possibilities.")
+  cancellationHours    Int                     @default(24)
+  /// "CLUB" routes every lesson payment through the club before it reaches a
+  /// coach. "SOLO" is one coach's own practice, where the student pays the
+  /// coach directly. Snapshotted onto each Booking as paymentRoute.
+  kind                 String                  @default("CLUB")
+  isDemo               Boolean                 @default(false)
+  createdAt            DateTime                @default(now())
+  memberships          Membership[]
+  instructors          Instructor[]
+  locations            Location[]
+  services             Service[]
+  availability         Availability[]
+  exceptions           AvailabilityException[]
+  customers            Customer[]
+  packages             LessonPackage[]
+  bookings             Booking[]
+  payments             Payment[]
+  notifications        Notification[]
   accountNotifications AccountNotification[]
+  rescheduleRequests   RescheduleRequest[]
+  integrityFlags       IntegrityFlag[]
 }
 
 model User {
-  id           String        @id @default(cuid())
-  name         String
-  email        String        @unique
-  passwordHash String?
-  accountType  String        @default("CUSTOMER")
-  phone        String        @default("")
-  parentName   String        @default("")
-  memberships  Membership[]
-  sessions     AuthSession[]
-  customers    Customer[]
+  id                   String                @id @default(cuid())
+  name                 String
+  email                String                @unique
+  passwordHash         String?
+  accountType          String                @default("CUSTOMER")
+  phone                String                @default("")
+  parentName           String                @default("")
+  memberships          Membership[]
+  sessions             AuthSession[]
+  customers            Customer[]
   accountNotifications AccountNotification[]
-  createdAt    DateTime      @default(now())
+  createdAt            DateTime              @default(now())
 }
 
 model Membership {
@@ -81,20 +87,25 @@ model AuthSession {
 }
 
 model Instructor {
-  id           String                  @id @default(cuid())
-  businessId   String
-  business     Business                @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  name         String
-  initials     String
-  color        String                  @default("sage")
-  email        String                  @default("")
-  specialty    String                  @default("")
-  active       Boolean                 @default(true)
-  membership   Membership?
-  assignments  ServiceInstructor[]
-  availability Availability[]
-  exceptions   AvailabilityException[]
-  bookings     Booking[]
+  id                    String                  @id @default(cuid())
+  businessId            String
+  business              Business                @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name                  String
+  initials              String
+  color                 String                  @default("sage")
+  email                 String                  @default("")
+  specialty             String                  @default("")
+  /// The coach's own protection window: a reschedule may not be requested or
+  /// accepted once the session is closer than this many hours away.
+  rescheduleNoticeHours Int                     @default(24)
+  active                Boolean                 @default(true)
+  membership            Membership?
+  assignments           ServiceInstructor[]
+  availability          Availability[]
+  exceptions            AvailabilityException[]
+  bookings              Booking[]
+  payouts               Payment[]
+  integrityFlags        IntegrityFlag[]
 
   // Supports the database-level composite FK that keeps a membership's
   // optional instructor inside the same business.
@@ -113,6 +124,14 @@ model Location {
   requiresApproval Boolean           @default(false)
   travelMinutes    Int               @default(20)
   notes            String            @default("")
+  /// Venue provenance. A coach or admin can look a venue up on Google Maps
+  /// instead of typing an address, so the place identity is stored alongside
+  /// the free-text address rather than replacing it.
+  source           String            @default("MANUAL")
+  placeId          String            @default("")
+  mapsUrl          String            @default("")
+  latitude         Float?
+  longitude        Float?
   active           Boolean           @default(true)
   services         ServiceLocation[]
   availability     Availability[]
@@ -240,34 +259,47 @@ model LessonPackage {
 }
 
 model Booking {
-  id            String        @id @default(cuid())
-  businessId    String
-  business      Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  serviceId     String
-  service       Service       @relation(fields: [serviceId], references: [id], onDelete: Restrict)
-  instructorId  String
-  instructor    Instructor    @relation(fields: [instructorId], references: [id], onDelete: Restrict)
-  locationId    String
-  location      Location      @relation(fields: [locationId], references: [id], onDelete: Restrict)
-  startAt       DateTime
-  endAt         DateTime
-  duration      Int
-  bufferMinutes Int           @default(0)
-  status        String        @default("CONFIRMED")
-  type          String
-  capacity      Int
+  id                   String                @id @default(cuid())
+  businessId           String
+  business             Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  serviceId            String
+  service              Service               @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  instructorId         String
+  instructor           Instructor            @relation(fields: [instructorId], references: [id], onDelete: Restrict)
+  locationId           String
+  location             Location              @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  startAt              DateTime
+  endAt                DateTime
+  duration             Int
+  bufferMinutes        Int                   @default(0)
+  status               String                @default("CONFIRMED")
+  type                 String
+  capacity             Int
   /// Integer minor units (cents), snapshotted when the booking is created.
-  price         Int
-  notes         String        @default("")
-  address       String        @default("")
-  recurringId   String?
-  createdAt     DateTime      @default(now())
-  participants  Participant[]
-  payments      Payment[]
+  price                Int
+  notes                String                @default("")
+  address              String                @default("")
+  /// Snapshot of Business.kind. "CLUB" means the club collects from the
+  /// student and later pays the coach; "DIRECT" means the student pays the
+  /// coach. Never derive this live: a business may change kind later.
+  paymentRoute         String                @default("DIRECT")
+  /// A club may assign a student to a coach without the student accepting,
+  /// but the coach must accept before the lesson is confirmed.
+  coachAcceptance      String                @default("NOT_REQUIRED")
+  coachRespondedAt     DateTime?
+  createdByUserId      String?
+  createdByRole        String                @default("CUSTOMER")
+  recurringId          String?
+  createdAt            DateTime              @default(now())
+  participants         Participant[]
+  payments             Payment[]
   accountNotifications AccountNotification[]
+  rescheduleRequests   RescheduleRequest[]
+  integrityFlags       IntegrityFlag[]
 
   @@index([businessId, startAt])
   @@index([instructorId, startAt, endAt])
+  @@index([businessId, coachAcceptance])
 }
 
 model Participant {
@@ -293,22 +325,35 @@ model Participant {
 }
 
 model Payment {
-  id         String         @id @default(cuid())
-  businessId String
-  business   Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  customerId String
-  customer   Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  bookingId  String?
-  booking    Booking?       @relation(fields: [bookingId], references: [id], onDelete: SetNull)
-  packageId  String?
-  package    LessonPackage? @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  id               String         @id @default(cuid())
+  businessId       String
+  business         Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  customerId       String
+  customer         Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  bookingId        String?
+  booking          Booking?       @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  packageId        String?
+  package          LessonPackage? @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  /// Which leg of the money path this record represents. Club lessons are
+  /// CUSTOMER_TO_CLUB followed by CLUB_TO_COACH; a solo coach's own student
+  /// pays CUSTOMER_TO_COACH.
+  kind             String         @default("CUSTOMER_TO_CLUB")
+  /// Set for a CLUB_TO_COACH payout.
+  instructorId     String?
+  instructor       Instructor?    @relation(fields: [instructorId], references: [id], onDelete: SetNull)
   /// Integer minor units (cents).
-  amount     Int
-  method     String         @default("BANK_TRANSFER")
-  note       String         @default("")
-  paidAt     DateTime       @default(now())
+  amount           Int
+  method           String         @default("BANK_TRANSFER")
+  note             String         @default("")
+  paidAt           DateTime       @default(now())
+  /// A recorded payment is reversed rather than deleted so the correction
+  /// stays auditable. Reversed rows are excluded from every balance.
+  reversedAt       DateTime?
+  reversedByUserId String?
+  reversedReason   String         @default("")
 
   @@index([businessId])
+  @@index([instructorId])
 }
 
 model Notification {
@@ -316,12 +361,18 @@ model Notification {
   businessId   String
   business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
   instructorId String?
+  /// Drives the icon and grouping in the workspace alerts view. See
+  /// notificationTypes in backend/src/notifications.ts for the vocabulary.
+  type         String   @default("NOTICE")
+  bookingId    String?
   title        String
   message      String
   read         Boolean  @default(false)
+  actionNeeded Boolean  @default(false)
   createdAt    DateTime @default(now())
 
   @@index([businessId])
+  @@index([businessId, read])
 }
 
 // Customer-facing account alerts are deliberately separate from provider
@@ -345,4 +396,68 @@ model AccountNotification {
   @@index([userId, createdAt])
   @@index([businessId])
   @@index([bookingId])
+}
+
+// A reschedule is a negotiation, not a unilateral edit. Either side proposes a
+// new time; the other side accepts before the booking actually moves. The
+// coach's rescheduleNoticeHours bounds how late a request may still be made.
+model RescheduleRequest {
+  id                String    @id @default(cuid())
+  businessId        String
+  business          Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  bookingId         String
+  booking           Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  /// "CUSTOMER", "COACH" or "CLUB". Who asked for the change.
+  requestedByRole   String
+  requestedByUserId String?
+  /// The participant the request belongs to when a customer raised it.
+  participantId     String?
+  proposedStartAt   DateTime
+  proposedEndAt     DateTime
+  originalStartAt   DateTime
+  message           String    @default("")
+  /// "PENDING", "ACCEPTED", "DECLINED", "WITHDRAWN" or "EXPIRED".
+  status            String    @default("PENDING")
+  respondedByUserId String?
+  respondedAt       DateTime?
+  responseMessage   String    @default("")
+  createdAt         DateTime  @default(now())
+
+  @@index([businessId, status])
+  @@index([bookingId, status])
+}
+
+// Club safeguard. A coach and a student who first met through a club, and who
+// later book privately outside it, are surfaced to that club for review rather
+// than being blocked: the platform reports, a human decides.
+model IntegrityFlag {
+  id                  String      @id @default(cuid())
+  /// The club that introduced the pair and may have been bypassed.
+  businessId          String
+  business            Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  /// The club's own roster entry for the coach involved.
+  instructorId        String?
+  instructor          Instructor? @relation(fields: [instructorId], references: [id], onDelete: SetNull)
+  coachUserId         String
+  customerUserId      String
+  coachName           String
+  customerName        String
+  /// The private booking outside the club that triggered the flag.
+  bookingId           String?
+  booking             Booking?    @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  outsideBusinessId   String?
+  outsideBusinessName String      @default("")
+  type                String      @default("PRIVATE_SESSION_AFTER_CLUB")
+  /// "OPEN", "REVIEWING", "DISMISSED" or "UPHELD".
+  status              String      @default("OPEN")
+  detail              String      @default("")
+  occurrences         Int         @default(1)
+  firstSeenAt         DateTime    @default(now())
+  lastSeenAt          DateTime    @default(now())
+  resolvedAt          DateTime?
+  resolvedByUserId    String?
+  resolutionNote      String      @default("")
+
+  @@unique([businessId, coachUserId, customerUserId, type])
+  @@index([businessId, status])
 }

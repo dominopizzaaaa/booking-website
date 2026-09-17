@@ -142,6 +142,21 @@ staffRouter.post('/staff', ownerOnly, asyncRoute(async (req, res) => {
     });
     if (existing) throw new HttpError(409, 'This account already has access to this business');
 
+    // A club-admin login is the club's own operating account, not a person's
+    // portable identity. One admin account therefore belongs to exactly one
+    // club, in both directions: an account that already works somewhere else
+    // cannot become an admin here, and an admin here cannot be added
+    // elsewhere later.
+    const elsewhere = await tx.membership.findMany({
+      where: { userId: user.id }, select: { role: true, business: { select: { name: true } } },
+    });
+    if (input.role === 'ADMIN' && elsewhere.length) {
+      throw new HttpError(409, `This account already belongs to ${elsewhere[0].business.name}. A club admin account is created by the club and belongs to that club alone.`);
+    }
+    if (elsewhere.some(membership => membership.role === 'ADMIN')) {
+      throw new HttpError(409, 'This account is a club admin account elsewhere and cannot be added to a second club.');
+    }
+
     const placeholder = input.instructorId
       ? await validateInstructor(tx, businessId, input.instructorId, undefined, true)
       : null;
@@ -188,6 +203,10 @@ staffRouter.patch('/staff/:membershipId', ownerOnly, asyncRoute(async (req, res)
     }
 
     const role = input.role ?? current.role;
+    if (role === 'ADMIN' && current.role !== 'ADMIN') {
+      const elsewhere = await tx.membership.count({ where: { userId: current.userId, id: { not: current.id } } });
+      if (elsewhere) throw new HttpError(409, 'This account belongs to another club, so it cannot become this club\u2019s admin account.');
+    }
     const requestedInstructorId = input.instructorId === undefined ? current.instructorId : input.instructorId;
     const placeholder = input.instructorId
       ? await validateInstructor(tx, businessId, input.instructorId, current.id, true)
