@@ -20,7 +20,7 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { mutate } from "@/lib/api";
-import { dateKey, shortDate, time } from "@/lib/utils";
+import { dateKey, shortDate } from "@/lib/utils";
 import {
   Editor,
   Empty,
@@ -43,21 +43,60 @@ const weekdays = [
   "Saturday",
 ];
 const weekOrder = [1, 2, 3, 4, 5, 6, 0];
-const localTime = (value: string) => time(`2026-01-05T${value}:00+08:00`);
+function localTime(value: string, locale = "en-SG") {
+  const [hour = "0", minute = "00"] = value.split(":");
+  const numericHour = Number(hour);
+  if (!Number.isInteger(numericHour) || numericHour < 0 || numericHour > 23) {
+    return value;
+  }
+  try {
+    return new Intl.DateTimeFormat(locale, {
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: "UTC",
+    }).format(new Date(Date.UTC(2026, 0, 5, numericHour, Number(minute))));
+  } catch {
+    return value;
+  }
+}
+
+function timezoneLabel(timezone: string) {
+  try {
+    const offset = new Intl.DateTimeFormat("en-SG", {
+      timeZone: timezone,
+      timeZoneName: "longOffset",
+    })
+      .formatToParts(new Date())
+      .find((part) => part.type === "timeZoneName")
+      ?.value.replace(/^GMT/, "UTC");
+    return offset ? `${timezone} · ${offset}` : timezone;
+  } catch {
+    return timezone;
+  }
+}
 
 export function AvailabilityView({ data, refresh }: ManagementProps) {
-  const [instructorId, setInstructor] = useState(
+  const isCoach = data.membership.role === "COACH";
+  const [selectedInstructorId, setSelectedInstructor] = useState(
     data.instructors.find((i) => i.active)?.id || "",
   );
+  const instructorId = isCoach
+    ? data.user.instructorId || ""
+    : data.instructors.some((i) => i.id === selectedInstructorId)
+      ? selectedInstructorId
+      : data.instructors.find((i) => i.active)?.id ||
+        data.instructors[0]?.id ||
+        "";
   const [editor, setEditor] = useState<"weekly" | "exception">();
   const [showPast, setShowPast] = useState(false);
   const { busy, run } = useManagementAction(refresh);
+  const businessDate = dateKey(undefined, data.business.timezone);
   const rows = data.availability.filter((a) => a.instructorId === instructorId);
   const exceptions = data.exceptions
     .filter(
       (e) =>
         e.instructorId === instructorId &&
-        (showPast || dateKey(e.date) >= dateKey()),
+        (showPast || e.date >= businessDate),
     )
     .sort((a, b) => a.date.localeCompare(b.date));
   const selectedInstructor = data.instructors.find(
@@ -66,33 +105,48 @@ export function AvailabilityView({ data, refresh }: ManagementProps) {
   return (
     <>
       <PageHeading
-        title="Availability"
-        description="Make space for the work you love. Set a weekly rhythm, then block out the days you need off."
-        action={() => setEditor("weekly")}
+        title={isCoach ? "Your availability" : "Availability"}
+        description={
+          isCoach
+            ? "Shape your teaching week, then block out the days you need off."
+            : "Make space for the work you love. Set a weekly rhythm, then block out the days you need off."
+        }
+        action={
+          !isCoach || selectedInstructor?.active
+            ? () => setEditor("weekly")
+            : undefined
+        }
         actionLabel="Add weekly hours"
       />
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4 rounded-xl border border-[#e5e9e0] bg-white p-4">
-        <div className="w-full sm:max-w-72">
-          <label htmlFor="availability-instructor">Instructor</label>
-          <select
-            id="availability-instructor"
-            value={instructorId}
-            onChange={(e) => setInstructor(e.target.value)}
-          >
-            <option value="" disabled>
-              Select an instructor
-            </option>
-            {data.instructors.map((i) => (
-              <option key={i.id} value={i.id}>
-                {i.name}
-                {!i.active ? " (archived)" : ""}
+        {!isCoach && (
+          <div className="w-full sm:max-w-72">
+            <label htmlFor="availability-instructor">Instructor</label>
+            <select
+              id="availability-instructor"
+              value={instructorId}
+              onChange={(e) => setSelectedInstructor(e.target.value)}
+            >
+              <option value="" disabled>
+                Select an instructor
               </option>
-            ))}
-          </select>
-        </div>
-        <p className="flex items-center gap-2 rounded-full bg-[#f4f6f1] px-3 py-2 text-[11px] text-stone-500">
-          <Globe2 size={13} />
-          Singapore time · UTC+8
+              {data.instructors.map((i) => (
+                <option key={i.id} value={i.id}>
+                  {i.name}
+                  {!i.active ? " (archived)" : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        {isCoach && selectedInstructor && (
+          <p className="text-xs font-medium text-[#405941]">
+            {selectedInstructor.name}
+          </p>
+        )}
+        <p className={`${isCoach ? "sm:ml-auto " : ""}flex items-center gap-2 rounded-full bg-[#f4f6f1] px-3 py-2 text-[11px] text-stone-500`}>
+          <Globe2 size={13} aria-hidden="true" />
+          {timezoneLabel(data.business.timezone)}
         </p>
       </div>
       <div className="grid items-start gap-5 xl:grid-cols-[1.45fr_1fr]">
@@ -107,13 +161,18 @@ export function AvailabilityView({ data, refresh }: ManagementProps) {
             </div>
             <Clock3 size={17} className="text-[#9aa58b]" />
           </div>
-          {!data.instructors.length ? (
+          {!selectedInstructor ? (
             <Empty
-              title="Start with your instructor roster"
+              title={
+                isCoach
+                  ? "Your instructor profile is not linked"
+                  : "Start with your instructor roster"
+              }
               icon={CalendarDays}
             >
-              Add an instructor in Team, then set their weekly working hours
-              here.
+              {isCoach
+                ? "Ask an owner or administrator to link your coach account to an instructor profile."
+                : "Add an instructor in Team, then set their weekly working hours here."}
             </Empty>
           ) : (
             <div>
@@ -202,7 +261,9 @@ export function AvailabilityView({ data, refresh }: ManagementProps) {
               size="sm"
               variant="outline"
               onClick={() => setEditor("exception")}
-              disabled={!instructorId}
+              disabled={
+                !instructorId || (isCoach && !selectedInstructor?.active)
+              }
               className="max-sm:w-full"
             >
               <Plus size={12} />
@@ -221,8 +282,11 @@ export function AvailabilityView({ data, refresh }: ManagementProps) {
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="text-xs font-medium text-[#344b39]">
-                      {shortDate(exception.date)}{" "}
-                      {dateKey(exception.date).slice(0, 4)}
+                      {shortDate(
+                        `${exception.date}T12:00:00Z`,
+                        "UTC",
+                      )}{" "}
+                      {exception.date.slice(0, 4)}
                     </p>
                     <p className="mt-1 text-[11px] leading-relaxed text-stone-500">
                       {exception.reason || "Unavailable all day"}
@@ -236,7 +300,10 @@ export function AvailabilityView({ data, refresh }: ManagementProps) {
                     onClick={() => {
                       if (
                         window.confirm(
-                          `Unblock ${shortDate(exception.date)}? New bookings may become available on this date.`,
+                          `Unblock ${shortDate(
+                            `${exception.date}T12:00:00Z`,
+                            "UTC",
+                          )}? New bookings may become available on this date.`,
                         )
                       )
                         void run(
@@ -277,13 +344,17 @@ export function AvailabilityView({ data, refresh }: ManagementProps) {
           submitLabel="Add weekly hours"
           success="Weekly hours added"
           disabled={
-            !data.instructors.some((i) => i.active) ||
+            (isCoach
+              ? !selectedInstructor?.active
+              : !data.instructors.some((i) => i.active)) ||
             !data.locations.some((l) => l.active)
           }
           onSubmit={(form) => {
             const startTime = text(form, "startTime");
             const endTime = text(form, "endTime");
-            const instructor = text(form, "hours-instructor");
+            const instructor = isCoach
+              ? instructorId
+              : text(form, "hours-instructor");
             const day = numeric(form, "hours-day");
             if (startTime >= endTime)
               throw new Error(
@@ -311,25 +382,27 @@ export function AvailabilityView({ data, refresh }: ManagementProps) {
           }}
         >
           <div className="form-grid max-sm:grid-cols-1!">
-            <Field label="Instructor" name="hours-instructor" wide>
-              <select
-                id="hours-instructor"
-                name="hours-instructor"
-                defaultValue={selectedInstructor?.active ? instructorId : ""}
-                required
-              >
-                <option value="" disabled>
-                  Select instructor
-                </option>
-                {data.instructors
-                  .filter((i) => i.active)
-                  .map((i) => (
-                    <option key={i.id} value={i.id}>
-                      {i.name}
-                    </option>
-                  ))}
-              </select>
-            </Field>
+            {!isCoach && (
+              <Field label="Instructor" name="hours-instructor" wide>
+                <select
+                  id="hours-instructor"
+                  name="hours-instructor"
+                  defaultValue={selectedInstructor?.active ? instructorId : ""}
+                  required
+                >
+                  <option value="" disabled>
+                    Select instructor
+                  </option>
+                  {data.instructors
+                    .filter((i) => i.active)
+                    .map((i) => (
+                      <option key={i.id} value={i.id}>
+                        {i.name}
+                      </option>
+                    ))}
+                </select>
+              </Field>
+            )}
             <Field label="Location" name="hours-location" wide>
               <select
                 id="hours-location"
@@ -359,21 +432,23 @@ export function AvailabilityView({ data, refresh }: ManagementProps) {
               </select>
             </Field>
             <Field
-              label="Start time (Singapore)"
+              label={`Start time (${data.business.timezone})`}
               name="startTime"
               type="time"
               defaultValue="09:00"
               required
             />
             <Field
-              label="End time (Singapore)"
+              label={`End time (${data.business.timezone})`}
               name="endTime"
               type="time"
               defaultValue="18:00"
               required
             />
           </div>
-          {(!data.instructors.some((i) => i.active) ||
+          {((isCoach
+            ? !selectedInstructor?.active
+            : !data.instructors.some((i) => i.active)) ||
             !data.locations.some((l) => l.active)) && (
             <p className="text-xs text-amber-800">
               Add an active instructor and location before creating weekly
@@ -392,33 +467,37 @@ export function AvailabilityView({ data, refresh }: ManagementProps) {
           success="Date blocked"
           onSubmit={(form) =>
             mutate("/exceptions", "POST", {
-              instructorId: text(form, "blocked-instructor"),
+              instructorId: isCoach
+                ? instructorId
+                : text(form, "blocked-instructor"),
               date: text(form, "date"),
               reason: text(form, "reason"),
             })
           }
         >
           <div className="form-grid max-sm:grid-cols-1!">
-            <Field label="Instructor" name="blocked-instructor" wide>
-              <select
-                id="blocked-instructor"
-                name="blocked-instructor"
-                defaultValue={instructorId}
-                required
-              >
-                {data.instructors.map((i) => (
-                  <option key={i.id} value={i.id}>
-                    {i.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
+            {!isCoach && (
+              <Field label="Instructor" name="blocked-instructor" wide>
+                <select
+                  id="blocked-instructor"
+                  name="blocked-instructor"
+                  defaultValue={instructorId}
+                  required
+                >
+                  {data.instructors.map((i) => (
+                    <option key={i.id} value={i.id}>
+                      {i.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
             <Field
               label="Date"
               name="date"
               type="date"
-              min={dateKey()}
-              defaultValue={dateKey()}
+              min={businessDate}
+              defaultValue={businessDate}
               required
               wide
             />

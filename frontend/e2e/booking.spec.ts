@@ -454,21 +454,23 @@ test('self-registered coach is linked to a club by its owner', async ({ page }, 
   await expect(page.locator('main').getByText('Your booking page', { exact: true })).toHaveCount(0);
   await coachNavigation.getByRole('button', { name: 'Explore', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
-  await expect(page.getByText(/Your coach access keeps business setup and financial records private/)).toBeVisible();
+  await expect(page.getByText(/Business setup, team access, packages, payments, and reporting are managed/)).toBeVisible();
   for (const label of ['Calendar', 'Bookings', 'Customers', 'Availability']) {
     await expect(page.getByRole('button', { name: `Open ${label}`, exact: true })).toBeEnabled();
   }
   for (const label of ['Services', 'Locations', 'Your team', 'Lesson packages', 'Payments', 'Insights']) {
-    await expect(page.getByRole('button', { name: `${label}, owner or administrator access required`, exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: `Open ${label}`, exact: true })).toHaveCount(0);
   }
 
   await coachNavigation.getByRole('button', { name: 'Create', exact: true }).click();
   const createDialog = page.getByRole('dialog', { name: 'Create' });
-  await expect(createDialog.getByRole('heading', { name: 'Create', exact: true })).toBeVisible();
-  for (const action of ['New booking', 'Customers', 'Availability']) {
+  await expect(createDialog.getByRole('heading', { name: 'Quick actions', exact: true })).toBeVisible();
+  await expect(createDialog.getByText('New booking needs a little setup', { exact: true })).toBeVisible();
+  await expect(createDialog.getByText(/Ask an owner or administrator/)).toBeVisible();
+  for (const action of ['Availability']) {
     await expect(createDialog.getByRole('button', { name: new RegExp(`^${action}\\b`) })).toBeVisible();
   }
-  for (const action of ['Services', 'Locations', 'Payments']) {
+  for (const action of ['Customers', 'Services', 'Locations', 'Payments']) {
     await expect(createDialog.getByRole('button', { name: new RegExp(`^${action}\\b`) })).toHaveCount(0);
   }
   await createDialog.getByRole('button', { name: 'Close dialog' }).click();

@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type KeyboardEvent,
   type ReactNode,
 } from "react";
 import {
@@ -189,6 +190,18 @@ function CustomerAccountAccess({
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const tabRefs = useRef<Record<"login" | "register", HTMLButtonElement | null>>({ login: null, register: null });
+  function selectMode(next: "login" | "register") {
+    setMode(next);
+    setError("");
+  }
+  function handleModeKey(event: KeyboardEvent<HTMLButtonElement>, value: "login" | "register") {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === "ArrowLeft" || event.key === "Home" ? "login" : "register";
+    if (next !== value) selectMode(next);
+    tabRefs.current[next]?.focus();
+  }
   async function submitAccount(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
@@ -222,13 +235,15 @@ function CustomerAccountAccess({
           {(["login", "register"] as const).map((value) => (
             <button
               key={value}
+              ref={(node) => { tabRefs.current[value] = node; }}
               type="button"
               role="tab"
+              id={formId + "-" + value + "-tab"}
+              aria-controls={formId}
               aria-selected={mode === value}
-              onClick={() => {
-                setMode(value);
-                setError("");
-              }}
+              tabIndex={mode === value ? 0 : -1}
+              onClick={() => selectMode(value)}
+              onKeyDown={(event) => handleModeKey(event, value)}
               className={cn(
                 "min-h-11 rounded-xl px-3 text-sm font-semibold transition",
                 mode === value
@@ -241,7 +256,7 @@ function CustomerAccountAccess({
           ))}
         </div>
       </div>
-      <form id={formId} onSubmit={submitAccount} className="space-y-5 p-5 sm:p-7">
+      <form id={formId} role="tabpanel" aria-labelledby={formId + "-" + mode + "-tab"} onSubmit={submitAccount} className="space-y-5 p-5 sm:p-7">
         <div>
           <h2 className="!text-base">
             {mode === "login" ? "Welcome back" : "Your Courtly account"}
@@ -809,6 +824,13 @@ export function PublicBooking({ slug }: { slug: string }) {
           : step === 3
             ? isCustomerSession(account.session)
             : true;
+  const continueHint = step === 0 && !serviceId
+    ? "Choose a lesson above to continue."
+    : step === 1 && (!locationId || !instructorId)
+      ? "Choose both a place and a coach to continue."
+      : step === 2 && !slot
+        ? slotsLoading ? "Checking available times…" : "Choose an available time to continue."
+        : "";
   const actionLabel =
     step === 3
       ? "Review booking"
@@ -1795,14 +1817,12 @@ export function PublicBooking({ slug }: { slug: string }) {
                   )}
                 </button>
               ) : (
-                <button
-                  type="button"
-                  className={button}
-                  disabled={!canContinue}
-                  onClick={() => goTo(step + 1)}
-                >
-                  Continue <ArrowRight size={15} />
-                </button>
+                <div className="text-right">
+                  <button type="button" className={button} disabled={!canContinue} aria-describedby={!canContinue ? "booking-continue-hint" : undefined} onClick={() => goTo(step + 1)}>
+                    Continue <ArrowRight size={15} />
+                  </button>
+                  {!canContinue && continueHint && <p id="booking-continue-hint" className="mt-2 text-[11px] text-[#7b8876]">{continueHint}</p>}
+                </div>
               )}
             </div>
             <p className="!mt-4 text-right text-[10px] text-[#98a08f]">
@@ -1959,14 +1979,12 @@ export function PublicBooking({ slug }: { slug: string }) {
                   {!saving && <ArrowRight size={15} className="shrink-0" />}
                 </button>
               ) : (
-                <button
-                  type="button"
-                  className={cn(button, "!min-h-12 !min-w-0 !flex-1 !px-4")}
-                  disabled={!canContinue}
-                  onClick={() => goTo(step + 1)}
-                >
-                  Continue <ArrowRight size={15} />
-                </button>
+                <div className="min-w-0 flex-1">
+                  <button type="button" className={cn(button, "!min-h-12 !w-full !min-w-0 !px-4")} disabled={!canContinue} aria-describedby={!canContinue ? "booking-mobile-continue-hint" : undefined} onClick={() => goTo(step + 1)}>
+                    Continue <ArrowRight size={15} />
+                  </button>
+                  {!canContinue && continueHint && <p id="booking-mobile-continue-hint" className="mt-1.5 text-center text-[10px] text-[#758171]">{continueHint}</p>}
+                </div>
               )}
             </div>
           </div>

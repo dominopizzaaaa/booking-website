@@ -82,7 +82,7 @@ test('provider can inspect lessons and open booking form', async ({ page }) => {
   }
   await create.click();
   const createDialog = page.getByRole('dialog', { name: 'Create' });
-  await expect(createDialog.getByRole('heading', { name: 'Create', exact: true })).toBeVisible();
+  await expect(createDialog.getByRole('heading', { name: 'Quick actions', exact: true })).toBeVisible();
   for (const action of ['New booking', 'Customers', 'Availability', 'Services', 'Locations', 'Payments']) {
     await expect(createDialog.getByRole('button', { name: new RegExp(`^${action}\\b`) })).toBeVisible();
   }

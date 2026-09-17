@@ -16,7 +16,6 @@ import {
   HelpCircle,
   Link2,
   Loader2,
-  LockKeyhole,
   LogOut,
   MapPin,
   Pencil,
@@ -60,6 +59,48 @@ export function canAccessExploreView(role: MembershipRole, view: string) {
   return isExploreView(view) && (role !== 'COACH' || coachViews.has(view));
 }
 
+export type BookingReadiness = {
+  publicReady: boolean;
+  staffBookingReady: boolean;
+  hasActiveLocation: boolean;
+  hasActiveInstructor: boolean;
+  hasAssignedService: boolean;
+  hasMatchingAvailability: boolean;
+  hasLinkedCustomer: boolean;
+};
+
+/**
+ * A booking page is only ready when one complete, active service path can
+ * produce a slot. Coaches are scoped to their own roster assignment.
+ */
+export function getBookingReadiness(data: Workspace): BookingReadiness {
+  const isCoach = data.membership.role === 'COACH';
+  const activeLocationIds = new Set(data.locations.filter(location => location.active).map(location => location.id));
+  const activeInstructorIds = new Set(data.instructors
+    .filter(instructor => instructor.active && (!isCoach || instructor.id === data.membership.instructorId))
+    .map(instructor => instructor.id));
+  const assignedPaths = data.services
+    .filter(service => service.active)
+    .flatMap(service => service.locations
+      .filter(mapping => activeLocationIds.has(mapping.locationId))
+      .flatMap(mapping => mapping.instructorIds
+        .filter(instructorId => activeInstructorIds.has(instructorId))
+        .map(instructorId => ({ instructorId, locationId: mapping.locationId }))));
+  const hasMatchingAvailability = assignedPaths.some(path => data.availability.some(window =>
+    window.instructorId === path.instructorId && window.locationId === path.locationId,
+  ));
+  const hasLinkedCustomer = data.customers.some(customer => !!customer.userId);
+  return {
+    publicReady: hasMatchingAvailability,
+    staffBookingReady: hasMatchingAvailability && hasLinkedCustomer,
+    hasActiveLocation: activeLocationIds.size > 0,
+    hasActiveInstructor: activeInstructorIds.size > 0,
+    hasAssignedService: assignedPaths.length > 0,
+    hasMatchingAvailability,
+    hasLinkedCustomer,
+  };
+}
+
 type ExploreItem = {
   id: ExploreViewId;
   label: string;
@@ -81,8 +122,36 @@ const exploreItems: ExploreItem[] = [
   { id: 'insights', label: 'Insights', description: 'Understand attendance, lessons, and recorded receipts.', icon: ChartNoAxesCombined, detail: data => `${data.bookings.filter(booking => booking.status === 'COMPLETED').length} completed lessons` },
 ];
 
+const exploreGroups: { title: string; ids: ExploreViewId[] }[] = [
+  { title: 'Schedule', ids: ['calendar', 'bookings', 'availability'] },
+  { title: 'People', ids: ['customers', 'team'] },
+  { title: 'Business setup', ids: ['services', 'locations'] },
+  { title: 'Money & reporting', ids: ['packages', 'payments', 'insights'] },
+];
+
 export function ExploreHub({ data, onNavigate }: { data: Workspace; onNavigate: (view: string) => void }) {
-  const restrictedCount = data.membership.role === 'COACH' ? exploreItems.length - coachViews.size : 0;
+  const isCoach = data.membership.role === 'COACH';
+  function renderCard(item: ExploreItem) {
+    const Icon = item.icon;
+    const description = isCoach && item.id === 'customers'
+      ? 'View the players already connected to your lessons.'
+      : item.description;
+    return <button
+      key={item.id}
+      type="button"
+      className="workspace-explore-card group min-h-40 rounded-2xl border border-[#e2e8df] bg-white p-5 text-left transition hover:-translate-y-0.5 hover:border-[#cbd8c5] hover:shadow-sm"
+      onClick={() => onNavigate(item.id)}
+      aria-label={`Open ${item.label}`}
+    >
+      <span className="flex items-start justify-between gap-4">
+        <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#edf2e7] text-[#66805a]"><Icon size={19} strokeWidth={1.6} /></span>
+        <ArrowRight size={16} className="mt-1 text-[#a0aa99] transition-transform group-hover:translate-x-0.5" />
+      </span>
+      <span className="mt-5 block text-sm font-semibold text-[#294735]">{item.label}</span>
+      <span className="mt-2 block text-[11px] leading-relaxed text-stone-500">{description}</span>
+      <span className="mt-4 block text-[10px] text-stone-400">{item.detail(data)}</span>
+    </button>;
+  }
   return <section className="workspace-explore" aria-labelledby="workspace-explore-title">
     <header className="section-heading">
       <div>
@@ -91,29 +160,21 @@ export function ExploreHub({ data, onNavigate }: { data: Workspace; onNavigate: 
         <p className="mt-2 max-w-2xl text-xs leading-relaxed text-stone-500">Everything that keeps {data.business.name} moving, gathered in one calm place.</p>
       </div>
     </header>
-    {restrictedCount > 0 && <div className="workspace-explore-role-note mb-5 flex items-start gap-3 rounded-xl border border-[#e4e9dd] bg-[#f4f7ef] p-4 text-xs leading-relaxed text-[#66755f]"><ShieldCheck size={17} className="mt-0.5 shrink-0" /><p>Your coach access keeps business setup and financial records private. Ask an owner or administrator if you need one of the locked areas.</p></div>}
-    <div className="workspace-explore-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-      {exploreItems.map(item => {
-        const allowed = canAccessExploreView(data.membership.role, item.id);
-        const Icon = item.icon;
-        return <button
-          key={item.id}
-          type="button"
-          className={`workspace-explore-card group min-h-40 rounded-2xl border p-5 text-left transition ${allowed ? 'border-[#e2e8df] bg-white hover:-translate-y-0.5 hover:border-[#cbd8c5] hover:shadow-sm' : 'cursor-not-allowed border-[#eceeea] bg-[#fafbf9] text-stone-400'}`}
-          onClick={() => allowed && onNavigate(item.id)}
-          disabled={!allowed}
-          aria-label={allowed ? `Open ${item.label}` : `${item.label}, owner or administrator access required`}
-        >
-          <span className="flex items-start justify-between gap-4">
-            <span className={`grid h-10 w-10 place-items-center rounded-xl ${allowed ? 'bg-[#edf2e7] text-[#66805a]' : 'bg-stone-100 text-stone-400'}`}><Icon size={19} strokeWidth={1.6} /></span>
-            {allowed ? <ArrowRight size={16} className="mt-1 text-[#a0aa99] transition-transform group-hover:translate-x-0.5" /> : <span className="flex items-center gap-1 text-[9px] font-semibold uppercase tracking-[0.08em] text-stone-400"><LockKeyhole size={11} />Restricted</span>}
-          </span>
-          <span className={`mt-5 block text-sm font-semibold ${allowed ? 'text-[#294735]' : 'text-stone-500'}`}>{item.label}</span>
-          <span className="mt-2 block text-[11px] leading-relaxed text-stone-500">{item.description}</span>
-          <span className="mt-4 block text-[10px] text-stone-400">{allowed ? item.detail(data) : 'Owner or administrator access'}</span>
-        </button>;
+    {isCoach ? <div className="space-y-5">
+      <section aria-labelledby="explore-your-tools">
+        <h2 id="explore-your-tools" className="mb-3 text-sm text-[#405744]">Your tools</h2>
+        <div className="workspace-explore-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{exploreItems.filter(item => coachViews.has(item.id)).map(renderCard)}</div>
+      </section>
+      <div className="workspace-explore-role-note flex items-start gap-3 rounded-xl border border-[#e4e9dd] bg-[#f4f7ef] p-4 text-xs leading-relaxed text-[#66755f]"><ShieldCheck size={17} className="mt-0.5 shrink-0" /><p>Business setup, team access, packages, payments, and reporting are managed by an owner or administrator.</p></div>
+    </div> : <div className="space-y-7">
+      {exploreGroups.map(group => {
+        const headingId = `explore-${group.title.toLowerCase().replace(/[^a-z]+/g, '-')}`;
+        return <section key={group.title} aria-labelledby={headingId}>
+          <h2 id={headingId} className="mb-3 text-sm text-[#405744]">{group.title}</h2>
+          <div className="workspace-explore-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{group.ids.map(id => renderCard(exploreItems.find(item => item.id === id)!))}</div>
+        </section>;
       })}
-    </div>
+    </div>}
   </section>;
 }
 
@@ -174,6 +235,7 @@ type ProfileViewProps = {
 
 export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusinessSettings, onHelp, onSignOut }: ProfileViewProps) {
   const canManageBusiness = data.membership.role !== 'COACH';
+  const bookingReadiness = getBookingReadiness(data);
   const bookingPath = `/book/${encodeURIComponent(data.business.slug)}`;
   async function copyBookingLink() {
     try {
@@ -206,8 +268,8 @@ export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusiness
           </div>
         </section>
         {canManageBusiness && <section className="panel overflow-hidden">
-          <div className="panel-heading"><div className="flex items-center gap-2"><Link2 size={17} className="text-[#839677]" /><h2 className="text-[#294735]">Your booking link</h2></div><span className="badge">Public page</span></div>
-          <div className="px-5 pb-5 sm:px-6 sm:pb-6"><p className="text-xs leading-relaxed text-stone-500">Share this page so customers can choose a service and find an available lesson.</p><div className="mt-4 flex min-w-0 items-center gap-2 rounded-xl border border-[#e3e8df] bg-[#fafbf8] p-3"><span className="min-w-0 flex-1 truncate text-xs text-stone-600">{bookingPath}</span><Button size="icon" variant="ghost" aria-label="Copy booking link" onClick={() => void copyBookingLink()}><Copy size={14} /></Button></div><div className="mt-3 grid grid-cols-1 gap-2 sm:flex"><Button size="sm" onClick={() => void copyBookingLink()}><Copy size={13} />Copy link</Button><Button size="sm" variant="outline" asChild><a href={bookingPath} target="_blank" rel="noreferrer"><ExternalLink size={13} />Open booking page</a></Button></div></div>
+          <div className="panel-heading"><div className="flex items-center gap-2"><Link2 size={17} className="text-[#839677]" /><h2 className="text-[#294735]">Your booking link</h2></div><span className="badge">{bookingReadiness.publicReady ? 'Ready' : 'Setup needed'}</span></div>
+          <div className="px-5 pb-5 sm:px-6 sm:pb-6"><p className="text-xs leading-relaxed text-stone-500">{bookingReadiness.publicReady ? 'Share this page so customers can choose a service and find an available lesson.' : 'Preview the page now. Finish your location, service assignment, and matching availability before sharing it.'}</p><div className="mt-4 flex min-w-0 items-center gap-2 rounded-xl border border-[#e3e8df] bg-[#fafbf8] p-3"><span className="min-w-0 flex-1 truncate text-xs text-stone-600">{bookingPath}</span>{bookingReadiness.publicReady && <Button size="icon" variant="ghost" aria-label="Copy booking link" onClick={() => void copyBookingLink()}><Copy size={14} /></Button>}</div><div className="mt-3 grid grid-cols-1 gap-2 sm:flex">{bookingReadiness.publicReady && <Button size="sm" onClick={() => void copyBookingLink()}><Copy size={13} />Copy link</Button>}<Button size="sm" variant="outline" asChild><a href={bookingPath} target="_blank" rel="noreferrer"><ExternalLink size={13} />Preview booking page</a></Button></div></div>
         </section>}
       </div>
       <aside className="space-y-5">
@@ -221,21 +283,45 @@ export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusiness
 type CreateDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  role: MembershipRole;
+  data?: Workspace;
+  role?: MembershipRole;
+  bookingReadiness?: BookingReadiness;
   onNewBooking: () => void;
   onNavigate: (view: string) => void;
 };
 
-export function CreateDialog({ open, onOpenChange, role, onNewBooking, onNavigate }: CreateDialogProps) {
+export function CreateDialog({ open, onOpenChange, data, role: roleProp, bookingReadiness, onNewBooking, onNavigate }: CreateDialogProps) {
+  const role = data?.membership.role ?? roleProp ?? 'OWNER';
+  const isCoach = role === 'COACH';
+  const readiness = data ? getBookingReadiness(data) : bookingReadiness ?? null;
   const actions = [
-    { label: 'Customers', description: 'Open customer records', view: 'customers', icon: Users, coach: true },
+    { label: 'Customers', description: 'Manage customer records', view: 'customers', icon: Users, coach: false },
     { label: 'Availability', description: 'Shape your teaching week', view: 'availability', icon: Clock3, coach: true },
     { label: 'Services', description: 'Add or edit a lesson', view: 'services', icon: Gift, coach: false },
     { label: 'Locations', description: 'Manage teaching venues', view: 'locations', icon: MapPin, coach: false },
     { label: 'Payments', description: 'Record an offline receipt', view: 'payments', icon: CreditCard, coach: false },
   ].filter(action => role !== 'COACH' || action.coach);
   function go(view: string) { onOpenChange(false); onNavigate(view); }
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="workspace-create-dialog max-w-lg"><DialogTitle className="text-lg font-semibold">Create</DialogTitle><DialogDescription className="mt-2 text-xs text-stone-500">Start a booking, or jump to the place where you manage what comes next.</DialogDescription><Button className="mt-5 h-auto w-full justify-start gap-3 rounded-xl p-4 text-left" onClick={() => { onOpenChange(false); window.requestAnimationFrame(onNewBooking); }}><span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/15"><Plus size={18} /></span><span><span className="block text-xs font-semibold">New booking</span><span className="mt-1 block text-[10px] font-normal text-white/75">Choose a lesson, customer, place, and time</span></span></Button><div className="mt-3 grid gap-2 sm:grid-cols-2">{actions.map(action => { const Icon = action.icon; return <button key={action.view} type="button" className="workspace-create-action flex min-h-20 items-center gap-3 rounded-xl border border-[#e3e8df] p-3 text-left transition hover:bg-[#f7f9f4]" onClick={() => go(action.view)}><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-[#edf2e7] text-[#6e835f]"><Icon size={16} /></span><span><span className="block text-xs font-semibold text-[#344b39]">{action.label}</span><span className="mt-1 block text-[10px] text-stone-500">{action.description}</span></span></button>; })}</div></DialogContent></Dialog>;
+  const ownerManagedBlockers = [
+    readiness && !readiness.hasActiveLocation && 'an active location',
+    readiness && !readiness.hasActiveInstructor && (isCoach ? 'an active coach roster profile' : 'an active instructor'),
+    readiness && !readiness.hasAssignedService && (isCoach ? 'a service assigned to you at an active location' : 'an active service assigned to an active instructor'),
+    readiness && !readiness.hasLinkedCustomer && 'a linked customer account',
+  ].filter((item): item is string => !!item);
+  const missingBookingSetup = [
+    ...ownerManagedBlockers,
+    readiness && readiness.hasAssignedService && !readiness.hasMatchingAvailability && 'availability for that instructor and location',
+  ].filter((item): item is string => !!item);
+  const primarySetupView = readiness && !readiness.hasActiveLocation ? 'locations'
+    : readiness && !readiness.hasActiveInstructor ? 'team'
+      : readiness && !readiness.hasAssignedService ? 'services'
+      : readiness && !readiness.hasMatchingAvailability ? 'availability'
+        : 'customers';
+  const setupMessage = isCoach
+    ? `${ownerManagedBlockers.length ? `Ask an owner or administrator to add ${ownerManagedBlockers.join(', ')}.` : ''}${readiness && !readiness.hasMatchingAvailability && readiness.hasAssignedService ? `${ownerManagedBlockers.length ? ' Then set' : 'Set'} availability for your assigned service location.` : ''}`
+    : `Complete ${missingBookingSetup.join(', ')} first.`;
+  const showNewBooking = readiness?.staffBookingReady ?? true;
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="workspace-create-dialog max-w-lg"><DialogTitle className="sr-only">Create</DialogTitle><h2 className="text-lg font-semibold">Quick actions</h2><DialogDescription className="mt-2 text-xs text-stone-500">Start a booking or open a tool that supports your work.</DialogDescription>{showNewBooking ? <Button className="mt-5 h-auto w-full justify-start gap-3 rounded-xl p-4 text-left" onClick={() => { onOpenChange(false); window.requestAnimationFrame(onNewBooking); }}><span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/15"><Plus size={18} /></span><span><span className="block text-xs font-semibold">New booking</span><span className="mt-1 block text-[10px] font-normal text-white/75">Choose a lesson, customer, place, and time</span></span></Button> : <div className="mt-5 rounded-xl border border-[#e8dfc8] bg-[#fbf8ef] p-4"><p className="text-xs font-semibold text-[#6e6246]">New booking needs a little setup</p><p className="mt-1.5 text-[10px] leading-relaxed text-[#8f8265]">{setupMessage}</p><Button variant="outline" size="sm" className="mt-3" onClick={() => go(isCoach && ownerManagedBlockers.length ? 'explore' : primarySetupView)}>{isCoach && ownerManagedBlockers.length ? 'View your tools' : primarySetupView === 'locations' ? 'Add a location' : primarySetupView === 'team' ? 'Open your team' : primarySetupView === 'services' ? 'Set up services' : primarySetupView === 'availability' ? 'Set availability' : 'Open customers'}<ArrowRight size={13} /></Button></div>}<div className="mt-4"><p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-stone-400">Go to</p><div className="grid gap-2 sm:grid-cols-2">{actions.map(action => { const Icon = action.icon; return <button key={action.view} type="button" className="workspace-create-action flex min-h-20 items-center gap-3 rounded-xl border border-[#e3e8df] p-3 text-left transition hover:bg-[#f7f9f4]" onClick={() => go(action.view)}><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-[#edf2e7] text-[#6e835f]"><Icon size={16} /></span><span><span className="block text-xs font-semibold text-[#344b39]">{action.label}</span><span className="mt-1 block text-[10px] text-stone-500">{action.description}</span></span></button>; })}</div></div></DialogContent></Dialog>;
 }
 
 export function PersonalProfileDialog({ open, onOpenChange, user, refresh }: { open: boolean; onOpenChange: (open: boolean) => void; user: WorkspaceUser; refresh: () => Promise<void> }) {

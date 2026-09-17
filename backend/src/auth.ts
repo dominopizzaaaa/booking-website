@@ -105,7 +105,10 @@ const credentials = z.object({
   password: z.string().min(8).max(72).refine(value => Buffer.byteLength(value, 'utf8') <= 72, 'Password must fit within 72 UTF-8 bytes'),
 }).strict();
 const registration = z.object({
-  accountType: z.enum(['CUSTOMER', 'COACH', 'OWNER']).default('OWNER'),
+  // Account type must always be an explicit choice. Silently creating an
+  // owner workspace when an older or custom client omits this field is both
+  // surprising and difficult for the user to undo.
+  accountType: z.enum(['CUSTOMER', 'COACH', 'OWNER']),
   businessName: z.string().trim().min(2).max(120).optional(),
   name: z.string().trim().min(2).max(120),
   email: z.string().trim().max(254).email().transform(value => value.toLowerCase()),
