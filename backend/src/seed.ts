@@ -293,7 +293,7 @@ async function populateBusiness(
   for (const instructor of instructors) {
     const upcoming = upcomingByCoach.get(instructor.id) ?? 0;
     notifications.push({
-      businessId, instructorId: instructor.id, title: 'Lesson reminders queued',
+      businessId, instructorId: instructor.id, type: 'BOOKING', title: 'Lesson reminders queued',
       message: upcoming > 0
         ? `${upcoming} upcoming lesson${upcoming === 1 ? '' : 's'} for ${instructor.name}. Confirmation and 24-hour reminders queued in Courtly; external delivery is not configured and no message has been sent.`
         : `This week's lessons for ${instructor.name} are complete. New booking confirmations and 24-hour reminders will be queued in Courtly; external delivery is not configured.`,
@@ -301,7 +301,7 @@ async function populateBusiness(
     });
     const pending = pendingByCoach.get(instructor.id) ?? 0;
     if (pending > 0) notifications.push({
-      businessId, instructorId: instructor.id, title: 'Venue confirmation needed',
+      businessId, instructorId: instructor.id, type: 'PENDING_ACTION', actionNeeded: true, title: 'Venue confirmation needed',
       message: `${pending} OCBC Arena session${pending === 1 ? '' : 's'} awaiting venue approval. Check court availability before confirming; Courtly has not reserved an external court.`,
       read: false, createdAt: now.minus({ minutes: 5 }).toJSDate(),
     });

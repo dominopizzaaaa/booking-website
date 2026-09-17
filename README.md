@@ -6,15 +6,31 @@ Courtly is a full-stack booking platform for coaching businesses. This repositor
 
 The working MVP includes global customer and provider accounts, club memberships, multi-location and instructor-aware availability, travel and preparation buffers, private and capacity-limited group lessons, atomic recurring bookings, pending venue approval, account-backed customer booking and self-service, packages, manual payment records, attendance, customer/parent details, staff roles, and a responsive provider workspace. Defaults are SGD and Asia/Singapore.
 
+It also covers how a club and its coaches actually work together: a club assigns a student to a coach and the coach accepts before the lesson is confirmed; either side proposes a new time and the other agrees before a session moves; lessons booked through a club are paid to the club, which then records what it pays each coach; a coach can run their own practice alongside their club work, where students pay them directly; and a club is told when a coach and a student it introduced start training privately outside it.
+
+Agents working on this repository should read [AGENTS.md](AGENTS.md) first.
+
 ## Accounts, clubs, and bookings
 
 An account belongs to a person, not to one club. Customers use the same global account to book with different clubs. Provider accounts gain access to individual club workspaces through memberships, and can switch between the clubs they belong to. A membership carries the workspace role (`OWNER`, `ADMIN`, or `COACH`) rather than duplicating the person's login for each club.
 
 - **Customers** create or sign in to a customer account from a club's booking page. Signing in is required before a booking can be submitted. The resulting club customer record is linked to the global account, so the customer can return to the booking page to view their receipt and club-specific booking history, then cancel or reschedule eligible sessions. New guest bookings and private management links are not supported; already-issued legacy links remain available only for their existing bookings.
 - **Owners** choose the owner account type at sign-up and create their first club workspace. They manage the club's services, locations, instructor roster, schedules, bookings, customers, and staff access.
-- **Coaches** create their own coach account first. A club owner then adds that existing account to the club and links its membership to the matching instructor profile. Every new coach roster entry or customer record must resolve to a registered account; creating an instructor profile alone does not grant sign-in access, and an owner does not create or share a coach password.
+- **Coaches** create their own coach account first. A club owner then adds that existing account to the club and links its membership to the matching instructor profile. A coach never joins a club themselves. Every new coach roster entry or customer record must resolve to a registered account; creating an instructor profile alone does not grant sign-in access, and an owner does not create or share a coach password. A coach can also create one practice of their own, for personal students who have nothing to do with a club.
+- **Club administrators** do not sign up. The club creates the login from its own workspace, and that account belongs to one club: it cannot be added to a second club, and it has no business switcher. Its profile leads with the club's name and its day-to-day tools.
 
 Club membership and customer membership are separate concerns: provider memberships grant workspace permissions, while each account-backed customer record holds that customer's club-specific booking, package, attendance, and payment context.
+
+## How lessons are paid for
+
+A workspace is either a **club or academy** or an **independent coach's practice**, chosen at sign-up and changeable in settings. Every booking records the arrangement it was made under, so changing the setting affects new bookings only.
+
+- In a club, the student pays the club. The club then records what it pays each coach, so both legs of the money path stay in one ledger.
+- In an independent practice, the student pays the coach directly.
+
+A recorded payment can be reversed. The record stays in the ledger marked as reversed, and the lesson or package returns to unpaid, so a correction is visible rather than silent.
+
+Because a club invests in introducing its coaches to its students, Courtly flags it to the club when a coach and a student who train together through that club also book privately outside it. Courtly reports; it does not block the booking, and it does not tell the coach or the student. The club records what it found and closes the flag.
 
 ## Requirements
 
@@ -94,6 +110,7 @@ Deploy the backend to Railway first, then point the Vercel frontend at the Railw
    | `NODE_ENV` | `production` |
    | `DEMO_ENABLED` | `false` (recommended) to prevent public demo-data growth; use `true` only for a monitored showcase |
    | `ADMIN_PASSWORD` | A long, random secret to unlock the platform admin console at `/admin`. Leave unset to disable the admin console entirely. |
+   | `GOOGLE_MAPS_API_KEY` | Optional. A Google Places API key enabling venue search. Leave unset to keep the paste-a-Maps-link fallback, which needs no key. |
 
    Do not set `PORT`; Railway injects it.
    `APP_ORIGIN` is added after Vercel assigns the frontend URL. It can remain unset for this initial health-only deployment because no browser will use the API yet.
@@ -134,6 +151,7 @@ Courtly ships a platform-owner console at `/admin`, separate from global custome
 ## MVP boundaries
 
 - Courtly reserves instructor time; it does not reserve an external court or room. Rented or approval-required venues stay pending until the provider secures them separately.
+- Venues can be looked up on Google Maps. Set `GOOGLE_MAPS_API_KEY` on the backend for live Places search; without it, pasting a Google Maps link still fills in the venue. The key stays server-side and never reaches the browser.
 - Lesson payments are tracked manually. No customer payment gateway or provider subscription checkout is connected.
 - Confirmations and reminders are queued as in-app records. Email, SMS, and automated WhatsApp delivery are not connected.
 - External calendar sync, route-based travel calculations, waitlists, and marketplace discovery are intentionally left for later integrations.

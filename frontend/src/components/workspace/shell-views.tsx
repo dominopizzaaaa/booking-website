@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import {
   ArrowRight,
   Bell,
@@ -8,6 +8,7 @@ import {
   CalendarDays,
   ChartNoAxesCombined,
   Check,
+  ChevronRight,
   Clock3,
   Copy,
   CreditCard,
@@ -21,6 +22,7 @@ import {
   Pencil,
   Plus,
   Settings2,
+  ShieldAlert,
   ShieldCheck,
   Ticket,
   UserRound,
@@ -31,8 +33,9 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { mutate } from '@/lib/api';
-import type { AuthSession, MembershipRole, Workspace, WorkspaceUser } from '@/lib/types';
-import { initials, shortDate } from '@/lib/utils';
+import { alertAppearance, alertPageSize, sortAlerts } from '@/lib/alerts';
+import type { AuthSession, MembershipRole, Notification, Workspace, WorkspaceUser } from '@/lib/types';
+import { initials, shortDate, time } from '@/lib/utils';
 
 export const exploreViewIds = [
   'calendar',
@@ -45,6 +48,7 @@ export const exploreViewIds = [
   'packages',
   'payments',
   'insights',
+  'integrity',
 ] as const;
 
 export type ExploreViewId = (typeof exploreViewIds)[number];
@@ -115,11 +119,12 @@ const exploreItems: ExploreItem[] = [
   { id: 'customers', label: 'Customers', description: 'Keep player details, notes, and lesson history together.', icon: Users, detail: data => `${data.customers.length} customer${data.customers.length === 1 ? '' : 's'}` },
   { id: 'services', label: 'Services', description: 'Shape the lessons customers can choose and book.', icon: Gift, detail: data => `${data.services.filter(service => service.active).length} active` },
   { id: 'locations', label: 'Locations', description: 'Manage venues, travel time, and approval rules.', icon: MapPin, detail: data => `${data.locations.filter(location => location.active).length} active` },
-  { id: 'team', label: 'Your team', description: 'Connect coaches and maintain your teaching roster.', icon: UsersRound, detail: data => `${data.instructors.filter(instructor => instructor.active).length} active` },
+  { id: 'team', label: 'My coaches', description: 'Add coaches to your roster and keep their details together.', icon: UsersRound, detail: data => `${data.instructors.filter(instructor => instructor.active).length} active` },
   { id: 'availability', label: 'Availability', description: 'Set teaching windows and protect time away.', icon: Clock3, detail: data => `${data.availability.length} weekly windows` },
   { id: 'packages', label: 'Lesson packages', description: 'Track lesson credits and customer commitments.', icon: Ticket, detail: data => `${data.packages.length} package${data.packages.length === 1 ? '' : 's'}` },
   { id: 'payments', label: 'Payments', description: 'Record offline receipts and follow unpaid lessons.', icon: CreditCard, detail: data => `${data.payments.length} recorded` },
   { id: 'insights', label: 'Insights', description: 'Understand attendance, lessons, and recorded receipts.', icon: ChartNoAxesCombined, detail: data => `${data.bookings.filter(booking => booking.status === 'COMPLETED').length} completed lessons` },
+  { id: 'integrity', label: 'Integrity', description: 'Review coaches and students training privately outside the club.', icon: ShieldAlert, detail: data => `${data.integrityFlags.filter(flag => flag.status === 'OPEN').length} open` },
 ];
 
 const exploreGroups: { title: string; ids: ExploreViewId[] }[] = [
@@ -127,6 +132,7 @@ const exploreGroups: { title: string; ids: ExploreViewId[] }[] = [
   { title: 'People', ids: ['customers', 'team'] },
   { title: 'Business setup', ids: ['services', 'locations'] },
   { title: 'Money & reporting', ids: ['packages', 'payments', 'insights'] },
+  { title: 'Oversight', ids: ['integrity'] },
 ];
 
 export function ExploreHub({ data, onNavigate }: { data: Workspace; onNavigate: (view: string) => void }) {
@@ -178,39 +184,50 @@ export function ExploreHub({ data, onNavigate }: { data: Workspace; onNavigate: 
   </section>;
 }
 
-function NotificationGroup({ title, notifications, unread }: { title: string; notifications: Workspace['notifications']; unread?: boolean }) {
-  if (!notifications.length) return null;
-  return <section className="workspace-alert-group" aria-labelledby={`alerts-${unread ? 'unread' : 'read'}-title`}>
-    <h2 id={`alerts-${unread ? 'unread' : 'read'}-title`} className="mb-3 flex items-center gap-2 text-[11px] uppercase tracking-[0.12em] text-stone-500">{title}<span className="rounded-full bg-[#edf1e8] px-2 py-0.5 text-[9px] text-[#718166]">{notifications.length}</span></h2>
-    <div className="workspace-alert-list overflow-hidden rounded-2xl border border-[#e3e8df] bg-white">
-      {notifications.map(notification => <article key={notification.id} className={`workspace-alert-item flex gap-4 border-b border-[#edf0e9] p-4 last:border-b-0 sm:p-5 ${unread ? 'bg-[#f8faf5]' : ''}`}>
-        <span className={`mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-full ${unread ? 'bg-[#e5eddb] text-[#5f7855]' : 'bg-stone-100 text-stone-400'}`}><Bell size={16} strokeWidth={1.6} /></span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-3"><h3 className={`text-xs ${unread ? 'font-semibold text-[#294735]' : 'font-medium text-stone-600'}`}>{notification.title}</h3>{unread && <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[#9a8a58]" aria-label="Unread" />}</div>
-          <p className="mt-1.5 text-xs leading-relaxed text-stone-500">{notification.message}</p>
-          <p className="mt-2 text-[9px] text-stone-400">{shortDate(notification.createdAt)} · {unread ? 'Unread' : 'Read'}</p>
-        </div>
-      </article>)}
-    </div>
-  </section>;
-}
-
-export function AlertsView({ data, refresh }: { data: Workspace; refresh: () => Promise<void> }) {
+/**
+ * Workspace alerts.
+ *
+ * Same shape as the customer inbox and for the same reason: an undifferentiated
+ * wall of bells makes a payment, a cancellation and a safeguard flag all look
+ * alike. Each alert carries a type that picks its icon, unread sit at the top
+ * with a wash behind them until opened, and the list shows a handful until
+ * asked for more. The full message and the way through to the booking live in
+ * the dialog.
+ */
+export function AlertsView({ data, refresh, onOpenBooking, onNavigate }: {
+  data: Workspace;
+  refresh: () => Promise<void>;
+  onOpenBooking?: (bookingId: string) => void;
+  onNavigate?: (view: string) => void;
+}) {
   const [markingRead, setMarkingRead] = useState(false);
-  const unread = data.notifications.filter(notification => !notification.read);
-  const read = data.notifications.filter(notification => notification.read);
-  async function markAllRead() {
+  const [showAll, setShowAll] = useState(false);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const ordered = useMemo(() => sortAlerts(data.notifications), [data.notifications]);
+  const unread = ordered.filter(notification => !notification.read);
+  const shown = showAll ? ordered : ordered.slice(0, alertPageSize);
+  const open = openId ? ordered.find(notification => notification.id === openId) ?? null : null;
+
+  async function markRead(ids?: string[]) {
     setMarkingRead(true);
     try {
-      await mutate('/notifications/read', 'PATCH');
+      await mutate('/notifications/read', 'PATCH', ids ? { ids } : undefined);
       await refresh();
-      toast.success('All updates marked as read');
+      if (!ids) toast.success('All updates marked as read');
     } catch (error) {
       toast.error((error as Error).message);
     } finally {
       setMarkingRead(false);
     }
   }
+
+  // Opening an alert is what marks it read, so the list responds to the tap
+  // rather than waiting for a separate "mark read" gesture.
+  function openAlert(notification: Notification) {
+    setOpenId(notification.id);
+    if (!notification.read) void markRead([notification.id]);
+  }
+
   return <section className="workspace-alerts mx-auto max-w-4xl" aria-labelledby="workspace-alerts-title">
     <header className="section-heading">
       <div>
@@ -218,9 +235,69 @@ export function AlertsView({ data, refresh }: { data: Workspace; refresh: () => 
         <h1 id="workspace-alerts-title" className="mt-2">Alerts</h1>
         <p className="mt-2 text-xs leading-relaxed text-stone-500">Booking activity from this workspace. External messaging is not connected.</p>
       </div>
-      {unread.length > 0 && <Button variant="outline" size="sm" onClick={() => void markAllRead()} disabled={markingRead}>{markingRead ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}Mark all as read</Button>}
+      {unread.length > 0 && <Button variant="outline" size="sm" onClick={() => void markRead()} disabled={markingRead}>{markingRead ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}Mark all as read</Button>}
     </header>
-    {data.notifications.length ? <div className="space-y-7"><NotificationGroup title="New" notifications={unread} unread /><NotificationGroup title="Earlier" notifications={read} /></div> : <div className="workspace-alerts-empty panel py-16 text-center"><span className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-[#edf2e7] text-[#718568]"><Bell size={21} /></span><h2 className="mt-4 text-[#294735]">You’re all caught up</h2><p className="mt-2 text-xs text-stone-500">New booking activity will appear here.</p></div>}
+
+    {ordered.length ? <>
+      <div className="workspace-alert-list overflow-hidden rounded-2xl border border-[#e3e8df] bg-white">
+        {shown.map(notification => {
+          const appearance = alertAppearance(notification);
+          const Icon = appearance.icon;
+          return <button
+            key={notification.id}
+            type="button"
+            onClick={() => openAlert(notification)}
+            aria-label={`${notification.read ? 'Read' : 'Unread'} alert: ${notification.title}`}
+            className={`workspace-alert-item flex w-full gap-4 border-b border-[#edf0e9] p-4 text-left transition last:border-b-0 hover:bg-[#fafbf7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-700 sm:p-5 ${notification.read ? '' : 'bg-[#f6faf1]'}`}
+          >
+            <span className={`relative mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-full ${appearance.tone}`}>
+              <Icon size={16} strokeWidth={1.6} />
+              {!notification.read && <span aria-hidden="true" className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-white bg-[#9a8a58]" />}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="flex flex-wrap items-center gap-2">
+                <span className={`text-xs ${notification.read ? 'font-medium text-stone-600' : 'font-semibold text-[#294735]'}`}>{notification.title}</span>
+                {notification.actionNeeded && <span className="badge pending !text-[9px]">Action needed</span>}
+              </span>
+              <span className="mt-1.5 line-clamp-1 block text-xs leading-relaxed text-stone-500">{notification.message}</span>
+              <span className="mt-2 block text-[9px] text-stone-400">{appearance.label} · {shortDate(notification.createdAt)}</span>
+            </span>
+            <ChevronRight size={15} className="mt-1 shrink-0 text-stone-300" aria-hidden="true" />
+          </button>;
+        })}
+      </div>
+      {ordered.length > alertPageSize && <Button variant="outline" size="sm" className="mt-4 w-full" onClick={() => setShowAll(value => !value)}>
+        {showAll ? 'Show fewer' : `Show all ${ordered.length} alerts`}
+      </Button>}
+    </> : <div className="workspace-alerts-empty panel py-16 text-center"><span className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-[#edf2e7] text-[#718568]"><Bell size={21} /></span><h2 className="mt-4 text-[#294735]">You&rsquo;re all caught up</h2><p className="mt-2 text-xs text-stone-500">New booking activity will appear here.</p></div>}
+
+    {open && <Dialog open onOpenChange={value => { if (!value) setOpenId(null); }}>
+      <DialogContent className="max-w-md">
+        {(() => {
+          const appearance = alertAppearance(open);
+          const Icon = appearance.icon;
+          return <>
+            <div className="flex items-start gap-3.5">
+              <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-2xl ${appearance.tone}`}><Icon size={20} strokeWidth={1.7} /></span>
+              <div className="min-w-0 flex-1">
+                <DialogTitle className="text-lg font-semibold tracking-tight text-[#294735]">{open.title}</DialogTitle>
+                <DialogDescription className="mt-1.5 text-[11px] text-stone-400">
+                  {appearance.label} · {shortDate(open.createdAt)} at {time(open.createdAt)}
+                </DialogDescription>
+              </div>
+            </div>
+            <p className="mt-5 text-sm leading-relaxed text-stone-600">{open.message}</p>
+            {open.actionNeeded && <p className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-[#f6ebd5] px-3 py-1 text-[10px] font-semibold text-[#94793c]">This one needs you</p>}
+            <div className="mt-6 flex flex-wrap gap-2 border-t border-[#edf0e8] pt-5">
+              {open.bookingId && onOpenBooking && <Button onClick={() => { const id = open.bookingId!; setOpenId(null); onOpenBooking(id); }}>Go to this booking<ArrowRight size={14} /></Button>}
+              {appearance.kind === 'integrity' && onNavigate && <Button variant="outline" onClick={() => { setOpenId(null); onNavigate('integrity'); }}>Open Integrity<ArrowRight size={14} /></Button>}
+              {appearance.kind === 'payment' && onNavigate && <Button variant="outline" onClick={() => { setOpenId(null); onNavigate('payments'); }}>Open Payments<ArrowRight size={14} /></Button>}
+              <Button variant="ghost" onClick={() => setOpenId(null)}>Close</Button>
+            </div>
+          </>;
+        })()}
+      </DialogContent>
+    </Dialog>}
   </section>;
 }
 
@@ -231,12 +308,38 @@ type ProfileViewProps = {
   onBusinessSettings: () => void;
   onHelp: () => void;
   onSignOut: () => void;
+  onNavigate?: (view: string) => void;
 };
 
-export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusinessSettings, onHelp, onSignOut }: ProfileViewProps) {
-  const canManageBusiness = data.membership.role !== 'COACH';
+/** Tools a club account expects to reach from its own profile page. */
+const clubProfileShortcuts: ExploreViewId[] = [
+  'team', 'calendar', 'bookings', 'customers', 'services', 'locations', 'payments', 'integrity',
+];
+
+/**
+ * Profile.
+ *
+ * Whose profile this is depends on the account. A club-admin login is created
+ * by the club and operates that one club: it is not a person's portable
+ * identity, so it leads with the club's name, drops the business switcher, and
+ * brings the club's day-to-day tools onto the page rather than hiding them
+ * behind Explore. An owner or coach keeps a personal profile that travels with
+ * them between the clubs that have added them.
+ */
+export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusinessSettings, onHelp, onSignOut, onNavigate }: ProfileViewProps) {
+  const role = data.membership.role;
+  const canManageBusiness = role !== 'COACH';
+  // The server decides: a club-admin membership is the club's own account.
+  const clubAccount = data.clubAccount;
+  const isClub = data.business.kind !== 'SOLO';
   const bookingReadiness = getBookingReadiness(data);
   const bookingPath = `/book/${encodeURIComponent(data.business.slug)}`;
+  const openFlags = data.integrityFlags.filter(flag => flag.status === 'OPEN').length;
+  const awaitingCoach = data.bookings.filter(booking => booking.coachAcceptance === 'PENDING').length;
+  const shortcuts = clubProfileShortcuts
+    .map(id => exploreItems.find(item => item.id === id))
+    .filter((item): item is ExploreItem => !!item);
+
   async function copyBookingLink() {
     try {
       await navigator.clipboard.writeText(`${window.location.origin}${bookingPath}`);
@@ -245,36 +348,101 @@ export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusiness
       toast.error('Copy is unavailable. Open your booking page and copy the address.');
     }
   }
+
   return <section className="workspace-profile mx-auto max-w-5xl" aria-labelledby="workspace-profile-title">
     <header className="workspace-profile-header mb-6 rounded-2xl border border-[#e1e7dd] bg-white p-5 sm:p-7">
       <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
-        <span className="grid h-20 w-20 shrink-0 place-items-center rounded-full bg-[#e8dccc] text-xl font-semibold text-[#887052]">{initials(data.user.name)}</span>
+        <span className={`grid h-20 w-20 shrink-0 place-items-center rounded-${clubAccount ? '2xl' : 'full'} ${clubAccount ? 'bg-[#e6eedd] text-[#5f7a51]' : 'bg-[#e8dccc] text-[#887052]'} text-xl font-semibold`}>
+          {initials(clubAccount ? data.business.name : data.user.name)}
+        </span>
         <div className="min-w-0 flex-1">
-          <p className="eyebrow">Personal profile</p>
-          <h1 id="workspace-profile-title" className="mt-2 truncate">{data.user.name}</h1>
-          <p className="mt-1 break-all text-xs text-stone-500">{data.user.email}</p>
-          <div className="mt-3 flex flex-wrap gap-2"><span className="badge">{data.membership.role === 'OWNER' ? 'Workspace owner' : data.membership.role === 'ADMIN' ? 'Workspace admin' : 'Coach'}</span>{data.user.phone && <span className="badge bg-stone-100! text-stone-500!">{data.user.phone}</span>}</div>
+          <p className="eyebrow">{clubAccount ? (isClub ? 'Club account' : 'Business account') : 'Personal profile'}</p>
+          <h1 id="workspace-profile-title" className="mt-2 truncate">{clubAccount ? data.business.name : data.user.name}</h1>
+          <p className="mt-1 break-all text-xs text-stone-500">{clubAccount ? (data.business.tagline || data.business.email) : data.user.email}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <span className="badge">{role === 'OWNER' ? 'Workspace owner' : role === 'ADMIN' ? 'Club administrator' : 'Coach'}</span>
+            {clubAccount && <span className="badge bg-stone-100! text-stone-500!">Managed by {data.business.name}</span>}
+            {!clubAccount && data.user.phone && <span className="badge bg-stone-100! text-stone-500!">{data.user.phone}</span>}
+          </div>
+          {clubAccount && <p className="mt-3 max-w-xl text-[11px] leading-relaxed text-stone-500">
+            This login belongs to {data.business.name}, not to one person. It is created by the club and works with this club alone.
+          </p>}
         </div>
-        <Button variant="outline" onClick={onEditProfile}><Pencil size={14} />Edit personal profile</Button>
+        <Button variant="outline" onClick={onEditProfile}><Pencil size={14} />{clubAccount ? 'Edit contact details' : 'Edit personal profile'}</Button>
       </div>
     </header>
+
+    {clubAccount && onNavigate && <section className="mb-5" aria-labelledby="workspace-profile-tools">
+      <h2 id="workspace-profile-tools" className="mb-3 text-sm text-[#405744]">Running {data.business.name}</h2>
+      {(openFlags > 0 || awaitingCoach > 0) && <div className="mb-3 flex flex-wrap gap-2">
+        {awaitingCoach > 0 && <button type="button" className="badge pending" onClick={() => onNavigate('bookings')}>{awaitingCoach} lesson{awaitingCoach === 1 ? '' : 's'} awaiting a coach</button>}
+        {openFlags > 0 && <button type="button" className="badge pending" onClick={() => onNavigate('integrity')}>{openFlags} flag{openFlags === 1 ? '' : 's'} to review</button>}
+      </div>}
+      <div className="grid gap-2 sm:grid-cols-2">
+        {shortcuts.map(item => {
+          const Icon = item.icon;
+          return <button
+            key={item.id}
+            type="button"
+            className="flex min-h-16 items-center gap-3 rounded-xl border border-[#e3e8df] bg-white p-3 text-left transition hover:border-[#cbd8c5] hover:bg-[#f8faf6]"
+            onClick={() => onNavigate(item.id)}
+          >
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-[#edf2e7] text-[#66805a]"><Icon size={17} strokeWidth={1.6} /></span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-xs font-semibold text-[#344b39]">{item.label}</span>
+              <span className="mt-1 block text-[10px] text-stone-500">{item.detail(data)}</span>
+            </span>
+            <ChevronRight size={14} className="shrink-0 text-stone-300" />
+          </button>;
+        })}
+      </div>
+    </section>}
+
     <div className="workspace-profile-grid grid items-start gap-5 lg:grid-cols-[1.15fr_0.85fr]">
       <div className="space-y-5">
         <section className="panel overflow-hidden">
-          <div className="panel-heading"><div className="flex items-center gap-2"><Building2 size={17} className="text-[#839677]" /><h2 className="text-[#294735]">Current business</h2></div><span className="badge">{data.business.isDemo ? 'Demo workspace' : data.membership.role.toLowerCase()}</span></div>
+          <div className="panel-heading"><div className="flex items-center gap-2"><Building2 size={17} className="text-[#839677]" /><h2 className="text-[#294735]">{clubAccount ? 'This club' : isClub ? 'My clubs & academies' : 'My practice'}</h2></div><span className="badge">{data.business.isDemo ? 'Demo workspace' : role.toLowerCase()}</span></div>
           <div className="px-5 pb-5 sm:px-6 sm:pb-6">
             <div className="flex items-center gap-3 rounded-xl bg-[#f5f7f1] p-4"><span className="business-avatar !h-11 !w-11 shrink-0">{initials(data.business.name)}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-[#294735]">{data.business.name}</p><p className="mt-1 text-[10px] text-stone-500">{data.business.tagline || 'Your coaching business, beautifully connected.'}</p></div></div>
-            <div className={`mt-4 grid gap-2 ${data.membership.role !== 'COACH' ? 'sm:grid-cols-2' : ''}`}><Button variant="outline" onClick={onSwitchWorkspace}><UsersRound size={14} />Switch business</Button>{data.membership.role !== 'COACH' && <Button variant="outline" onClick={onBusinessSettings}><Settings2 size={14} />Business settings</Button>}</div>
+            {!clubAccount && <p className="mt-3 text-[11px] leading-relaxed text-stone-500">
+              {data.memberships.length > 1
+                ? `You coach at ${data.memberships.length} clubs or academies. A club adds you to its roster; you cannot join one yourself.`
+                : 'A club or academy adds you to its roster. You cannot join one yourself.'}
+            </p>}
+            <div className={`mt-4 grid gap-2 ${!clubAccount && canManageBusiness ? 'sm:grid-cols-2' : ''}`}>
+              {/* A club account operates one club, so there is nothing to
+                  switch between and the switcher would only confuse. */}
+              {!clubAccount && <Button variant="outline" onClick={onSwitchWorkspace}><UsersRound size={14} />{isClub ? 'Switch club or academy' : 'Switch business'}</Button>}
+              {canManageBusiness && <Button variant="outline" onClick={onBusinessSettings}><Settings2 size={14} />{clubAccount ? 'Club settings' : 'Business settings'}</Button>}
+            </div>
           </div>
         </section>
         {canManageBusiness && <section className="panel overflow-hidden">
           <div className="panel-heading"><div className="flex items-center gap-2"><Link2 size={17} className="text-[#839677]" /><h2 className="text-[#294735]">Your booking link</h2></div><span className="badge">{bookingReadiness.publicReady ? 'Ready' : 'Setup needed'}</span></div>
           <div className="px-5 pb-5 sm:px-6 sm:pb-6"><p className="text-xs leading-relaxed text-stone-500">{bookingReadiness.publicReady ? 'Share this page so customers can choose a service and find an available lesson.' : 'Preview the page now. Finish your location, service assignment, and matching availability before sharing it.'}</p><div className="mt-4 flex min-w-0 items-center gap-2 rounded-xl border border-[#e3e8df] bg-[#fafbf8] p-3"><span className="min-w-0 flex-1 truncate text-xs text-stone-600">{bookingPath}</span>{bookingReadiness.publicReady && <Button size="icon" variant="ghost" aria-label="Copy booking link" onClick={() => void copyBookingLink()}><Copy size={14} /></Button>}</div><div className="mt-3 grid grid-cols-1 gap-2 sm:flex">{bookingReadiness.publicReady && <Button size="sm" onClick={() => void copyBookingLink()}><Copy size={13} />Copy link</Button>}<Button size="sm" variant="outline" asChild><a href={bookingPath} target="_blank" rel="noreferrer"><ExternalLink size={13} />Preview booking page</a></Button></div></div>
         </section>}
+        {canManageBusiness && isClub && <section className="panel overflow-hidden">
+          <div className="panel-heading"><div className="flex items-center gap-2"><ShieldCheck size={17} className="text-[#839677]" /><h2 className="text-[#294735]">How money moves</h2></div></div>
+          <div className="px-5 pb-5 text-xs leading-relaxed text-stone-500 sm:px-6 sm:pb-6">
+            <p>Every lesson booked through {data.business.name} is paid to the club. The club then records what it pays each coach, so the club&rsquo;s books stay complete and a coach is never paid twice for the same lesson.</p>
+            {onNavigate && <Button size="sm" variant="outline" className="mt-3" onClick={() => onNavigate('payments')}><CreditCard size={13} />Open Payments<ArrowRight size={13} /></Button>}
+          </div>
+        </section>}
       </div>
       <aside className="space-y-5">
-        <section className="panel overflow-hidden"><div className="panel-heading"><h2 className="text-[#294735]">Account & support</h2></div><div className="workspace-profile-actions px-3 pb-3"><button type="button" className="nav-link !min-h-11" onClick={onEditProfile}><UserRound size={16} />Personal details<ArrowRight size={13} className="ml-auto" /></button><button type="button" className="nav-link !min-h-11" onClick={onHelp}><HelpCircle size={16} />A little help<ArrowRight size={13} className="ml-auto" /></button><button type="button" className="nav-link !min-h-11 text-[#8b625c]!" onClick={onSignOut}><LogOut size={16} />Sign out</button></div></section>
-        {data.business.isDemo && <section className="rounded-2xl border border-[#e1e8d6] bg-[#eef3e6] p-5"><ShieldCheck size={21} className="text-[#7c9169]" /><h2 className="mt-3 text-[#294735]">A private place to explore</h2><p className="mt-2 text-xs leading-relaxed text-[#77866d]">Your changes stay in this demo workspace. When you’re ready, create a business of your own.</p><Button className="mt-4 w-full" asChild><a href="/signup">Create your own workspace</a></Button></section>}
+        <section className="panel overflow-hidden"><div className="panel-heading"><h2 className="text-[#294735]">Account &amp; support</h2></div><div className="workspace-profile-actions px-3 pb-3"><button type="button" className="nav-link !min-h-11" onClick={onEditProfile}><UserRound size={16} />{clubAccount ? 'Contact details' : 'Personal details'}<ArrowRight size={13} className="ml-auto" /></button><button type="button" className="nav-link !min-h-11" onClick={onHelp}><HelpCircle size={16} />A little help<ArrowRight size={13} className="ml-auto" /></button><button type="button" className="nav-link !min-h-11 text-[#8b625c]!" onClick={onSignOut}><LogOut size={16} />Sign out</button></div></section>
+        {role === 'COACH' && onNavigate && <section className="panel overflow-hidden">
+          <div className="panel-heading"><h2 className="text-[#294735]">My clubs &amp; academies</h2></div>
+          <div className="px-5 pb-5 sm:px-6 sm:pb-6">
+            <ul className="space-y-2">{data.memberships.map(membership => <li key={membership.id} className="flex items-center gap-2.5 rounded-xl bg-[#f5f7f1] p-3">
+              <span className="business-avatar !h-8 !w-8 shrink-0 !text-[10px]">{initials(membership.business.name)}</span>
+              <span className="min-w-0 flex-1 truncate text-xs text-[#344b39]">{membership.business.name}</span>
+              {membership.businessId === data.business.id && <span className="badge !text-[9px]">Current</span>}
+            </li>)}</ul>
+            <p className="mt-3 text-[10px] leading-relaxed text-stone-500">A club or academy adds you to its roster. You cannot join one yourself.</p>
+          </div>
+        </section>}
+        {data.business.isDemo && <section className="rounded-2xl border border-[#e1e8d6] bg-[#eef3e6] p-5"><ShieldCheck size={21} className="text-[#7c9169]" /><h2 className="mt-3 text-[#294735]">A private place to explore</h2><p className="mt-2 text-xs leading-relaxed text-[#77866d]">Your changes stay in this demo workspace. When you&rsquo;re ready, create a business of your own.</p><Button className="mt-4 w-full" asChild><a href="/signup">Create your own workspace</a></Button></section>}
       </aside>
     </div>
   </section>;

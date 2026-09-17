@@ -16,6 +16,8 @@ import {
   ShieldCheck,
   Trash2,
   Unplug,
+  CalendarClock,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -73,6 +75,95 @@ function timezoneLabel(timezone: string) {
   } catch {
     return timezone;
   }
+}
+
+/**
+ * The coach's own protection window.
+ *
+ * Rescheduling is a negotiation, and a coach who has already turned down other
+ * work should not be asked to renegotiate the night before. This sets how late
+ * a reschedule may still be raised or accepted for that coach's sessions. The
+ * club's cancellation notice is a floor, so whichever is stricter applies.
+ */
+function RescheduleWindow({
+  instructor,
+  isCoach,
+  data,
+  refresh,
+}: ManagementProps & { instructor: { id: string; name: string; rescheduleNoticeHours: number }; isCoach: boolean }) {
+  const [hours, setHours] = useState(String(instructor.rescheduleNoticeHours));
+  const [busy, setBusy] = useState(false);
+  const effective = Math.max(Number(hours) || 0, data.business.cancellationHours);
+  const dirty = Number(hours) !== instructor.rescheduleNoticeHours;
+  // A coach sets their own window; an owner or admin can set it for anyone on
+  // the roster. Nobody else can.
+  const canEdit = isCoach || data.membership.role !== "COACH";
+
+  async function save() {
+    const value = Number(hours);
+    if (!Number.isInteger(value) || value < 0 || value > 720) {
+      toast.error("Enter a whole number of hours between 0 and 720.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await mutate(
+        isCoach ? "/instructors/me" : `/instructors/${instructor.id}`,
+        "PATCH",
+        { rescheduleNoticeHours: value },
+      );
+      await refresh();
+      toast.success("Reschedule window saved");
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="mb-6 rounded-xl border border-[#e5e9e0] bg-white p-4 sm:p-5">
+      <div className="flex items-start gap-3">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-[#edf2e7] text-[#66805a]">
+          <CalendarClock size={17} strokeWidth={1.6} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm text-[#294735]">Latest time to reschedule</h2>
+          <p className="mt-1 text-[11px] leading-relaxed text-stone-500">
+            {isCoach
+              ? "How close to a session someone may still ask you to move it. Past this point, nobody can raise or accept a change without speaking to you."
+              : `How close to a session someone may still ask ${instructor.name} to move it.`}
+          </p>
+          <div className="mt-3 flex flex-wrap items-end gap-3">
+            <div className="w-32">
+              <label htmlFor={`reschedule-window-${instructor.id}`}>Hours before</label>
+              <input
+                id={`reschedule-window-${instructor.id}`}
+                type="number"
+                min="0"
+                max="720"
+                step="1"
+                value={hours}
+                disabled={!canEdit || busy}
+                onChange={(event) => setHours(event.target.value)}
+              />
+            </div>
+            {canEdit && (
+              <Button size="sm" variant="outline" disabled={busy || !dirty} onClick={() => void save()}>
+                {busy ? <Loader2 size={13} className="animate-spin" /> : null}
+                Save window
+              </Button>
+            )}
+          </div>
+          <p className="mt-2 text-[10px] leading-relaxed text-stone-500">
+            {effective > (Number(hours) || 0)
+              ? `This club requires ${data.business.cancellationHours} hours' notice, so ${effective} hours applies.`
+              : `Requests close ${effective} hours before a session starts.`}
+          </p>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 export function AvailabilityView({ data, refresh }: ManagementProps) {
@@ -149,6 +240,7 @@ export function AvailabilityView({ data, refresh }: ManagementProps) {
           {timezoneLabel(data.business.timezone)}
         </p>
       </div>
+      {selectedInstructor && <RescheduleWindow instructor={selectedInstructor} isCoach={isCoach} data={data} refresh={refresh} />}
       <div className="grid items-start gap-5 xl:grid-cols-[1.45fr_1fr]">
         <section className="panel overflow-hidden">
           <div className="panel-heading">
@@ -733,6 +825,7 @@ export function SettingsView({ data, refresh }: ManagementProps) {
               color: text(form, "color"),
               tagline: text(form, "tagline"),
               cancellationHours: numeric(form, "cancellationHours"),
+              kind: text(form, "business-kind"),
             })
           }
         >
@@ -774,11 +867,30 @@ export function SettingsView({ data, refresh }: ManagementProps) {
               required
               defaultValue={business.cancellationHours}
             />
+            <Field label="How lessons are paid for" name="business-kind" wide>
+              <select
+                id="business-kind"
+                name="business-kind"
+                defaultValue={business.kind}
+                required
+              >
+                <option value="CLUB">
+                  Club or academy · students pay the club, the club pays its coaches
+                </option>
+                <option value="SOLO">
+                  Independent coach · students pay the coach directly
+                </option>
+              </select>
+            </Field>
           </div>
           <p className="text-[11px] leading-relaxed text-stone-500">
             Customers can self-cancel until this many hours before their lesson.
             This updates the policy; it does not cancel or change existing
             lessons.
+          </p>
+          <p className="text-[11px] leading-relaxed text-stone-500">
+            Lessons keep the money path they were booked under, so changing this
+            affects new bookings only and never rewrites your ledger.
           </p>
         </Editor>
       )}

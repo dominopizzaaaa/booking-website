@@ -590,12 +590,19 @@ describe.sequential('Global account authentication and workspace memberships', (
       name: 'Assistant Coach', email: staffEmail, accountType: 'COACH',
       passwordHash: await bcrypt.hash(password, 4),
     });
+    // A coach keeps one portable personal account across the clubs that add
+    // them, so an existing coach membership elsewhere is no obstacle here.
     const otherMembership = await prisma.membership.create({
-      data: { userId: staff.id, businessId: otherTenant.business.id, role: 'ADMIN' },
+      data: { userId: staff.id, businessId: otherTenant.business.id, role: 'COACH' },
     });
     await owner.agent.post('/api/staff').send({
       email: `${randomUUID()}@example.test`, role: 'ADMIN', instructorId: null,
     }).expect(404);
+    // A club-admin login belongs to one club alone, so an account that
+    // already works somewhere else cannot be made this club's admin.
+    await owner.agent.post('/api/staff').send({
+      email: staffEmail, role: 'ADMIN', instructorId: null,
+    }).expect(409);
     const created = await owner.agent.post('/api/staff').send({
       email: staffEmail, role: 'COACH', instructorId: null,
     }).expect(201);
@@ -633,7 +640,14 @@ describe.sequential('Global account authentication and workspace memberships', (
     await coach.post('/api/auth/login').send({ email: staffEmail, password }).expect(200);
     await coach.get('/api/staff').expect(403);
     await coach.post('/api/auth/switch-workspace').send({ membershipId: created.body.id }).expect(200);
-    await owner.agent.patch(`/api/staff/${created.body.id}`).send({ role: 'ADMIN', instructorId: null }).expect(200);
+    // The same single-club rule applies to a promotion, not only to a new
+    // membership: this account still belongs to another club. The other club's
+    // membership is untouched by the refusal.
+    await owner.agent.patch(`/api/staff/${created.body.id}`).send({ role: 'ADMIN', instructorId: null }).expect(409);
+    expect(await prisma.membership.findUniqueOrThrow({ where: { id: otherMembership.id } }))
+      .toMatchObject({ role: 'COACH', businessId: otherTenant.business.id });
+    // Detaching the roster link is still allowed for a coach membership.
+    await owner.agent.patch(`/api/staff/${created.body.id}`).send({ role: 'COACH', instructorId: null }).expect(200);
     await owner.agent.delete(`/api/staff/${created.body.id}`).expect(200);
     await coach.get('/api/workspace').expect(403);
     expect(await prisma.membership.findUnique({ where: { id: created.body.id } })).toBeNull();
@@ -848,15 +862,21 @@ describe.sequential('Customer account notifications', () => {
     await request(app).patch(`/api/bookings/${providerBookingId}`).set('Cookie', f.cookie)
       .send({ status: 'CONFIRMED' }).expect(200);
     await prisma.location.update({ where: { id: f.location.id }, data: { requiresApproval: false } });
+    // Rescheduling is a two-sided negotiation: the club proposes, the customer
+    // accepts, and only then does the session actually move.
     const movedStart = f.starts.plus({ days: 1 });
-    await request(app).post(`/api/bookings/${providerBookingId}/reschedule`).set('Cookie', f.cookie)
-      .send({ startAt: movedStart.toISO() }).expect(200);
+    const proposal = await request(app).post(`/api/bookings/${providerBookingId}/reschedule-requests`)
+      .set('Cookie', f.cookie).send({ startAt: movedStart.toISO() }).expect(201);
+    await request(app).post(`/api/account/reschedule-requests/${proposal.body.id}/accept`)
+      .set('Cookie', session.cookie).send({}).expect(200);
     const beforeNoOp = await Promise.all([
       prisma.accountNotification.count({ where: { userId: account.id } }),
       prisma.notification.count({ where: { businessId: f.business.id } }),
     ]);
-    await request(app).post(`/api/bookings/${providerBookingId}/reschedule`).set('Cookie', f.cookie)
-      .send({ startAt: movedStart.toUTC().toISO() }).expect(200);
+    // Proposing the time the session already holds is refused outright, so it
+    // cannot produce a second, meaningless round of alerts.
+    await request(app).post(`/api/bookings/${providerBookingId}/reschedule-requests`)
+      .set('Cookie', f.cookie).send({ startAt: movedStart.toUTC().toISO() }).expect(400);
     expect(await Promise.all([
       prisma.accountNotification.count({ where: { userId: account.id } }),
       prisma.notification.count({ where: { businessId: f.business.id } }),
@@ -888,10 +908,10 @@ describe.sequential('Customer account notifications', () => {
       .set('Cookie', session.cookie).send({}).expect(200);
 
     const alerts = await prisma.accountNotification.findMany({ where: { userId: account.id } });
-    expect(alerts).toHaveLength(10);
+    expect(alerts).toHaveLength(11);
     expect(alerts.map(alert => alert.type)).toEqual(expect.arrayContaining([
       'BOOKING_REQUESTED', 'BOOKING_CONFIRMED', 'BOOKING_PENDING', 'BOOKING_CONFIRMED',
-      'BOOKING_RESCHEDULED', 'BOOKING_COMPLETED', 'BOOKING_CREATED',
+      'RESCHEDULE_REQUESTED', 'BOOKING_RESCHEDULED', 'BOOKING_COMPLETED', 'BOOKING_CREATED',
       'BOOKING_CANCELLED', 'BOOKING_CREATED', 'BOOKING_CANCELLED',
     ]));
     for (const alert of alerts) expect(alert.message).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
@@ -899,7 +919,7 @@ describe.sequential('Customer account notifications', () => {
       .toContain(f.starts.setLocale('en-SG').toFormat("ccc, d LLL yyyy 'at' h:mm a"));
     expect(alerts.find(alert => alert.type === 'BOOKING_RESCHEDULED')?.message)
       .toContain(f.starts.plus({ days: 1 }).setLocale('en-SG').toFormat("ccc, d LLL yyyy 'at' h:mm a"));
-    expect(alerts.filter(alert => alert.bookingId === providerBookingId)).toHaveLength(6);
+    expect(alerts.filter(alert => alert.bookingId === providerBookingId)).toHaveLength(7);
     const pending = alerts.find(alert => alert.bookingId === providerBookingId && alert.type === 'BOOKING_PENDING')!;
     expect(pending).toMatchObject({ title: 'Booking awaiting confirmation', actionNeeded: false });
     expect(pending.message).toContain('pending confirmation');
@@ -915,7 +935,7 @@ describe.sequential('Customer account notifications', () => {
     expect(customerCancellation).toMatchObject({ actionNeeded: false, read: false });
     expect(customerCancellation.message).toContain('You cancelled');
     // The separate provider workspace stream is retained alongside account alerts.
-    expect(await prisma.notification.count({ where: { businessId: f.business.id } })).toBe(6);
+    expect(await prisma.notification.count({ where: { businessId: f.business.id } })).toBe(7);
   });
 
   it('marks a reschedule pending when venue confirmation is required without claiming customer action is needed', async () => {
@@ -929,9 +949,15 @@ describe.sequential('Customer account notifications', () => {
     const bookingId = created.body.bookings[0].id as string;
     await prisma.location.update({ where: { id: f.location.id }, data: { requiresApproval: true } });
 
-    const moved = await request(app).post(`/api/bookings/${bookingId}/reschedule`).set('Cookie', f.cookie)
-      .send({ startAt: f.starts.plus({ days: 1 }).toISO() }).expect(200);
-    expect(moved.body.status).toBe('PENDING');
+    const proposal = await request(app).post(`/api/bookings/${bookingId}/reschedule-requests`)
+      .set('Cookie', f.cookie).send({ startAt: f.starts.plus({ days: 1 }).toISO() }).expect(201);
+    const moved = await request(app).post(`/api/reschedule-requests/${proposal.body.id}/accept`)
+      .set('Cookie', f.cookie).send({}).expect(403);
+    // Only the customer can accept a proposal the provider side raised.
+    const accepted = await request(app).post(`/api/account/reschedule-requests/${proposal.body.id}/accept`)
+      .set('Cookie', session.cookie).send({}).expect(200);
+    expect(accepted.body.booking.status).toBe('PENDING');
+    void moved;
     const alert = await prisma.accountNotification.findFirstOrThrow({
       where: { userId: account.id, bookingId, type: 'BOOKING_RESCHEDULED' },
     });

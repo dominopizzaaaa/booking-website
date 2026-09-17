@@ -318,8 +318,19 @@ describe.sequential('Public API security regressions', () => {
     expect(strangerHistory.body).toEqual({ bookings: [] });
     await request(app).post(`/api/account/bookings/${participantId}/cancel`)
       .set('Cookie', stranger.cookie).send({}).expect(404);
-    await request(app).post(`/api/account/bookings/${participantId}/reschedule`)
+    await request(app).post(`/api/account/bookings/${participantId}/reschedule-requests`)
       .set('Cookie', stranger.cookie).send({ startAt: f.starts.plus({ days: 1 }).toISO()! }).expect(404);
+
+    // A stranger must not be able to answer a proposal on someone else's
+    // booking either, now that rescheduling is a two-sided negotiation.
+    const proposal = await request(app).post(`/api/bookings/${created.body.bookings[0].id}/reschedule-requests`)
+      .set('Cookie', f.cookie).send({ startAt: f.starts.plus({ days: 1 }).toISO()! }).expect(201);
+    await request(app).post(`/api/account/reschedule-requests/${proposal.body.id}/accept`)
+      .set('Cookie', stranger.cookie).send({}).expect(404);
+    await request(app).post(`/api/account/reschedule-requests/${proposal.body.id}/decline`)
+      .set('Cookie', stranger.cookie).send({}).expect(404);
+    expect(await prisma.rescheduleRequest.findUniqueOrThrow({ where: { id: proposal.body.id } }))
+      .toMatchObject({ status: 'PENDING' });
 
     expect(await prisma.participant.findUniqueOrThrow({ where: { id: participantId } })).toMatchObject({ cancelledAt: null });
     expect(await prisma.booking.findUniqueOrThrow({ where: { id: created.body.bookings[0].id } })).toMatchObject({
@@ -327,7 +338,7 @@ describe.sequential('Public API security regressions', () => {
     });
   });
 
-  it('accepts only startAt when an account reschedules and preserves catalog identity', async () => {
+  it('accepts only startAt and a message when an account proposes a new time, and moves nothing until the provider accepts', async () => {
     const { cookie } = await accountSession();
     const created = await request(app).post(`/api/public/${f.business.slug}/bookings`)
       .set('Cookie', cookie).send(publicInputFor(f)).expect(201);
@@ -341,7 +352,7 @@ describe.sequential('Public API security regressions', () => {
     ] as const;
 
     for (const [field, value] of forbiddenFields) {
-      await request(app).post(`/api/account/bookings/${participantId}/reschedule`)
+      await request(app).post(`/api/account/bookings/${participantId}/reschedule-requests`)
         .set('Cookie', cookie).send({ startAt: movedStart, [field]: value }).expect(400);
     }
     expect(await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } })).toMatchObject({
@@ -349,9 +360,22 @@ describe.sequential('Public API security regressions', () => {
       startAt: f.starts.toJSDate(),
     });
 
-    const moved = await request(app).post(`/api/account/bookings/${participantId}/reschedule`)
-      .set('Cookie', cookie).send({ startAt: movedStart }).expect(200);
-    expect(moved.body.booking).toMatchObject({
+    // Raising a request records the proposal and leaves the session alone.
+    const requested = await request(app).post(`/api/account/bookings/${participantId}/reschedule-requests`)
+      .set('Cookie', cookie).send({ startAt: movedStart }).expect(201);
+    expect(requested.body.rescheduleRequest).toMatchObject({
+      status: 'PENDING', requestedByRole: 'CUSTOMER', proposedStartAt: f.starts.plus({ days: 1 }).toUTC().toISO(),
+    });
+    expect(await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } }))
+      .toMatchObject({ startAt: f.starts.toJSDate() });
+
+    // The customer cannot accept their own request; the provider side does.
+    const requestId = requested.body.rescheduleRequest.id as string;
+    await request(app).post(`/api/account/reschedule-requests/${requestId}/accept`)
+      .set('Cookie', cookie).send({}).expect(403);
+    const accepted = await request(app).post(`/api/reschedule-requests/${requestId}/accept`)
+      .set('Cookie', f.cookie).send({}).expect(200);
+    expect(accepted.body.booking).toMatchObject({
       id: bookingId, serviceId: f.service.id, instructorId: f.instructor.id, locationId: f.location.id,
       startAt: f.starts.plus({ days: 1 }).toJSDate().toISOString(),
     });

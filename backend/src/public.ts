@@ -9,6 +9,17 @@ import { asyncRoute, HttpError } from './http.js';
 import { bookingInclude, bookingJson, publicBookingBusiness, publicInstructor, publicLocation, serviceJson } from './serializers.js';
 import { bookableInstructorWhere, createBookings, evaluateSlot, lockInstructors, publicBookingInput, refundParticipant, rescheduleBooking, schedulingContext } from './scheduling.js';
 import { createBookingAccountAlerts } from './account-notifications.js';
+import { notifyWorkspace } from './notifications.js';
+import {
+  acceptRescheduleRequest,
+  createRescheduleRequest,
+  declineRescheduleRequest,
+  rescheduleNoticeHours,
+  rescheduleRequestInput,
+  rescheduleRequestJson,
+  rescheduleResponseInput,
+  withdrawRescheduleRequest,
+} from './reschedule.js';
 
 export const publicRouter = Router();
 const bookingLimit = rateLimit({ windowMs: 60 * 60_000, limit: 80, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many requests. Please try again later.' } });
@@ -93,10 +104,29 @@ publicRouter.post('/public/:slug/bookings', bookingLimit, requireAuth, requireCu
 
 type AccountParticipant = Awaited<ReturnType<typeof accountParticipant>>;
 
+const accountBookingInclude = {
+  ...bookingInclude,
+  business: true,
+  rescheduleRequests: {
+    where: { status: 'PENDING' as const },
+    orderBy: { createdAt: 'desc' as const },
+    include: {
+      booking: {
+        include: {
+          business: { select: { id: true, name: true, timezone: true } },
+          instructor: { select: { id: true, name: true, rescheduleNoticeHours: true } },
+          service: { select: { name: true } },
+          location: { select: { name: true } },
+        },
+      },
+    },
+  },
+} as const;
+
 async function accountParticipant(participantId: string, userId: string) {
   const participant = await prisma.participant.findFirst({
     where: { id: participantId, customer: { userId } },
-    include: { customer: true, booking: { include: { ...bookingInclude, business: true } } },
+    include: { customer: true, booking: { include: accountBookingInclude } },
   });
   if (!participant) throw new HttpError(404, 'Booking not found');
   return participant;
@@ -109,21 +139,40 @@ function canManageAccount(p: AccountParticipant) {
     && p.booking.startAt.getTime() - Date.now() >= p.booking.business.cancellationHours * 3600_000;
 }
 
+/**
+ * Rescheduling closes earlier than cancelling when the coach asks for more
+ * notice, so it has its own window rather than reusing the cancellation one.
+ */
+function canRequestReschedule(p: AccountParticipant) {
+  if (p.cancelledAt || !['CONFIRMED', 'PENDING'].includes(p.booking.status)) return false;
+  if (p.booking.coachAcceptance === 'PENDING') return false;
+  const hours = rescheduleNoticeHours(p.booking.instructor, p.booking.business);
+  return p.booking.startAt.getTime() - Date.now() >= hours * 3600_000;
+}
+
 function accountBookingJson(p: AccountParticipant) {
   // Serialize exactly one participant even for group lessons. Other customers'
   // identities, contact details and participant notes stay private.
   const single = bookingJson({ ...p.booking, participants: [{ ...p, cancelledAt: null }] }, { includeNotes: false });
   if (p.cancelledAt) single.status = 'CANCELLED';
   const canChange = canManageAccount(p);
+  const canReschedule = canRequestReschedule(p) && p.booking.type === 'PRIVATE';
+  const pending = p.booking.rescheduleRequests[0];
   return {
     business: publicBookingBusiness(p.booking.business),
     booking: single,
     participant: { ...single.participants[0], cancelled: !!p.cancelledAt, cancelledAt: p.cancelledAt?.toISOString() ?? null },
     location: publicLocation(p.booking.location),
     canCancel: canChange,
-    canReschedule: canChange && p.booking.type === 'PRIVATE',
+    canReschedule,
+    // A pending proposal is the one thing a customer may need to act on, so it
+    // travels with the booking rather than requiring a second request.
+    rescheduleRequest: pending ? rescheduleRequestJson(pending) : null,
+    awaitingCoach: p.booking.coachAcceptance === 'PENDING',
+    paymentRoute: p.booking.paymentRoute,
     management: {
       cancellationHours: p.booking.business.cancellationHours,
+      rescheduleNoticeHours: rescheduleNoticeHours(p.booking.instructor, p.booking.business),
       reminders: 'Queued in Courtly; external delivery is not configured',
       venueReserved: false,
     },
@@ -243,11 +292,12 @@ publicRouter.post('/manage/:token/cancel', bookingLimit, asyncRoute(async (req, 
     await tx.participant.update({ where: { id: participant.id }, data: { cancelledAt: new Date() } });
     const remaining = await tx.participant.count({ where: { bookingId: participant.bookingId, cancelledAt: null } });
     if (!remaining) await tx.booking.update({ where: { id: participant.bookingId }, data: { status: 'CANCELLED' } });
-    await tx.notification.create({ data: {
+    await notifyWorkspace(tx, {
       businessId: participant.booking.businessId, instructorId: participant.booking.instructorId,
+      bookingId: participant.bookingId, type: 'CANCELLATION', actionNeeded: true,
       title: 'Customer cancelled a booking',
       message: 'The customer cancelled through an existing private booking link. Any consumed package credit was restored.',
-    } });
+    });
     await createBookingAccountAlerts(tx, participant.bookingId, 'CUSTOMER_CANCELLED', [participant.customer.userId]);
   });
   res.json(legacyBookingJson(await legacyParticipant(req.params.token)));
@@ -280,7 +330,7 @@ publicRouter.get('/account/bookings', requireAuth, requireCustomer, asyncRoute(a
       customer: { userId: req.auth.user.id },
       ...(query.businessSlug ? { booking: { business: { slug: query.businessSlug } } } : {}),
     },
-    include: { customer: true, booking: { include: { ...bookingInclude, business: true } } },
+    include: { customer: true, booking: { include: accountBookingInclude } },
     orderBy: { booking: { startAt: 'asc' } },
   });
   res.json({ bookings: participants.map(accountBookingJson) });
@@ -305,28 +355,76 @@ publicRouter.post('/account/bookings/:participantId/cancel', bookingLimit, requi
     await tx.participant.update({ where: { id: participant.id }, data: { cancelledAt: new Date() } });
     const remaining = await tx.participant.count({ where: { bookingId: participant.bookingId, cancelledAt: null } });
     if (!remaining) await tx.booking.update({ where: { id: participant.bookingId }, data: { status: 'CANCELLED' } });
-    await tx.notification.create({ data: { businessId: participant.booking.businessId, instructorId: participant.booking.instructorId, title: 'Customer cancelled a booking', message: 'The customer cancelled through their account. Any consumed package credit was restored. Cancellation notice queued; no external message sent.' } });
+    await notifyWorkspace(tx, { businessId: participant.booking.businessId, instructorId: participant.booking.instructorId, bookingId: participant.bookingId, type: 'CANCELLATION', actionNeeded: true, title: 'Customer cancelled a booking', message: 'The customer cancelled through their account. Any consumed package credit was restored. Cancellation notice queued; no external message sent.' });
     await createBookingAccountAlerts(tx, participant.bookingId, 'CUSTOMER_CANCELLED', [req.auth.user.id]);
   });
   res.json(accountBookingJson(await accountParticipant(req.params.participantId, req.auth.user.id)));
 }));
 
-publicRouter.post('/account/bookings/:participantId/reschedule', bookingLimit, requireAuth, requireCustomer, asyncRoute(async (req, res) => {
-  const changes = z.object({ startAt: z.string().datetime({ offset: true }) }).strict().parse(req.body);
+// Rescheduling from the customer side is a request, not a change. The coach
+// has to agree before a session actually moves.
+publicRouter.post('/account/bookings/:participantId/reschedule-requests', bookingLimit, requireAuth, requireCustomer, asyncRoute(async (req, res) => {
+  const input = rescheduleRequestInput.parse(req.body);
   const initial = await accountParticipant(req.params.participantId, req.auth.user.id);
+  if (initial.booking.type !== 'PRIVATE') throw new HttpError(400, 'Please contact your coach to move your place in a group session');
   await prisma.$transaction(async tx => {
-    await lockInstructors(tx, [initial.booking.instructorId]);
     const participant = await tx.participant.findFirst({
       where: { id: initial.id, customer: { userId: req.auth.user.id } },
-      include: { booking: { include: { business: true } } },
+      select: { id: true, bookingId: true, booking: { select: { businessId: true } } },
     });
     if (!participant) throw new HttpError(404, 'Booking not found');
-    if (participant.booking.instructorId !== initial.booking.instructorId) throw new HttpError(409, 'Session changed. Please refresh and try again');
-    if (participant.cancelledAt || !['CONFIRMED', 'PENDING'].includes(participant.booking.status) || participant.booking.startAt.getTime() <= Date.now() || participant.booking.startAt.getTime() - Date.now() < participant.booking.business.cancellationHours * 3600_000) {
-      throw new HttpError(400, 'This booking is outside the self-service rescheduling window. Contact your coach.');
-    }
-    if (participant.booking.type !== 'PRIVATE') throw new HttpError(400, 'Please contact your coach to move your place in a group session');
-    await rescheduleBooking(tx, participant.booking.businessId, participant.bookingId, changes);
+    await createRescheduleRequest(tx, {
+      bookingId: participant.bookingId,
+      businessId: participant.booking.businessId,
+      role: 'CUSTOMER',
+      userId: req.auth.user.id,
+      participantId: participant.id,
+      startAt: input.startAt,
+      message: input.message,
+    });
   }, { timeout: 30_000 });
-  res.json(accountBookingJson(await accountParticipant(req.params.participantId, req.auth.user.id)));
+  res.status(201).json(accountBookingJson(await accountParticipant(req.params.participantId, req.auth.user.id)));
+}));
+
+// Answering a proposal the provider side raised.
+publicRouter.post('/account/reschedule-requests/:requestId/accept', bookingLimit, requireAuth, requireCustomer, asyncRoute(async (req, res) => {
+  const body = rescheduleResponseInput.parse(req.body ?? {});
+  const participantId = await prisma.$transaction(async tx => {
+    const request = await tx.rescheduleRequest.findFirst({
+      where: { id: req.params.requestId, booking: { participants: { some: { cancelledAt: null, customer: { userId: req.auth.user.id } } } } },
+      select: { id: true, bookingId: true },
+    });
+    if (!request) throw new HttpError(404, 'Reschedule request not found');
+    await acceptRescheduleRequest(tx, request.id, { role: 'CUSTOMER', userId: req.auth.user.id, message: body.message });
+    const participant = await tx.participant.findFirst({
+      where: { bookingId: request.bookingId, cancelledAt: null, customer: { userId: req.auth.user.id } },
+      select: { id: true },
+    });
+    return participant?.id ?? null;
+  }, { timeout: 30_000 });
+  if (!participantId) throw new HttpError(404, 'Booking not found');
+  res.json(accountBookingJson(await accountParticipant(participantId, req.auth.user.id)));
+}));
+
+publicRouter.post('/account/reschedule-requests/:requestId/decline', bookingLimit, requireAuth, requireCustomer, asyncRoute(async (req, res) => {
+  const body = rescheduleResponseInput.parse(req.body ?? {});
+  const participantId = await prisma.$transaction(async tx => {
+    const request = await tx.rescheduleRequest.findFirst({
+      where: { id: req.params.requestId, booking: { participants: { some: { cancelledAt: null, customer: { userId: req.auth.user.id } } } } },
+      select: { id: true, bookingId: true, requestedByRole: true },
+    });
+    if (!request) throw new HttpError(404, 'Reschedule request not found');
+    if (request.requestedByRole === 'CUSTOMER') {
+      await withdrawRescheduleRequest(tx, request.id, { role: 'CUSTOMER', userId: req.auth.user.id });
+    } else {
+      await declineRescheduleRequest(tx, request.id, { role: 'CUSTOMER', userId: req.auth.user.id, message: body.message });
+    }
+    const participant = await tx.participant.findFirst({
+      where: { bookingId: request.bookingId, cancelledAt: null, customer: { userId: req.auth.user.id } },
+      select: { id: true },
+    });
+    return participant?.id ?? null;
+  });
+  if (!participantId) throw new HttpError(404, 'Booking not found');
+  res.json(accountBookingJson(await accountParticipant(participantId, req.auth.user.id)));
 }));

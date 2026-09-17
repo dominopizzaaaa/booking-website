@@ -44,4 +44,18 @@ export function coachScope(req: AuthRequest, instructorId: string) {
   }
 }
 
-export const initials = (name: string) => name.trim().split(/\s+/).slice(0, 2).map(x => x[0]).join('').toUpperCase();
+// Initials come from the letters people actually read in a name. Splitting on
+// whitespace alone turns "Dominic (Coach)" into "D(", so punctuation is
+// stripped from the front of each word first and words left with nothing are
+// dropped. Internal punctuation is kept inside a word, so a hyphenated first
+// name still counts as one word. Falls back to the first letter or digit
+// present, so a name written entirely in punctuation still shows something.
+export function initials(name: string) {
+  const words = name
+    .normalize('NFC')
+    .split(/\s+/)
+    .map(word => word.replace(/^[^\p{L}\p{N}]+/u, ''))
+    .filter(word => word.length > 0);
+  const letters = words.slice(0, 2).map(word => [...word][0]).join('');
+  return (letters || [...name.normalize('NFC')].find(character => /[\p{L}\p{N}]/u.test(character)) || '?').toUpperCase();
+}

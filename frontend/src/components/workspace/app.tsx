@@ -49,11 +49,12 @@ const viewTitles: Record<string, string> = {
   customers: 'Customers',
   services: 'Services',
   locations: 'Locations',
-  team: 'Your team',
+  team: 'My coaches',
   availability: 'Availability',
   packages: 'Lesson packages',
   payments: 'Payments',
   insights: 'Insights',
+  integrity: 'Integrity',
   settings: 'Settings',
 };
 
@@ -217,6 +218,16 @@ export default function WorkspaceApp() {
     return () => media.removeEventListener('change', update);
   }, []);
 
+  /** Open a booking named by an alert, so an alert can lead somewhere. */
+  function openBookingById(bookingId: string) {
+    const found = data?.bookings.find(booking => booking.id === bookingId);
+    if (!found) {
+      toast.error('That booking is no longer in this workspace.');
+      return;
+    }
+    setSelectedBooking(found);
+  }
+
   function navigate(nextView: string) {
     if (!data) return;
     const safeView = data.membership.role === 'COACH' && nextView === 'settings'
@@ -293,6 +304,7 @@ export default function WorkspaceApp() {
   }
 
   const unread = data.notifications.filter(notification => !notification.read).length;
+  const clubAccount = data.clubAccount;
   const currentRole = data.membership.role;
   const memberships = data.memberships;
   const title = currentRole === 'COACH' && view === 'availability' ? 'Your availability' : viewTitles[view] || 'Workspace';
@@ -323,7 +335,11 @@ export default function WorkspaceApp() {
   return <div className="app-shell workspace-shell">
     <aside className="sidebar workspace-sidebar desktop-only" aria-label="Workspace navigation" aria-hidden={isMobile ? true : undefined} inert={isMobile ? true : undefined}>
       <button className="wordmark" onClick={() => navigate('overview')} aria-label="Courtly home"><span className="brand-mark" />courtly<span className="ml-[-6px] text-[#9cad76]">.</span></button>
-      <button className="workspace-switch text-left" aria-haspopup="dialog" onClick={() => setWorkspaceOpen(true)}><span className="business-avatar">{initials(data.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-[11px] font-semibold">{data.business.name}</span><span className="mt-1 block text-[9px] text-[#a4ab99]">{data.business.isDemo ? 'Demo workspace' : memberships.length > 1 ? `${memberships.length} business workspaces` : `${currentRole.toLowerCase()} workspace`}</span></span><ChevronsUpDown size={12} className="text-[#a4ab99]" /></button>
+      {/* A club-admin login operates one club, so the sidebar shows the club
+          rather than a switcher that can only lead back to itself. */}
+      {clubAccount
+        ? <div className="workspace-switch text-left"><span className="business-avatar">{initials(data.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-[11px] font-semibold">{data.business.name}</span><span className="mt-1 block text-[9px] text-[#a4ab99]">{data.business.isDemo ? 'Demo workspace' : data.business.kind === 'SOLO' ? 'Coaching practice' : 'Club account'}</span></span></div>
+        : <button className="workspace-switch text-left" aria-haspopup="dialog" onClick={() => setWorkspaceOpen(true)}><span className="business-avatar">{initials(data.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-[11px] font-semibold">{data.business.name}</span><span className="mt-1 block text-[9px] text-[#a4ab99]">{data.business.isDemo ? 'Demo workspace' : memberships.length > 1 ? `${memberships.length} clubs and academies` : `${currentRole.toLowerCase()} workspace`}</span></span><ChevronsUpDown size={12} className="text-[#a4ab99]" /></button>}
       <nav className="workspace-primary-nav workspace-primary-nav-desktop mt-5 flex-1" aria-label="Primary">
         {primaryNavigation.slice(0, 2).map(item => <button key={item.id} type="button" className={`nav-link workspace-primary-tab workspace-primary-tab-${item.id} ${primaryTab === item.id ? 'active' : ''}`} aria-current={primaryTab === item.id ? 'page' : undefined} onClick={item.action}><item.icon size={18} strokeWidth={1.65} /><span>{item.label}</span></button>)}
         <button type="button" className="nav-link workspace-primary-tab workspace-primary-tab-create" aria-haspopup="dialog" aria-expanded={createOpen} onClick={() => setCreateOpen(true)}><Plus size={19} strokeWidth={1.8} /><span>Create</span></button>
@@ -347,8 +363,8 @@ export default function WorkspaceApp() {
         )}
         {view === 'overview' ? <Dashboard key={data.business.id} data={data} onNavigate={navigate} onNew={() => setBookingOpen(true)} onBooking={setSelectedBooking} />
           : view === 'explore' ? <ExploreHub data={data} onNavigate={navigate} />
-          : view === 'alerts' ? <AlertsView data={data} refresh={refresh} />
-          : view === 'profile' ? <ProfileView data={data} onEditProfile={() => setProfileEditorOpen(true)} onSwitchWorkspace={() => setWorkspaceOpen(true)} onBusinessSettings={() => navigate('settings')} onHelp={() => setHelpOpen(true)} onSignOut={() => void signOut()} />
+          : view === 'alerts' ? <AlertsView data={data} refresh={refresh} onOpenBooking={openBookingById} onNavigate={navigate} />
+          : view === 'profile' ? <ProfileView data={data} onEditProfile={() => setProfileEditorOpen(true)} onSwitchWorkspace={() => setWorkspaceOpen(true)} onBusinessSettings={() => navigate('settings')} onHelp={() => setHelpOpen(true)} onSignOut={() => void signOut()} onNavigate={navigate} />
           : view === 'calendar' || view === 'bookings' ? <CalendarView key={`${data.business.id}:${view}`} data={data} onNew={() => setBookingOpen(true)} onBooking={setSelectedBooking} listOnly={view === 'bookings'} />
           : <ManagementView key={`${data.business.id}:${view}`} view={view} data={data} refresh={refresh} />}
       </main>
@@ -371,6 +387,6 @@ export default function WorkspaceApp() {
 
     <Dialog open={helpOpen} onOpenChange={setHelpOpen}><DialogContent><DialogTitle className="text-lg font-semibold">{currentRole === 'COACH' ? 'Help with your coaching workspace' : 'A little help to get going'}</DialogTitle><DialogDescription className="mt-2 text-xs text-stone-400">{currentRole === 'COACH' ? 'Your schedule, customers, availability, and attendance—all in one place.' : 'Less admin. More time doing what you love.'}</DialogDescription><div className="mt-6 space-y-5 text-xs leading-relaxed">{helpSteps.map(([number, heading, body]) => <div className="flex gap-3" key={number}><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#edf2e5] text-[#7e926c]">{number}</span><div><h3>{heading}</h3><p className="mt-1 text-stone-500">{body}</p></div></div>)}</div></DialogContent></Dialog>
 
-    <Dialog open={workspaceOpen} onOpenChange={open => { if (!switchingMembershipId) setWorkspaceOpen(open); }}><DialogContent onEscapeKeyDown={event => { if (switchingMembershipId) event.preventDefault(); }} onPointerDownOutside={event => { if (switchingMembershipId) event.preventDefault(); }}><DialogTitle className="text-lg font-semibold">Switch business</DialogTitle><DialogDescription className="mt-2 text-xs leading-relaxed text-stone-500">Use the same Courtly account across every club that has added you.</DialogDescription><div className="mt-5 space-y-2">{memberships.map(membership => { const current = membership.id === data.membership?.id || membership.business.id === data.business.id; return <button key={membership.id} type="button" disabled={!!switchingMembershipId || !membership.active} onClick={() => void switchWorkspace(membership)} className={`flex min-h-16 w-full items-center gap-3 rounded-xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-55 ${current ? 'border-[#cbd9bf] bg-[#f0f5e9]' : 'border-[#e3e8df] hover:bg-[#f8faf6]'}`}><span className="business-avatar shrink-0">{initials(membership.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-semibold text-[#344b39]">{membership.business.name}</span><span className="mt-1 block text-[10px] capitalize text-stone-500">{membership.active ? membership.role.toLowerCase() : `${membership.role.toLowerCase()} · inactive`}</span></span>{switchingMembershipId === membership.id ? <Loader2 size={16} className="shrink-0 animate-spin text-[#69805e]" /> : current ? <span className="flex items-center gap-1 text-[10px] font-semibold text-[#66805a]"><Check size={13} />Current</span> : null}</button>; })}{!memberships.length && <p className="rounded-xl bg-stone-50 p-4 text-xs leading-relaxed text-stone-500">This is your only available workspace.</p>}</div></DialogContent></Dialog>
+    <Dialog open={workspaceOpen && !clubAccount} onOpenChange={open => { if (!switchingMembershipId) setWorkspaceOpen(open); }}><DialogContent onEscapeKeyDown={event => { if (switchingMembershipId) event.preventDefault(); }} onPointerDownOutside={event => { if (switchingMembershipId) event.preventDefault(); }}><DialogTitle className="text-lg font-semibold">Switch club or academy</DialogTitle><DialogDescription className="mt-2 text-xs leading-relaxed text-stone-500">Use the same Courtly account across every club and academy that has added you. A club adds you to its roster; you cannot join one yourself.</DialogDescription><div className="mt-5 space-y-2">{memberships.map(membership => { const current = membership.id === data.membership?.id || membership.business.id === data.business.id; return <button key={membership.id} type="button" disabled={!!switchingMembershipId || !membership.active} onClick={() => void switchWorkspace(membership)} className={`flex min-h-16 w-full items-center gap-3 rounded-xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-55 ${current ? 'border-[#cbd9bf] bg-[#f0f5e9]' : 'border-[#e3e8df] hover:bg-[#f8faf6]'}`}><span className="business-avatar shrink-0">{initials(membership.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-semibold text-[#344b39]">{membership.business.name}</span><span className="mt-1 block text-[10px] capitalize text-stone-500">{membership.active ? membership.role.toLowerCase() : `${membership.role.toLowerCase()} · inactive`}</span></span>{switchingMembershipId === membership.id ? <Loader2 size={16} className="shrink-0 animate-spin text-[#69805e]" /> : current ? <span className="flex items-center gap-1 text-[10px] font-semibold text-[#66805a]"><Check size={13} />Current</span> : null}</button>; })}{!memberships.length && <p className="rounded-xl bg-stone-50 p-4 text-xs leading-relaxed text-stone-500">This is your only available workspace.</p>}</div></DialogContent></Dialog>
   </div>;
 }

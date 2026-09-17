@@ -6,6 +6,8 @@ import { prisma } from './db.js';
 import { HttpError, initials } from './http.js';
 import { bookingInclude, bookingJson } from './serializers.js';
 import { createBookingAccountAlerts } from './account-notifications.js';
+import { notifyWorkspace } from './notifications.js';
+import { flagPrivateSessionsAfterClub } from './integrity.js';
 
 const bookingSelection = {
   serviceId: z.string().min(1), instructorId: z.string().min(1), locationId: z.string().min(1),
@@ -31,7 +33,39 @@ export const publicBookingInput = z.object({
 export type BookingInput = z.infer<typeof bookingInput>;
 export type PublicBookingInput = z.infer<typeof publicBookingInput>;
 export type Tx = Prisma.TransactionClient;
-export type CreateBookingsOptions = { customerUserId: string } | { requireLinkedCustomer: true };
+/**
+ * Who is creating this booking, which decides two things that cannot be
+ * derived later: whether the coach still has to accept it, and whose name
+ * goes on the audit trail.
+ *  - `customerUserId`  the student booked it themselves
+ *  - `actor`           a provider created it inside a workspace
+ */
+export type CreateBookingsOptions =
+  | { customerUserId: string }
+  | {
+      requireLinkedCustomer: true;
+      actor?: { userId: string; role: 'OWNER' | 'ADMIN' | 'COACH'; instructorId: string | null };
+    };
+
+/** "CLUB" money runs through the club's books; "DIRECT" goes to the coach. */
+export const paymentRouteFor = (business: { kind: string }) => business.kind === 'SOLO' ? 'DIRECT' : 'CLUB';
+
+/**
+ * A club may assign a student to a coach without asking the student, but the
+ * coach must accept before the lesson counts as confirmed. A coach booking
+ * their own session, or a student booking a coach directly in a solo
+ * practice, needs no second acceptance from the same person.
+ */
+export function coachAcceptanceFor(
+  options: CreateBookingsOptions,
+  instructorId: string,
+): 'NOT_REQUIRED' | 'PENDING' {
+  if ('customerUserId' in options) return 'NOT_REQUIRED';
+  const actor = options.actor;
+  if (!actor) return 'NOT_REQUIRED';
+  if (actor.role === 'COACH' && actor.instructorId === instructorId) return 'NOT_REQUIRED';
+  return 'PENDING';
+}
 
 // A roster row by itself is not enough to host a new session. Legacy data can
 // retain unclaimed instructors for history and later account connection, but
@@ -197,11 +231,20 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
     if (!updated.count) throw new HttpError(409, 'Not enough package credits for all sessions');
   }
   const recurringId = occurrences.length > 1 ? randomUUID() : null;
+  const paymentRoute = paymentRouteFor(ctx.business);
+  const coachAcceptance = coachAcceptanceFor(options, input.instructorId);
+  const actor = 'customerUserId' in options ? null : options.actor ?? null;
+  const createdByRole = accountBooking ? 'CUSTOMER' : actor?.role === 'COACH' ? 'COACH' : 'CLUB';
+  const createdByUserId = accountBooking ? options.customerUserId : actor?.userId ?? null;
+  // A lesson the coach has not accepted yet is not a confirmed lesson, even at
+  // a venue that needs no approval.
+  const venuePendingStatus = (ctx.location.requiresApproval || ctx.location.type === 'RENTED') ? 'PENDING' : 'CONFIRMED';
+  const initialStatus = coachAcceptance === 'PENDING' ? 'PENDING' : venuePendingStatus;
   const booked = [];
   for (const slot of occurrences) {
     let bookingId = slot.groupId;
     if (!bookingId) {
-      const booking = await tx.booking.create({ data: { businessId, serviceId: input.serviceId, instructorId: input.instructorId, locationId: input.locationId, startAt: slot.startAt, endAt: slot.endAt, duration: ctx.assignment.duration, bufferMinutes: ctx.service.bufferMinutes, price: ctx.assignment.price, type: ctx.service.type, capacity: ctx.service.type === 'PRIVATE' ? 1 : ctx.service.capacity, status: (ctx.location.requiresApproval || ctx.location.type === 'RENTED') ? 'PENDING' : 'CONFIRMED', recurringId, notes: accountBooking ? '' : input.notes, address: input.address } });
+      const booking = await tx.booking.create({ data: { businessId, serviceId: input.serviceId, instructorId: input.instructorId, locationId: input.locationId, startAt: slot.startAt, endAt: slot.endAt, duration: ctx.assignment.duration, bufferMinutes: ctx.service.bufferMinutes, price: ctx.assignment.price, type: ctx.service.type, capacity: ctx.service.type === 'PRIVATE' ? 1 : ctx.service.capacity, status: initialStatus, paymentRoute, coachAcceptance, createdByRole, createdByUserId, recurringId, notes: accountBooking ? '' : input.notes, address: input.address } });
       bookingId = booking.id;
     }
     const existing = await tx.participant.findUnique({ where: { bookingId_customerId: { bookingId, customerId: customer.id } } });
@@ -216,11 +259,29 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
       : json);
   }
   const venuePending = ctx.location.requiresApproval || ctx.location.type === 'RENTED';
-  await tx.notification.create({ data: { businessId, instructorId: input.instructorId, title: `${booked.length > 1 ? 'Recurring booking' : 'New booking'} · ${customer.name}`, message: `${ctx.service.name} with ${ctx.instructor.name}. ${venuePending ? 'Venue approval is required; no external court has been reserved. ' : ''}Booking confirmation and 24-hour reminder queued in Courtly; external delivery is not configured.` } });
+  const awaitingCoach = coachAcceptance === 'PENDING';
+  await notifyWorkspace(tx, {
+    businessId,
+    instructorId: input.instructorId,
+    bookingId: booked[0]?.id ?? null,
+    type: awaitingCoach ? 'PENDING_ACTION' : 'BOOKING',
+    actionNeeded: awaitingCoach,
+    title: awaitingCoach
+      ? `Lesson awaiting your acceptance · ${customer.name}`
+      : `${booked.length > 1 ? 'Recurring booking' : 'New booking'} · ${customer.name}`,
+    message: awaitingCoach
+      ? `${ctx.service.name} with ${customer.name} was assigned to ${ctx.instructor.name}. It is confirmed once the coach accepts it.`
+      : `${ctx.service.name} with ${ctx.instructor.name}. ${venuePending ? 'Venue approval is required; no external court has been reserved. ' : ''}Booking confirmation and 24-hour reminder queued in Courtly; external delivery is not configured.`,
+  });
   for (const booking of booked) {
     await createBookingAccountAlerts(
-      tx, booking.id, booking.status === 'PENDING' ? 'REQUESTED' : 'CREATED', [customer.userId],
+      tx, booking.id,
+      awaitingCoach ? 'CLUB_ASSIGNED' : booking.status === 'PENDING' ? 'REQUESTED' : 'CREATED',
+      [customer.userId],
     );
+    // Only a lesson that skips the club's books can bypass a club, so the
+    // safeguard is evaluated exactly where that money path is decided.
+    if (paymentRoute === 'DIRECT') await flagPrivateSessionsAfterClub(tx, booking.id);
   }
   return { bookings: booked };
 }
@@ -241,7 +302,7 @@ export async function cancelBooking(tx: Tx, businessId: string, bookingId: strin
   if (current.status === 'CANCELLED') return;
   for (const participant of current.participants) await refundParticipant(tx, participant);
   await tx.booking.update({ where: { id: bookingId }, data: { status: 'CANCELLED' } });
-  await tx.notification.create({ data: { businessId, instructorId: current.instructorId, title: 'Session cancelled', message: 'Package credits were restored. Cancellation notification queued; no external message has been sent.' } });
+  await notifyWorkspace(tx, { businessId, instructorId: current.instructorId, bookingId, type: 'CANCELLATION', title: 'Session cancelled', message: 'Package credits were restored. Cancellation notification queued; no external message has been sent.' });
   await createBookingAccountAlerts(tx, bookingId, 'PROVIDER_CANCELLED');
 }
 
@@ -267,7 +328,7 @@ export async function rescheduleBooking(tx: Tx, businessId: string, bookingId: s
   if (!slot.available || slot.groupId) throw new HttpError(409, 'Requested time is unavailable', { conflicts: [{ date: changes.startAt, reason: slot.reason || 'A group already occupies that time' }] });
   if (booking.participants.some(p => p.package && p.package.expiresAt < startAt)) throw new HttpError(400, 'Package would expire before the rescheduled session');
   const updated = await tx.booking.update({ where: { id: booking.id }, data: { startAt, endAt: slot.endAt, instructorId: ctx.instructor.id, locationId: ctx.location.id, status: (ctx.location.requiresApproval || ctx.location.type === 'RENTED') ? 'PENDING' : 'CONFIRMED' }, include: bookingInclude });
-  await tx.notification.create({ data: { businessId, instructorId: updated.instructorId, title: 'Session rescheduled', message: 'Schedule updated. Change notification and reminder queued in Courtly; external delivery is not configured.' } });
+  await notifyWorkspace(tx, { businessId, instructorId: updated.instructorId, bookingId: updated.id, type: 'RESCHEDULE', title: 'Session rescheduled', message: 'Schedule updated. Change notification and reminder queued in Courtly; external delivery is not configured.' });
   await createBookingAccountAlerts(tx, booking.id, 'RESCHEDULED');
   return bookingJson(updated);
 }

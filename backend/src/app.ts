@@ -14,6 +14,8 @@ import { bookingsRouter } from './bookings.js';
 import { crudRouter } from './crud.js';
 import { staffRouter } from './staff.js';
 import { accountRouter } from './account-notifications.js';
+import { venuesRouter } from './venues.js';
+import { integrityRouter } from './integrity.js';
 import { HttpError } from './http.js';
 import { prisma } from './db.js';
 export const app = express();
@@ -38,7 +40,11 @@ app.use('/api', (req, res, next) => {
 app.get('/api/health', async (_req, res) => {
   try { await prisma.$queryRaw`SELECT 1`; res.json({
     ok: true, service: 'courtly', database: 'connected', accountModel: 'global-memberships',
-    capabilities: { accountProfile: true },
+    capabilities: {
+      accountProfile: true, rescheduleRequests: true, coachAcceptance: true,
+      paymentReversal: true, integrityFlags: true,
+      venueSearch: config.googleMapsApiKey ? 'google-places' : 'maps-link',
+    },
   }); }
   catch { res.status(503).json({ error: 'Database is unavailable' }); }
 });
@@ -49,7 +55,7 @@ app.use('/api/account', requireAuth, requireCustomer, accountRouter);
 // Account-only public booking management installs its own authentication
 // middleware. Every provider route below additionally requires an active,
 // non-revoked membership selected on the session.
-app.use('/api', requireAuth, requireWorkspace, workspaceRouter, bookingsRouter, crudRouter, staffRouter);
+app.use('/api', requireAuth, requireWorkspace, workspaceRouter, bookingsRouter, crudRouter, staffRouter, venuesRouter, integrityRouter);
 app.use((_req, _res, next) => next(new HttpError(404, 'Route not found')));
 const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
   if (error instanceof HttpError) { res.status(error.status).json({ error: error.message, ...error.details }); return; }

@@ -29,10 +29,12 @@ const serviceJson = (service: ServiceWithLocations) => ({
     duration: location.duration, instructorIds: location.instructors.map(instructor => instructor.instructorId) })),
 });
 const instructorJson = (instructor: Instructor) => ({ id: instructor.id, name: instructor.name, initials: instructor.initials,
-  color: instructor.color, email: instructor.email, specialty: instructor.specialty, active: instructor.active });
+  color: instructor.color, email: instructor.email, specialty: instructor.specialty,
+  rescheduleNoticeHours: instructor.rescheduleNoticeHours, active: instructor.active });
 const locationJson = (location: Location) => ({ id: location.id, name: location.name, address: location.address,
   type: location.type, color: location.color, requiresApproval: location.requiresApproval,
-  travelMinutes: location.travelMinutes, notes: location.notes, active: location.active });
+  travelMinutes: location.travelMinutes, notes: location.notes, source: location.source, placeId: location.placeId,
+  mapsUrl: location.mapsUrl, latitude: location.latitude, longitude: location.longitude, active: location.active });
 const availabilityJson = (availability: Availability) => ({ id: availability.id, instructorId: availability.instructorId,
   locationId: availability.locationId, dayOfWeek: availability.dayOfWeek, startTime: availability.startTime, endTime: availability.endTime });
 const exceptionJson = (exception: AvailabilityException) => ({ id: exception.id, instructorId: exception.instructorId,
@@ -42,7 +44,8 @@ const packageJson = (pkg: PackageWithCustomer) => ({ id: pkg.id, customerId: pkg
   price: pkg.price, expiresAt: pkg.expiresAt.toISOString(), paid: pkg.paid });
 const businessJson = (business: Business) => ({ id: business.id, name: business.name, slug: business.slug,
   ownerName: business.ownerName, email: business.email, timezone: business.timezone, currency: business.currency,
-  color: business.color, tagline: business.tagline, cancellationHours: business.cancellationHours, isDemo: business.isDemo });
+  color: business.color, tagline: business.tagline, cancellationHours: business.cancellationHours,
+  kind: business.kind, isDemo: business.isDemo });
 function customerJson(customer: CustomerWithBookings) {
   const lastBookingAt = customer.participants.reduce<Date | null>((latest, participant) =>
     !latest || participant.booking.startAt > latest ? participant.booking.startAt : latest, null);
@@ -182,11 +185,18 @@ crudRouter.delete('/services/:id', adminOnly, asyncRoute(async (req, res) => {
 
 const instructorSchema = z.object({ name: nameSchema, email: z.union([emailSchema, z.literal('')]).default(''),
   specialty: z.string().trim().max(500).default(''), color: colorSchema.default('sage'), active: z.boolean().default(true) }).strict();
+const noticeHoursSchema = z.number().int().min(0).max(720);
 const instructorUpdateSchema = z.object({
   specialty: z.string().trim().max(500).optional(),
   color: colorSchema.optional(),
+  rescheduleNoticeHours: noticeHoursSchema.optional(),
   active: z.boolean().optional(),
 }).strict().refine(value => Object.keys(value).length > 0, 'Provide instructor details to update');
+// A coach's own reschedule protection window is theirs to set, so it is the
+// one roster field a coach can change without owner or admin access.
+const coachSelfUpdateSchema = z.object({
+  rescheduleNoticeHours: noticeHoursSchema,
+}).strict();
 crudRouter.get('/instructors', adminOnly, asyncRoute(async (req, res) => {
   const instructors = await prisma.instructor.findMany({ where: { businessId: req.auth.business.id }, orderBy: { name: 'asc' } });
   res.json(instructors.map(instructorJson));
@@ -208,6 +218,17 @@ crudRouter.post('/instructors', adminOnly, asyncRoute(async (req, res) => {
     return created;
   }, { isolationLevel: 'Serializable' });
   res.status(201).json(instructorJson(instructor));
+}));
+crudRouter.patch('/instructors/me', asyncRoute(async (req, res) => {
+  const input = coachSelfUpdateSchema.parse(req.body);
+  const membership = req.auth.membership!;
+  const instructorId = membership.instructorId;
+  if (!instructorId) throw new HttpError(400, 'This account is not linked to a coach profile in this business');
+  await requireInstructor(prisma, req.auth.business.id, instructorId);
+  const instructor = await prisma.instructor.update({
+    where: { id: instructorId, businessId: req.auth.business.id }, data: input,
+  });
+  res.json(instructorJson(instructor));
 }));
 crudRouter.patch('/instructors/:id', adminOnly, asyncRoute(async (req, res) => {
   // Name and email belong to the linked global account. Clubs may edit only
@@ -239,12 +260,21 @@ crudRouter.delete('/instructors/:id', adminOnly, asyncRoute(async (req, res) => 
 const locationSchema = z.object({ name: nameSchema, address: z.string().trim().max(500).default(''),
   type: z.enum(['FACILITY', 'RENTED', 'HOME', 'ONLINE']).default('FACILITY'), color: colorSchema.default('sage'),
   requiresApproval: z.boolean().default(false), travelMinutes: z.number().int().min(0).max(240).default(20),
-  notes: z.string().trim().max(2000).default(''), active: z.boolean().default(true) }).strict();
+  notes: z.string().trim().max(2000).default(''),
+  source: z.enum(['MANUAL', 'GOOGLE_MAPS']).default('MANUAL'),
+  placeId: z.string().trim().max(300).default(''),
+  mapsUrl: z.string().trim().max(2000).refine(value => !value || /^https?:\/\//i.test(value), 'Use a full https link').default(''),
+  latitude: z.number().min(-90).max(90).nullable().default(null),
+  longitude: z.number().min(-180).max(180).nullable().default(null),
+  active: z.boolean().default(true) }).strict();
 crudRouter.get('/locations', adminOnly, asyncRoute(async (req, res) => {
   const locations = await prisma.location.findMany({ where: { businessId: req.auth.business.id }, orderBy: { name: 'asc' } });
   res.json(locations.map(locationJson));
 }));
-crudRouter.post('/locations', adminOnly, asyncRoute(async (req, res) => {
+// A coach who teaches somewhere new should not have to wait on the club's
+// office to add the venue, so creating one is open to every workspace role.
+// Editing and archiving stay with an owner or admin.
+crudRouter.post('/locations', asyncRoute(async (req, res) => {
   const input = locationSchema.parse(req.body);
   const location = await prisma.location.create({ data: { ...input, businessId: req.auth.business.id } });
   res.status(201).json(locationJson(location));
@@ -486,7 +516,9 @@ crudRouter.delete('/exceptions/:id', asyncRoute(async (req, res) => {
 const businessSchema = z.object({ name: nameSchema.optional(), ownerName: nameSchema.optional(), email: emailSchema.optional(),
   timezone: z.string().trim().max(100).refine(zone => IANAZone.isValidZone(zone), 'Choose a valid IANA timezone').optional(),
   currency: z.string().trim().regex(/^[A-Za-z]{3}$/, 'Use a three-letter currency code').transform(value => value.toUpperCase()).optional(),
-  color: colorSchema.optional(), tagline: z.string().trim().max(500).optional(), cancellationHours: z.number().int().min(0).max(720).optional() }).strict();
+  color: colorSchema.optional(), tagline: z.string().trim().max(500).optional(),
+  cancellationHours: z.number().int().min(0).max(720).optional(),
+  kind: z.enum(['CLUB', 'SOLO']).optional() }).strict();
 crudRouter.patch('/business', adminOnly, asyncRoute(async (req, res) => {
   const input = businessSchema.parse(req.body);
   const business = await prisma.business.update({ where: { id: req.auth.business.id }, data: input });

@@ -6,5 +6,14 @@ export const money = (value: number, currency = 'SGD') => new Intl.NumberFormat(
 export const dateKey = (value: Date | string = new Date(), timezone = 'Asia/Singapore') => formatInTimeZone(value, timezone, 'yyyy-MM-dd');
 export const time = (value: Date | string, timezone = 'Asia/Singapore') => formatInTimeZone(value, timezone, 'h:mm a');
 export const shortDate = (value: Date | string, timezone = 'Asia/Singapore') => formatInTimeZone(value, timezone, 'EEE, d MMM');
-export function initials(name: string) { return name.trim().split(/\s+/).map(n => n[0]).slice(0, 2).join('').toUpperCase(); }
+// Kept in step with `initials` in backend/src/http.ts. Splitting on plain
+// whitespace turns "Dominic (Coach)" into "D(", so leading punctuation is
+// stripped from each word and words left empty are dropped.
+export function initials(name: string) {
+  const words = name.normalize('NFC').split(/\s+/)
+    .map(word => word.replace(/^[^\p{L}\p{N}]+/u, ''))
+    .filter(word => word.length > 0);
+  const letters = words.slice(0, 2).map(word => [...word][0]).join('');
+  return (letters || [...name.normalize('NFC')].find(character => /[\p{L}\p{N}]/u.test(character)) || '?').toUpperCase();
+}
 export function addDaysKey(key: string, days: number) { const d = new Date(`${key}T12:00:00+08:00`); d.setUTCDate(d.getUTCDate() + days); return dateKey(d); }
