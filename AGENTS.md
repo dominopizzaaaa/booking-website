@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 2.1.11** · Last updated 2026-09-18
+**Version 2.2.0** · Last updated 2026-09-18
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -278,6 +278,33 @@ npx playwright test --prefix frontend # needs both servers running
    Repeated local suite runs can still exhaust registration; restart the API
    to reset its in-memory limiter.
 
+### Migrations that audit before they enforce
+
+`20260917210000_account_shape_invariants` and the two after it install their
+triggers only over a database that already satisfies them, and abort the whole
+transaction otherwise. That is deliberate: enforcement added around invalid
+data would either fail later or quietly permit the exception forever.
+
+The consequence is that a deploy fails fast (`P3009`) rather than half-applying.
+`20260917205000_single_club_account_per_club` exists to make the audit pass on
+real data, because the old model allowed an `OWNER` *and* one or more `ADMIN`s
+per club, and both become `CLUB` accounts. It keeps the earliest institutional
+login, hands any displaced administrator their login back as a coach account,
+and gives a club that has lost its login a dormant, sign-in-disabled one rather
+than deleting the business.
+
+If an environment already failed on the invariants migration, the failed
+attempt rolled itself back and is safe to clear before redeploying:
+
+```bash
+npx prisma migrate resolve --rolled-back 20260917210000_account_shape_invariants
+npx prisma migrate deploy
+```
+
+Before changing account or affiliation shapes, check the invariants still hold:
+apply the chain to a scratch database *and* to a copy with real data, since only
+the second exercises the repair.
+
 ---
 
 ## 9. Environment variables
@@ -315,6 +342,18 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 2.2.0 — 2026-09-18
+
+Added `20260917205000_single_club_account_per_club` so the account-shape
+invariants can be installed over real data. A club created under the old model
+could have an `OWNER` and one or more `ADMIN`s, all of which became `CLUB`
+accounts; the audit in the next migration then refused to run and a deploy
+stopped at `P3009`. The repair keeps one institutional login per club, returns
+a displaced administrator's login to them as a coach account, and gives a club
+with no login a dormant one instead of deleting it. Documented the recovery
+path for an environment that already failed.
+
 
 ### 2.1.11 — 2026-09-18
 
