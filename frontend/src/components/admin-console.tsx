@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { AlertTriangle, Building2, CalendarClock, Check, Layers3, LoaderCircle, LockKeyhole, LogOut, RefreshCw, Search, ShieldCheck, Sparkles, Trash2, TrendingUp, Users, Wallet, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { AlertTriangle, Building2, CalendarClock, Check, Layers3, LoaderCircle, LockKeyhole, LogOut, RefreshCw, Search, ShieldCheck, Sparkles, Trash2, TrendingUp, Users, Wallet } from 'lucide-react';
 import { toast } from 'sonner';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import {
   adminBusinesses, adminDeleteBusiness, adminLogin, adminLogout, adminOverview, adminPurgeDemos, adminSession,
   ApiError, type AdminBusiness, type AdminOverview,
@@ -35,6 +36,10 @@ export function AdminConsole() {
   const [loadingData, setLoadingData] = useState(false);
   const [confirm, setConfirm] = useState<AdminBusiness | 'demos' | null>(null);
   const [working, setWorking] = useState(false);
+  const cancelConfirmationRef = useRef<HTMLButtonElement>(null);
+  const confirmationTriggerRef = useRef<HTMLButtonElement>(null);
+  const businessSearchRef = useRef<HTMLInputElement>(null);
+  const refreshGenerationRef = useRef(0);
 
   useEffect(() => {
     adminSession()
@@ -43,16 +48,19 @@ export function AdminConsole() {
   }, []);
 
   const refresh = useCallback(async () => {
+    const generation = ++refreshGenerationRef.current;
     setLoadingData(true);
     try {
       const [ov, list] = await Promise.all([adminOverview(), adminBusinesses({ search: search.trim() || undefined, filter })]);
+      if (generation !== refreshGenerationRef.current) return;
       setOverview(ov);
       setBusinesses(list.businesses);
     } catch (error) {
+      if (generation !== refreshGenerationRef.current) return;
       if (error instanceof ApiError && error.status === 401) { setPhase('login'); return; }
       toast.error(errorText(error, 'Could not load platform data.'));
     } finally {
-      setLoadingData(false);
+      if (generation === refreshGenerationRef.current) setLoadingData(false);
     }
   }, [search, filter]);
 
@@ -78,6 +86,7 @@ export function AdminConsole() {
   }
   async function signOut() {
     try { await adminLogout(); } catch { /* ignore */ }
+    refreshGenerationRef.current += 1;
     setOverview(null); setBusinesses([]); setPhase('login');
   }
   async function runDelete() {
@@ -101,34 +110,34 @@ export function AdminConsole() {
   }
 
   if (phase === 'loading') return (
-    <main className="grid min-h-screen place-items-center bg-[#f6f7f4] text-[#7d8a7b]">
+    <main className="grid min-h-screen place-items-center bg-[#f6f7f4] text-[#59675c]">
       <LoaderCircle className="animate-spin" size={26} />
     </main>
   );
 
   if (phase === 'unconfigured') return (
     <ShellCentered>
-      <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl border border-[#e0e6d7] bg-[#edf2e5] text-[#849970]"><ShieldCheck size={24} strokeWidth={1.5} /></div>
+      <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl border border-[#e0e6d7] bg-[#edf2e5] text-[#59675c]"><ShieldCheck size={24} strokeWidth={1.5} /></div>
       <h1 className="!mt-5 !text-[24px] !font-medium !tracking-[-0.6px]">Admin console not configured</h1>
-      <p className="!mt-3 text-sm leading-relaxed text-[#8a957f]">Set an <code className="rounded bg-[#eef2e8] px-1.5 py-0.5 text-[12px] text-[#4c6046]">ADMIN_PASSWORD</code> environment variable on the backend (Railway), then redeploy to unlock this page.</p>
+      <p className="!mt-3 text-sm leading-relaxed text-[#59675c]">Set an <code className="rounded bg-[#eef2e8] px-1.5 py-0.5 text-[12px] text-[#4c6046]">ADMIN_PASSWORD</code> environment variable on the backend (Railway), then redeploy to unlock this page.</p>
     </ShellCentered>
   );
 
   if (phase === 'login') return (
     <ShellCentered>
-      <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl border border-[#e0e6d7] bg-[#edf2e5] text-[#849970]"><LockKeyhole size={22} strokeWidth={1.5} /></div>
-      <p className="!mb-2 !mt-5 text-[10px] font-semibold uppercase tracking-[2px] text-[#95a085]">PLATFORM ADMINISTRATION</p>
+      <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl border border-[#e0e6d7] bg-[#edf2e5] text-[#59675c]"><LockKeyhole size={22} strokeWidth={1.5} /></div>
+      <p className="!mb-2 !mt-5 text-[10px] font-semibold uppercase tracking-[2px] text-[#59675c]">PLATFORM ADMINISTRATION</p>
       <h1 className="!text-[26px] !font-medium !tracking-[-0.8px]">Admin sign in</h1>
-      <p className="!mt-2.5 text-sm leading-relaxed text-[#8a957f]">Enter the platform admin password to manage every workspace on Courtly.</p>
+      <p className="!mt-2.5 text-sm leading-relaxed text-[#59675c]">Enter the platform admin password to manage every workspace on Courtly.</p>
       <form className="!mt-6 space-y-4 text-left" onSubmit={signIn}>
         <div>
           <label htmlFor="admin-password" className="!mb-2 block !text-xs !font-medium !text-[#617257]">Admin password</label>
           <input id="admin-password" type="password" autoFocus autoComplete="current-password" value={password}
             onChange={event => { setPassword(event.target.value); if (loginError) setLoginError(''); }}
-            className="!min-h-12 !rounded-xl !border-[#dfe5dd] !px-3.5 !text-base placeholder:!text-[#a7afa0] sm:!text-sm" placeholder="••••••••••••" disabled={signingIn} />
+            className="!min-h-12 !rounded-xl !border-[#dfe5dd] !px-3.5 !text-base placeholder:!text-[#59675c] sm:!text-sm" placeholder="••••••••••••" disabled={signingIn} />
         </div>
-        {loginError && <div role="alert" aria-live="polite" className="rounded-xl border border-[#eedbd4] bg-[#fff6f1] p-3.5 text-xs leading-relaxed text-[#a16a55]">{loginError}</div>}
-        <button type="submit" disabled={signingIn || !password} className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#174c3c] px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[#103e2f] disabled:cursor-wait disabled:opacity-60">
+        {loginError && <div role="alert" aria-live="polite" className="rounded-xl border border-[#eedbd4] bg-[#fff6f1] p-3.5 text-xs leading-relaxed text-[#8b4d3c]">{loginError}</div>}
+        <button type="submit" disabled={signingIn || !password} className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#174c3c] px-5 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-[#103e2f] disabled:cursor-wait disabled:opacity-60">
           {signingIn ? <><LoaderCircle size={16} className="animate-spin" />Signing in…</> : <>Unlock admin console<ShieldCheck size={16} /></>}
         </button>
       </form>
@@ -145,16 +154,16 @@ export function AdminConsole() {
             <span className="hidden shrink-0 items-center gap-1.5 rounded-full border border-[#dbe4d3] bg-[#eef3e8] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[1.4px] text-[#5c7150] sm:inline-flex"><ShieldCheck size={12} />Admin</span>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => void refresh()} disabled={loadingData} className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-[#dce4d4] bg-white px-3.5 text-xs font-semibold text-[#5b6c53] transition hover:bg-[#f2f5ec] disabled:opacity-60"><RefreshCw size={14} className={cn(loadingData && 'animate-spin')} /><span className="hidden sm:inline">Refresh</span></button>
-            <button onClick={() => void signOut()} className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-[#dce4d4] bg-white px-3.5 text-xs font-semibold text-[#5b6c53] transition hover:bg-[#f2f5ec]"><LogOut size={14} /><span className="hidden sm:inline">Sign out</span></button>
+            <button aria-label="Refresh" onClick={() => void refresh()} disabled={loadingData} className="inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-xl border border-[#dce4d4] bg-white px-3.5 text-xs font-semibold text-[#5b6c53] transition hover:bg-[#f2f5ec] disabled:opacity-60"><RefreshCw size={14} className={cn(loadingData && 'animate-spin')} /><span className="hidden sm:inline">Refresh</span></button>
+            <button aria-label="Sign out" onClick={() => void signOut()} className="inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-xl border border-[#dce4d4] bg-white px-3.5 text-xs font-semibold text-[#5b6c53] transition hover:bg-[#f2f5ec]"><LogOut size={14} /><span className="hidden sm:inline">Sign out</span></button>
           </div>
         </div>
       </header>
 
       <div className="mx-auto max-w-[1180px] px-4 pt-6 sm:px-6 sm:pt-8">
-        <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#95a085]">PLATFORM OVERVIEW</p>
+        <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#59675c]">PLATFORM OVERVIEW</p>
         <h1 className="!mt-1.5 !text-[27px] !font-medium !leading-tight !tracking-[-0.9px] sm:!text-[31px]">Every workspace, at a glance</h1>
-        <p className="!mt-2 max-w-xl text-sm leading-relaxed text-[#8a957f]">Monitor providers, activity and payments across the whole platform. Deletions here are permanent and cascade to every record a business owns.</p>
+        <p className="!mt-2 max-w-xl text-sm leading-relaxed text-[#59675c]">Monitor providers, activity and payments across the whole platform. Deletions here are permanent and cascade to every record a business owns.</p>
 
         <section className="!mt-6 grid grid-cols-2 gap-3 sm:!mt-7 sm:grid-cols-3 lg:grid-cols-4">
           <StatCard icon={<Building2 size={16} />} label="Businesses" value={t?.businesses} hint={t ? `${t.realBusinesses} real · ${t.demoBusinesses} demo` : undefined} />
@@ -173,29 +182,30 @@ export function AdminConsole() {
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <div className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
+                <label htmlFor="admin-business-search" className="sr-only">Search businesses</label>
                 <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#9aa48e]" />
-                <input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search name, contact, email…" className="!min-h-11 !rounded-xl !border-[#dfe5dd] !pl-9 !pr-3 !text-base sm:!text-sm" />
+                <input ref={businessSearchRef} id="admin-business-search" type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search name, contact, email…" className="!min-h-11 !rounded-xl !border-[#dfe5dd] !pl-9 !pr-3 !text-base sm:!text-sm" />
               </div>
-              <div className="flex rounded-xl border border-[#dce4d4] bg-white p-1">
+              <div role="group" aria-label="Filter businesses" className="flex rounded-xl border border-[#dce4d4] bg-white p-1">
                 {(['all', 'real', 'demo'] as Filter[]).map(option => (
-                  <button key={option} onClick={() => setFilter(option)} className={cn('min-h-9 rounded-lg px-3 text-xs font-semibold capitalize transition', filter === option ? 'bg-[#174c3c] text-white' : 'text-[#6b7a5f] hover:bg-[#f2f5ec]')}>{option}</button>
+                  <button key={option} aria-pressed={filter === option} onClick={() => setFilter(option)} className={cn('min-h-9 rounded-lg px-3 text-xs font-semibold capitalize transition', filter === option ? 'bg-[#174c3c] text-white' : 'text-[#6b7a5f] hover:bg-[#f2f5ec]')}>{option}</button>
                 ))}
               </div>
-              <button onClick={() => setConfirm('demos')} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-[#e6d9c9] bg-[#fdf6ee] px-3.5 text-xs font-semibold text-[#a97b46] transition hover:bg-[#faeede]"><Sparkles size={14} />Purge demos</button>
+              <button onClick={event => { confirmationTriggerRef.current = event.currentTarget; setConfirm('demos'); }} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-[#e6d9c9] bg-[#fdf6ee] px-3.5 text-xs font-semibold text-[#70582e] transition hover:bg-[#faeede]"><Sparkles size={14} />Purge demos</button>
             </div>
           </div>
 
           <div className="!mt-4 overflow-hidden rounded-2xl border border-[#e6eae3] bg-white">
             {loadingData && !businesses.length ? (
-              <div className="grid place-items-center py-16 text-[#9aa48e]"><LoaderCircle className="animate-spin" size={22} /></div>
+              <div className="grid place-items-center py-16 text-[#59675c]"><LoaderCircle className="animate-spin" size={22} /></div>
             ) : !businesses.length ? (
-              <div className="grid place-items-center gap-2 py-16 text-center text-[#8a957f]"><Building2 size={26} className="text-[#b3bfa7]" /><p className="text-sm">No businesses match your filters yet.</p></div>
+              <div className="grid place-items-center gap-2 py-16 text-center text-[#59675c]"><Building2 size={26} className="text-[#59675c]" /><p className="text-sm">No businesses match your filters yet.</p></div>
             ) : (
               <>
                 {/* Desktop table */}
                 <table className="hidden w-full border-collapse text-left text-sm md:table">
                   <thead>
-                    <tr className="border-b border-[#eef0e9] text-[10px] uppercase tracking-[0.6px] text-[#a1a794]">
+                    <tr className="border-b border-[#eef0e9] text-[10px] uppercase tracking-[0.6px] text-[#59675c]">
                       <th className="px-5 py-3 font-medium">Business</th>
                       <th className="px-3 py-3 font-medium">Contact</th>
                       <th className="px-3 py-3 text-center font-medium">Students</th>
@@ -211,17 +221,17 @@ export function AdminConsole() {
                         <td className="px-5 py-3.5">
                           <div className="flex items-center gap-2 font-medium text-[#26382f]">
                             <span className="truncate">{business.name}</span>
-                            {business.isDemo && <span className="shrink-0 rounded-full bg-[#f8efd7] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-[#a1854c]">Demo</span>}
+                            {business.isDemo && <span className="shrink-0 rounded-full bg-[#f8efd7] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-[#70582e]">Demo</span>}
                           </div>
-                          <p className="!mt-0.5 truncate text-[11px] text-[#98a08e]">/{business.slug}</p>
+                          <p className="!mt-0.5 truncate text-[11px] text-[#59675c]">/{business.slug}</p>
                         </td>
-                        <td className="px-3 py-3.5"><p className="truncate text-[13px] text-[#4d5e51]">{business.ownerName}</p><p className="truncate text-[11px] text-[#98a08e]">{business.email}</p></td>
+                        <td className="px-3 py-3.5"><p className="truncate text-[13px] text-[#4d5e51]">{business.ownerName}</p><p className="truncate text-[11px] text-[#59675c]">{business.email}</p></td>
                         <td className="px-3 py-3.5 text-center tabular-nums text-[#4d5e51]">{business.counts.students}</td>
                         <td className="px-3 py-3.5 text-center tabular-nums text-[#4d5e51]">{business.counts.bookings}</td>
                         <td className="px-3 py-3.5 text-center tabular-nums text-[#4d5e51]">{business.counts.locations}</td>
-                        <td className="px-3 py-3.5 text-[12px] text-[#818c78]">{relative(business.createdAt)}</td>
+                        <td className="px-3 py-3.5 text-[12px] text-[#59675c]">{relative(business.createdAt)}</td>
                         <td className="px-5 py-3.5 text-right">
-                          <button onClick={() => setConfirm(business)} aria-label={`Delete ${business.name}`} className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-[#f0dcd7] bg-[#fdf3f0] px-3 text-xs font-semibold text-[#b0654f] transition hover:bg-[#fbe8e2]"><Trash2 size={13} />Delete</button>
+                          <button onClick={event => { confirmationTriggerRef.current = event.currentTarget; setConfirm(business); }} aria-label={`Delete ${business.name}`} className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-[#f0dcd7] bg-[#fdf3f0] px-3 text-xs font-semibold text-[#8b4d3c] transition hover:bg-[#fbe8e2]"><Trash2 size={13} />Delete</button>
                         </td>
                       </tr>
                     ))}
@@ -235,13 +245,13 @@ export function AdminConsole() {
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
                             <p className="truncate font-medium text-[#26382f]">{business.name}</p>
-                            {business.isDemo && <span className="shrink-0 rounded-full bg-[#f8efd7] px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wide text-[#a1854c]">Demo</span>}
+                            {business.isDemo && <span className="shrink-0 rounded-full bg-[#f8efd7] px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wide text-[#70582e]">Demo</span>}
                           </div>
-                          <p className="!mt-0.5 truncate text-[11px] text-[#98a08e]">{business.ownerName} · {business.email}</p>
+                          <p className="!mt-0.5 truncate text-[11px] text-[#59675c]">{business.ownerName} · {business.email}</p>
                         </div>
-                        <button onClick={() => setConfirm(business)} aria-label={`Delete ${business.name}`} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-[#f0dcd7] bg-[#fdf3f0] text-[#b0654f]"><Trash2 size={15} /></button>
+                        <button onClick={event => { confirmationTriggerRef.current = event.currentTarget; setConfirm(business); }} aria-label={`Delete ${business.name}`} className="grid h-11 w-11 shrink-0 place-items-center rounded-lg border border-[#f0dcd7] bg-[#fdf3f0] text-[#8b4d3c]"><Trash2 size={15} /></button>
                       </div>
-                      <div className="!mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[#818c78]">
+                      <div className="!mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[#59675c]">
                         <span><b className="font-semibold text-[#4d5e51]">{business.counts.students}</b> students</span>
                         <span><b className="font-semibold text-[#4d5e51]">{business.counts.bookings}</b> bookings</span>
                         <span><b className="font-semibold text-[#4d5e51]">{business.counts.locations}</b> places</span>
@@ -253,32 +263,43 @@ export function AdminConsole() {
               </>
             )}
           </div>
-          {overview && <p className="!mt-3 text-center text-[11px] text-[#a1a794]">Last updated {new Date(overview.generatedAt).toLocaleTimeString()} · showing up to 200 most recent businesses</p>}
+          {overview && <p className="!mt-3 text-center text-[11px] text-[#59675c]">Last updated {new Date(overview.generatedAt).toLocaleTimeString()} · showing up to 200 most recent businesses</p>}
         </section>
       </div>
 
-      {confirm && (
-        <div className="fixed inset-0 z-50 grid place-items-end bg-[#112c2252] p-0 backdrop-blur-sm sm:place-items-center sm:p-4" onClick={() => !working && setConfirm(null)}>
-          <div className="w-full rounded-t-3xl bg-white p-6 shadow-2xl sm:max-w-md sm:rounded-3xl" onClick={event => event.stopPropagation()}>
-            <div className="flex items-start justify-between gap-3">
-              <div className="grid h-11 w-11 place-items-center rounded-2xl bg-[#fdece7] text-[#c06a4f]"><AlertTriangle size={22} /></div>
-              <button onClick={() => !working && setConfirm(null)} aria-label="Close" className="grid h-10 w-10 place-items-center rounded-xl text-[#9aa48e] hover:bg-[#f2f5ec]"><X size={18} /></button>
-            </div>
-            <h2 className="!mt-4 !text-[20px] !font-semibold !tracking-[-0.4px]">{confirm === 'demos' ? 'Remove all demo workspaces?' : `Delete “${confirm.name}”?`}</h2>
-            <p className="!mt-2 text-sm leading-relaxed text-[#7c8878]">
+      <Dialog open={confirm !== null} onOpenChange={open => { if (!open && !working) setConfirm(null); }}>
+        {confirm && (
+          <DialogContent
+            aria-busy={working}
+            className="w-full max-w-md rounded-3xl p-6 shadow-2xl max-sm:bottom-0 max-sm:rounded-b-none"
+            onEscapeKeyDown={event => { if (working) event.preventDefault(); }}
+            onPointerDownOutside={event => { if (working) event.preventDefault(); }}
+            onOpenAutoFocus={event => {
+              event.preventDefault();
+              cancelConfirmationRef.current?.focus();
+            }}
+            onCloseAutoFocus={event => {
+              event.preventDefault();
+              const trigger = confirmationTriggerRef.current;
+              (working ? businessSearchRef.current : trigger?.isConnected ? trigger : businessSearchRef.current)?.focus();
+            }}
+          >
+            <div className="grid h-11 w-11 place-items-center rounded-2xl bg-[#fdece7] text-[#c06a4f]"><AlertTriangle size={22} /></div>
+            <DialogTitle className="!mt-4 !text-[20px] !font-semibold !tracking-[-0.4px]">{confirm === 'demos' ? 'Remove all demo workspaces?' : `Delete “${confirm.name}”?`}</DialogTitle>
+            <DialogDescription className="!mt-2 text-sm leading-relaxed text-[#59675c]">
               {confirm === 'demos'
                 ? 'This permanently deletes every demo business and all of their data. Real provider accounts are untouched.'
                 : 'This permanently deletes the business and every student, booking, package and payment it owns. This cannot be undone.'}
-            </p>
+            </DialogDescription>
             <div className="!mt-6 flex gap-3">
-              <button onClick={() => setConfirm(null)} disabled={working} className="inline-flex min-h-12 flex-1 items-center justify-center rounded-xl border border-[#dce4d4] bg-white text-sm font-semibold text-[#5b6c53] transition hover:bg-[#f2f5ec] disabled:opacity-60">Cancel</button>
+              <button ref={cancelConfirmationRef} onClick={() => setConfirm(null)} disabled={working} className="inline-flex min-h-12 flex-1 items-center justify-center rounded-xl border border-[#dce4d4] bg-white text-sm font-semibold text-[#5b6c53] transition hover:bg-[#f2f5ec] disabled:opacity-60">Cancel</button>
               <button onClick={() => void runDelete()} disabled={working} className="inline-flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl bg-[#b0503a] text-sm font-semibold text-white transition hover:bg-[#98432f] disabled:cursor-wait disabled:opacity-60">
                 {working ? <LoaderCircle size={16} className="animate-spin" /> : <Check size={16} />}{confirm === 'demos' ? 'Purge demos' : 'Delete forever'}
               </button>
             </div>
-          </div>
-        </div>
-      )}
+          </DialogContent>
+        )}
+      </Dialog>
     </main>
   );
 }
@@ -299,7 +320,7 @@ function StatCard({ icon, label, value, hint }: { icon: React.ReactNode; label: 
       </div>
       <p className="!mt-3 text-[26px] font-semibold tabular-nums leading-none tracking-[-0.8px] text-[#26382f]">{value === undefined ? '—' : value.toLocaleString()}</p>
       <p className="!mt-2 text-[12px] font-medium text-[#5b6c53]">{label}</p>
-      {hint && <p className="!mt-0.5 truncate text-[11px] text-[#98a08e]">{hint}</p>}
+      {hint && <p className="!mt-0.5 truncate text-[11px] text-[#59675c]">{hint}</p>}
     </div>
   );
 }

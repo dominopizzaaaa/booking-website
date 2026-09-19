@@ -10,6 +10,11 @@ import { dateKey, money, shortDate, time } from '@/lib/utils';
 
 type NewBookingDialogProps = { data: WorkspaceResponse; open: boolean; onClose: () => void; refresh: () => Promise<void> };
 
+function lessonHasEnded(endAt: string, now: number) {
+  const end = new Date(endAt).getTime();
+  return Number.isFinite(end) && end <= now;
+}
+
 export function NewBookingDialog(props: NewBookingDialogProps) {
   // Workspace switching does not require a full browser reload. Remount the
   // state holder so selections and uncontrolled notes from one business can
@@ -94,11 +99,46 @@ export function BookingDetail({ bookingId, data, onClose, refresh }: { bookingId
   const [selectedSlot, setSelectedSlot] = useState('');
   const [proposalMessage, setProposalMessage] = useState('');
   const [payMethod, setPayMethod] = useState('BANK_TRANSFER');
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const current = data.bookings.find(booking => booking.id === bookingId) ?? null;
   const managerBooking = managerData?.bookings.find(booking => booking.id === bookingId) ?? null;
-  useEffect(() => { setReschedule(false); setSelectedSlot(''); setProposalMessage(''); }, [bookingId]);
+  const currentStatus = current?.status;
+  const currentEndAt = current?.endAt;
+  useEffect(() => { setReschedule(false); setSelectedSlot(''); setProposalMessage(''); setNowMs(Date.now()); }, [bookingId]);
+  useEffect(() => {
+    if (!bookingId || !currentEndAt || currentStatus === 'CANCELLED' || currentStatus === 'COMPLETED') return;
+    const end = new Date(currentEndAt).getTime();
+    let timer: number | undefined;
+    function updateClock() {
+      const liveNow = Date.now();
+      setNowMs(liveNow);
+      if (Number.isFinite(end) && end > liveNow) {
+        timer = window.setTimeout(updateClock, Math.max(50, Math.min(30_000, end - liveNow)));
+      }
+    }
+    if (Number.isFinite(end) && end > Date.now()) {
+      timer = window.setTimeout(updateClock, Math.max(50, Math.min(30_000, end - Date.now())));
+    }
+    function handleVisibilityChange() {
+      if (document.visibilityState === 'visible') {
+        if (timer !== undefined) window.clearTimeout(timer);
+        updateClock();
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [bookingId, currentEndAt, currentStatus]);
+  useEffect(() => {
+    if (!currentEndAt || !lessonHasEnded(currentEndAt, nowMs)) return;
+    setReschedule(false);
+    setSelectedSlot('');
+  }, [currentEndAt, nowMs]);
   useEffect(() => { let active = true; if (reschedule && current) { setSlots([]); setSelectedSlot(''); loadSlots(data.business.slug, { serviceId: current.serviceId, instructorId: current.instructorId, locationId: current.locationId, date }).then(r => { if (active) setSlots(r.slots); }).catch(e => toast.error(e.message)); } return () => { active = false; }; }, [reschedule, date, bookingId, current, data.business.slug]);
   if (!current) return null;
+  const endAt = current.endAt;
 
   async function run<T>(work: () => Promise<T>, success: string) {
     setBusy(true);
@@ -109,16 +149,54 @@ export function BookingDetail({ bookingId, data, onClose, refresh }: { bookingId
   async function action(path: string, values: unknown, method: 'PATCH' | 'POST' = 'PATCH') {
     await run(() => mutate(path, method, values), 'Booking updated');
   }
+  function allowBeforeLessonEnd() {
+    const liveNow = Date.now();
+    if (!lessonHasEnded(endAt, liveNow)) return true;
+    setNowMs(liveNow);
+    setReschedule(false);
+    return false;
+  }
+  function allowAfterLessonEnd() {
+    const liveNow = Date.now();
+    if (lessonHasEnded(endAt, liveNow)) return true;
+    setNowMs(liveNow);
+    return false;
+  }
 
   const inactive = current.status === 'CANCELLED';
-  const scheduleClosed = inactive || current.status === 'COMPLETED';
+  const hasEnded = lessonHasEnded(current.endAt, nowMs);
+  const canMarkCompleted = current.status === 'CONFIRMED' && hasEnded;
+  const canMarkAttendance = hasEnded
+    && ['CONFIRMED', 'COMPLETED'].includes(current.status)
+    && current.coachAcceptance !== 'PENDING';
+  const scheduleClosed = inactive || current.status === 'COMPLETED' || hasEnded;
   const awaitingCoach = current.status === 'PENDING' && current.coachAcceptance === 'PENDING';
   const isAssignedCoach = data.user.accountType === 'COACH' && data.user.instructorId === current.instructorId;
   // Accepting an assignment is a teaching decision. The club account manages
   // the roster but never answers on a coach's behalf.
-  const canAnswerAssignment = awaitingCoach && isAssignedCoach;
-  const openRequest = scheduleClosed ? undefined : data.rescheduleRequests.find(request => request.bookingId === current.id && request.status === 'PENDING');
-  const weRaisedRequest = openRequest?.requestedByRole !== 'STUDENT';
+  const canAnswerAssignment = awaitingCoach && isAssignedCoach && !hasEnded;
+  const openRequest = data.rescheduleRequests.find(request => request.bookingId === current.id && request.status === 'PENDING');
+  const requestRaisedByStudent = openRequest?.requestedByRole === 'STUDENT';
+  // Provider roles share a workspace, but they do not share ownership of a
+  // proposal: the API only lets the exact role that raised it withdraw it.
+  const canWithdrawRequest = openRequest?.requestedByRole === data.user.accountType;
+  const requestOwner = openRequest?.requestedByRole === 'CLUB' ? 'club' : 'coach';
+  const requestHeading = scheduleClosed
+    ? 'Reschedule request needs closing'
+    : requestRaisedByStudent
+      ? 'The student asked for a new time'
+      : canWithdrawRequest
+        ? 'Waiting for the student to reply'
+        : `The ${requestOwner} proposed a new time`;
+  const requestStatusMessage = scheduleClosed
+    ? `${hasEnded ? 'The original lesson has ended' : 'The lesson is closed'}, so this proposal can no longer be accepted. ${requestRaisedByStudent
+      ? 'Decline the request to close it.'
+      : canWithdrawRequest
+        ? 'Withdraw the request to close it.'
+        : `Only the ${requestOwner} account that raised it can withdraw the request.`}`
+    : !requestRaisedByStudent && !canWithdrawRequest
+      ? `The session keeps its current time until the student replies. Only the ${requestOwner} account that raised it can withdraw the request.`
+      : 'The session keeps its current time until both sides agree.';
   // Payments for this lesson that still count, plus the reversed ones kept for
   // the audit trail.
   const lessonPayments = managerData
@@ -127,7 +205,7 @@ export function BookingDetail({ bookingId, data, onClose, refresh }: { bookingId
   const activePaymentFor = (studentId: string): Payment | undefined =>
     lessonPayments.find(payment => payment.studentId === studentId && !payment.reversedAt);
 
-  return <Dialog open={!!bookingId} onOpenChange={v => { if (!v && !busy) onClose(); }}><DialogContent className="max-w-lg"><DialogTitle className="pr-7 text-xl font-semibold">{current.serviceName}</DialogTitle><DialogDescription className="mt-2 mb-5 text-xs text-stone-500">Booking details · {current.id.slice(-8).toUpperCase()}</DialogDescription>
+  return <Dialog open={!!bookingId} onOpenChange={v => { if (!v && !busy) onClose(); }}><DialogContent className="max-w-lg [&_.text-stone-400]:!text-[#59675c]"><DialogTitle className="pr-7 text-xl font-semibold">{current.serviceName}</DialogTitle><DialogDescription className="mt-2 mb-5 text-xs text-stone-500">Booking details · {current.id.slice(-8).toUpperCase()}</DialogDescription>
     <div className="flex flex-wrap items-center gap-2">
       <span className={`badge ${current.status.toLowerCase()}`}>{current.status === 'PENDING' ? awaitingCoach ? 'Awaiting coach' : 'Venue pending' : current.status.toLowerCase()}</span>
       {current.recurringId && <span className="badge"><Repeat2 size={11} />Weekly lesson</span>}
@@ -138,25 +216,25 @@ export function BookingDetail({ bookingId, data, onClose, refresh }: { bookingId
     {awaitingCoach && <div className="mb-5 rounded-lg border border-amber-100 bg-amber-50 p-3 text-xs text-amber-800">
       <p className="leading-relaxed">{current.createdByRole === 'CLUB' ? 'The club assigned this lesson. The student does not need to accept it, but the coach does before it is confirmed.' : 'This lesson is waiting for the coach to accept it.'}</p>
       {canAnswerAssignment && <div className="mt-3 flex flex-wrap gap-2">
-        <Button size="sm" disabled={busy} onClick={() => void run(() => respondToAssignment(current.id, 'accept'), 'Lesson accepted')}><Check size={13} />Accept lesson</Button>
-        <Button size="sm" variant="outline" disabled={busy} onClick={() => { if (window.confirm('Decline this lesson? The slot is released, any package credit is returned, and the club is asked to reassign it.')) void run(() => respondToAssignment(current.id, 'decline'), 'Lesson declined'); }}><X size={13} />Cannot teach this</Button>
+        <Button size="sm" disabled={busy} onClick={() => { if (allowBeforeLessonEnd()) void run(() => respondToAssignment(current.id, 'accept'), 'Lesson accepted'); }}><Check size={13} />Accept lesson</Button>
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => { if (allowBeforeLessonEnd() && window.confirm('Decline this lesson? The slot is released, any package credit is returned, and the club is asked to reassign it.') && allowBeforeLessonEnd()) void run(() => respondToAssignment(current.id, 'decline'), 'Lesson declined'); }}><X size={13} />Cannot teach this</Button>
       </div>}
     </div>}
 
-    {current.status === 'PENDING' && !awaitingCoach && <div className="mb-5 rounded-lg border border-amber-100 bg-amber-50 p-3 text-xs text-amber-800"><p className="leading-relaxed">{managerData ? 'Please secure the venue separately, then confirm this session. Courtly has not reserved the court.' : 'Venue confirmation is still pending. The club can confirm it once the court or room is secured.'}</p>{managerData && <Button size="sm" variant="outline" className="mt-3" disabled={busy} onClick={() => action(`/bookings/${current.id}`, { status: 'CONFIRMED' })}><Check size={13} />Venue secured · confirm</Button>}</div>}
+    {current.status === 'PENDING' && !awaitingCoach && <div className="mb-5 rounded-lg border border-amber-100 bg-amber-50 p-3 text-xs text-amber-800"><p className="leading-relaxed">{managerData ? 'Please secure the venue separately, then confirm this session. Courtly has not reserved the court.' : 'Venue confirmation is still pending. The club can confirm it once the court or room is secured.'}</p>{managerData && !hasEnded && <Button size="sm" variant="outline" className="mt-3" disabled={busy} onClick={() => { if (allowBeforeLessonEnd()) void action(`/bookings/${current.id}`, { status: 'CONFIRMED' }); }}><Check size={13} />Venue secured · confirm</Button>}</div>}
 
-    {openRequest && <div className="mb-5 rounded-lg border border-[#e7dcc1] bg-[#fcf8ee] p-3 text-xs text-[#7a6838]">
-      <p className="flex items-center gap-2 font-semibold"><CalendarClock size={14} />{weRaisedRequest ? 'Waiting for the student to reply' : 'The student asked for a new time'}</p>
-      <p className="mt-2 leading-relaxed">Proposed: <strong className="font-semibold">{shortDate(openRequest.proposedStartAt)} at {time(openRequest.proposedStartAt)}</strong>. The session keeps its current time until both sides agree.</p>
+    {openRequest && <div role="region" aria-label="Pending reschedule request" className="mb-5 rounded-lg border border-[#e7dcc1] bg-[#fcf8ee] p-3 text-xs text-[#7a6838]">
+      <p className="flex items-center gap-2 font-semibold"><CalendarClock size={14} />{requestHeading}</p>
+      <p className="mt-2 leading-relaxed">Proposed: <strong className="font-semibold">{shortDate(openRequest.proposedStartAt)} at {time(openRequest.proposedStartAt)}</strong>. {requestStatusMessage}</p>
       {openRequest.message && <p className="mt-2 border-l-2 border-[#e0d3b4] pl-3 italic">“{openRequest.message}”</p>}
-      <div className="mt-3 flex flex-wrap gap-2">
-        {weRaisedRequest
+      {(canWithdrawRequest || requestRaisedByStudent) && <div className="mt-3 flex flex-wrap gap-2">
+        {canWithdrawRequest
           ? <Button size="sm" variant="outline" disabled={busy} onClick={() => void run(() => respondToRescheduleRequest(openRequest.id, 'withdraw'), 'Request withdrawn')}><X size={13} />Withdraw request</Button>
-          : <>
-            <Button size="sm" disabled={busy} onClick={() => void run(() => respondToRescheduleRequest(openRequest.id, 'accept'), 'New time confirmed')}><Check size={13} />Accept new time</Button>
+          : requestRaisedByStudent ? <>
+            {!scheduleClosed && <Button size="sm" disabled={busy} onClick={() => { if (allowBeforeLessonEnd()) void run(() => respondToRescheduleRequest(openRequest.id, 'accept'), 'New time confirmed'); }}><Check size={13} />Accept new time</Button>}
             <Button size="sm" variant="outline" disabled={busy} onClick={() => void run(() => respondToRescheduleRequest(openRequest.id, 'decline'), 'Request declined')}><X size={13} />Decline</Button>
-          </>}
-      </div>
+          </> : null}
+      </div>}
     </div>}
 
     <h3 className="mb-3 text-xs">Participants · {current.participants.length}/{current.capacity}</h3>
@@ -166,7 +244,7 @@ export function BookingDetail({ bookingId, data, onClose, refresh }: { bookingId
       return <div className="rounded-lg border border-stone-200 p-3" key={p.id}>
         <div className="flex items-center justify-between gap-3"><div><p className="text-xs font-semibold">{p.name}</p><p className="mt-1 text-[10px] text-stone-400">{p.email}</p></div>{managerParticipant && <span className={`badge ${!managerParticipant.paid ? 'pending' : ''}`}>{managerParticipant.packageId ? 'Package credit' : managerParticipant.paid ? 'Paid' : `${money(managerParticipant.price)} unpaid`}</span>}</div>
         <div className="mt-3 flex flex-wrap gap-2">
-          {!inactive && !awaitingCoach && <><Button size="sm" variant={p.attendance === 'PRESENT' ? 'default' : 'outline'} disabled={busy} onClick={() => action(`/bookings/${current.id}/participants/${p.id}`, { attendance: 'PRESENT' })}><Check size={12} />Attended</Button><Button size="sm" variant={p.attendance === 'ABSENT' ? 'destructive' : 'ghost'} disabled={busy} onClick={() => action(`/bookings/${current.id}/participants/${p.id}`, { attendance: 'ABSENT' })}>No-show</Button></>}
+          {canMarkAttendance && <><Button size="sm" variant={p.attendance === 'PRESENT' ? 'default' : 'outline'} disabled={busy} onClick={() => { if (allowAfterLessonEnd()) void action(`/bookings/${current.id}/participants/${p.id}`, { attendance: 'PRESENT' }); }}><Check size={12} />Attended</Button><Button size="sm" variant={p.attendance === 'ABSENT' ? 'destructive' : 'ghost'} disabled={busy} onClick={() => { if (allowAfterLessonEnd()) void action(`/bookings/${current.id}/participants/${p.id}`, { attendance: 'ABSENT' }); }}>No-show</Button></>}
           {managerParticipant && !managerParticipant.paid && !managerParticipant.packageId && !inactive && <Button size="sm" variant="outline" disabled={busy} onClick={() => action('/payments', { studentId: p.studentId, bookingId: current.id, amount: managerParticipant.price, method: payMethod, note: 'Lesson payment' }, 'POST')}>Record payment</Button>}
           {/* Recording a payment is undoable: the row stays in the ledger,
               marked reversed, and the participant returns to unpaid. */}
@@ -187,12 +265,14 @@ export function BookingDetail({ bookingId, data, onClose, refresh }: { bookingId
       <select aria-label="New lesson time" value={selectedSlot} onChange={e => setSelectedSlot(e.target.value)}><option value="">Select available time</option>{slots.filter(s => s.available && s.startAt !== current.startAt).map(s => <option key={s.startAt} value={s.startAt}>{time(s.startAt)}</option>)}</select>
       <div><label htmlFor="reschedule-message">Message to the student <span className="font-normal text-stone-400">(optional)</span></label><input id="reschedule-message" value={proposalMessage} maxLength={500} onChange={e => setProposalMessage(e.target.value)} placeholder="Why the time needs to move" /></div>
       <p className="text-[10px] leading-relaxed text-stone-500">The student has to accept before the session moves. This affects only the selected occurrence, not the full series.</p>
-      <Button size="sm" disabled={busy || !selectedSlot} onClick={() => void run(async () => { await proposeWorkspaceReschedule(current.id, selectedSlot, proposalMessage); setReschedule(false); }, 'Request sent to the student')}>Send request<ArrowRight size={13} /></Button>
+      <Button size="sm" disabled={busy || !selectedSlot} onClick={() => { if (allowBeforeLessonEnd()) void run(async () => { await proposeWorkspaceReschedule(current.id, selectedSlot, proposalMessage); setReschedule(false); }, 'Request sent to the student'); }}>Send request<ArrowRight size={13} /></Button>
     </div>}
 
-    {!scheduleClosed && <div className="mt-6 flex flex-wrap justify-between gap-2 border-t border-stone-100 pt-4">
-      <Button variant="outline" size="sm" disabled={!!openRequest || awaitingCoach} onClick={() => setReschedule(v => !v)}><Clock3 size={13} />{openRequest ? 'Reschedule pending' : 'Propose a new time'}</Button>
-      <Button variant="destructive" size="sm" disabled={busy} onClick={() => { if (window.confirm('Cancel this lesson for all participants? Package credits will be returned. Other recurring lessons stay unchanged.')) action(`/bookings/${current.id}`, { status: 'CANCELLED' }); }}>Cancel lesson</Button>
+    {(canMarkCompleted || !scheduleClosed) && <div className="mt-6 flex flex-wrap justify-between gap-2 border-t border-stone-100 pt-4">
+      {canMarkCompleted
+        ? <Button size="sm" disabled={busy} onClick={() => { if (allowAfterLessonEnd()) void run(() => mutate(`/bookings/${current.id}`, 'PATCH', { status: 'COMPLETED' }), 'Session marked completed'); }}><Check size={13} />Mark completed</Button>
+        : <Button variant="outline" size="sm" disabled={!!openRequest || awaitingCoach} onClick={() => { if (allowBeforeLessonEnd()) setReschedule(v => !v); }}><Clock3 size={13} />{openRequest ? 'Reschedule pending' : 'Propose a new time'}</Button>}
+      {!scheduleClosed && <Button variant="destructive" size="sm" disabled={busy} onClick={() => { if (allowBeforeLessonEnd() && window.confirm('Cancel this lesson for all participants? Package credits will be returned. Other recurring lessons stay unchanged.') && allowBeforeLessonEnd()) void action(`/bookings/${current.id}`, { status: 'CANCELLED' }); }}>Cancel lesson</Button>}
     </div>}
   </DialogContent></Dialog>;
 }

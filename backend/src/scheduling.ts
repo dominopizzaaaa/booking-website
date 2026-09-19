@@ -339,6 +339,9 @@ export async function rescheduleBooking(tx: Tx, businessId: string, bookingId: s
   });
   if (booking.instructorId !== original.instructorId) throw new HttpError(409, 'Session changed concurrently. Please retry.');
   if (['CANCELLED', 'COMPLETED'].includes(booking.status)) throw new HttpError(400, 'Only active sessions can be rescheduled');
+  if (booking.coachAcceptance === 'PENDING') {
+    throw new HttpError(400, 'This lesson is still waiting for the coach to accept it. Reschedule it once it is confirmed.');
+  }
   const startAt = new Date(changes.startAt);
   // Equivalent ISO offsets represent the same instant. Return the existing
   // booking before availability evaluation or writes so retries are harmless.

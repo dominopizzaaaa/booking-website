@@ -4,6 +4,7 @@ import { DateTime } from 'luxon';
 import { z } from 'zod';
 import { rateLimit } from 'express-rate-limit';
 import { requireAuth, requireStudent } from './auth.js';
+import { skipRateLimits } from './config.js';
 import { prisma } from './db.js';
 import { asyncRoute, HttpError } from './http.js';
 import { bookingInclude, bookingJson, publicBookingBusiness, publicInstructor, publicLocation, serviceJson } from './serializers.js';
@@ -12,6 +13,7 @@ import { createBookingAccountAlerts } from './account-notifications.js';
 import { notifyWorkspace } from './notifications.js';
 import {
   acceptRescheduleRequest,
+  assertInsideRescheduleWindow,
   createRescheduleRequest,
   declineRescheduleRequest,
   rescheduleNoticeHours,
@@ -22,9 +24,9 @@ import {
 } from './reschedule.js';
 
 export const publicRouter = Router();
-const bookingLimit = rateLimit({ windowMs: 60 * 60_000, limit: 80, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many requests. Please try again later.' } });
-const slotLimit = rateLimit({ windowMs: 5 * 60_000, limit: 180, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many availability checks. Please wait a moment.' } });
-const legacyLookupLimit = rateLimit({ windowMs: 15 * 60_000, limit: 120, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many management-link requests. Please try again later.' } });
+const bookingLimit = rateLimit({ windowMs: 60 * 60_000, limit: 80, standardHeaders: 'draft-8', legacyHeaders: false, skip: skipRateLimits, message: { error: 'Too many requests. Please try again later.' } });
+const slotLimit = rateLimit({ windowMs: 5 * 60_000, limit: 180, standardHeaders: 'draft-8', legacyHeaders: false, skip: skipRateLimits, message: { error: 'Too many availability checks. Please wait a moment.' } });
+const legacyLookupLimit = rateLimit({ windowMs: 15 * 60_000, limit: 120, standardHeaders: 'draft-8', legacyHeaders: false, skip: skipRateLimits, message: { error: 'Too many management-link requests. Please try again later.' } });
 
 async function businessForSlug(slug: string) {
   const business = await prisma.business.findUnique({ where: { slug } });
@@ -243,6 +245,13 @@ function canManageLegacy(p: LegacyParticipant) {
     && p.booking.startAt.getTime() - Date.now() >= p.booking.business.cancellationHours * 3600_000;
 }
 
+function canRescheduleLegacy(p: LegacyParticipant) {
+  if (p.cancelledAt || !['CONFIRMED', 'PENDING'].includes(p.booking.status)) return false;
+  if (p.booking.coachAcceptance === 'PENDING') return false;
+  const hours = rescheduleNoticeHours(p.booking.instructor, p.booking.business);
+  return p.booking.startAt.getTime() - Date.now() >= hours * 3600_000;
+}
+
 function legacyBookingJson(p: LegacyParticipant) {
   const single = bookingJson({ ...p.booking, participants: [{ ...p, cancelledAt: null }] }, { includeNotes: false });
   if (p.cancelledAt) single.status = 'CANCELLED';
@@ -265,7 +274,11 @@ function legacyBookingJson(p: LegacyParticipant) {
     },
     location: publicLocation(p.booking.location),
     canCancel: canChange,
-    canReschedule: canChange && p.booking.type === 'PRIVATE' && instructorCanHost,
+    canReschedule: canRescheduleLegacy(p) && p.booking.type === 'PRIVATE' && instructorCanHost,
+    management: {
+      cancellationHours: p.booking.business.cancellationHours,
+      rescheduleNoticeHours: rescheduleNoticeHours(p.booking.instructor, p.booking.business),
+    },
   };
 }
 
@@ -309,15 +322,18 @@ publicRouter.post('/manage/:token/reschedule', bookingLimit, asyncRoute(async (r
   await prisma.$transaction(async tx => {
     await lockInstructors(tx, [initial.booking.instructorId]);
     const participant = await tx.participant.findUniqueOrThrow({
-      where: { id: initial.id }, include: { booking: { include: { business: true } } },
+      where: { id: initial.id }, include: { booking: { include: { business: true, instructor: true } } },
     });
     if (participant.booking.instructorId !== initial.booking.instructorId) throw new HttpError(409, 'Session changed. Please refresh and try again');
     if (participant.cancelledAt || !['CONFIRMED', 'PENDING'].includes(participant.booking.status)
-      || participant.booking.startAt.getTime() <= Date.now()
-      || participant.booking.startAt.getTime() - Date.now() < participant.booking.business.cancellationHours * 3600_000) {
+      || participant.booking.startAt.getTime() <= Date.now()) {
       throw new HttpError(400, 'This booking is outside the self-service rescheduling window. Contact your coach.');
     }
+    if (participant.booking.coachAcceptance === 'PENDING') {
+      throw new HttpError(400, 'This lesson is still waiting for the coach to accept it. Reschedule it once it is confirmed.');
+    }
     if (participant.booking.type !== 'PRIVATE') throw new HttpError(400, 'Please contact your coach to move your place in a group session');
+    assertInsideRescheduleWindow(participant.booking, participant.booking.instructor, participant.booking.business);
     await rescheduleBooking(tx, participant.booking.businessId, participant.bookingId, changes);
   }, { timeout: 30_000 });
   res.json(legacyBookingJson(await legacyParticipant(req.params.token)));

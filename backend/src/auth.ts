@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { rateLimit } from 'express-rate-limit';
 import { prisma } from './db.js';
-import { config, production } from './config.js';
+import { config, production, skipRateLimits } from './config.js';
 import { asyncRoute, HttpError, initials, type AccountRequest, type AuthRequest, type MembershipWithBusiness } from './http.js';
 import { authState } from './serializers.js';
 import { seedBusiness } from './seed.js';
@@ -104,10 +104,12 @@ export const requireStudent: RequestHandler = (req, _res, next) => {
 const authRouter = Router();
 const registrationLimit = rateLimit({
   windowMs: 15 * 60_000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false,
+  skip: skipRateLimits,
   message: { error: 'Too many attempts. Please try again later.' },
 });
 const loginLimit = rateLimit({
   windowMs: 15 * 60_000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false,
+  skip: skipRateLimits,
   // Only failed credentials should spend the brute-force budget. Successful
   // sign-ins are ordinary use and must not lock out a shared office or test
   // runner that legitimately signs several accounts in from one address.
@@ -195,6 +197,7 @@ authRouter.post('/login', loginLimit, asyncRoute(async (req, res) => {
 
 authRouter.post('/demo', rateLimit({
   windowMs: 60 * 60_000, limit: 40, standardHeaders: 'draft-8', legacyHeaders: false,
+  skip: skipRateLimits,
   message: { error: 'Demo limit reached. Try again later.' },
 }), asyncRoute(async (req, res) => {
   if (!config.demoEnabled) throw new HttpError(403, 'Demo mode is disabled');

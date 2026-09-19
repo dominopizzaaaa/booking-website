@@ -171,7 +171,7 @@ describe.sequential('database identity and payment tenant invariants', () => {
       await db.$executeRawUnsafe(`INSERT INTO "Payment" ("id", "businessId", "studentId", "instructorId", "amount", "kind") VALUES ('valid-payout', 'club-a', NULL, 'coach-a', 500, 'CLUB_TO_COACH')`);
       await db.$executeRawUnsafe(`INSERT INTO "Payment" ("id", "businessId", "studentId", "instructorId", "bookingId", "amount", "kind") VALUES ('valid-booking-payout', 'club-a', NULL, 'coach-a', 'club-route-booking', 500, 'CLUB_TO_COACH')`);
       await db.$executeRawUnsafe(`INSERT INTO "Payment" ("id", "businessId", "studentId", "bookingId", "amount", "kind") VALUES ('valid-direct-contract', 'club-a', 'student-a', 'direct-route-booking', 1000, 'STUDENT_TO_COACH')`);
-      await db.$executeRawUnsafe(`INSERT INTO "Payment" ("id", "businessId", "studentId", "bookingId", "packageId", "amount", "kind") VALUES ('valid-solo-receipt', 'solo', 'solo-student', 'solo-route-booking', 'solo-package', 1000, 'STUDENT_TO_COACH')`);
+      await db.$executeRawUnsafe(`INSERT INTO "Payment" ("id", "businessId", "studentId", "packageId", "amount", "kind") VALUES ('valid-solo-receipt', 'solo', 'solo-student', 'solo-package', 1000, 'STUDENT_TO_COACH')`);
       await expect(db.$executeRawUnsafe(`INSERT INTO "Payment" ("id", "businessId", "studentId", "amount", "kind") VALUES ('cross-tenant-receipt', 'club-b', 'student-a', 1000, 'STUDENT_TO_CLUB')`))
         .rejects.toThrow();
       await expect(db.$executeRawUnsafe(`INSERT INTO "Payment" ("id", "businessId", "studentId", "instructorId", "amount", "kind") VALUES ('cross-tenant-payout', 'club-b', NULL, 'coach-a', 500, 'CLUB_TO_COACH')`))

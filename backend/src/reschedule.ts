@@ -20,6 +20,8 @@ export const rescheduleResponseInput = z.object({
   message: z.string().trim().max(500).default(''),
 }).strict();
 
+export const withdrawRescheduleRequestInput = z.object({}).strict();
+
 const requestInclude = {
   booking: {
     include: {
@@ -103,6 +105,14 @@ async function loadRequest(tx: Tx, requestId: string) {
   return request;
 }
 
+async function lockAndLoadRequest(tx: Tx, requestId: string) {
+  // Accept, decline and withdraw are competing terminal decisions. Lock their
+  // shared request before reading its state so a waiter observes the winner's
+  // committed status instead of acting on an earlier PENDING snapshot.
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`reschedule-request:${requestId}`}, 0))`;
+  return loadRequest(tx, requestId);
+}
+
 /**
  * Raise a proposal. The proposed time is validated against live availability
  * straight away so neither side is asked to consider a slot that cannot be
@@ -120,15 +130,26 @@ export async function createRescheduleRequest(
     message: string;
   },
 ) {
-  const booking = await tx.booking.findFirst({
+  const initial = await tx.booking.findFirst({
     where: { id: options.bookingId, businessId: options.businessId },
+    select: { id: true, instructorId: true },
+  });
+  if (!initial) throw new HttpError(404, 'Booking not found');
+  await lockInstructors(tx, [initial.instructorId]);
+  // Booking lifecycle changes take the same instructor lock. Reload after
+  // waiting so a cancellation, completion or unaccepted reassignment cannot
+  // be hidden by the snapshot taken before the lock.
+  const booking = await tx.booking.findFirst({
+    where: { id: initial.id, businessId: options.businessId },
     include: {
       business: true, instructor: true, service: true, location: true,
       participants: { where: { cancelledAt: null }, include: { student: true } },
     },
   });
   if (!booking) throw new HttpError(404, 'Booking not found');
-  await lockInstructors(tx, [booking.instructorId]);
+  if (booking.instructorId !== initial.instructorId) {
+    throw new HttpError(409, 'Session changed. Please retry.');
+  }
   if (['CANCELLED', 'COMPLETED'].includes(booking.status)) {
     throw new HttpError(400, 'Only an active session can be rescheduled');
   }
@@ -220,17 +241,27 @@ export async function acceptRescheduleRequest(
   requestId: string,
   responder: { role: RequesterRole; userId: string | null; message: string },
 ) {
-  const request = await loadRequest(tx, requestId);
+  const request = await lockAndLoadRequest(tx, requestId);
   if (request.status !== 'PENDING') throw new HttpError(409, 'This reschedule request has already been answered');
   assertOtherSide(request.requestedByRole, responder.role,
     'A reschedule request is accepted by the other side, not by the side that raised it');
 
-  const booking = await tx.booking.findUniqueOrThrow({
+  const initial = await tx.booking.findUniqueOrThrow({
     where: { id: request.bookingId },
+    select: { id: true, instructorId: true },
+  });
+  await lockInstructors(tx, [initial.instructorId]);
+  const booking = await tx.booking.findUniqueOrThrow({
+    where: { id: initial.id },
     include: { business: true, instructor: true, participants: { where: { cancelledAt: null }, include: { student: true, package: true } } },
   });
-  await lockInstructors(tx, [booking.instructorId]);
+  if (booking.instructorId !== initial.instructorId) {
+    throw new HttpError(409, 'Session changed. Please retry.');
+  }
   if (['CANCELLED', 'COMPLETED'].includes(booking.status)) throw new HttpError(400, 'Only an active session can be rescheduled');
+  if (booking.coachAcceptance === 'PENDING') {
+    throw new HttpError(400, 'This lesson is still waiting for the coach to accept it. Reschedule it once it is confirmed.');
+  }
   assertInsideRescheduleWindow(booking, booking.instructor, booking.business);
 
   const ctx = await schedulingContext(tx, booking.businessId, booking.serviceId, booking.instructorId, booking.locationId);
@@ -303,7 +334,7 @@ export async function declineRescheduleRequest(
   requestId: string,
   responder: { role: RequesterRole; userId: string | null; message: string },
 ) {
-  const request = await loadRequest(tx, requestId);
+  const request = await lockAndLoadRequest(tx, requestId);
   if (request.status !== 'PENDING') throw new HttpError(409, 'This reschedule request has already been answered');
   assertOtherSide(request.requestedByRole, responder.role, 'Withdraw your own request instead of declining it');
   await tx.rescheduleRequest.update({
@@ -335,7 +366,7 @@ export async function withdrawRescheduleRequest(
   requestId: string,
   requester: { role: RequesterRole; userId: string | null },
 ) {
-  const request = await loadRequest(tx, requestId);
+  const request = await lockAndLoadRequest(tx, requestId);
   if (request.status !== 'PENDING') throw new HttpError(409, 'This reschedule request has already been answered');
   if (request.requestedByRole !== requester.role) {
     throw new HttpError(403, 'Only the side that raised a request can withdraw it');

@@ -71,6 +71,7 @@ model Membership {
   business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
   /// The club's roster entry for this coach. A club account never teaches, so
   /// it never has one; a coach's own practice does, because they teach there.
+  /// SQL also pins it to businessId with a non-cascading composite foreign key.
   instructorId String?       @unique
   instructor   Instructor?   @relation(fields: [instructorId], references: [id], onDelete: SetNull)
   active       Boolean       @default(true)
@@ -97,6 +98,7 @@ model AuthSession {
 
 model Instructor {
   id                    String                  @id @default(cuid())
+  /// Tenant ownership is immutable after creation at the database boundary.
   businessId            String
   business              Business                @relation(fields: [businessId], references: [id], onDelete: Cascade)
   name                  String
@@ -124,6 +126,7 @@ model Instructor {
 
 model Location {
   id               String            @id @default(cuid())
+  /// Tenant ownership is immutable after creation at the database boundary.
   businessId       String
   business         Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
   name             String
@@ -146,11 +149,14 @@ model Location {
   availability     Availability[]
   bookings         Booking[]
 
+  // Composite target for tenant-bound scheduling relations.
+  @@unique([id, businessId])
   @@index([businessId])
 }
 
 model Service {
   id            String            @id @default(cuid())
+  /// Tenant ownership is immutable after creation at the database boundary.
   businessId    String
   business      Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
   name          String
@@ -169,12 +175,16 @@ model Service {
   bookings      Booking[]
   packages      LessonPackage[]
 
+  // Composite target for a booking's tenant-bound service relation.
+  @@unique([id, businessId])
   @@index([businessId])
 }
 
 model ServiceLocation {
   id          String              @id @default(cuid())
   serviceId   String
+  /// Deferred keyed invariants keep the service and location in one business
+  /// even though this assignment row has no duplicate businessId.
   service     Service             @relation(fields: [serviceId], references: [id], onDelete: Cascade)
   locationId  String
   location    Location            @relation(fields: [locationId], references: [id], onDelete: Cascade)
@@ -190,6 +200,8 @@ model ServiceInstructor {
   serviceLocationId String
   serviceLocation   ServiceLocation @relation(fields: [serviceLocationId], references: [id], onDelete: Cascade)
   instructorId      String
+  /// The database requires this instructor to share the service location's
+  /// business; API-side roster checks are an additional bookability rule.
   instructor        Instructor      @relation(fields: [instructorId], references: [id], onDelete: Cascade)
 
   @@id([serviceLocationId, instructorId])
@@ -200,9 +212,11 @@ model Availability {
   businessId   String
   business     Business   @relation(fields: [businessId], references: [id], onDelete: Cascade)
   instructorId String
-  instructor   Instructor @relation(fields: [instructorId], references: [id], onDelete: Cascade)
+  /// Both scheduling resources are pinned to businessId by composite foreign
+  /// keys, which remain deferred for transactional graph construction.
+  instructor   Instructor @relation(fields: [instructorId, businessId], references: [id, businessId], onDelete: Cascade, onUpdate: NoAction)
   locationId   String
-  location     Location   @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  location     Location   @relation(fields: [locationId, businessId], references: [id, businessId], onDelete: Cascade, onUpdate: NoAction)
   dayOfWeek    Int
   startTime    String
   endTime      String
@@ -216,7 +230,8 @@ model AvailabilityException {
   businessId   String
   business     Business   @relation(fields: [businessId], references: [id], onDelete: Cascade)
   instructorId String
-  instructor   Instructor @relation(fields: [instructorId], references: [id], onDelete: Cascade)
+  /// A deferred composite foreign key pins the instructor to this business.
+  instructor   Instructor @relation(fields: [instructorId, businessId], references: [id, businessId], onDelete: Cascade, onUpdate: NoAction)
   date         String
   reason       String     @default("Unavailable")
 
@@ -228,6 +243,7 @@ model AvailabilityException {
 /// Their identity as a person lives on User.
 model Student {
   id           String          @id @default(cuid())
+  /// Tenant ownership is immutable after creation at the database boundary.
   businessId   String
   business     Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
   userId       String?
@@ -256,9 +272,11 @@ model LessonPackage {
   businessId   String
   business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
   studentId    String
-  student      Student       @relation(fields: [studentId, businessId], references: [id, businessId], onDelete: Restrict)
+  student      Student       @relation(fields: [studentId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   name         String
   serviceId    String?
+  /// SQL adds a deferred, non-cascading composite tenant FK alongside this
+  /// Prisma relation. It nulls only serviceId so businessId stays intact.
   service      Service?      @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   totalCredits Int
   usedCredits  Int           @default(0)
@@ -270,19 +288,23 @@ model LessonPackage {
   payments     Payment[]
 
   @@unique([id, businessId])
+  @@unique([id, studentId])
   @@index([businessId])
 }
 
 model Booking {
   id                   String                @id @default(cuid())
+  /// Tenant ownership is immutable after creation at the database boundary.
   businessId           String
   business             Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
   serviceId            String
-  service              Service               @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  /// Deferred composite foreign keys require the service, instructor and
+  /// location to belong to businessId.
+  service              Service               @relation(fields: [serviceId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   instructorId         String
-  instructor           Instructor            @relation(fields: [instructorId], references: [id], onDelete: Restrict)
+  instructor           Instructor            @relation(fields: [instructorId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   locationId           String
-  location             Location              @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  location             Location              @relation(fields: [locationId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   startAt              DateTime
   endAt                DateTime
   duration             Int
@@ -326,6 +348,7 @@ model Participant {
   bookingId                String
   booking                  Booking        @relation(fields: [bookingId], references: [id], onDelete: Cascade)
   studentId                String
+  /// The database requires this student to share the booking's business.
   student                  Student        @relation(fields: [studentId], references: [id], onDelete: Restrict)
   attendance               String         @default("UNMARKED")
   paid                     Boolean        @default(false)
@@ -333,7 +356,9 @@ model Participant {
   price                    Int
   notes                    String         @default("")
   packageId                String?
-  package                  LessonPackage? @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  /// A composite relation pins package ownership to this student. Because the
+  /// student is tenant-pinned to the booking, package tenancy follows too.
+  package                  LessonPackage? @relation(fields: [packageId, studentId], references: [id, studentId], onDelete: NoAction, onUpdate: NoAction)
   creditConsumed           Boolean        @default(false)
   cancelledAt              DateTime?
   managementTokenHash      String?        @unique
@@ -341,6 +366,7 @@ model Participant {
   managementTokenRevokedAt DateTime?
 
   @@unique([bookingId, studentId])
+  @@index([packageId, studentId])
 }
 
 model Payment {
@@ -351,11 +377,14 @@ model Payment {
   /// have no student party. Including businessId in the relation prevents a
   /// ledger row from naming a student owned by another tenant.
   studentId        String?
-  student          Student?       @relation(fields: [studentId, businessId], references: [id, businessId], onDelete: Restrict)
+  student          Student?       @relation(fields: [studentId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   bookingId        String?
-  booking          Booking?       @relation(fields: [bookingId, businessId], references: [id, businessId], onDelete: Restrict)
+  /// A student receipt may target this booking only when the named student is
+  /// one of its participants. A payment cannot target a booking and package.
+  booking          Booking?       @relation(fields: [bookingId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   packageId        String?
-  package          LessonPackage? @relation(fields: [packageId, businessId], references: [id, businessId], onDelete: Restrict)
+  /// A package receipt must name the same student who owns the package.
+  package          LessonPackage? @relation(fields: [packageId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   /// Which leg of the money path this record represents. Club lessons are
   /// STUDENT_TO_CLUB followed by CLUB_TO_COACH; a solo coach's own student
   /// pays STUDENT_TO_COACH.
@@ -364,7 +393,7 @@ model Payment {
   /// payout can never silently lose the coach it names, and include businessId
   /// so the payee must be on this tenant's roster.
   instructorId     String?
-  instructor       Instructor?    @relation(fields: [instructorId, businessId], references: [id, businessId], onDelete: Restrict)
+  instructor       Instructor?    @relation(fields: [instructorId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   /// Integer minor units (cents).
   amount           Int
   method           String         @default("BANK_TRANSFER")
@@ -378,6 +407,8 @@ model Payment {
 
   @@index([businessId])
   @@index([instructorId])
+  @@index([bookingId, studentId])
+  @@index([packageId, studentId])
 }
 
 model Notification {
@@ -430,8 +461,13 @@ model RescheduleRequest {
   businessId        String
   business          Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
   bookingId         String
-  booking           Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  /// A deferred composite foreign key pins the request to this booking's business.
+  booking           Booking   @relation(fields: [bookingId, businessId], references: [id, businessId], onDelete: Cascade, onUpdate: NoAction)
   /// "STUDENT", "COACH" or "CLUB". Who asked for the change.
+  /// New or retargeted rows require a requester account with live authority:
+  /// STUDENT requires an active participantId, while provider roles forbid one
+  /// and require an active matching affiliation. Historical null requesters,
+  /// later cancellation and later affiliation deactivation remain preserved.
   requestedByRole   String
   requestedByUserId String?
   /// The participant the request belongs to when a student raised it.

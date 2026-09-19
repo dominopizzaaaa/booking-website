@@ -44,6 +44,10 @@ type LegacyManagedBooking = {
   location?: PublicLocation;
   canCancel?: boolean;
   canReschedule?: boolean;
+  management?: {
+    cancellationHours: number;
+    rescheduleNoticeHours?: number;
+  };
 };
 type Action = 'none' | 'cancel' | 'reschedule';
 type Conflict = { date: string; reason: string };
@@ -72,6 +76,36 @@ function conflictList(error: unknown): Conflict[] {
           typeof item.reason === 'string',
       )
     : [];
+}
+
+function rescheduleNoticeHours(data: LegacyManagedBooking) {
+  return Math.max(
+    data.management?.rescheduleNoticeHours ?? data.business.cancellationHours,
+    data.business.cancellationHours,
+  );
+}
+
+function canCancelNow(data: LegacyManagedBooking, now: number) {
+  const start = new Date(data.booking.startAt).getTime();
+  return Number.isFinite(start)
+    && !data.participant.cancelled
+    && !data.participant.cancelledAt
+    && !['CANCELLED', 'COMPLETED'].includes(data.booking.status)
+    && now < start
+    && now <= start - data.business.cancellationHours * 3_600_000
+    && data.canCancel !== false;
+}
+
+function canRescheduleNow(data: LegacyManagedBooking, now: number) {
+  const start = new Date(data.booking.startAt).getTime();
+  return Number.isFinite(start)
+    && !data.participant.cancelled
+    && !data.participant.cancelledAt
+    && ['CONFIRMED', 'PENDING'].includes(data.booking.status)
+    && data.booking.type === 'PRIVATE'
+    && now < start
+    && now <= start - rescheduleNoticeHours(data) * 3_600_000
+    && data.canReschedule !== false;
 }
 
 function plusDays(key: string, days: number) {
@@ -141,7 +175,7 @@ function LegacyShell({
         </div>
       </header>
       {children}
-      <footer className="!mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 px-5 py-8 text-[11px] text-[#8a9489] sm:flex-row sm:px-8">
+      <footer className="!mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 px-5 py-8 text-[11px] text-[#59675c] sm:flex-row sm:px-8">
         <span>Thoughtfully powered by Courtly</span>
         <span>
           {business
@@ -157,7 +191,7 @@ function Loading() {
   return (
     <div
       role="status"
-      className="flex min-h-72 flex-col items-center justify-center gap-4 text-sm text-[#7a877b]"
+      className="flex min-h-72 flex-col items-center justify-center gap-4 text-sm text-[#59675c]"
     >
       <LoaderCircle className="animate-spin text-[#174c3c]" size={26} />
       <span>Opening your booking…</span>
@@ -205,9 +239,9 @@ function DetailRow({
 }) {
   return (
     <div className="flex items-start gap-3">
-      <span className="!mt-0.5 shrink-0 text-[#85927f]">{icon}</span>
+      <span className="!mt-0.5 shrink-0 text-[#59675c]">{icon}</span>
       <div className="min-w-0">
-        <p className="text-[10px] font-medium uppercase tracking-wider text-[#8a9487]">
+        <p className="text-[10px] font-medium uppercase tracking-wider text-[#59675c]">
           {title}
         </p>
         <div className="!mt-1 text-sm leading-relaxed text-[#415244]">
@@ -317,7 +351,7 @@ function DateSlots({
               'flex min-h-[76px] w-[54px] shrink-0 snap-start flex-col items-center justify-center gap-1.5 rounded-xl border px-1 py-2.5 transition sm:w-auto',
               date === key
                 ? 'border-[#174c3c] bg-[#174c3c] text-white shadow-sm'
-                : 'border-[#e5e9e4] bg-white text-[#8a9487] hover:border-[#a1b397] hover:bg-[#f8faf5]',
+                : 'border-[#e5e9e4] bg-white text-[#59675c] hover:border-[#a1b397] hover:bg-[#f8faf5]',
             )}
           >
             <span className="text-[10px] font-medium uppercase tracking-wide sm:text-xs sm:normal-case sm:tracking-normal">
@@ -337,14 +371,14 @@ function DateSlots({
       <div className="border-t border-[#eef0eb] pt-5">
         <div className="!mb-4 flex flex-wrap items-center justify-between gap-2">
           <h3 className="!text-sm">Available start times</h3>
-          <span className="flex items-center gap-1 text-[11px] text-[#82907e]">
+          <span className="flex items-center gap-1 text-[11px] text-[#59675c]">
             <Clock3 size={12} /> {timezone.replaceAll('_', ' ')}
           </span>
         </div>
         {loading ? (
           <div
             role="status"
-            className="flex min-h-28 items-center justify-center gap-2 py-8 text-sm text-[#81907c]"
+            className="flex min-h-28 items-center justify-center gap-2 py-8 text-sm text-[#59675c]"
           >
             <LoaderCircle size={17} className="animate-spin" />
             Checking availability…
@@ -361,10 +395,10 @@ function DateSlots({
             <CalendarDays
               size={28}
               strokeWidth={1.5}
-              className="!mx-auto mb-3 text-[#92a385]"
+              className="!mx-auto mb-3 text-[#4f6847]"
             />
             <h3 className="!text-sm">No times available on this date</h3>
-            <p className="!mx-auto mt-2 max-w-xs text-xs leading-relaxed text-[#83907d]">
+            <p className="!mx-auto mt-2 max-w-xs text-xs leading-relaxed text-[#59675c]">
               Choose another day to keep the same lesson, coach, and location.
             </p>
             <button
@@ -398,7 +432,7 @@ function DateSlots({
                   {time(candidate.startAt, timezone)}
                 </span>
                 {candidate.placesRemaining > 1 && (
-                  <span className="text-[9px] font-normal text-[#82907c]">
+                  <span className="text-[9px] font-normal text-[#59675c]">
                     {candidate.placesRemaining} places left
                   </span>
                 )}
@@ -426,6 +460,7 @@ export function LegacyBooking({ token }: { token: string }) {
   const [slotsError, setSlotsError] = useState('');
   const [selectedSlot, setSelectedSlot] = useState<Slot | null>(null);
   const [slotsVersion, setSlotsVersion] = useState(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const path = `/manage/${encodeURIComponent(token)}`;
 
   const load = useCallback(async () => {
@@ -446,6 +481,44 @@ export function LegacyBooking({ token }: { token: string }) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!data) return;
+    const start = new Date(data.booking.startAt).getTime();
+    const end = new Date(data.booking.endAt).getTime();
+    const rescheduleHours = rescheduleNoticeHours(data);
+    const boundaries = [
+      start - data.business.cancellationHours * 3_600_000 + 1,
+      start - rescheduleHours * 3_600_000 + 1,
+      start,
+      end,
+    ].filter(Number.isFinite);
+    let timer: number | undefined;
+    function updateClock() {
+      const liveNow = Date.now();
+      setNowMs(liveNow);
+      const futureBoundaries = boundaries.filter((value) => value > liveNow);
+      const nextBoundary = futureBoundaries.length
+        ? Math.min(...futureBoundaries)
+        : Number.POSITIVE_INFINITY;
+      timer = window.setTimeout(
+        updateClock,
+        Math.max(50, Math.min(30_000, nextBoundary - liveNow)),
+      );
+    }
+    updateClock();
+    function handleVisibilityChange() {
+      if (document.visibilityState === 'visible') {
+        if (timer !== undefined) window.clearTimeout(timer);
+        updateClock();
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [data]);
 
   useEffect(() => {
     if (action !== 'reschedule' || !data || !date) return;
@@ -480,8 +553,33 @@ export function LegacyBooking({ token }: { token: string }) {
     };
   }, [action, data, date, slotsVersion]);
 
+  useEffect(() => {
+    if (!data || action === 'none') return;
+    if (action === 'cancel' && !canCancelNow(data, nowMs)) {
+      setAction('none');
+      setNotice(`This booking is now inside ${data.business.cancellationHours} hours of its start. Please contact your coach.`);
+      return;
+    }
+    if (action === 'reschedule' && !canRescheduleNow(data, nowMs)) {
+      setAction('none');
+      setSelectedSlot(null);
+      setNotice('This booking is now outside the rescheduling window. Contact your coach.');
+    }
+  }, [action, data, nowMs]);
+
   function beginAction(nextAction: Exclude<Action, 'none'>) {
     if (!data) return;
+    const liveNow = Date.now();
+    if (nextAction === 'cancel' && !canCancelNow(data, liveNow)) {
+      setNowMs(liveNow);
+      setNotice(`This booking is now inside ${data.business.cancellationHours} hours of its start. Please contact your coach.`);
+      return;
+    }
+    if (nextAction === 'reschedule' && !canRescheduleNow(data, liveNow)) {
+      setNowMs(liveNow);
+      setNotice('This booking is now outside the rescheduling window. Contact your coach.');
+      return;
+    }
     setAction(nextAction);
     setActionError('');
     setConflicts([]);
@@ -502,6 +600,19 @@ export function LegacyBooking({ token }: { token: string }) {
   async function performAction() {
     if (action === 'none' || busy) return;
     if (action === 'reschedule' && !selectedSlot) return;
+    const liveNow = Date.now();
+    if (action === 'cancel' && (!data || !canCancelNow(data, liveNow))) {
+      setNowMs(liveNow);
+      setActionError(data
+        ? `This booking is now inside ${data.business.cancellationHours} hours of its start. Please contact your coach.`
+        : 'This booking can no longer be cancelled.');
+      return;
+    }
+    if (action === 'reschedule' && (!data || !canRescheduleNow(data, liveNow))) {
+      setNowMs(liveNow);
+      setActionError('This booking is now outside the rescheduling window. Contact your coach.');
+      return;
+    }
     setBusy(true);
     setActionError('');
     setConflicts([]);
@@ -544,12 +655,12 @@ export function LegacyBooking({ token }: { token: string }) {
       <LegacyShell>
         <main className="!mx-auto max-w-lg px-5 py-16">
           <section className={cn(panel, 'space-y-5 p-7')}>
-            <ShieldCheck size={30} className="text-[#93a582]" />
+            <ShieldCheck size={30} className="text-[#4f6847]" />
             <h1 className="!text-2xl">This booking link is unavailable</h1>
             <ErrorNotice
               message={error || 'This management link is not available.'}
             />
-            <p className="text-xs leading-relaxed text-[#86947a]">
+            <p className="text-xs leading-relaxed text-[#59675c]">
               Check that you opened the full link from your original booking
               receipt. If it has expired, contact your coach or sign in to your
               account.
@@ -579,21 +690,12 @@ export function LegacyBooking({ token }: { token: string }) {
     !!participant.cancelledAt;
   const completed =
     booking.status === 'COMPLETED' ||
-    new Date(booking.endAt).getTime() < Date.now();
+    new Date(booking.endAt).getTime() <= nowMs;
   const pending = booking.status === 'PENDING';
-  const started = new Date(booking.startAt).getTime() <= Date.now();
-  const insideWindow =
-    new Date(booking.startAt).getTime() - Date.now() <
-    business.cancellationHours * 3_600_000;
-  const fallbackCanChange =
-    !cancelled && !completed && !started && !insideWindow;
-  const canCancel =
-    !cancelled && !completed && (data.canCancel ?? fallbackCanChange);
-  const canReschedule =
-    !cancelled &&
-    !completed &&
-    booking.type === 'PRIVATE' &&
-    (data.canReschedule ?? fallbackCanChange);
+  const started = new Date(booking.startAt).getTime() <= nowMs;
+  const canCancel = canCancelNow(data, nowMs);
+  const rescheduleNotice = rescheduleNoticeHours(data);
+  const canReschedule = canRescheduleNow(data, nowMs);
   const status = cancelled
     ? 'Cancelled'
     : pending
@@ -607,13 +709,13 @@ export function LegacyBooking({ token }: { token: string }) {
       <main className="!mx-auto max-w-3xl px-5 py-10 sm:px-8 sm:py-14">
         <div className="!mb-8 flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
           <div>
-            <p className="!mb-2 text-[10px] font-semibold uppercase tracking-[2px] text-[#8d9b80]">
+            <p className="!mb-2 text-[10px] font-semibold uppercase tracking-[2px] text-[#59675c]">
               Existing private booking link
             </p>
             <h1 className="!text-3xl !font-medium !tracking-tight sm:!text-4xl">
               Your booking
             </h1>
-            <p className="!mt-3 text-sm text-[#86937c]">
+            <p className="!mt-3 text-sm text-[#59675c]">
               View or update this booking without signing in.
             </p>
           </div>
@@ -625,7 +727,7 @@ export function LegacyBooking({ token }: { token: string }) {
         {notice && (
           <div
             role="status"
-            className="!mb-5 flex items-start gap-2.5 rounded-xl border border-[#d8e4cb] bg-[#edf5e4] p-4 text-sm leading-relaxed text-[#66834d]"
+            className="!mb-5 flex items-start gap-2.5 rounded-xl border border-[#d8e4cb] bg-[#edf5e4] p-4 text-sm leading-relaxed text-[#4f6847]"
           >
             <CheckCheck size={18} className="!mt-0.5 shrink-0" />
             {notice}
@@ -639,12 +741,12 @@ export function LegacyBooking({ token }: { token: string }) {
               className={cn(
                 'rounded-full px-3 py-1.5 text-[10px] font-medium',
                 status === 'Cancelled'
-                  ? 'bg-[#f8e8e3] text-[#a67260]'
+                  ? 'bg-[#f8e8e3] text-[#8b4d3c]'
                   : status === 'Awaiting confirmation'
-                    ? 'bg-[#f8eed3] text-[#9b844b]'
+                    ? 'bg-[#f8eed3] text-[#70582e]'
                     : status === 'Completed'
-                      ? 'bg-[#e8edf2] text-[#728696]'
-                      : 'bg-[#e9f0df] text-[#77905c]',
+                      ? 'bg-[#e8edf2] text-[#4f687d]'
+                      : 'bg-[#e9f0df] text-[#4f6847]',
               )}
             >
               {status}
@@ -652,12 +754,12 @@ export function LegacyBooking({ token }: { token: string }) {
           </div>
           <div className="p-5 sm:p-8">
             <div className="!mb-7 flex items-center gap-4">
-              <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-[#eaf0e2] text-[#869d6f]">
+              <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-[#eaf0e2] text-[#4f6847]">
                 <CircleDot size={29} strokeWidth={1.5} />
               </span>
               <div>
                 <h2 className="!text-xl">{booking.serviceName}</h2>
-                <p className="!mt-1.5 text-xs text-[#88967d]">
+                <p className="!mt-1.5 text-xs text-[#59675c]">
                   With {booking.instructorName} ·{' '}
                   {Math.max(
                     0,
@@ -674,11 +776,11 @@ export function LegacyBooking({ token }: { token: string }) {
             <div className="grid gap-6 sm:grid-cols-2">
               <DetailRow icon={<CalendarDays size={18} />} title="When">
                 {shortDate(booking.startAt, business.timezone)}
-                <p className="text-xs text-[#89977d]">
+                <p className="text-xs text-[#59675c]">
                   {time(booking.startAt, business.timezone)} –{' '}
                   {time(booking.endAt, business.timezone)}
                 </p>
-                <p className="text-[10px] text-[#9aa48e]">
+                <p className="text-[10px] text-[#59675c]">
                   {business.timezone.replaceAll('_', ' ')}
                 </p>
               </DetailRow>
@@ -687,7 +789,7 @@ export function LegacyBooking({ token }: { token: string }) {
                 title="Where"
               >
                 {booking.locationName}
-                <p className="break-words text-xs text-[#89977d]">
+                <p className="break-words text-xs text-[#59675c]">
                   {booking.address ||
                     location?.address ||
                     'Details provided by your coach'}
@@ -698,7 +800,7 @@ export function LegacyBooking({ token }: { token: string }) {
               </DetailRow>
               <DetailRow icon={<ShieldCheck size={18} />} title="Session price">
                 {money(participant.price ?? booking.price, business.currency)}
-                <p className="text-xs text-[#89977d]">
+                <p className="text-xs text-[#59675c]">
                   {participant.paid
                     ? 'Marked paid by your coach'
                     : 'Payment arranged with your coach'}
@@ -706,7 +808,7 @@ export function LegacyBooking({ token }: { token: string }) {
               </DetailRow>
             </div>
             {pending && (
-              <div className="!mt-6 flex gap-2.5 rounded-xl border border-[#eee5ce] bg-[#fcf8ec] p-4 text-xs leading-relaxed text-[#897344]">
+              <div className="!mt-6 flex gap-2.5 rounded-xl border border-[#eee5ce] bg-[#fcf8ec] p-4 text-xs leading-relaxed text-[#70582e]">
                 <Info size={16} className="!mt-0.5 shrink-0" />
                 <div>
                   <strong>Your session is awaiting confirmation.</strong>
@@ -723,18 +825,20 @@ export function LegacyBooking({ token }: { token: string }) {
         {action === 'none' && (
           <section className={cn(panel, 'mt-5 p-5 sm:p-6')}>
             <h2 className="!text-base">Plans change. We get it.</h2>
-            <p className="!mt-2 text-xs leading-relaxed text-[#87967b]">
+            <p className="!mt-2 text-xs leading-relaxed text-[#59675c]">
               {cancelled
                 ? 'This booking is cancelled. Sign in to your account when you are ready to book again.'
-                : `Changes must be made at least ${business.cancellationHours} hours before the session and affect only this booking.`}
+                : rescheduleNotice === business.cancellationHours
+                  ? `Changes must be made at least ${business.cancellationHours} hours before the session and affect only this booking.`
+                  : `Cancellation requires ${business.cancellationHours} hours notice; rescheduling requires ${rescheduleNotice} hours notice.`}
             </p>
             {!cancelled && booking.type === 'GROUP' && !canReschedule && (
-              <p className="!mt-3 text-xs leading-relaxed text-[#849575]">
+              <p className="!mt-3 text-xs leading-relaxed text-[#59675c]">
                 Contact your coach to move a place in a group session.
               </p>
             )}
             {!cancelled && !canCancel && !canReschedule && (
-              <p className="!mt-3 rounded-xl bg-[#f6f8f2] p-3 text-xs leading-relaxed text-[#849575]">
+              <p className="!mt-3 rounded-xl bg-[#f6f8f2] p-3 text-xs leading-relaxed text-[#59675c]">
                 {started || completed
                   ? 'This session has already started or finished.'
                   : 'This session is inside the self-service change window.'}{' '}
@@ -754,7 +858,7 @@ export function LegacyBooking({ token }: { token: string }) {
               {canCancel && (
                 <button
                   type="button"
-                  className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-[#edddd7] px-4 py-2.5 text-sm font-medium text-[#a37565] transition hover:bg-[#fff7f3]"
+                  className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-[#edddd7] px-4 py-2.5 text-sm font-medium text-[#8b4d3c] transition hover:bg-[#fff7f3]"
                   onClick={() => beginAction('cancel')}
                 >
                   <X size={15} /> Cancel booking
@@ -769,20 +873,20 @@ export function LegacyBooking({ token }: { token: string }) {
           </section>
         )}
 
-        {action === 'cancel' && (
+        {action === 'cancel' && canCancel && (
           <section
             role="region"
             aria-label="Confirm cancellation"
             className="!mt-5 rounded-2xl border border-[#e7d4ca] bg-[#fffcf9] p-5 sm:p-6"
           >
             <h2 className="!text-lg">Cancel this session?</h2>
-            <p className="!mt-2 text-sm leading-relaxed text-[#958273]">
+            <p className="!mt-2 text-sm leading-relaxed text-[#70582e]">
               This releases your place in {booking.serviceName} on{' '}
               {shortDate(booking.startAt, business.timezone)} at{' '}
               {time(booking.startAt, business.timezone)}. This cannot be
               undone from this link.
             </p>
-            <p className="!mt-3 text-xs leading-relaxed text-[#a09586]">
+            <p className="!mt-3 text-xs leading-relaxed text-[#70582e]">
               If you paid your coach directly, contact them about their refund
               policy.
             </p>
@@ -802,8 +906,8 @@ export function LegacyBooking({ token }: { token: string }) {
               </button>
               <button
                 type="button"
-                disabled={busy}
-                className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-[#a46d56] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#8b5945] disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={busy || !canCancel}
+                className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-[#8b4d3c] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#743e31] disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={() => void performAction()}
               >
                 {busy ? (
@@ -817,12 +921,12 @@ export function LegacyBooking({ token }: { token: string }) {
           </section>
         )}
 
-        {action === 'reschedule' && (
+        {action === 'reschedule' && canReschedule && (
           <section className={cn(panel, 'mt-5 p-5 sm:p-7')}>
             <div className="!mb-6 flex items-start justify-between gap-4">
               <div>
                 <h2 className="!text-lg">Find a better time</h2>
-                <p className="!mt-2 text-xs text-[#8b987f]">
+                <p className="!mt-2 text-xs text-[#59675c]">
                   The lesson, coach, and location stay the same.
                 </p>
               </div>
@@ -852,7 +956,7 @@ export function LegacyBooking({ token }: { token: string }) {
               minimumDate={dateKey(new Date(), business.timezone)}
             />
             {selectedSlot && (
-              <div className="!mt-5 rounded-xl bg-[#f0f5e8] p-4 text-xs leading-relaxed text-[#7d9169]">
+              <div className="!mt-5 rounded-xl bg-[#f0f5e8] p-4 text-xs leading-relaxed text-[#4f6847]">
                 New time:{' '}
                 <strong>
                   {shortDate(selectedSlot.startAt, business.timezone)},{' '}
@@ -878,7 +982,7 @@ export function LegacyBooking({ token }: { token: string }) {
               <button
                 type="button"
                 className={primaryButton}
-                disabled={!selectedSlot || busy || slotsLoading}
+                disabled={!selectedSlot || busy || slotsLoading || !canReschedule}
                 onClick={() => void performAction()}
               >
                 {busy ? (
@@ -892,7 +996,7 @@ export function LegacyBooking({ token }: { token: string }) {
           </section>
         )}
 
-        <div className="!mt-7 flex items-start gap-2.5 px-1 text-[11px] leading-relaxed text-[#96a08a]">
+        <div className="!mt-7 flex items-start gap-2.5 px-1 text-[11px] leading-relaxed text-[#59675c]">
           <ShieldCheck size={15} className="!mt-0.5 shrink-0" />
           <p>
             This legacy link is a private credential. Keep it safe: anyone with

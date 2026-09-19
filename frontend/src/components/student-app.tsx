@@ -34,6 +34,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type Ref,
   type ReactNode,
 } from 'react';
 import { CourtlyLogo } from '@/components/public-booking';
@@ -219,6 +220,15 @@ function outgoingRequest(item: AccountBooking) {
     : null;
 }
 
+function rescheduleAcceptanceClosed(item: AccountBooking, now = Date.now()) {
+  const endsAt = new Date(item.booking.endAt).getTime();
+  return (
+    bookingCancelled(item) ||
+    item.booking.status === 'COMPLETED' ||
+    (Number.isFinite(endsAt) && endsAt <= now)
+  );
+}
+
 function notificationArray(value: unknown): unknown[] | null {
   if (Array.isArray(value)) return value;
   if (!value || typeof value !== 'object') return null;
@@ -376,11 +386,11 @@ function knownClubs(bookings: AccountBooking[], preferredSlug?: string, now = Da
 }
 
 function statusClass(state: string) {
-  if (state === 'Cancelled') return 'bg-[#f8e8e3] text-[#a67260]';
-  if (state === 'Awaiting confirmation' || state === 'Awaiting coach') return 'bg-[#f8eed3] text-[#9b844b]';
-  if (state === 'Completed') return 'bg-[#e8edf2] text-[#728696]';
+  if (state === 'Cancelled') return 'bg-[#f8e8e3] text-[#8b4d3c]';
+  if (state === 'Awaiting confirmation' || state === 'Awaiting coach') return 'bg-[#f8eed3] text-[#70582e]';
+  if (state === 'Completed') return 'bg-[#e8edf2] text-[#4f687d]';
   if (state === 'In progress') return 'bg-[#dfeee7] text-[#39705a]';
-  return 'bg-[#e9f0df] text-[#77905c]';
+  return 'bg-[#e9f0df] text-[#4f6847]';
 }
 
 function LocationIcon({ location, size = 18 }: { location?: PublicLocation; size?: number }) {
@@ -392,9 +402,9 @@ function LocationIcon({ location, size = 18 }: { location?: PublicLocation; size
 function Detail({ icon, label, children }: { icon: ReactNode; label: string; children: ReactNode }) {
   return (
     <div className="flex items-start gap-3">
-      <span className="mt-0.5 shrink-0 text-[#85927f]">{icon}</span>
+      <span className="mt-0.5 shrink-0 text-[#59675c]">{icon}</span>
       <div>
-        <p className="text-[10px] font-medium uppercase tracking-wider text-[#8a9487]">
+        <p className="text-[10px] font-medium uppercase tracking-wider text-[#59675c]">
           {label}
         </p>
         <div className="mt-1 text-sm leading-relaxed text-[#415244]">{children}</div>
@@ -426,6 +436,31 @@ function ErrorNotice({ message, conflicts = [] }: { message: string; conflicts?:
   );
 }
 
+function SuccessNotice({
+  message,
+  noticeRef,
+  className,
+}: {
+  message: string;
+  noticeRef: Ref<HTMLDivElement>;
+  className?: string;
+}) {
+  return (
+    <div
+      ref={noticeRef}
+      role="status"
+      tabIndex={-1}
+      className={cn(
+        'flex items-start gap-2.5 rounded-xl border border-[#d8e4cb] bg-[#edf5e4] p-4 text-sm text-[#4f6847] outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a]',
+        className,
+      )}
+    >
+      <CheckCheck aria-hidden="true" size={18} className="mt-0.5 shrink-0" />
+      {message}
+    </div>
+  );
+}
+
 function EmptyState({
   icon,
   title,
@@ -439,11 +474,11 @@ function EmptyState({
 }) {
   return (
     <section className={cn(panel, 'px-6 py-10 text-center sm:px-10')}>
-      <span className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-[#eef3e8] text-[#819672]">
+      <span className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-[#eef3e8] text-[#4f6847]">
         {icon}
       </span>
       <h2 className="mt-5 text-xl font-semibold tracking-tight text-[#263e33]">{title}</h2>
-      <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-[#83907e]">{children}</p>
+      <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-[#59675c]">{children}</p>
       {action && <div className="mt-6">{action}</div>}
     </section>
   );
@@ -527,11 +562,11 @@ function BookingLinkForm({ id }: { id: string }) {
           Open booking page <ArrowRight size={15} />
         </button>
       </div>
-      <p id={hintId} className="mt-2 text-[11px] leading-relaxed text-[#899487]">
+      <p id={hintId} className="mt-2 text-[11px] leading-relaxed text-[#59675c]">
         Use the full link your club shared, or just the part after /book/.
       </p>
       {error && (
-        <p id={errorId} role="alert" className="mt-2 text-xs font-medium text-[#a16a55]">
+        <p id={errorId} role="alert" className="mt-2 text-xs font-medium text-[#8b4d3c]">
           {error}
         </p>
       )}
@@ -545,7 +580,7 @@ function LoadingScreen({ text }: { text: string }) {
       <span className="grid h-12 w-12 place-items-center rounded-2xl bg-[#e9f0e2] text-[#174c3c]">
         <LoaderCircle size={23} className="animate-spin" />
       </span>
-      <p className="text-sm text-[#7e8d7d]">{text}</p>
+      <p className="text-sm text-[#59675c]">{text}</p>
     </div>
   );
 }
@@ -554,14 +589,14 @@ function CompactBooking({ item, nowMs }: { item: AccountBooking; nowMs: number }
   const state = bookingState(item, nowMs);
   return (
     <article className="flex items-start gap-3 rounded-xl border border-[#e8ece5] bg-white p-4">
-      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#edf2e7] text-[#7f966c]">
+      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#edf2e7] text-[#4f6847]">
         <CalendarDays size={18} />
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
             <h3 className="text-sm font-semibold text-[#294536]">{item.booking.serviceName}</h3>
-            <p className="mt-1 text-xs text-[#8a9583]">{item.business.name}</p>
+            <p className="mt-1 text-xs text-[#59675c]">{item.business.name}</p>
           </div>
           <span className={cn('rounded-full px-2 py-1 text-[9px] font-medium', statusClass(state))}>
             {state}
@@ -609,7 +644,7 @@ function BookingRow({
         aria-label={`Open details for ${item.booking.serviceName} at ${item.business.name}`}
         className="flex w-full items-center gap-3.5 rounded-2xl p-4 text-left transition hover:bg-[#fafbf7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a] sm:p-5"
       >
-        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#eaf0e2] text-[#7f966c]">
+        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#eaf0e2] text-[#4f6847]">
           <CircleDot size={20} strokeWidth={1.6} />
         </span>
         <span className="min-w-0 flex-1">
@@ -621,18 +656,18 @@ function BookingRow({
               {state}
             </span>
           </span>
-          <span className="mt-1.5 block text-xs text-[#78866f]">
+          <span className="mt-1.5 block text-xs text-[#59675c]">
             {shortDate(item.booking.startAt, item.business.timezone)} ·{' '}
             {time(item.booking.startAt, item.business.timezone)} · {item.business.name}
           </span>
           {(incoming || outgoing) && (
-            <span className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-[#f6ead2] px-2.5 py-1 text-[10px] font-semibold text-[#8d7740]">
+            <span className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-[#f6ead2] px-2.5 py-1 text-[10px] font-semibold text-[#70582e]">
               <CalendarClock size={11} />
               {incoming ? 'New time proposed · your reply needed' : 'Waiting on your coach'}
             </span>
           )}
         </span>
-        <ChevronRight size={17} className="shrink-0 text-[#a8b3a4]" aria-hidden="true" />
+        <ChevronRight size={17} className="shrink-0 text-[#59675c]" aria-hidden="true" />
       </button>
     </article>
   );
@@ -641,6 +676,8 @@ function BookingRow({
 type BookingDialogProps = {
   item: AccountBooking | null;
   onClose: () => void;
+  notice: string;
+  noticeRef: Ref<HTMLDivElement>;
   mode: BookingDialogMode;
   setMode: (mode: BookingDialogMode) => void;
   busy: boolean;
@@ -670,6 +707,8 @@ type BookingDialogProps = {
 function BookingDialog({
   item,
   onClose,
+  notice,
+  noticeRef,
   mode,
   setMode,
   busy,
@@ -694,6 +733,8 @@ function BookingDialog({
   const canReschedule = canChangeBooking(item, 'reschedule', nowMs);
   const incoming = incomingRequest(item);
   const outgoing = outgoingRequest(item);
+  const incomingClosed = !!incoming && rescheduleAcceptanceClosed(item, nowMs);
+  const originalLessonEnded = new Date(item.booking.endAt).getTime() <= nowMs;
   const availableSlots = slots.filter(
     (candidate) => candidate.available && candidate.startAt !== item.booking.startAt,
   );
@@ -708,7 +749,7 @@ function BookingDialog({
         <DialogTitle className="text-xl font-semibold tracking-tight text-[#20382d]">
           {item.booking.serviceName}
         </DialogTitle>
-        <DialogDescription className="mt-2 text-xs leading-relaxed text-[#849080]">
+        <DialogDescription className="mt-2 text-xs leading-relaxed text-[#59675c]">
           With {item.booking.instructorName} at {item.business.name}
         </DialogDescription>
 
@@ -724,12 +765,16 @@ function BookingDialog({
           </Link>
         </div>
 
+        {notice && (
+          <SuccessNotice message={notice} noticeRef={noticeRef} className="mt-5" />
+        )}
+
         {mode === 'details' && (
           <>
             <div className="mt-5 grid gap-5 sm:grid-cols-2">
               <Detail icon={<CalendarDays size={18} />} label="When">
                 {shortDate(item.booking.startAt, item.business.timezone)}
-                <p className="text-xs text-[#89977d]">
+                <p className="text-xs text-[#59675c]">
                   {time(item.booking.startAt, item.business.timezone)} –{' '}
                   {time(item.booking.endAt, item.business.timezone)}
                 </p>
@@ -737,14 +782,14 @@ function BookingDialog({
               <Detail icon={<LocationIcon location={item.location} />} label="Where">
                 {item.booking.locationName}
                 {(item.booking.address || item.location?.address) && (
-                  <p className="text-xs text-[#89977d]">
+                  <p className="text-xs text-[#59675c]">
                     {item.booking.address || item.location?.address}
                   </p>
                 )}
               </Detail>
               <Detail icon={<ShieldCheck size={18} />} label="Session price">
                 {money(item.participant.price ?? item.booking.price, item.business.currency)}
-                <p className="text-xs text-[#89977d]">
+                <p className="text-xs text-[#59675c]">
                   {item.participant.paid
                     ? 'Marked paid'
                     : item.paymentRoute === 'CLUB'
@@ -758,14 +803,14 @@ function BookingDialog({
             </div>
 
             {state === 'Awaiting coach' && (
-              <div className="mt-5 flex gap-2.5 rounded-xl border border-[#eee5ce] bg-[#fcf8ec] p-4 text-xs leading-relaxed text-[#897344]">
+              <div className="mt-5 flex gap-2.5 rounded-xl border border-[#eee5ce] bg-[#fcf8ec] p-4 text-xs leading-relaxed text-[#70582e]">
                 <Info size={16} className="mt-0.5 shrink-0" />
                 {item.business.name} booked this lesson for you. Your coach is confirming it — nothing
                 is needed from you.
               </div>
             )}
             {state === 'Awaiting confirmation' && (
-              <div className="mt-5 flex gap-2.5 rounded-xl border border-[#eee5ce] bg-[#fcf8ec] p-4 text-xs leading-relaxed text-[#897344]">
+              <div className="mt-5 flex gap-2.5 rounded-xl border border-[#eee5ce] bg-[#fcf8ec] p-4 text-xs leading-relaxed text-[#70582e]">
                 <Info size={16} className="mt-0.5 shrink-0" />
                 Your coach will confirm this request and any venue arrangements.
               </div>
@@ -777,9 +822,10 @@ function BookingDialog({
                 className="mt-5 rounded-xl border border-[#e7dcc1] bg-[#fcf8ee] p-4"
               >
                 <h3 className="flex items-center gap-2 text-sm font-semibold text-[#6f5f36]">
-                  <CalendarClock size={15} /> A new time was proposed
+                  <CalendarClock size={15} />
+                  {incomingClosed ? 'Reschedule request needs closing' : 'A new time was proposed'}
                 </h3>
-                <p className="mt-2 text-xs leading-relaxed text-[#8a7a50]">
+                <p className="mt-2 text-xs leading-relaxed text-[#70582e]">
                   {item.business.name} asked to move this session to{' '}
                   <strong className="font-semibold">
                     {shortDate(incoming.proposedStartAt, item.business.timezone)} at{' '}
@@ -787,17 +833,25 @@ function BookingDialog({
                   </strong>
                   .
                 </p>
+                {incomingClosed && (
+                  <p className="mt-2 text-xs leading-relaxed text-[#70582e]">
+                    {originalLessonEnded ? 'The original lesson has ended' : 'The lesson is closed'}, so
+                    this proposal can no longer be accepted. Keep the original time to close it.
+                  </p>
+                )}
                 {incoming.message && (
-                  <p className="mt-2 border-l-2 border-[#e0d3b4] pl-3 text-xs italic text-[#8a7a50]">
+                  <p className="mt-2 border-l-2 border-[#e0d3b4] pl-3 text-xs italic text-[#70582e]">
                     “{incoming.message}”
                   </p>
                 )}
                 {actionError && <div className="mt-4"><ErrorNotice message={actionError} conflicts={conflicts} /></div>}
                 <div className="mt-4 flex flex-wrap gap-2.5">
-                  <button type="button" className={primaryButton} disabled={busy} onClick={() => respondToRequest(true)}>
-                    {busy ? <LoaderCircle size={15} className="animate-spin" /> : <Check size={15} />}
-                    Accept new time
-                  </button>
+                  {!incomingClosed && (
+                    <button type="button" className={primaryButton} disabled={busy} onClick={() => respondToRequest(true)}>
+                      {busy ? <LoaderCircle size={15} className="animate-spin" /> : <Check size={15} />}
+                      Accept new time
+                    </button>
+                  )}
                   <button type="button" className={secondaryButton} disabled={busy} onClick={() => respondToRequest(false)}>
                     <X size={15} /> Keep original time
                   </button>
@@ -813,7 +867,7 @@ function BookingDialog({
                 <h3 className="flex items-center gap-2 text-sm font-semibold text-[#4a6050]">
                   <Clock3 size={15} /> Waiting on your coach
                 </h3>
-                <p className="mt-2 text-xs leading-relaxed text-[#77866f]">
+                <p className="mt-2 text-xs leading-relaxed text-[#59675c]">
                   You asked to move this session to{' '}
                   <strong className="font-semibold">
                     {shortDate(outgoing.proposedStartAt, item.business.timezone)} at{' '}
@@ -848,7 +902,7 @@ function BookingDialog({
                 {canCancel && (
                   <button
                     type="button"
-                    className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-[#edddd7] px-4 py-2.5 text-sm font-medium text-[#a37565] transition hover:bg-[#fff7f3]"
+                    className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-[#edddd7] px-4 py-2.5 text-sm font-medium text-[#8b4d3c] transition hover:bg-[#fff7f3]"
                     onClick={() => setMode('cancel')}
                   >
                     <X size={15} /> Cancel booking
@@ -857,7 +911,7 @@ function BookingDialog({
               </div>
             )}
             {!canCancel && !canReschedule && !incoming && !outgoing && state !== 'Cancelled' && state !== 'Completed' && (
-              <p className="mt-6 border-t border-[#edf0e8] pt-5 text-[11px] leading-relaxed text-[#939d90]">
+              <p className="mt-6 border-t border-[#edf0e8] pt-5 text-[11px] leading-relaxed text-[#59675c]">
                 Changes close {rescheduleNoticeHours(item)} hours before the session. Contact your coach
                 if something has come up.
               </p>
@@ -868,7 +922,7 @@ function BookingDialog({
         {mode === 'cancel' && (
           <div className="mt-5 rounded-xl border border-[#e7d4ca] bg-[#fffcf9] p-5">
             <h3 className="text-base font-semibold text-[#3d493f]">Cancel this session?</h3>
-            <p className="mt-2 text-xs leading-relaxed text-[#958273]">
+            <p className="mt-2 text-xs leading-relaxed text-[#70582e]">
               Your place on {shortDate(item.booking.startAt, item.business.timezone)} at{' '}
               {time(item.booking.startAt, item.business.timezone)} will be released.
             </p>
@@ -880,7 +934,7 @@ function BookingDialog({
               <button
                 type="button"
                 disabled={busy || !canCancel}
-                className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-[#a46d56] px-5 py-3 text-sm font-semibold text-white hover:bg-[#8b5945] disabled:opacity-50"
+                className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-[#8b4d3c] px-5 py-3 text-sm font-semibold text-white hover:bg-[#743e31] disabled:opacity-50"
                 onClick={performCancel}
               >
                 {busy ? <LoaderCircle size={15} className="animate-spin" /> : <X size={15} />}
@@ -893,7 +947,7 @@ function BookingDialog({
         {mode === 'reschedule' && (
           <div className="mt-5">
             <h3 className="text-base font-semibold text-[#3d493f]">Ask for a new time</h3>
-            <p className="mt-1 text-xs leading-relaxed text-[#8b987f]">
+            <p className="mt-1 text-xs leading-relaxed text-[#59675c]">
               Same lesson, coach, and place. Your coach confirms the change before the session moves.
             </p>
             <label htmlFor={`reschedule-date-${item.participant.id}`} className="mt-5 block text-xs font-semibold">
@@ -913,12 +967,12 @@ function BookingDialog({
             <div className="mt-5 border-t border-[#edf0e8] pt-5">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <h4 className="text-sm font-semibold text-[#344b3a]">Available start times</h4>
-                <span className="inline-flex items-center gap-1 text-[10px] text-[#87947d]">
+                <span className="inline-flex items-center gap-1 text-[10px] text-[#59675c]">
                   <Clock3 size={12} /> {item.business.timezone.replaceAll('_', ' ')}
                 </span>
               </div>
               {slotsLoading ? (
-                <div role="status" className="flex min-h-24 items-center justify-center gap-2 text-xs text-[#82907d]">
+                <div role="status" className="flex min-h-24 items-center justify-center gap-2 text-xs text-[#59675c]">
                   <LoaderCircle size={16} className="animate-spin" /> Checking availability…
                 </div>
               ) : slotsError ? (
@@ -948,7 +1002,7 @@ function BookingDialog({
                   ))}
                 </div>
               ) : (
-                <p className="rounded-xl border border-dashed border-[#dfe5dc] bg-[#fafbf8] px-4 py-7 text-center text-xs text-[#87937f]">
+                <p className="rounded-xl border border-dashed border-[#dfe5dc] bg-[#fafbf8] px-4 py-7 text-center text-xs text-[#59675c]">
                   No other times are available on this date.
                 </p>
               )}
@@ -1009,7 +1063,7 @@ function AlertDialog({
             <DialogTitle className="text-lg font-semibold tracking-tight text-[#20382d]">
               {alert.title}
             </DialogTitle>
-            <DialogDescription className="mt-1.5 text-[11px] text-[#98a296]">
+            <DialogDescription className="mt-1.5 text-[11px] text-[#59675c]">
               {appearance.label}
               {alert.createdAt && (
                 <> · {shortDate(alert.createdAt, timezone)} at {time(alert.createdAt, timezone)}</>
@@ -1019,7 +1073,7 @@ function AlertDialog({
         </div>
         <p className="mt-5 text-sm leading-relaxed text-[#4c5c4d]">{alert.message}</p>
         {alert.actionNeeded && (
-          <p className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-[#f6ebd5] px-3 py-1 text-[10px] font-semibold text-[#94793c]">
+          <p className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-[#f6ebd5] px-3 py-1 text-[10px] font-semibold text-[#70582e]">
             <Info size={11} /> This one needs you
           </p>
         )}
@@ -1052,7 +1106,7 @@ function ClubAvatar({ club, size = 'large' }: { club: KnownClub; size?: 'small' 
     <span
       aria-hidden="true"
       className={cn(
-        'grid shrink-0 place-items-center rounded-full border-[3px] border-white bg-[#dfe9d5] font-bold text-[#607854] shadow-[0_0_0_1px_#d8e1d2]',
+        'grid shrink-0 place-items-center rounded-full border-[3px] border-white bg-[#dfe9d5] font-bold text-[#4f6847] shadow-[0_0_0_1px_#d8e1d2]',
         size === 'large' ? 'h-16 w-16 text-sm' : 'h-11 w-11 text-[11px]',
       )}
       style={
@@ -1085,14 +1139,14 @@ function AppHeader({
           <CourtlyLogo />
         </Link>
         <div className="flex items-center gap-2">
-          <span className="hidden text-[11px] font-medium text-[#899486] sm:inline">{title}</span>
+          <span className="hidden text-[11px] font-medium text-[#59675c] sm:inline">{title}</span>
           <button
             type="button"
             aria-label="Open profile"
             aria-current={activeTab === 'profile' ? 'page' : undefined}
             title={`Signed in as ${userName}`}
             onClick={onOpenProfile}
-            className="grid h-10 w-10 place-items-center rounded-full border border-[#dfe6da] bg-[#edf2e7] text-[10px] font-bold text-[#6e835e] transition hover:border-[#b8c8b1] hover:bg-[#e5eddd] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a] focus-visible:ring-offset-2"
+            className="grid h-10 w-10 place-items-center rounded-full border border-[#dfe6da] bg-[#edf2e7] text-[10px] font-bold text-[#4f6847] transition hover:border-[#b8c8b1] hover:bg-[#e5eddd] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a] focus-visible:ring-offset-2"
           >
             {initials(userName)}
           </button>
@@ -1134,7 +1188,7 @@ function BottomNavigation({
               onClick={() => onChange(tab.id)}
               className={cn(
                 'relative flex min-h-[62px] min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 text-[11px] font-medium transition sm:text-xs',
-                active ? 'text-[#174c3c]' : 'text-[#8b958a] hover:bg-[#f6f8f3] hover:text-[#496353]',
+                active ? 'text-[#174c3c]' : 'text-[#59675c] hover:bg-[#f6f8f3] hover:text-[#496353]',
                 central && '-translate-y-2',
               )}
             >
@@ -1153,7 +1207,7 @@ function BottomNavigation({
                   {tab.id === 'alerts' && unread > 0 && (
                     <span
                       aria-hidden="true"
-                      className="absolute right-0 top-0 grid h-4 min-w-4 place-items-center rounded-full border-2 border-white bg-[#a86752] px-0.5 text-[8px] leading-none text-white"
+                      className="absolute right-0 top-0 grid h-4 min-w-4 place-items-center rounded-full border-2 border-white bg-[#8b4d3c] px-0.5 text-[8px] leading-none text-white"
                     >
                       {unread > 9 ? '9+' : unread}
                     </span>
@@ -1576,7 +1630,12 @@ export function StudentApp({ slug }: { slug?: string }) {
 
   function respondToRequest(accept: boolean) {
     const request = actionBooking?.rescheduleRequest;
-    if (!request) return;
+    if (!request || !actionBooking) return;
+    if (accept && rescheduleAcceptanceClosed(actionBooking, Date.now())) {
+      setNowMs(Date.now());
+      setActionError('The original lesson has ended, so this proposal can no longer be accepted. Keep the original time to close it.');
+      return;
+    }
     const mine = request.requestedByRole === 'STUDENT';
     void runBookingAction(
       () => (accept ? acceptAccountReschedule(request.id) : declineAccountReschedule(request.id)),
@@ -1709,6 +1768,8 @@ export function StudentApp({ slug }: { slug?: string }) {
 
   const bookingDialogProps = {
     onClose: closeBooking,
+    notice,
+    noticeRef: successNoticeRef,
     mode: dialogMode,
     setMode: changeDialogMode,
     busy: actionBusy,
@@ -1783,7 +1844,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                     {signingOut && <LoaderCircle size={15} className="animate-spin" />}
                     Sign out and switch account
                   </button>
-                  {signOutError && <p role="alert" className="text-xs text-[#a16a55]">{signOutError}</p>}
+                  {signOutError && <p role="alert" className="text-xs text-[#8b4d3c]">{signOutError}</p>}
                 </div>
               }
             >
@@ -1836,13 +1897,13 @@ export function StudentApp({ slug }: { slug?: string }) {
           <section id="student-home-panel" aria-label="Home" className="student-tab-panel student-tab-home">
             <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#8c9980]">
+                <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#59675c]">
                   Good to see you, {session.user.name.split(/\s+/)[0]}
                 </p>
                 <h1 className="mt-1.5 text-[30px] font-medium tracking-[-1px] text-[#20382d] sm:text-[36px]">
                   My bookings
                 </h1>
-                <p className="mt-2 text-sm text-[#849080]">Every club, one calm place.</p>
+                <p className="mt-2 text-sm text-[#59675c]">Every club, one calm place.</p>
               </div>
               {clubs.length > 0 && (
                 <button type="button" className={secondaryButton} onClick={() => selectTab('book')}>
@@ -1872,10 +1933,8 @@ export function StudentApp({ slug }: { slug?: string }) {
               </div>
             )}
 
-            {notice && (
-              <div ref={successNoticeRef} role="status" tabIndex={-1} className="mt-6 flex items-start gap-2.5 rounded-xl border border-[#d8e4cb] bg-[#edf5e4] p-4 text-sm text-[#66834d] outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a]">
-                <CheckCheck size={18} className="mt-0.5 shrink-0" /> {notice}
-              </div>
+            {notice && !actionBooking && (
+              <SuccessNotice message={notice} noticeRef={successNoticeRef} className="mt-6" />
             )}
 
             {bookingsLoading ? (
@@ -1906,14 +1965,14 @@ export function StudentApp({ slug }: { slug?: string }) {
                   <section aria-labelledby="current-bookings">
                     <div className="mb-4 flex items-end justify-between gap-4">
                       <div>
-                        <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#4e816c]">
+                        <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#174c3c]">
                           Happening now
                         </p>
                         <h2 id="current-bookings" className="mt-1 text-xl font-semibold tracking-tight">
                           In progress
                         </h2>
                       </div>
-                      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#4e816c]">
+                      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#174c3c]">
                         <span className="h-2 w-2 animate-pulse rounded-full bg-[#5c9278]" /> Live
                       </span>
                     </div>
@@ -1928,14 +1987,14 @@ export function StudentApp({ slug }: { slug?: string }) {
                   <section aria-labelledby="upcoming-bookings">
                     <div className="mb-4 flex items-end justify-between gap-4">
                       <div>
-                        <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#8a987e]">
+                        <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">
                           Next up
                         </p>
                         <h2 id="upcoming-bookings" className="mt-1 text-xl font-semibold tracking-tight">
                           Upcoming sessions
                         </h2>
                       </div>
-                      <span className="text-xs text-[#89957f]">
+                      <span className="text-xs text-[#59675c]">
                         {upcoming.length} booking{upcoming.length === 1 ? '' : 's'}
                       </span>
                     </div>
@@ -1949,7 +2008,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                 {history.length > 0 && (
                   <section aria-labelledby="booking-history">
                     <div className="mb-4">
-                      <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#8a987e]">
+                      <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">
                         Looking back
                       </p>
                       <h2 id="booking-history" className="mt-1 text-xl font-semibold tracking-tight">
@@ -1966,14 +2025,14 @@ export function StudentApp({ slug }: { slug?: string }) {
                 <section aria-labelledby="recent-activity">
                   <div className="mb-4 flex items-end justify-between gap-4">
                     <div>
-                      <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#8a987e]">
+                      <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">
                         In your orbit
                       </p>
                       <h2 id="recent-activity" className="mt-1 text-xl font-semibold tracking-tight">
                         Recent activity
                       </h2>
                     </div>
-                    <button type="button" onClick={() => selectTab('alerts')} className="min-h-10 text-xs font-semibold text-[#648052]">
+                    <button type="button" onClick={() => selectTab('alerts')} className="min-h-10 text-xs font-semibold text-[#174c3c]">
                       See all
                     </button>
                   </div>
@@ -1996,20 +2055,20 @@ export function StudentApp({ slug }: { slug?: string }) {
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="block text-sm font-semibold text-[#344c3b]">{item.title}</span>
-                          <span className="mt-1 line-clamp-2 block text-xs leading-relaxed text-[#849080]">{item.message}</span>
+                          <span className="mt-1 line-clamp-2 block text-xs leading-relaxed text-[#59675c]">{item.message}</span>
                         </span>
-                        <ChevronRight size={15} className="mt-1 shrink-0 text-[#adb7a9]" aria-hidden="true" />
+                        <ChevronRight size={15} className="mt-1 shrink-0 text-[#59675c]" aria-hidden="true" />
                       </button>
                       );
                     })}
                     {visibleNotifications.length === 0 && fallbackActivity.length === 0 && (
-                      <p className="p-7 text-center text-sm text-[#899487]">
+                      <p className="p-7 text-center text-sm text-[#59675c]">
                         Your booking activity will collect here.
                       </p>
                     )}
                   </div>
                   {fallbackActivity.length > 0 && (notificationsFallback || visibleNotifications.length === 0) && (
-                    <p className="mt-2 text-[10px] text-[#929c91]">Based on the current status of your bookings.</p>
+                    <p className="mt-2 text-[10px] text-[#59675c]">Based on the current status of your bookings.</p>
                   )}
                 </section>
               </div>
@@ -2019,16 +2078,16 @@ export function StudentApp({ slug }: { slug?: string }) {
 
         {activeTab === 'explore' && (
           <section id="student-explore-panel" aria-label="Explore" className="student-tab-panel student-tab-explore">
-            <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#8c9980]">Your courts</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#59675c]">Your courts</p>
             <h1 className="mt-1.5 text-[30px] font-medium tracking-[-1px] text-[#20382d] sm:text-[36px]">Explore</h1>
-            <p className="mt-2 max-w-xl text-sm leading-relaxed text-[#849080]">
+            <p className="mt-2 max-w-xl text-sm leading-relaxed text-[#59675c]">
               Revisit clubs you have genuinely booked with. Courtly does not list clubs you have not connected with.
             </p>
             {linkedSlugIsNew && (
               <div className="mt-6 flex flex-col gap-3 rounded-2xl border border-[#dfe7d8] bg-[#f0f5ea] p-5 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h2 className="text-sm font-semibold text-[#3d5a41]">A club invited you to book</h2>
-                  <p className="mt-1 text-xs leading-relaxed text-[#788874]">Open its live booking page from the link you followed.</p>
+                  <p className="mt-1 text-xs leading-relaxed text-[#59675c]">Open its live booking page from the link you followed.</p>
                 </div>
                 <Link href={`/book/${encodeURIComponent(slug!)}`} className={cn(primaryButton, 'shrink-0')}>
                   Open booking page <ArrowRight size={15} />
@@ -2072,18 +2131,18 @@ export function StudentApp({ slug }: { slug?: string }) {
                           <h2 className="text-base font-semibold tracking-tight text-[#2c4737]">
                             {club.business.name}
                           </h2>
-                          <p className="mt-1 text-xs text-[#899583]">
+                          <p className="mt-1 text-xs text-[#59675c]">
                             {club.business.tagline || `Coaching with ${club.business.ownerName}`}
                           </p>
                         </div>
                       </div>
                       <dl className="mt-5 grid grid-cols-2 gap-3 rounded-xl bg-[#f6f8f3] p-3">
                         <div>
-                          <dt className="text-[9px] uppercase tracking-wide text-[#919b8c]">Your bookings</dt>
+                          <dt className="text-[9px] uppercase tracking-wide text-[#59675c]">Your bookings</dt>
                           <dd className="mt-1 text-sm font-semibold text-[#456049]">{club.bookingCount}</dd>
                         </div>
                         <div>
-                          <dt className="text-[9px] uppercase tracking-wide text-[#919b8c]">Next session</dt>
+                          <dt className="text-[9px] uppercase tracking-wide text-[#59675c]">Next session</dt>
                           <dd className="mt-1 text-sm font-semibold text-[#456049]">
                             {club.nextAt ? shortDate(club.nextAt, club.business.timezone) : 'Nothing booked'}
                           </dd>
@@ -2105,18 +2164,18 @@ export function StudentApp({ slug }: { slug?: string }) {
 
         {activeTab === 'book' && (
           <section id="student-book-panel" aria-label="Book" className="student-tab-panel student-tab-book">
-            <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#8c9980]">Make time to play</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#59675c]">Make time to play</p>
             <h1 className="mt-1.5 text-[30px] font-medium tracking-[-1px] text-[#20382d] sm:text-[36px]">
               Book a session
             </h1>
-            <p className="mt-2 max-w-xl text-sm leading-relaxed text-[#849080]">
+            <p className="mt-2 max-w-xl text-sm leading-relaxed text-[#59675c]">
               Choose a club from your booking history, then continue to its live availability.
             </p>
             {linkedSlugIsNew && (
               <div className="mt-6 flex flex-col gap-3 rounded-2xl border border-[#dfe7d8] bg-[#f0f5ea] p-5 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h2 className="text-sm font-semibold text-[#3d5a41]">Book with the club that sent you here</h2>
-                  <p className="mt-1 text-xs leading-relaxed text-[#788874]">Its identity is confirmed on the booking page before you choose a lesson.</p>
+                  <p className="mt-1 text-xs leading-relaxed text-[#59675c]">Its identity is confirmed on the booking page before you choose a lesson.</p>
                 </div>
                 <Link href={`/book/${encodeURIComponent(slug!)}`} className={cn(primaryButton, 'shrink-0')}>
                   Continue <ArrowRight size={15} />
@@ -2173,7 +2232,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                           <ClubAvatar club={club} size="small" />
                           <span className="min-w-0 flex-1">
                             <span className="block text-sm font-semibold text-[#304a39]">{club.business.name}</span>
-                            <span className="mt-1 block text-xs text-[#899583]">
+                            <span className="mt-1 block text-xs text-[#59675c]">
                               {club.bookingCount} past or upcoming booking{club.bookingCount === 1 ? '' : 's'}
                             </span>
                           </span>
@@ -2198,7 +2257,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                     Continue to {selectedClub.business.name} <ArrowRight size={15} />
                   </Link>
                 )}
-                <p className="mt-4 text-center text-[10px] leading-relaxed text-[#939d90]">
+                <p className="mt-4 text-center text-[10px] leading-relaxed text-[#59675c]">
                   Services, coaches, and times are shown on the club’s live booking page.
                 </p>
               </div>
@@ -2210,9 +2269,9 @@ export function StudentApp({ slug }: { slug?: string }) {
           <section id="student-alerts-panel" aria-label="Alerts" className="student-tab-panel student-tab-alerts">
             <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#8c9980]">Stay in the loop</p>
+                <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#59675c]">Stay in the loop</p>
                 <h1 className="mt-1.5 text-[30px] font-medium tracking-[-1px] text-[#20382d] sm:text-[36px]">Alerts</h1>
-                <p className="mt-2 text-sm text-[#849080]">Booking updates from the clubs you know.</p>
+                <p className="mt-2 text-sm text-[#59675c]">Booking updates from the clubs you know.</p>
               </div>
               {!notificationsFallback && unread > 0 && (
                 <button type="button" className={secondaryButton} disabled={markingRead} onClick={() => void markAllRead()}>
@@ -2224,7 +2283,7 @@ export function StudentApp({ slug }: { slug?: string }) {
             {alertsStatus && (
               <div
                 role="status"
-                className="mt-6 flex items-center gap-2 rounded-xl border border-[#d8e4cb] bg-[#edf5e4] p-4 text-sm text-[#66834d]"
+                className="mt-6 flex items-center gap-2 rounded-xl border border-[#d8e4cb] bg-[#edf5e4] p-4 text-sm text-[#4f6847]"
               >
                 <CheckCheck aria-hidden="true" size={17} /> {alertsStatus}
               </div>
@@ -2235,7 +2294,7 @@ export function StudentApp({ slug }: { slug?: string }) {
               </div>
             )}
             {notificationsFallback && (
-              <div className="mt-6 flex items-start gap-2.5 rounded-xl border border-[#e6e3d4] bg-[#fbfaf2] p-4 text-xs leading-relaxed text-[#82795d]">
+              <div className="mt-6 flex items-start gap-2.5 rounded-xl border border-[#e6e3d4] bg-[#fbfaf2] p-4 text-xs leading-relaxed text-[#70582e]">
                 <Info size={15} className="mt-0.5 shrink-0" />
                 <span>
                   Live alerts are temporarily unavailable, so this view is using the latest status from your bookings.
@@ -2275,7 +2334,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                         <span className={cn('relative grid h-10 w-10 shrink-0 place-items-center rounded-full', appearance.tone)}>
                           <Icon size={17} strokeWidth={1.7} />
                           {!item.read && (
-                            <span aria-hidden="true" className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-white bg-[#a86752]" />
+                            <span aria-hidden="true" className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-white bg-[#8b4d3c]" />
                           )}
                         </span>
                         <span className="min-w-0 flex-1">
@@ -2284,16 +2343,16 @@ export function StudentApp({ slug }: { slug?: string }) {
                               {item.title}
                             </span>
                             {item.actionNeeded && (
-                              <span className="rounded-full bg-[#f8eed3] px-2 py-0.5 text-[9px] font-semibold text-[#927a42]">
+                              <span className="rounded-full bg-[#f8eed3] px-2 py-0.5 text-[9px] font-semibold text-[#70582e]">
                                 Action needed
                               </span>
                             )}
                           </span>
-                          <span className="mt-1.5 line-clamp-1 block text-xs leading-relaxed text-[#7f8c80]">
+                          <span className="mt-1.5 line-clamp-1 block text-xs leading-relaxed text-[#59675c]">
                             {item.message}
                           </span>
                           {item.createdAt && (
-                            <span className="mt-1.5 block text-[10px] text-[#a0a89e]">
+                            <span className="mt-1.5 block text-[10px] text-[#59675c]">
                               {appearance.label} ·{' '}
                               {shortDate(
                                 item.createdAt,
@@ -2302,7 +2361,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                             </span>
                           )}
                         </span>
-                        <ChevronRight size={16} className="mt-1 shrink-0 text-[#adb7a9]" aria-hidden="true" />
+                        <ChevronRight size={16} className="mt-1 shrink-0 text-[#59675c]" aria-hidden="true" />
                       </button>
                     );
                   })}
@@ -2332,9 +2391,9 @@ export function StudentApp({ slug }: { slug?: string }) {
 
         {activeTab === 'profile' && (
           <section id="student-profile-panel" aria-label="Profile" className="student-tab-panel student-tab-profile">
-            <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#8c9980]">Your student account</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#59675c]">Your student account</p>
             <h1 className="mt-1.5 text-[30px] font-medium tracking-[-1px] text-[#20382d] sm:text-[36px]">Profile</h1>
-            <p className="mt-2 text-sm text-[#849080]">Keep your details current across every club.</p>
+            <p className="mt-2 text-sm text-[#59675c]">Keep your details current across every club.</p>
             {/*
               Personal details read as a record, not a form. People open this
               tab to check what a club sees far more often than to change it,
@@ -2343,12 +2402,12 @@ export function StudentApp({ slug }: { slug?: string }) {
             */}
             <section className={cn(panel, 'mt-8 p-5 sm:p-6')} aria-labelledby="student-personal-details">
               <div className="flex items-start gap-3 border-b border-[#edf0e9] pb-5">
-                <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-[#e8efe0] text-sm font-bold text-[#6b825b]">
+                <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-[#e8efe0] text-sm font-bold text-[#4f6847]">
                   {initials(profile.name || session.user.name)}
                 </span>
                 <div className="min-w-0 flex-1">
                   <h2 id="student-personal-details" className="text-base font-semibold text-[#304b39]">Personal details</h2>
-                  <p className="mt-1 text-xs leading-relaxed text-[#899583]">Shared only with clubs you book.</p>
+                  <p className="mt-1 text-xs leading-relaxed text-[#59675c]">Shared only with clubs you book.</p>
                 </div>
                 <button
                   type="button"
@@ -2369,29 +2428,29 @@ export function StudentApp({ slug }: { slug?: string }) {
               </div>
               <dl className="mt-5 grid gap-5 sm:grid-cols-2">
                 <div>
-                  <dt className="text-[10px] font-medium uppercase tracking-wider text-[#8a9487]">Full name</dt>
+                  <dt className="text-[10px] font-medium uppercase tracking-wider text-[#59675c]">Full name</dt>
                   <dd className="mt-1.5 text-sm text-[#415244]">{profile.name || session.user.name}</dd>
                 </div>
                 <div>
-                  <dt className="text-[10px] font-medium uppercase tracking-wider text-[#8a9487]">Email address</dt>
+                  <dt className="text-[10px] font-medium uppercase tracking-wider text-[#59675c]">Email address</dt>
                   <dd className="mt-1.5 break-all text-sm text-[#415244]">{session.user.email}</dd>
-                  <dd className="mt-1 text-[10px] text-[#9ba49b]">Your sign-in identity; it cannot be changed here.</dd>
+                  <dd className="mt-1 text-[10px] text-[#59675c]">Your sign-in identity; it cannot be changed here.</dd>
                 </div>
                 <div>
-                  <dt className="text-[10px] font-medium uppercase tracking-wider text-[#8a9487]">Phone</dt>
-                  <dd className={cn('mt-1.5 text-sm', profile.phone ? 'text-[#415244]' : 'text-[#9ba49b]')}>
+                  <dt className="text-[10px] font-medium uppercase tracking-wider text-[#59675c]">Phone</dt>
+                  <dd className={cn('mt-1.5 text-sm', profile.phone ? 'text-[#415244]' : 'text-[#59675c]')}>
                     {profile.phone || 'Not added'}
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-[10px] font-medium uppercase tracking-wider text-[#8a9487]">Parent or guardian</dt>
-                  <dd className={cn('mt-1.5 text-sm', profile.parentName ? 'text-[#415244]' : 'text-[#9ba49b]')}>
+                  <dt className="text-[10px] font-medium uppercase tracking-wider text-[#59675c]">Parent or guardian</dt>
+                  <dd className={cn('mt-1.5 text-sm', profile.parentName ? 'text-[#415244]' : 'text-[#59675c]')}>
                     {profile.parentName || 'Not added'}
                   </dd>
                 </div>
               </dl>
               {profileNotice && !profileEditorOpen && (
-                <div role="status" className="mt-5 flex items-center gap-2 rounded-xl bg-[#edf5e4] p-4 text-sm text-[#66834d]">
+                <div role="status" className="mt-5 flex items-center gap-2 rounded-xl bg-[#edf5e4] p-4 text-sm text-[#4f6847]">
                   <Check size={16} /> {profileNotice}
                 </div>
               )}
@@ -2409,7 +2468,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                 <DialogTitle className="text-xl font-semibold tracking-tight text-[#20382d]">
                   Edit personal details
                 </DialogTitle>
-                <DialogDescription className="mt-2 text-xs leading-relaxed text-[#849080]">
+                <DialogDescription className="mt-2 text-xs leading-relaxed text-[#59675c]">
                   These details belong to your student account and travel with you to every club you book.
                 </DialogDescription>
                 <form onSubmit={saveProfile} className="mt-5">
@@ -2435,13 +2494,13 @@ export function StudentApp({ slug }: { slug?: string }) {
                       <label htmlFor="student-profile-email">Email address</label>
                       <input
                         id="student-profile-email"
-                        className={cn(field, '!bg-[#f5f6f3] !text-[#7f8b80]')}
+                        className={cn(field, '!bg-[#f5f6f3] !text-[#59675c]')}
                         value={session.user.email}
                         readOnly
                         aria-describedby="student-profile-email-note"
                         autoComplete="email"
                       />
-                      <p id="student-profile-email-note" className="mt-1.5 text-[10px] text-[#9ba49b]">
+                      <p id="student-profile-email-note" className="mt-1.5 text-[10px] text-[#59675c]">
                         Email is your sign-in identity and cannot be changed here.
                       </p>
                     </div>
@@ -2499,7 +2558,7 @@ export function StudentApp({ slug }: { slug?: string }) {
 
             <section className="mt-9" aria-labelledby="profile-booking-history">
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#8a987e]">All your sessions</p>
+                <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">All your sessions</p>
                 <h2 id="profile-booking-history" className="mt-1 text-xl font-semibold tracking-tight">Booking history</h2>
               </div>
               <div role="group" aria-label="Filter booking history" className="mt-4 flex gap-2 overflow-x-auto pb-2">
@@ -2522,7 +2581,7 @@ export function StudentApp({ slug }: { slug?: string }) {
               </div>
               <div className="mt-3 space-y-3">
                 {bookingsLoading ? (
-                  <div role="status" className="flex min-h-28 items-center justify-center gap-2 rounded-2xl border border-[#e5e9e4] bg-white text-xs text-[#82907d]">
+                  <div role="status" className="flex min-h-28 items-center justify-center gap-2 rounded-2xl border border-[#e5e9e4] bg-white text-xs text-[#59675c]">
                     <LoaderCircle size={16} className="animate-spin" /> Gathering your sessions…
                   </div>
                 ) : filteredHistory.length ? (
@@ -2530,7 +2589,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                     <CompactBooking key={item.participant.id} item={item} nowMs={nowMs} />
                   ))
                 ) : (
-                  <p className="rounded-2xl border border-dashed border-[#dfe5dc] bg-white px-5 py-8 text-center text-sm text-[#879287]">
+                  <p className="rounded-2xl border border-dashed border-[#dfe5dc] bg-white px-5 py-8 text-center text-sm text-[#59675c]">
                     No {historyFilter === 'all' ? '' : `${historyFilter} `}bookings to show.
                   </p>
                 )}
@@ -2539,12 +2598,12 @@ export function StudentApp({ slug }: { slug?: string }) {
 
             <section className={cn(panel, 'mt-9 p-5')}>
               <div className="flex items-start gap-3">
-                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#f2eee9] text-[#91745f]">
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#f2eee9] text-[#6f5738]">
                   <LogOut size={17} />
                 </span>
                 <div className="flex-1">
                   <h2 className="text-sm font-semibold text-[#3f4c42]">Finished for now?</h2>
-                  <p className="mt-1 text-xs leading-relaxed text-[#899287]">Sign out of this device. Your bookings stay safely with your account.</p>
+                  <p className="mt-1 text-xs leading-relaxed text-[#59675c]">Sign out of this device. Your bookings stay safely with your account.</p>
                 </div>
               </div>
               <button type="button" className={cn(secondaryButton, 'mt-5 w-full text-[#8e6555]')} disabled={signingOut} onClick={() => void signOut()}>
@@ -2552,7 +2611,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                 Sign out
               </button>
               {signOutError && (
-                <p role="alert" className="mt-3 text-xs text-[#a16a55]">{signOutError}</p>
+                <p role="alert" className="mt-3 text-xs text-[#8b4d3c]">{signOutError}</p>
               )}
             </section>
           </section>

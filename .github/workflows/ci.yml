@@ -80,7 +80,7 @@ jobs:
 
       - name: Start production bundles
         run: |
-          nohup env NODE_ENV=development DEMO_ENABLED=true APP_ORIGIN=http://localhost:3107,http://127.0.0.1:3107 npm start --prefix backend > /tmp/courtly-api.log 2>&1 &
+          nohup env NODE_ENV=development DEMO_ENABLED=true E2E_DISABLE_RATE_LIMITS=true APP_ORIGIN=http://localhost:3107,http://127.0.0.1:3107 npm start --prefix backend > /tmp/courtly-api.log 2>&1 &
           nohup env PORT=3107 BACKEND_URL=http://127.0.0.1:4000 npm start --prefix frontend > /tmp/courtly-web.log 2>&1 &
           for attempt in {1..60}; do
             if curl --fail --silent http://127.0.0.1:4000/api/health >/dev/null && curl --fail --silent http://127.0.0.1:3107 >/dev/null; then

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
-import { config } from './config.js';
+import { config, skipRateLimits } from './config.js';
 import { asyncRoute, HttpError } from './http.js';
 
 export const venuesRouter = Router();
@@ -18,6 +18,7 @@ export type VenueCandidate = {
 
 const searchLimit = rateLimit({
   windowMs: 5 * 60_000, limit: 60, standardHeaders: 'draft-8', legacyHeaders: false,
+  skip: skipRateLimits,
   message: { error: 'Too many venue searches. Please wait a moment.' },
 });
 
