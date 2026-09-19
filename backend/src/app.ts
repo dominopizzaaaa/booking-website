@@ -5,7 +5,7 @@ import cookieParser from 'cookie-parser';
 import { rateLimit } from 'express-rate-limit';
 import { ZodError } from 'zod';
 import { Prisma } from '@prisma/client';
-import { config, production } from './config.js';
+import { config, production, skipRateLimits } from './config.js';
 import { authRouter, requireAuth, requireStudent, requireWorkspace } from './auth.js';
 import { adminRouter } from './admin.js';
 import { publicRouter } from './public.js';
@@ -25,7 +25,11 @@ app.use(helmet());
 app.use(cors({ credentials: true, origin(origin, cb) { cb(null, !origin || config.origins.includes(origin)); } }));
 app.use(express.json({ limit: '100kb' }));
 app.use(cookieParser());
-app.use('/api', rateLimit({ windowMs: 60_000, limit: 600, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many requests. Please slow down.' } }));
+app.use('/api', rateLimit({
+  windowMs: 60_000, limit: 600, standardHeaders: 'draft-8', legacyHeaders: false,
+  skip: skipRateLimits,
+  message: { error: 'Too many requests. Please slow down.' },
+}));
 app.use('/api', (req, res, next) => {
   res.set('Cache-Control', 'no-store');
   if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {

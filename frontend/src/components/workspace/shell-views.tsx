@@ -252,7 +252,7 @@ export function AlertsView({ data, refresh, onOpenBooking, onNavigate }: {
       <div>
         <p className="eyebrow">Stay in the loop</p>
         <h1 id="workspace-alerts-title" className="mt-2">Alerts</h1>
-        <p className="mt-2 text-xs leading-relaxed text-stone-500">Booking activity from this workspace. External messaging is not connected.</p>
+        <p className="mt-2 text-xs leading-relaxed text-[#59675c]">Booking activity from this workspace. External messaging is not connected.</p>
       </div>
       {unread.length > 0 && <Button variant="outline" size="sm" onClick={() => void markRead()} disabled={markingRead}>{markingRead ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}Mark all as read</Button>}
     </header>
@@ -279,7 +279,7 @@ export function AlertsView({ data, refresh, onOpenBooking, onNavigate }: {
                 {notification.actionNeeded && <span className="badge pending !text-[9px]">Action needed</span>}
               </span>
               <span className="mt-1.5 line-clamp-1 block text-xs leading-relaxed text-stone-500">{notification.message}</span>
-              <span className="mt-2 block text-[9px] text-stone-400">{appearance.label} · {shortDate(notification.createdAt)}</span>
+              <span className="mt-2 block text-[9px] text-[#59675c]">{appearance.label} · {shortDate(notification.createdAt)}</span>
             </span>
             <ChevronRight size={15} className="mt-1 shrink-0 text-stone-300" aria-hidden="true" />
           </button>;
@@ -300,13 +300,13 @@ export function AlertsView({ data, refresh, onOpenBooking, onNavigate }: {
               <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-2xl ${appearance.tone}`}><Icon size={20} strokeWidth={1.7} /></span>
               <div className="min-w-0 flex-1">
                 <DialogTitle className="text-lg font-semibold tracking-tight text-[#294735]">{open.title}</DialogTitle>
-                <DialogDescription className="mt-1.5 text-[11px] text-stone-400">
+                <DialogDescription className="mt-1.5 text-[11px] text-[#59675c]">
                   {appearance.label} · {shortDate(open.createdAt)} at {time(open.createdAt)}
                 </DialogDescription>
               </div>
             </div>
             <p className="mt-5 text-sm leading-relaxed text-stone-600">{open.message}</p>
-            {open.actionNeeded && <p className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-[#f6ebd5] px-3 py-1 text-[10px] font-semibold text-[#94793c]">This one needs you</p>}
+            {open.actionNeeded && <p className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-[#f6ebd5] px-3 py-1 text-[10px] font-semibold text-[#70582e]">This one needs you</p>}
             <div className="mt-6 flex flex-wrap gap-2 border-t border-[#edf0e8] pt-5">
               {open.bookingId && onOpenBooking && <Button onClick={() => { const id = open.bookingId!; setOpenId(null); onOpenBooking(id); }}>Go to this booking<ArrowRight size={14} /></Button>}
               {appearance.kind === 'integrity' && onNavigate && <Button variant="outline" onClick={() => { setOpenId(null); onNavigate('integrity'); }}>Open Integrity<ArrowRight size={14} /></Button>}

@@ -91,6 +91,8 @@ npm run build
 
 The backend integration suite deliberately requires a local PostgreSQL URL. GitHub Actions provisions an isolated PostgreSQL 16 service, migrates it, runs the tests, type-checks the frontend, and builds both applications.
 
+The full Playwright suite deliberately creates many isolated accounts and workspaces from one loopback address. When running that suite, start the backend with `E2E_DISABLE_RATE_LIMITS=true` to bypass all API rate limiters for that process. The flag is opt-in, is unnecessary for normal development, and is ignored whenever `NODE_ENV=production`, even if it is accidentally set. Never configure it on a deployed service.
+
 ## Deploy from GitHub
 
 Deploy the backend to Railway first, then point the Vercel frontend at the Railway public domain. Both hosts must import the same GitHub repository but use different Root Directories. Do not add `backend/.env` or `frontend/.env.local` to Git; configure production values in the hosting dashboards.

@@ -4,7 +4,7 @@ import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { rateLimit } from 'express-rate-limit';
 import { prisma } from './db.js';
-import { config, production } from './config.js';
+import { config, production, skipRateLimits } from './config.js';
 import { asyncRoute, HttpError } from './http.js';
 
 // The platform admin console is separate from provider (business) logins. It is
@@ -14,7 +14,11 @@ import { asyncRoute, HttpError } from './http.js';
 // immediately invalidates every existing admin session.
 export const adminRouter = Router();
 const adminCookieOptions = { httpOnly: true, secure: production, sameSite: 'lax' as const, path: '/' };
-const adminLimit = rateLimit({ windowMs: 15 * 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many attempts. Please try again later.' } });
+const adminLimit = rateLimit({
+  windowMs: 15 * 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false,
+  skip: skipRateLimits,
+  message: { error: 'Too many attempts. Please try again later.' },
+});
 
 function safeEqual(a: string, b: string) {
   const left = Buffer.from(a);
@@ -49,7 +53,7 @@ adminRouter.get('/admin/session', asyncRoute(async (req, res) => {
 }));
 adminRouter.post('/admin/login', adminLimit, asyncRoute(async (req, res) => {
   if (!config.adminPassword) throw new HttpError(503, 'Admin console is not configured');
-  const { password } = z.object({ password: z.string().min(1).max(200) }).parse(req.body);
+  const { password } = z.object({ password: z.string().min(1).max(200) }).strict().parse(req.body);
   if (!safeEqual(password, config.adminPassword)) throw new HttpError(401, 'Incorrect admin password');
   issueAdminSession(res);
   res.json({ ok: true });
@@ -184,7 +188,13 @@ adminRouter.delete('/admin/businesses/:id', requireAdmin, asyncRoute(async (req,
 }));
 
 adminRouter.post('/admin/purge-demos', requireAdmin, asyncRoute(async (_req, res) => {
-  const demos = await prisma.business.findMany({ where: { isDemo: true }, select: { id: true } });
-  for (const demo of demos) await prisma.$transaction(tx => deleteBusinessDeep(tx, demo.id), { timeout: 30_000 });
-  res.json({ ok: true, deleted: demos.length });
+  // Purging is one platform operation. Keeping every demo in the same
+  // transaction avoids per-workspace commit overhead and cannot leave a
+  // half-purged platform if a later workspace fails its teardown.
+  const deleted = await prisma.$transaction(async tx => {
+    const demos = await tx.business.findMany({ where: { isDemo: true }, select: { id: true } });
+    for (const demo of demos) await deleteBusinessDeep(tx, demo.id);
+    return demos.length;
+  }, { timeout: 30_000 });
+  res.json({ ok: true, deleted });
 }));

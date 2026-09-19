@@ -59,7 +59,7 @@ export function Editor({ title, description, children, onClose, onSubmit, refres
 }
 
 export function Stat({ label, value, detail, icon: Icon }: { label: string; value: ReactNode; detail: string; icon: LucideIcon }) {
-  return <article className="stat-card flex min-h-36 flex-col"><div className="flex items-start justify-between gap-2"><p className="text-[11px] font-medium leading-snug text-[#69766c]">{label}</p><span className="stat-icon shrink-0"><Icon size={15} /></span></div><div className="stat-value text-[#254b38]">{value}</div><p className="mt-auto text-[10px] leading-relaxed text-[#8a9482]">{detail}</p></article>;
+  return <article className="stat-card flex min-h-36 flex-col"><div className="flex items-start justify-between gap-2"><p className="text-[11px] font-medium leading-snug text-[#69766c]">{label}</p><span className="stat-icon shrink-0"><Icon size={15} /></span></div><div className="stat-value text-[#254b38]">{value}</div><p className="mt-auto text-[10px] leading-relaxed text-[#59675c]">{detail}</p></article>;
 }
 
 export function useManagementAction(refresh: () => Promise<void>) {

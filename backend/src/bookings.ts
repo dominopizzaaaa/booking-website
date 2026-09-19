@@ -13,6 +13,7 @@ import {
   rescheduleRequestInput,
   rescheduleRequestJson,
   rescheduleResponseInput,
+  withdrawRescheduleRequestInput,
   withdrawRescheduleRequest,
   type RequesterRole,
 } from './reschedule.js';
@@ -22,6 +23,10 @@ export const bookingsRouter = Router();
 const requesterRole = (accountType: string): RequesterRole => accountType === 'COACH' ? 'COACH' : 'CLUB';
 const bookingStatus = z.enum(['CONFIRMED', 'PENDING', 'CANCELLED', 'COMPLETED']);
 type BookingStatus = z.infer<typeof bookingStatus>;
+
+// At endAt the reserved lesson is over: completion can begin, while actions
+// that would release the slot or refund its package credit are closed.
+const lessonHasEnded = (booking: { endAt: Date }) => booking.endAt.getTime() <= Date.now();
 
 function assertBookingStatusTransition(
   booking: { status: string; coachAcceptance: string; endAt: Date },
@@ -34,13 +39,16 @@ function assertBookingStatusTransition(
   if (booking.status === 'COMPLETED') {
     throw new HttpError(400, 'Completed sessions cannot be changed.');
   }
+  if (next === 'CANCELLED' && lessonHasEnded(booking)) {
+    throw new HttpError(400, 'A lesson cannot be cancelled after it has ended.');
+  }
   if (booking.coachAcceptance === 'PENDING' && (next === 'CONFIRMED' || next === 'COMPLETED')) {
     throw new HttpError(400, 'The assigned coach must accept this lesson before it can be confirmed or completed.');
   }
   if (booking.status === 'PENDING' && (next === 'CONFIRMED' || next === 'CANCELLED')) return;
   if (booking.status === 'CONFIRMED' && next === 'CANCELLED') return;
   if (booking.status === 'CONFIRMED' && next === 'COMPLETED') {
-    if (booking.endAt.getTime() > Date.now()) {
+    if (!lessonHasEnded(booking)) {
       throw new HttpError(400, 'A session can only be completed after it has ended.');
     }
     return;
@@ -48,9 +56,10 @@ function assertBookingStatusTransition(
   throw new HttpError(400, `A ${booking.status.toLowerCase()} session cannot be changed directly to ${next.toLowerCase()}.`);
 }
 
-function requireActiveAcceptanceDecision(booking: { status: string; coachAcceptance: string }) {
+function requireActiveAcceptanceDecision(booking: { status: string; coachAcceptance: string; endAt: Date }) {
   if (booking.status === 'CANCELLED') throw new HttpError(400, 'A cancelled lesson cannot be accepted or declined');
   if (booking.status === 'COMPLETED') throw new HttpError(400, 'A completed lesson cannot be accepted or declined');
+  if (lessonHasEnded(booking)) throw new HttpError(400, 'A lesson cannot be accepted or declined after it has ended.');
   if (booking.coachAcceptance !== 'PENDING') throw new HttpError(409, 'This lesson is not waiting for a coach decision');
   if (booking.status !== 'PENDING') throw new HttpError(409, 'Only a pending lesson can receive a coach decision');
 }
@@ -129,7 +138,13 @@ bookingsRouter.patch('/bookings/:id/participants/:participantId', asyncRoute(asy
     if (!participant) throw new HttpError(404, 'Participant not found');
     coachScope(req, participant.booking.instructorId);
     if (participant.booking.instructorId !== initial.instructorId) throw new HttpError(409, 'Session changed. Please retry.');
-    if (participant.booking.status === 'CANCELLED') throw new HttpError(400, 'Cannot mark attendance for a cancelled lesson');
+    if (!['CONFIRMED', 'COMPLETED'].includes(participant.booking.status)
+      || participant.booking.coachAcceptance === 'PENDING') {
+      throw new HttpError(400, 'Attendance can only be marked for a confirmed or completed lesson');
+    }
+    if (participant.booking.endAt.getTime() > Date.now()) {
+      throw new HttpError(400, 'Attendance can only be marked after the lesson has ended');
+    }
     return tx.participant.update({ where: { id: participant.id }, data: body });
   });
   res.json({ id: result.id, attendance: result.attendance });
@@ -293,6 +308,7 @@ bookingsRouter.post('/reschedule-requests/:requestId/decline', asyncRoute(async 
 }));
 
 bookingsRouter.post('/reschedule-requests/:requestId/withdraw', asyncRoute(async (req, res) => {
+  withdrawRescheduleRequestInput.parse(req.body ?? {});
   const membership = req.auth.membership!;
   const request = await prisma.$transaction(async tx => {
     const found = await tx.rescheduleRequest.findFirst({
@@ -313,24 +329,24 @@ bookingsRouter.post('/bookings/:id/reschedule', asyncRoute(async (req, res) => {
   const initial = await prisma.booking.findFirst({ where: { id: req.params.id, businessId: req.auth.business.id } });
   if (!initial) throw new HttpError(404, 'Booking not found');
   coachScope(req, initial.instructorId);
-  const hasAccountParticipant = await prisma.participant.findFirst({
-    where: { bookingId: initial.id, cancelledAt: null, student: { userId: { not: null } } },
-    select: { id: true },
-  });
-  if (hasAccountParticipant) {
-    throw new HttpError(409, 'Propose a new time instead. A session with a registered student moves only once they accept the change.');
-  }
   const result = await prisma.$transaction(async tx => {
     await lockInstructors(tx, [initial.instructorId]);
     const current = await tx.booking.findUniqueOrThrow({ where: { id: initial.id } });
     coachScope(req, current.instructorId);
     if (current.instructorId !== initial.instructorId) throw new HttpError(409, 'Session changed. Please retry.');
+    const hasAccountParticipant = await tx.participant.findFirst({
+      where: { bookingId: current.id, cancelledAt: null, student: { userId: { not: null } } },
+      select: { id: true },
+    });
+    if (hasAccountParticipant) {
+      throw new HttpError(409, 'Propose a new time instead. A session with a registered student moves only once they accept the change.');
+    }
     return rescheduleBooking(tx, req.auth.business.id, req.params.id, changes);
   }, { timeout: 30_000 });
   res.json(coachScoped(req.auth) ? withoutBookingFinancials(result) : result);
 }));
 bookingsRouter.post('/payments', requireBusinessManager, asyncRoute(async (req, res) => {
-  const input = z.object({ studentId: z.string().min(1), bookingId: z.string().min(1).optional(), packageId: z.string().min(1).optional(), participantId: z.string().min(1).optional(), amount: z.number().int().positive().max(100_000_000), method: z.enum(['CASH', 'BANK_TRANSFER', 'OTHER']), note: z.string().max(1000).default('') }).refine(x => !(x.bookingId && x.packageId), { message: 'Record a payment against a booking or a package, not both' }).parse(req.body);
+  const input = z.object({ studentId: z.string().min(1), bookingId: z.string().min(1).optional(), packageId: z.string().min(1).optional(), participantId: z.string().min(1).optional(), amount: z.number().int().positive().max(100_000_000), method: z.enum(['CASH', 'BANK_TRANSFER', 'OTHER']), note: z.string().max(1000).default('') }).strict().refine(x => !(x.bookingId && x.packageId), { message: 'Record a payment against a booking or a package, not both' }).parse(req.body);
   const result = await prisma.$transaction(async tx => {
     const student = await tx.student.findFirst({ where: { id: input.studentId, businessId: req.auth.business.id } });
     if (!student) throw new HttpError(404, 'Student not found');
@@ -388,8 +404,19 @@ bookingsRouter.post('/payments', requireBusinessManager, asyncRoute(async (req, 
 bookingsRouter.delete('/payments/:id', requireBusinessManager, asyncRoute(async (req, res) => {
   const reason = z.object({ reason: z.string().trim().max(500).default('') }).strict().parse(req.body ?? {});
   const result = await prisma.$transaction(async tx => {
-    const payment = await tx.payment.findFirst({
+    const initial = await tx.payment.findFirst({
       where: { id: req.params.id, businessId: req.auth.business.id },
+      include: { student: true, instructor: { select: { name: true } } },
+    });
+    if (!initial) throw new HttpError(404, 'Payment not found');
+    const initialIsPayout = initial.kind === 'CLUB_TO_COACH';
+    const partyLockId = initialIsPayout ? `payout:${initial.instructorId}` : `payment:${initial.studentId}`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${partyLockId}, 0))`;
+    // Another reversal may have committed while this request waited for the
+    // party lock. Make the decision from locked, current state so only the
+    // winner changes audit metadata or emits a reversal notification.
+    const payment = await tx.payment.findFirst({
+      where: { id: initial.id, businessId: req.auth.business.id },
       include: { student: true, instructor: { select: { name: true } } },
     });
     if (!payment) throw new HttpError(404, 'Payment not found');
@@ -403,8 +430,6 @@ bookingsRouter.delete('/payments/:id', requireBusinessManager, asyncRoute(async 
       throw new HttpError(409, 'This student payment has invalid party details and cannot be reversed safely');
     }
     const studentId = payment.studentId;
-    const partyLockId = isPayout ? `payout:${payment.instructorId}` : `payment:${payment.studentId}`;
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${partyLockId}, 0))`;
     const reversed = await tx.payment.update({
       where: { id: payment.id },
       data: { reversedAt: new Date(), reversedByUserId: req.auth.user.id, reversedReason: reason.reason },

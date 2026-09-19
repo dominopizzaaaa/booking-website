@@ -124,7 +124,7 @@ export function IntegrityView({ data, refresh }: ManagementProps) {
         : 'Flags you have closed will be kept here.'}
     </Empty></div>}
 
-    <p className="mt-4 text-[10px] leading-relaxed text-stone-400">
+    <p className="mt-4 text-[10px] leading-relaxed text-[#59675c]">
       A flag is a prompt to have a conversation, not a finding. Courtly does not block the booking, notify the coach or the student, or share your decision with them.
     </p>
   </>;

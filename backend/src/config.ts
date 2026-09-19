@@ -16,5 +16,11 @@ export const config = {
   googleMapsApiKey: (process.env.GOOGLE_MAPS_API_KEY || '').trim(),
   sessionDays: 14,
   demoEnabled: process.env.DEMO_ENABLED === 'true' || (!production && process.env.DEMO_ENABLED !== 'false'),
+  // The browser suite creates many isolated accounts from one loopback IP.
+  // Keep the escape hatch test-only even if it is accidentally configured on
+  // a deployed service.
+  e2eRateLimitBypass: !production && process.env.E2E_DISABLE_RATE_LIMITS === 'true',
   origins: (process.env.APP_ORIGIN || (production ? '' : 'http://localhost:3000,http://127.0.0.1:3000,http://localhost:3100,http://127.0.0.1:3100,http://localhost:3107,http://127.0.0.1:3107,http://localhost:5173,http://127.0.0.1:5173,http://localhost:4000,http://127.0.0.1:4000')).split(',').map(x => x.trim()).filter(Boolean),
 };
+
+export const skipRateLimits = () => config.e2eRateLimitBypass;

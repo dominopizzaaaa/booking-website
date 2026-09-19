@@ -1,4 +1,4 @@
-import { isManagerWorkspace, type WorkspaceResponse, type WorkspaceBooking, type PublicBusiness, type Slot, type BookingInput, type PublicBookingInput, type BookingResult, type ProviderBookingResult, type AuthSession, type AccountBooking, type AccountBookingsResult, type IntegrityFlag, type RescheduleRequest, type VenueSearchResult } from './types';
+import { isManagerWorkspace, type WorkspaceResponse, type WorkspaceBooking, type PublicBusiness, type Slot, type BookingInput, type PublicBookingInput, type BookingResult, type ProviderBookingResult, type AuthSession, type AccountBooking, type AccountBookingsResult, type IntegrityFlag, type Payment, type RescheduleRequest, type VenueSearchResult } from './types';
 
 export class ApiError extends Error {
   constructor(message: string, public status: number, public details?: unknown) { super(message); }
@@ -83,11 +83,11 @@ export const respondToAssignment = (bookingId: string, action: 'accept' | 'decli
 // Recording a payment is a human action, so it has to be undoable. The row is
 // kept and marked reversed rather than deleted.
 export const reversePayment = (paymentId: string, reason = '') =>
-  api<{ ok: true }>(`/payments/${encodeURIComponent(paymentId)}`, {
+  api<{ ok: true; payment: Payment }>(`/payments/${encodeURIComponent(paymentId)}`, {
     method: 'DELETE', body: JSON.stringify({ reason }),
   });
 export const recordCoachPayout = (values: { instructorId: string; amount: number; method: string; note?: string }) =>
-  api('/payouts', { method: 'POST', body: JSON.stringify(values) });
+  api<Payment>('/payouts', { method: 'POST', body: JSON.stringify(values) });
 
 export const searchVenues = (query: string) =>
   api<VenueSearchResult>(`/venues/search?${new URLSearchParams({ q: query })}`);
