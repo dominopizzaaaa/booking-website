@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 2.3.0** · Last updated 2026-09-19
+**Version 2.4.0** · Last updated 2026-09-20
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -93,6 +93,7 @@ frontend/          Next.js App Router (TypeScript, Tailwind)
     public-booking.tsx      Public booking page for /book/[slug]
     legacy-booking.tsx      Pre-account management links (/manage/[token])
     auth-form.tsx           Login and sign-up
+  tests/           Vitest; the pure helpers under the UI, no DOM or server
   e2e/             Playwright; runs in CI against production bundles
 
 scripts/           Local PostgreSQL helper, investor-showcase builder
@@ -275,7 +276,19 @@ a detail dialog that links through to the subject.
 - Frontend API calls go in `src/lib/api.ts`, typed against `src/lib/types.ts`.
 - New UI must meet WCAG AA contrast, expose keyboard-complete semantics and
   predictable focus behavior, and work at 390px wide. The Playwright suite runs
-  three viewports.
+  three viewports. A control that carries a number must say what the number
+  counts; a bare badge reads as "Alerts 5" to a screen reader.
+- **Put a test where it belongs.** A rule about scheduling, money, tenancy or
+  an API contract belongs in `backend/tests`. A pure helper — formatting, the
+  alert vocabulary, the API client's own behaviour — belongs in
+  `frontend/tests`, which needs neither a DOM nor a server and runs in a
+  second. Anything a person does with a rendered page belongs in
+  `frontend/e2e`, where it runs at all three viewports. Do not reach for a
+  browser to test a function, and do not assert layout or focus from Vitest.
+- The two alert stores share one vocabulary. A new alert type added in
+  `notifications.ts` or `account-notifications.ts` needs a matching entry in
+  `frontend/src/lib/alerts.ts`; `frontend/tests/alerts.test.ts` reads both
+  backend files and fails when one is added without the other.
 
 ---
 
@@ -295,6 +308,7 @@ Checks, in the order CI runs them:
 npm test                              # backend Vitest (needs local PostgreSQL)
 npm run build --prefix backend
 npm run typecheck --prefix frontend
+npm test --prefix frontend            # frontend Vitest (no server, no DOM)
 npm run build --prefix frontend
 (cd frontend && npx playwright test)  # needs both servers running
 ```
@@ -304,7 +318,7 @@ Backend Vitest must remain file-serial: `npm test` invokes
 mutable process and database state. Do not run its files concurrently. Run the
 Playwright projects in one command from `frontend/`; they share test artifacts.
 
-**Two traps when running e2e locally:**
+**Three traps when running e2e locally:**
 
 1. Next.js bakes `BACKEND_URL` into the build at `next build` time. Run the API
    on **port 4000** (the default), or rebuild the frontend with the port you
@@ -313,6 +327,14 @@ Playwright projects in one command from `frontend/`; they share test artifacts.
    15-minute limit. Successful logins do not consume the failed-login budget.
    Start the suite's backend with `E2E_DISABLE_RATE_LIMITS=true`; this explicit
    opt-in is ignored in production and must never be configured on a deployment.
+3. The browser suite creates a demo workspace per test, in whatever database
+   the API is pointed at. Point it at the same local database the backend
+   Vitest suite uses and those workspaces accumulate there, until
+   `POST /api/admin/purge-demos` — one bounded transaction over every demo on
+   the platform — no longer finishes inside its test's five-second budget, and
+   `tests/admin.integration.test.ts` times out on work the suite itself left
+   behind. Purge the demos, or give the browser suite its own database, before
+   reading a backend failure as a regression.
 
 ### Migrations that audit before they enforce
 
@@ -388,6 +410,23 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 2.4.0 — 2026-09-20
+
+Added a third test suite and closed two reporting defects it found. Frontend
+Vitest (`frontend/tests`) now covers the pure helpers under the UI — money and
+date formatting, avatar initials, the shared alert vocabulary, and the API
+client's error mapping and workspace normalisation — including a check that
+reads both backend alert sources so a new alert type cannot ship without a
+frontend mapping. Backend coverage gained the public slot grid and its date
+boundaries, the HTTP request envelope, the management catalog's input
+boundaries, instalment and reversal arithmetic across bookings and packages,
+the platform business directory, and one narrative that follows a single lesson
+from the club, coach and student seats at once. Playwright gained workspace
+alert triage and a responsive sweep of every route. An oversized request body
+now answers 413 with a sentence instead of a 500 that alerted on the caller's
+mistake, and the desktop sidebar's unread badge announces what its number
+counts.
 
 ### 2.3.0 — 2026-09-19
 

@@ -70,6 +70,12 @@ const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
     if (error.code === 'P2034') { res.status(409).json({ error: 'Another update occurred at the same time. Please try again.' }); return; }
   }
   if (error instanceof SyntaxError && 'body' in error) { res.status(400).json({ error: 'Invalid JSON request body' }); return; }
+  // A body larger than the parser accepts is the caller sending too much, not
+  // this service failing. Reporting it as a server error would both mislead
+  // the caller and raise a fault alert for someone else's oversized request.
+  if (error instanceof Error && (error as { type?: string }).type === 'entity.too.large') {
+    res.status(413).json({ error: 'Request body is too large' }); return;
+  }
   console.error(error);
   res.status(500).json({ error: 'An unexpected server error occurred. Please try again.' });
 };

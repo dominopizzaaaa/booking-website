@@ -85,11 +85,20 @@ For a temporary investor showcase on an already deployed account-aware environme
 With PostgreSQL running and the migrations applied:
 
 ```bash
-npm test
+npm test                              # backend Vitest, against local PostgreSQL
+npm test --prefix frontend            # frontend unit tests; no server needed
 npm run build
 ```
 
-The backend integration suite deliberately requires a local PostgreSQL URL. GitHub Actions provisions an isolated PostgreSQL 16 service, migrates it, runs the tests, type-checks the frontend, and builds both applications.
+There are three suites, each covering what it is best placed to cover:
+
+| Suite | Where | Covers |
+| --- | --- | --- |
+| Backend Vitest | `backend/tests` | Scheduling, money, tenancy, database invariants, and every API route |
+| Frontend Vitest | `frontend/tests` | The pure helpers under the UI: money and date formatting, avatar initials, the shared alert vocabulary, and the API client |
+| Playwright | `frontend/e2e` | Real journeys for each role, at three viewports, including accessibility and keyboard operation |
+
+The backend integration suite deliberately requires a local PostgreSQL URL. GitHub Actions provisions an isolated PostgreSQL 16 service, migrates it, runs the tests, type-checks the frontend, runs the frontend unit tests, and builds both applications.
 
 The full Playwright suite deliberately creates many isolated accounts and workspaces from one loopback address. When running that suite, start the backend with `E2E_DISABLE_RATE_LIMITS=true` to bypass all API rate limiters for that process. The flag is opt-in, is unnecessary for normal development, and is ignored whenever `NODE_ENV=production`, even if it is accidentally set. Never configure it on a deployed service.
 
