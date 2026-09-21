@@ -6,6 +6,8 @@
     "install:all": "npm install --prefix backend && npm install --prefix frontend",
     "db:local": "node scripts/local-db.mjs",
     "demo:investors": "node scripts/populate-investor-showcase.mjs",
+    "demo:elever": "npm run seed:elever --prefix backend",
+    "verify:elever": "node scripts/verify-elever-showcase.mjs",
     "dev": "concurrently -n api,web -c green,blue \"npm run dev --prefix backend\" \"npm run dev --prefix frontend\"",
     "build": "npm run build --prefix backend && npm run build --prefix frontend",
     "test": "npm test --prefix backend",
