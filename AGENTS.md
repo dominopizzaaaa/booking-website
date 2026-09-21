@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 2.4.0** · Last updated 2026-09-20
+**Version 2.4.1** · Last updated 2026-09-21
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -410,6 +410,11 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 2.4.1 — 2026-09-21
+
+Fixed the investor-showcase builder so it respects immutable business kinds
+after registration, with a regression test covering the provisioning payload.
 
 ### 2.4.0 — 2026-09-20
 

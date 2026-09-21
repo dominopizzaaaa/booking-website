@@ -202,7 +202,6 @@ await club.patch('/business', {
   color: '#214e3e',
   tagline: 'Premium coaching, effortless operations.',
   cancellationHours: 24,
-  kind: 'CLUB',
 });
 
 let staff = await club.get('/staff');
