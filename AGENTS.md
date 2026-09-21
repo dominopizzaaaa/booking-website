@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 2.4.1** · Last updated 2026-09-21
+**Version 2.5.0** · Last updated 2026-09-21
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -385,6 +385,9 @@ with real data, since only the second exercises repair and historical audits.
 | `ADMIN_PASSWORD` | backend | Unlocks `/admin`; unset disables it entirely |
 | `GOOGLE_MAPS_API_KEY` | backend | **Optional.** Enables Places venue search |
 | `BACKEND_URL` | frontend | Server-side rewrite target; build-time |
+| `ELEVER_RESET_CONFIRMATION` | one-off CLI | Exact destructive-operation phrase required by `demo:elever` |
+| `ELEVER_EXPECTED_DATABASE_SHA256` | one-off CLI | SHA-256 fingerprint of the exact `DATABASE_URL` targeted by `demo:elever` |
+| `ELEVER_CLUB_PASSWORD`, `ELEVER_LOH_PASSWORD`, `ELEVER_ENG_PASSWORD`, `ELEVER_DOMINIC_PASSWORD`, `ELEVER_STUDENT_PASSWORD` | one-off CLI | Distinct 12–72-byte passwords used only while provisioning/verifying the Elever fixture |
 
 Without `GOOGLE_MAPS_API_KEY`, venue lookup still works: a pasted Google Maps
 link is parsed server-side by `parseMapsLink()`. Opaque `maps.app.goo.gl` share
@@ -410,6 +413,18 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 2.5.0 — 2026-09-21
+
+Added the guarded `demo:elever` production fixture command. It requires an
+explicit destructive-reset confirmation plus an exact database-URL fingerprint,
+preserves `_prisma_migrations`, validates the applied migration names and
+checksums against the checkout, and
+atomically replaces application data with the Elever Badminton Academy
+investor dataset: two affiliated coaches with their own SOLO practices, eight
+student accounts, lifecycle-consistent past and future sessions, and both club
+and direct payment routes. The README documents the backup-first run sequence
+and every required one-off environment variable.
 
 ### 2.4.1 — 2026-09-21
 

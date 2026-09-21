@@ -10,7 +10,8 @@
     "test": "vitest run --no-file-parallelism",
     "db:generate": "prisma generate",
     "db:migrate": "tsx src/migrate.ts",
-    "seed": "tsx prisma/seed.ts"
+    "seed": "tsx prisma/seed.ts",
+    "seed:elever": "tsx prisma/provision-elever-showcase.ts"
   },
   "dependencies": {
     "@prisma/client": "6.19.2",
