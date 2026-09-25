@@ -72,12 +72,12 @@ export function coachAcceptanceFor(
 // only an active membership backed by a registered provider account is
 // bookable. Keep this predicate shared by catalog and scheduling entry points
 // so a hidden legacy coach cannot still be selected with a crafted request.
-export const bookableInstructorWhere = (businessId: string): Prisma.InstructorWhereInput => ({
-  businessId,
+export const bookableInstructorWhere = (businessId?: string): Prisma.InstructorWhereInput => ({
+  ...(businessId ? { businessId } : {}),
   active: true,
   membership: {
     is: {
-      businessId,
+      ...(businessId ? { businessId } : {}),
       active: true,
       user: {
         is: {

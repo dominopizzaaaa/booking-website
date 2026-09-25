@@ -22,6 +22,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Search,
   ShieldCheck,
   UserRound,
   Video,
@@ -45,6 +46,7 @@ import {
   api,
   cancelAccountBooking,
   declineAccountReschedule,
+  loadAccountClubs,
   loadAccountBookings,
   loadAuthSession,
   loadSlots,
@@ -58,6 +60,7 @@ import type {
   PublicBookingBusiness,
   PublicLocation,
   Slot,
+  StudentClubDirectoryEntry,
 } from '@/lib/types';
 import { cn, dateKey, initials, money, shortDate, time } from '@/lib/utils';
 
@@ -65,6 +68,7 @@ type StudentTab = 'home' | 'explore' | 'book' | 'alerts' | 'profile';
 /** Which step the booking dialog is showing. */
 type BookingDialogMode = 'details' | 'cancel' | 'reschedule';
 type BookingFilter = 'all' | 'upcoming' | 'completed' | 'cancelled';
+type ClubRelationshipFilter = 'all' | 'known' | 'discover';
 type Conflict = { date: string; reason: string };
 type StudentNotification = {
   id: string;
@@ -82,6 +86,11 @@ type KnownClub = {
   bookingCount: number;
   nextAt?: string;
   lastAt?: string;
+};
+type ExploreClub = {
+  business: PublicBookingBusiness;
+  directory?: StudentClubDirectoryEntry;
+  known?: KnownClub;
 };
 
 const primaryButton =
@@ -383,6 +392,115 @@ function knownClubs(bookings: AccountBooking[], preferredSlug?: string, now = Da
     if (b.business.slug === preferredSlug) return 1;
     return notificationTime(b.nextAt ?? b.lastAt) - notificationTime(a.nextAt ?? a.lastAt);
   });
+}
+
+function directoryClubs(
+  directory: StudentClubDirectoryEntry[],
+  known: KnownClub[],
+  includeKnownOutsideDirectory: boolean,
+): ExploreClub[] {
+  const knownBySlug = new Map(known.map((club) => [club.business.slug, club]));
+  const entries = directory.map((entry) => ({
+    business: entry.business,
+    directory: entry,
+    known: knownBySlug.get(entry.business.slug),
+  }));
+  const listedSlugs = new Set(entries.map((club) => club.business.slug));
+  return [
+    ...entries,
+    ...(includeKnownOutsideDirectory ? known : [])
+      .filter((club) => !listedSlugs.has(club.business.slug))
+      .map((club) => ({ business: club.business, known: club })),
+  ];
+}
+
+function ExploreClubCard({ club }: { club: ExploreClub }) {
+  const { business, directory, known } = club;
+  return (
+    <article className={cn(panel, 'overflow-hidden')}>
+      <div
+        className="h-1.5 bg-[#78936a]"
+        style={business.color?.startsWith('#') ? { backgroundColor: business.color } : undefined}
+      />
+      <div className="flex h-[calc(100%-0.375rem)] flex-col p-5">
+        <div className="flex items-start gap-3">
+          <ClubAvatar club={club} size="small" />
+          <div className="flex-1">
+            <h3 className="text-base font-semibold tracking-tight text-[#2c4737]">{business.name}</h3>
+            <p className="mt-1 text-xs leading-relaxed text-[#59675c]">
+              {business.tagline || `Coaching with ${business.ownerName}`}
+            </p>
+          </div>
+        </div>
+
+        {directory && directory.sports.length > 0 && (
+          <ul aria-label={`${business.name} sports`} className="mt-4 flex flex-wrap gap-1.5">
+            {directory.sports.map((sport) => (
+              <li key={sport} className="rounded-full bg-[#edf3e7] px-2.5 py-1 text-[10px] font-semibold text-[#496353]">
+                {sport}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {directory && (
+          <dl className="mt-4 grid grid-cols-3 gap-2 rounded-xl bg-[#f6f8f3] p-3 text-center">
+            <div>
+              <dt className="text-[9px] uppercase tracking-wide text-[#59675c]">Services</dt>
+              <dd className="mt-1 text-sm font-semibold text-[#456049]">{directory.serviceCount}</dd>
+            </div>
+            <div>
+              <dt className="text-[9px] uppercase tracking-wide text-[#59675c]">Coaches</dt>
+              <dd className="mt-1 text-sm font-semibold text-[#456049]">{directory.coachCount}</dd>
+            </div>
+            <div>
+              <dt className="text-[9px] uppercase tracking-wide text-[#59675c]">Locations</dt>
+              <dd className="mt-1 text-sm font-semibold text-[#456049]">{directory.locationCount}</dd>
+            </div>
+          </dl>
+        )}
+
+        {known && (
+          <dl className="mt-3 grid grid-cols-2 gap-3 rounded-xl border border-[#e4e9df] p-3">
+            <div>
+              <dt className="text-[9px] uppercase tracking-wide text-[#59675c]">Your bookings</dt>
+              <dd className="mt-1 text-sm font-semibold text-[#456049]">{known.bookingCount}</dd>
+            </div>
+            <div>
+              <dt className="text-[9px] uppercase tracking-wide text-[#59675c]">Next session</dt>
+              <dd className="mt-1 text-sm font-semibold text-[#456049]">
+                {known.nextAt ? shortDate(known.nextAt, business.timezone) : 'Nothing booked'}
+              </dd>
+            </div>
+          </dl>
+        )}
+
+        <div className="mt-4 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            {directory ? (
+              <>
+                <p className="text-[9px] uppercase tracking-wide text-[#59675c]">Sessions from</p>
+                <p className="mt-1 text-base font-semibold text-[#34533e]">
+                  {money(directory.priceFrom, business.currency)}
+                </p>
+              </>
+            ) : (
+              <p className="text-xs text-[#59675c]">Live details are temporarily unavailable.</p>
+            )}
+          </div>
+          {known && <span className="text-[10px] font-semibold text-[#4f6847]">You have booked here</span>}
+        </div>
+
+        <Link
+          href={`/book/${encodeURIComponent(business.slug)}`}
+          className={cn(primaryButton, 'mt-5 w-full')}
+          aria-label={`View ${business.name} booking page`}
+        >
+          View booking page <ArrowRight size={15} />
+        </Link>
+      </div>
+    </article>
+  );
 }
 
 function statusClass(state: string) {
@@ -1101,7 +1219,7 @@ function AlertDialog({
   );
 }
 
-function ClubAvatar({ club, size = 'large' }: { club: KnownClub; size?: 'small' | 'large' }) {
+function ClubAvatar({ club, size = 'large' }: { club: { business: PublicBookingBusiness }; size?: 'small' | 'large' }) {
   return (
     <span
       aria-hidden="true"
@@ -1233,7 +1351,15 @@ export function StudentApp({ slug }: { slug?: string }) {
   const [authError, setAuthError] = useState('');
   const [bookings, setBookings] = useState<AccountBooking[]>([]);
   const [bookingsLoading, setBookingsLoading] = useState(false);
+  const [bookingsReady, setBookingsReady] = useState(false);
   const [bookingsError, setBookingsError] = useState('');
+  const [clubDirectory, setClubDirectory] = useState<StudentClubDirectoryEntry[]>([]);
+  const [clubDirectoryLoading, setClubDirectoryLoading] = useState(false);
+  const [clubDirectoryError, setClubDirectoryError] = useState('');
+  const [clubSearch, setClubSearch] = useState('');
+  const [clubSport, setClubSport] = useState('');
+  const [clubSlug, setClubSlug] = useState('');
+  const [clubRelationship, setClubRelationship] = useState<ClubRelationshipFilter>('all');
   const [notifications, setNotifications] = useState<StudentNotification[]>([]);
   const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [notificationsFallback, setNotificationsFallback] = useState(false);
@@ -1361,6 +1487,26 @@ export function StudentApp({ slug }: { slug?: string }) {
       }
     } finally {
       setBookingsLoading(false);
+      setBookingsReady(true);
+    }
+  }, [router]);
+
+  const refreshClubDirectory = useCallback(async () => {
+    setClubDirectoryLoading(true);
+    setClubDirectoryError('');
+    try {
+      const value = await loadAccountClubs();
+      setClubDirectory(value.clubs);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        router.replace(loginHrefRef.current);
+      } else {
+        // Directory discovery is additive. A failed or staggered deployment
+        // must not take a signed-in student away from their bookings.
+        setClubDirectoryError(messageOf(error));
+      }
+    } finally {
+      setClubDirectoryLoading(false);
     }
   }, [router]);
 
@@ -1396,9 +1542,11 @@ export function StudentApp({ slug }: { slug?: string }) {
       phone: session!.user.phone ?? '',
       parentName: session!.user.parentName ?? '',
     });
+    setBookingsReady(false);
     void refreshBookings();
+    void refreshClubDirectory();
     void refreshNotifications();
-  }, [session, refreshBookings, refreshNotifications]);
+  }, [session, refreshBookings, refreshClubDirectory, refreshNotifications]);
 
   useEffect(() => {
     function updateClock() {
@@ -1430,6 +1578,46 @@ export function StudentApp({ slug }: { slug?: string }) {
   }, [notice]);
 
   const clubs = useMemo(() => knownClubs(bookings, slug, nowMs), [bookings, nowMs, slug]);
+  const exploreClubs = useMemo(
+    () => directoryClubs(clubDirectory, clubs, !!clubDirectoryError),
+    [clubDirectory, clubDirectoryError, clubs],
+  );
+  const clubSports = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const sport of clubDirectory.flatMap((club) => club.sports)) {
+      const key = sport.trim().toLocaleLowerCase();
+      if (key && !labels.has(key)) labels.set(key, sport.trim());
+    }
+    return [...labels].map(([key, label]) => ({ key, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [clubDirectory]);
+  useEffect(() => {
+    if (clubSlug && !exploreClubs.some((club) => club.business.slug === clubSlug)) setClubSlug('');
+    if (clubSport && !clubSports.some((sport) => sport.key === clubSport)) setClubSport('');
+  }, [clubSlug, clubSport, clubSports, exploreClubs]);
+  const filteredExploreClubs = useMemo(() => {
+    const query = clubSearch.trim().toLocaleLowerCase();
+    return exploreClubs.filter((club) => {
+      const matchesSearch = !query || [
+        club.business.name,
+        club.business.tagline,
+        club.business.ownerName,
+        club.business.slug,
+        ...(club.directory?.sports ?? []),
+      ].some((value) => value.toLocaleLowerCase().includes(query));
+      const matchesSport = !clubSport || club.directory?.sports.some(
+        (sport) => sport.trim().toLocaleLowerCase() === clubSport,
+      );
+      const matchesClub = !clubSlug || club.business.slug === clubSlug;
+      const matchesRelationship =
+        clubRelationship === 'all' ||
+        (clubRelationship === 'known' ? !!club.known : !club.known);
+      return matchesSearch && matchesSport && matchesClub && matchesRelationship;
+    });
+  }, [clubRelationship, clubSearch, clubSlug, clubSport, exploreClubs]);
+  const filteredKnownClubs = filteredExploreClubs.filter((club) => club.known);
+  const filteredDiscoveryClubs = filteredExploreClubs.filter((club) => !club.known);
+  const exploreLoading = clubDirectoryLoading || !bookingsReady;
   const current = useMemo(() => bookings.filter((item) => isInProgress(item, nowMs)), [bookings, nowMs]);
   const upcoming = useMemo(() => bookings.filter((item) => isUpcoming(item, nowMs)), [bookings, nowMs]);
   const history = useMemo(
@@ -2078,12 +2266,12 @@ export function StudentApp({ slug }: { slug?: string }) {
 
         {activeTab === 'explore' && (
           <section id="student-explore-panel" aria-label="Explore" className="student-tab-panel student-tab-explore">
-            <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#59675c]">Your courts</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#59675c]">Find your court</p>
             <h1 className="mt-1.5 text-[30px] font-medium tracking-[-1px] text-[#20382d] sm:text-[36px]">Explore</h1>
             <p className="mt-2 max-w-xl text-sm leading-relaxed text-[#59675c]">
-              Revisit clubs you have genuinely booked with. Courtly does not list clubs you have not connected with.
+              Browse bookable clubs, compare their coaching, and return to the places you already know.
             </p>
-            {linkedSlugIsNew && (
+            {bookingsReady && linkedSlugIsNew && (
               <div className="mt-6 flex flex-col gap-3 rounded-2xl border border-[#dfe7d8] bg-[#f0f5ea] p-5 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h2 className="text-sm font-semibold text-[#3d5a41]">A club invited you to book</h2>
@@ -2094,69 +2282,193 @@ export function StudentApp({ slug }: { slug?: string }) {
                 </Link>
               </div>
             )}
-            {bookingsLoading ? (
-              <LoadingScreen text="Finding your clubs…" />
-            ) : clubs.length === 0 ? (
-              <div className="mt-8">
+
+            {clubDirectoryError && exploreClubs.length > 0 && (
+              <div className="mt-6 space-y-3">
+                <ErrorNotice message={`We couldn’t load every club. ${clubDirectoryError}`} />
+                <button type="button" className={secondaryButton} onClick={() => void refreshClubDirectory()}>
+                  <RefreshCw size={14} /> Try club directory again
+                </button>
+              </div>
+            )}
+
+            <div className={cn(panel, 'mt-7 p-4 sm:p-5')}>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label htmlFor="student-club-search" className="text-xs font-semibold text-[#465e4c]">
+                    Search clubs
+                  </label>
+                  <div className="relative mt-2">
+                    <Search aria-hidden="true" size={17} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-[#647469]" />
+                    <input
+                      id="student-club-search"
+                      type="search"
+                      value={clubSearch}
+                      onChange={(event) => setClubSearch(event.target.value)}
+                      placeholder="Club name, owner, or sport"
+                      className={cn(field, 'w-full !pl-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a]')}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label htmlFor="student-club-select" className="text-xs font-semibold text-[#465e4c]">
+                    Club
+                  </label>
+                  <select
+                    id="student-club-select"
+                    value={clubSlug}
+                    onChange={(event) => setClubSlug(event.target.value)}
+                    className={cn(field, 'mt-2 w-full bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a]')}
+                  >
+                    <option value="">All clubs</option>
+                    {exploreClubs.map((club) => (
+                      <option key={club.business.slug} value={club.business.slug}>{club.business.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <fieldset className="mt-5">
+                <legend className="text-xs font-semibold text-[#465e4c]">Relationship</legend>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {([
+                    ['all', 'All clubs'],
+                    ['known', 'Your clubs'],
+                    ['discover', 'Discover'],
+                  ] as const).map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      aria-pressed={clubRelationship === value}
+                      onClick={() => setClubRelationship(value)}
+                      className={cn(
+                        'min-h-10 rounded-full border px-4 py-2 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a] focus-visible:ring-offset-2',
+                        clubRelationship === value
+                          ? 'border-[#174c3c] bg-[#174c3c] text-white'
+                          : 'border-[#d8e1d5] bg-white text-[#496353] hover:bg-[#f3f6f1]',
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+
+              {clubSports.length > 0 && (
+                <fieldset className="mt-5">
+                  <legend className="text-xs font-semibold text-[#465e4c]">Sport</legend>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      aria-pressed={!clubSport}
+                      onClick={() => setClubSport('')}
+                      className={cn(
+                        'min-h-10 rounded-full border px-4 py-2 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a] focus-visible:ring-offset-2',
+                        !clubSport ? 'border-[#55734d] bg-[#e8f0df] text-[#34533e]' : 'border-[#d8e1d5] bg-white text-[#496353] hover:bg-[#f3f6f1]',
+                      )}
+                    >
+                      All sports
+                    </button>
+                    {clubSports.map((sport) => (
+                      <button
+                        key={sport.key}
+                        type="button"
+                        aria-pressed={clubSport === sport.key}
+                        onClick={() => setClubSport(sport.key)}
+                        className={cn(
+                          'min-h-10 rounded-full border px-4 py-2 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a] focus-visible:ring-offset-2',
+                          clubSport === sport.key
+                            ? 'border-[#55734d] bg-[#e8f0df] text-[#34533e]'
+                            : 'border-[#d8e1d5] bg-white text-[#496353] hover:bg-[#f3f6f1]',
+                        )}
+                      >
+                        {sport.label}
+                      </button>
+                    ))}
+                  </div>
+                </fieldset>
+              )}
+            </div>
+
+            <p role="status" aria-live="polite" className="mt-5 text-xs font-medium text-[#59675c]">
+              {exploreLoading
+                ? 'Loading clubs…'
+                : `${filteredExploreClubs.length} club${filteredExploreClubs.length === 1 ? '' : 's'} found`}
+            </p>
+
+            {exploreLoading ? (
+              <LoadingScreen text="Finding clubs…" />
+            ) : exploreClubs.length === 0 ? (
+              <div className="mt-6">
                 <EmptyState
                   icon={<Compass size={23} />}
-                  title={slug ? 'Book with this club to add it here' : 'Add your first club'}
+                  title={clubDirectoryError ? 'Your club directory is temporarily unavailable' : 'No clubs are available yet'}
                   action={
-                    slug ? (
-                      <Link href={`/book/${encodeURIComponent(slug)}`} className={primaryButton}>
-                        Open booking page <ArrowRight size={15} />
-                      </Link>
-                    ) : (
-                      <BookingLinkForm id="student-explore-booking-link" />
-                    )
+                    clubDirectoryError ? (
+                      <button type="button" className={primaryButton} onClick={() => void refreshClubDirectory()}>
+                        <RefreshCw size={14} /> Try again
+                      </button>
+                    ) : undefined
                   }
                 >
-                  {slug
-                    ? 'Choose a session on its booking page. The club will appear here after you book.'
-                    : 'Paste a club’s Courtly booking link to choose a session and add it to your history.'}
+                  {clubDirectoryError
+                    ? 'Your bookings are still available. Try loading the directory again when you are ready.'
+                    : 'Come back soon as more bookable clubs join Courtly.'}
+                </EmptyState>
+              </div>
+            ) : filteredExploreClubs.length === 0 ? (
+              <div className="mt-6">
+                <EmptyState
+                  icon={<Search size={23} />}
+                  title="No clubs match these filters"
+                  action={
+                    <button
+                      type="button"
+                      className={secondaryButton}
+                      onClick={() => {
+                        setClubSearch('');
+                        setClubSport('');
+                        setClubSlug('');
+                        setClubRelationship('all');
+                      }}
+                    >
+                      Clear all filters
+                    </button>
+                  }
+                >
+                  Try another club name or sport, or clear the filters to see the full directory.
                 </EmptyState>
               </div>
             ) : (
-              <div className="mt-8 grid gap-4 sm:grid-cols-2">
-                {clubs.map((club) => (
-                  <article key={club.business.slug} className={cn(panel, 'overflow-hidden')}>
-                    <div
-                      className="h-1.5 bg-[#78936a]"
-                      style={club.business.color?.startsWith('#') ? { backgroundColor: club.business.color } : undefined}
-                    />
-                    <div className="p-5">
-                      <div className="flex items-start gap-3">
-                        <ClubAvatar club={club} size="small" />
-                        <div className="flex-1">
-                          <h2 className="text-base font-semibold tracking-tight text-[#2c4737]">
-                            {club.business.name}
-                          </h2>
-                          <p className="mt-1 text-xs text-[#59675c]">
-                            {club.business.tagline || `Coaching with ${club.business.ownerName}`}
-                          </p>
-                        </div>
+              <div className="mt-7 space-y-10">
+                {filteredKnownClubs.length > 0 && (
+                  <section aria-labelledby="student-known-clubs">
+                    <div className="mb-4 flex items-end justify-between gap-4">
+                      <div>
+                        <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#174c3c]">Welcome back</p>
+                        <h2 id="student-known-clubs" className="mt-1 text-xl font-semibold tracking-tight">Your clubs</h2>
                       </div>
-                      <dl className="mt-5 grid grid-cols-2 gap-3 rounded-xl bg-[#f6f8f3] p-3">
-                        <div>
-                          <dt className="text-[9px] uppercase tracking-wide text-[#59675c]">Your bookings</dt>
-                          <dd className="mt-1 text-sm font-semibold text-[#456049]">{club.bookingCount}</dd>
-                        </div>
-                        <div>
-                          <dt className="text-[9px] uppercase tracking-wide text-[#59675c]">Next session</dt>
-                          <dd className="mt-1 text-sm font-semibold text-[#456049]">
-                            {club.nextAt ? shortDate(club.nextAt, club.business.timezone) : 'Nothing booked'}
-                          </dd>
-                        </div>
-                      </dl>
-                      <Link
-                        href={`/book/${encodeURIComponent(club.business.slug)}`}
-                        className={cn(primaryButton, 'mt-5 w-full')}
-                      >
-                        View booking page <ArrowRight size={15} />
-                      </Link>
+                      <span className="text-xs text-[#59675c]">{filteredKnownClubs.length} shown</span>
                     </div>
-                  </article>
-                ))}
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      {filteredKnownClubs.map((club) => <ExploreClubCard key={club.business.slug} club={club} />)}
+                    </div>
+                  </section>
+                )}
+                {filteredDiscoveryClubs.length > 0 && (
+                  <section aria-labelledby="student-discover-clubs">
+                    <div className="mb-4 flex items-end justify-between gap-4">
+                      <div>
+                        <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">Try somewhere new</p>
+                        <h2 id="student-discover-clubs" className="mt-1 text-xl font-semibold tracking-tight">Discover new clubs</h2>
+                      </div>
+                      <span className="text-xs text-[#59675c]">{filteredDiscoveryClubs.length} shown</span>
+                    </div>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      {filteredDiscoveryClubs.map((club) => <ExploreClubCard key={club.business.slug} club={club} />)}
+                    </div>
+                  </section>
+                )}
               </div>
             )}
           </section>

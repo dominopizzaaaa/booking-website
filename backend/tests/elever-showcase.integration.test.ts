@@ -315,7 +315,7 @@ describe.sequential('Elever showcase provisioner integration', () => {
     )).toBe(true);
 
     const counts = await snapshot(database);
-    expect(counts._prisma_migrations.count).toBe(15);
+    expect(counts._prisma_migrations.count).toBe(16);
     expect(await database.$queryRawUnsafe<Array<{ failed: number; rolledBack: number }>>(`
       SELECT
         COUNT(*) FILTER (WHERE finished_at IS NULL AND rolled_back_at IS NULL)::int AS failed,

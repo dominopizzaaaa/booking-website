@@ -1,4 +1,4 @@
-import { isManagerWorkspace, type WorkspaceResponse, type WorkspaceBooking, type PublicBusiness, type Slot, type BookingInput, type PublicBookingInput, type BookingResult, type ProviderBookingResult, type AuthSession, type AccountBooking, type AccountBookingsResult, type IntegrityFlag, type Payment, type RescheduleRequest, type VenueSearchResult } from './types';
+import { isManagerWorkspace, type WorkspaceResponse, type WorkspaceBooking, type PublicBusiness, type Slot, type BookingInput, type PublicBookingInput, type BookingResult, type ProviderBookingResult, type AuthSession, type AccountBooking, type AccountBookingsResult, type StudentClubDirectoryPage, type StudentClubDirectoryResult, type IntegrityFlag, type Payment, type RescheduleRequest, type VenueSearchResult } from './types';
 
 export class ApiError extends Error {
   constructor(message: string, public status: number, public details?: unknown) { super(message); }
@@ -46,6 +46,27 @@ export async function loadAccountBookings(businessSlug?: string): Promise<Accoun
   const query = businessSlug ? `?${new URLSearchParams({ businessSlug })}` : '';
   const value = await api<AccountBookingsResult | AccountBooking[]>(`/account/bookings${query}`);
   return Array.isArray(value) ? { bookings: value } : value;
+}
+export async function loadAccountClubs(): Promise<StudentClubDirectoryResult> {
+  const clubs: StudentClubDirectoryResult['clubs'] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+
+  while (true) {
+    const query = `?${new URLSearchParams({ ...(cursor ? { cursor } : {}), limit: '50' })}`;
+    const page = await api<StudentClubDirectoryPage>(`/account/clubs${query}`);
+    clubs.push(...page.clubs);
+    if (!page.nextCursor) break;
+    if (seenCursors.has(page.nextCursor)) {
+      throw new ApiError('The club directory returned an invalid page. Please try again.', 502);
+    }
+    seenCursors.add(page.nextCursor);
+    cursor = page.nextCursor;
+  }
+
+  clubs.sort((a, b) =>
+    a.business.name.localeCompare(b.business.name) || a.business.slug.localeCompare(b.business.slug));
+  return { clubs };
 }
 export const cancelAccountBooking = (participantId: string) => api(`/account/bookings/${encodeURIComponent(participantId)}/cancel`, { method: 'POST', body: JSON.stringify({}) });
 

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { createHash } from 'node:crypto';
+import type { Prisma } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { z } from 'zod';
 import { rateLimit } from 'express-rate-limit';
@@ -33,6 +34,82 @@ async function businessForSlug(slug: string) {
   if (!business) throw new HttpError(404, 'Booking page not found');
   return business;
 }
+
+const bookableServiceWhere = {
+  active: true,
+  locations: {
+    some: {
+      location: { active: true },
+      instructors: { some: { instructor: bookableInstructorWhere() } },
+    },
+  },
+} satisfies Prisma.ServiceWhereInput;
+const clubDirectoryQuery = z.object({
+  cursor: z.string().trim().min(1).max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(50),
+}).strict();
+
+// Explore is an account surface, but its cards deliberately carry only the
+// same public-safe identity used by booking pages. A club belongs here only
+// when following its link can lead to at least one real booking choice.
+publicRouter.get('/account/clubs', requireAuth, requireStudent, asyncRoute(async (req, res) => {
+  const { cursor, limit } = clubDirectoryQuery.parse(req.query);
+  const businesses = await prisma.business.findMany({
+    where: {
+      kind: 'CLUB',
+      isDemo: false,
+      ...(cursor ? { slug: { gt: cursor } } : {}),
+      services: { some: bookableServiceWhere },
+    },
+    include: {
+      services: {
+        where: bookableServiceWhere,
+        select: {
+          id: true, category: true,
+          locations: {
+            where: {
+              location: { active: true },
+              instructors: { some: { instructor: bookableInstructorWhere() } },
+            },
+            select: {
+              locationId: true, price: true,
+              instructors: {
+                where: { instructor: bookableInstructorWhere() },
+                select: { instructorId: true },
+              },
+            },
+          },
+        },
+      },
+    },
+    orderBy: { slug: 'asc' },
+    take: limit + 1,
+  });
+  const hasNextPage = businesses.length > limit;
+  const page = hasNextPage ? businesses.slice(0, limit) : businesses;
+
+  res.json({
+    clubs: page.map(business => {
+      const locations = business.services.flatMap(service => service.locations);
+      const sportByKey = new Map<string, string>();
+      for (const service of business.services) {
+        const sport = service.category.trim();
+        if (sport && !sportByKey.has(sport.toLocaleLowerCase())) {
+          sportByKey.set(sport.toLocaleLowerCase(), sport);
+        }
+      }
+      return {
+        business: publicBookingBusiness(business),
+        sports: [...sportByKey.values()].sort((a, b) => a.localeCompare(b)),
+        serviceCount: business.services.length,
+        coachCount: new Set(locations.flatMap(location => location.instructors.map(item => item.instructorId))).size,
+        locationCount: new Set(locations.map(location => location.locationId)).size,
+        priceFrom: Math.min(...locations.map(location => location.price)),
+      };
+    }),
+    nextCursor: hasNextPage ? page.at(-1)!.slug : null,
+  });
+}));
 
 publicRouter.get('/public/:slug', asyncRoute(async (req, res) => {
   const business = await businessForSlug(req.params.slug);

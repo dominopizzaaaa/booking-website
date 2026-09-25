@@ -306,6 +306,14 @@ async function mockAdmin(page: Page) {
 
 async function mockStudent(page: Page) {
   await page.route('**/api/auth/me', route => route.fulfill({ json: studentSession }));
+  await page.route('**/api/account/clubs*', route => route.fulfill({
+    json: {
+      clubs: [{
+        business: bookingBusiness, sports: ['Tennis'], serviceCount: 1,
+        coachCount: 1, locationCount: 1, priceFrom: 8_000,
+      }],
+    },
+  }));
   await page.route('**/api/account/bookings*', route => route.fulfill({
     json: { bookings: [populatedBooking] },
   }));
@@ -379,6 +387,7 @@ test.describe('automated WCAG checks', () => {
 
   test('authenticated student profile has no detectable WCAG A or AA violations', async ({ page }) => {
     await page.route('**/api/auth/me', route => route.fulfill({ json: studentSession }));
+    await page.route('**/api/account/clubs*', route => route.fulfill({ json: { clubs: [] } }));
     await page.route('**/api/account/bookings*', route => route.fulfill({ json: { bookings: [] } }));
     await page.route('**/api/account/notifications', route => route.fulfill({ json: { notifications: [] } }));
 

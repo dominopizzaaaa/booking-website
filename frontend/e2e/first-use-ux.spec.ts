@@ -207,6 +207,7 @@ test('student bottom-tab navigation moves focus to the main content', async ({ p
   };
 
   await page.route('**/api/auth/me', route => route.fulfill({ json: session }));
+  await page.route('**/api/account/clubs*', route => route.fulfill({ json: { clubs: [] } }));
   await page.route('**/api/account/bookings*', route => route.fulfill({ json: { bookings: [] } }));
   await page.route('**/api/account/notifications', route => route.fulfill({ json: { notifications: [] } }));
 

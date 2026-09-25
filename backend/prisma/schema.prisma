@@ -38,6 +38,8 @@ model Business {
   accountNotifications AccountNotification[]
   rescheduleRequests   RescheduleRequest[]
   integrityFlags       IntegrityFlag[]
+
+  @@index([kind, isDemo, slug])
 }
 
 model User {

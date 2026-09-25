@@ -358,6 +358,7 @@ test('student shell guards stale actions and exposes current sessions and action
   );
 
   await page.route('**/api/auth/me', route => route.fulfill({ json: session }));
+  await page.route('**/api/account/clubs*', route => route.fulfill({ json: { clubs: [] } }));
   await page.route('**/api/account/bookings*', route => route.fulfill({
     json: { bookings: [inProgress, insideCutoff] },
   }));

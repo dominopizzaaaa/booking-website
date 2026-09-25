@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 2.5.0** · Last updated 2026-09-21
+**Version 2.6.0** · Last updated 2026-09-25
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -69,7 +69,7 @@ backend/           Express + Prisma API (TypeScript, ESM)
     reschedule.ts  Two-sided reschedule requests
     integrity.ts   Club safeguard: detection + review routes
     notifications.ts  Typed workspace alerts (notifyWorkspace)
-    account-notifications.ts  Student alert copy + /api/account/*
+    account-notifications.ts  Student profile, alerts, and /api/account/*
     bookings.ts    Bookings, coach acceptance, payments, payouts, reversal
     crud.ts        Services, instructors, locations, students, packages, …
     staff.ts       Club-created coach affiliations
@@ -109,6 +109,7 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
 | Add an API route | The matching `backend/src/*.ts` router, then `app.ts` |
 | Change what the workspace shows | `backend/src/workspace.ts` **and** `frontend/src/lib/types.ts` |
 | Change student booking UI | `frontend/src/components/student-app.tsx` |
+| Change student club discovery | `backend/src/public.ts`, then `frontend/src/components/student-app.tsx` |
 | Change provider UI | `frontend/src/components/workspace/` |
 | Change slot / conflict rules | `backend/src/scheduling.ts` |
 | Change alert icons or ordering | `frontend/src/lib/alerts.ts` |
@@ -154,6 +155,13 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
   Google Maps finder, and sees the club's active venues so a new one remains
   visible after saving. Editing, archiving, and service assignment remain with
   the club; the coach still receives no service prices or financial records.
+- Student Explore is a directory of every currently bookable non-demo `CLUB`,
+  not only businesses found in that student's booking history. Bounded
+  directory pages use the immutable public slug as their cursor. A result must
+  have an active service connected through an active venue to a bookable coach;
+  sport labels come from those services' `category` values. Keep the directory
+  response public-safe and use booking history only to distinguish "Your clubs"
+  from clubs the student has not booked with yet.
 
 ### Booking lifecycle
 
@@ -413,6 +421,15 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 2.6.0 — 2026-09-25
+
+Expanded the student Explore tab from booking-history-only cards into the
+bookable club directory. Students can browse known and new clubs in separate
+categories, search by name, and filter by sport, exact club, or relationship;
+directory summaries expose only public booking metadata, exclude private demo
+workspaces, load through bounded cursor pages, and are derived from active
+services with a registered, active coach and venue.
 
 ### 2.5.0 — 2026-09-21
 
