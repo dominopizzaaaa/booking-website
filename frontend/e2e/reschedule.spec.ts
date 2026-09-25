@@ -131,7 +131,7 @@ async function createJourney(page: Page, projectName: string, label: string): Pr
   const studentEmail = `${runId}@example.test`;
 
   await responseJson(await page.request.post('/api/auth/register', {
-    data: { accountType: 'STUDENT', name: studentName, email: studentEmail, password },
+    data: { accountType: 'STUDENT', name: studentName, username: `rs_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: studentEmail, password },
   }));
   await logout(page);
 
@@ -261,7 +261,7 @@ test.describe('two-sided rescheduling', () => {
     await restoreCookies(page, journey.clubCookies);
     dialog = await openProviderBooking(page, journey);
     await expect(dialog.getByText('The student asked for a new time', { exact: true })).toBeVisible();
-    await expect(dialog).toContainText('The session keeps its current time until both sides agree.');
+    await expect(dialog).toContainText('The class keeps its current time until both sides agree.');
     await expect(dialog).toContainText(displayedTime(journey.originalStartAt));
     await expect(dialog).toContainText(displayedTime(journey.proposedStartAt));
     expect((await workspaceBooking(page, journey.bookingId)).booking.startAt).toBe(journey.originalStartAt);
@@ -291,7 +291,7 @@ test.describe('two-sided rescheduling', () => {
     let dialog = await openProviderBooking(page, journey);
     await dialog.getByRole('button', { name: 'Propose a new time', exact: true }).click();
     await dialog.getByLabel('Propose a new time', { exact: true }).fill(futureSingaporeDate());
-    await dialog.getByLabel('New lesson time', { exact: true }).selectOption(journey.proposedStartAt);
+    await dialog.getByLabel('New class time', { exact: true }).selectOption(journey.proposedStartAt);
     const proposalMessage = 'Could we use the later court window?';
     await dialog.getByLabel('Message to the student', { exact: false }).fill(proposalMessage);
     const providerProposalResponse = page.waitForResponse(response =>
@@ -302,7 +302,7 @@ test.describe('two-sided rescheduling', () => {
     expect((await providerProposalResponse).status()).toBe(201);
     await expect(page.getByText('Request sent to the student', { exact: true })).toBeVisible();
     await expect(dialog.getByText('Waiting for the student to reply', { exact: true })).toBeVisible();
-    await expect(dialog).toContainText('The session keeps its current time until both sides agree.');
+    await expect(dialog).toContainText('The class keeps its current time until both sides agree.');
     await expect(dialog).toContainText(proposalMessage);
     expect((await workspaceBooking(page, journey.bookingId)).booking.startAt).toBe(journey.originalStartAt);
     await expectNoHorizontalOverflow(page, dialog);
@@ -319,7 +319,7 @@ test.describe('two-sided rescheduling', () => {
     // Raise the same proposal again, then exercise the student's decline path.
     await dialog.getByRole('button', { name: 'Propose a new time', exact: true }).click();
     await dialog.getByLabel('Propose a new time', { exact: true }).fill(futureSingaporeDate());
-    await dialog.getByLabel('New lesson time', { exact: true }).selectOption(journey.proposedStartAt);
+    await dialog.getByLabel('New class time', { exact: true }).selectOption(journey.proposedStartAt);
     await dialog.getByLabel('Message to the student', { exact: false }).fill(proposalMessage);
     await dialog.getByRole('button', { name: 'Send request', exact: true }).click();
     await expect(dialog.getByText('Waiting for the student to reply', { exact: true })).toBeVisible();
@@ -347,7 +347,7 @@ test.describe('two-sided rescheduling', () => {
     dialog = await openProviderBooking(page, journey);
     await dialog.getByRole('button', { name: 'Propose a new time', exact: true }).click();
     await dialog.getByLabel('Propose a new time', { exact: true }).fill(futureSingaporeDate());
-    await dialog.getByLabel('New lesson time', { exact: true }).selectOption(journey.proposedStartAt);
+    await dialog.getByLabel('New class time', { exact: true }).selectOption(journey.proposedStartAt);
     await dialog.getByLabel('Message to the student', { exact: false }).fill('Final proposal for acceptance.');
     await dialog.getByRole('button', { name: 'Send request', exact: true }).click();
     await expect(dialog.getByText('Waiting for the student to reply', { exact: true })).toBeVisible();

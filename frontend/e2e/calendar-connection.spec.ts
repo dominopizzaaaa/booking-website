@@ -3,8 +3,10 @@ import type {
   AuthSession,
   Business,
   CalendarConnectionStatus,
+  CoachClubWorkspace,
   ManagerWorkspace,
   Membership,
+  WorkspaceResponse,
 } from '../src/lib/types';
 
 const soloBusiness: Business & { kind: 'SOLO' } = {
@@ -36,11 +38,11 @@ const clubBusiness: Business & { kind: 'CLUB' } = {
 const coachMembership: Membership = {
   id: 'calendar-coach-membership',
   userId: 'calendar-coach',
-  businessId: soloBusiness.id,
+  businessId: clubBusiness.id,
   instructorId: 'calendar-coach-instructor',
   active: true,
   createdAt: '2026-01-01T00:00:00.000Z',
-  business: soloBusiness,
+  business: clubBusiness,
 };
 
 const clubMembership: Membership = {
@@ -53,8 +55,8 @@ const clubMembership: Membership = {
   business: clubBusiness,
 };
 
-const coachWorkspace: ManagerWorkspace = {
-  business: soloBusiness,
+const coachWorkspace: CoachClubWorkspace = {
+  business: clubBusiness,
   user: {
     id: 'calendar-coach',
     name: 'Morgan Coach',
@@ -96,6 +98,11 @@ const clubWorkspace: ManagerWorkspace = {
   membership: clubMembership,
   memberships: [clubMembership],
   clubAccount: true,
+  services: [],
+  bookings: [],
+  packages: [],
+  payments: [],
+  integrityFlags: [],
 };
 
 const coachSession: AuthSession = {
@@ -161,7 +168,7 @@ function calendarCard(page: Page) {
   return page.getByRole('region', { name: 'Google Calendar', exact: true });
 }
 
-async function mockWorkspace(page: Page, workspace: ManagerWorkspace) {
+async function mockWorkspace(page: Page, workspace: WorkspaceResponse) {
   await page.route('**/api/workspace', route => route.fulfill({ json: workspace }));
 }
 
@@ -170,6 +177,10 @@ async function mockStudent(page: Page) {
   await page.route('**/api/account/clubs*', route => route.fulfill({ json: { clubs: [] } }));
   await page.route('**/api/account/bookings*', route => route.fulfill({ json: { bookings: [] } }));
   await page.route('**/api/account/notifications', route => route.fulfill({ json: { notifications: [] } }));
+  await page.route('**/api/account/packages', route => route.fulfill({ json: { packages: [] } }));
+  await page.route(/\/api\/rentals(?:\?.*)?$/, route => route.fulfill({
+    json: { rentals: [], nextCursor: null },
+  }));
 }
 
 async function expectNoHorizontalOverflow(page: Page) {
@@ -393,6 +404,7 @@ test('student calendar controls remain named, keyboard-operable, and contained a
 
   await page.goto('/manage?tab=profile');
   const card = calendarCard(page);
+  await expect(card).toBeVisible();
   await card.scrollIntoViewIfNeeded();
   await expectNoHorizontalOverflow(page);
   await page.screenshot({ path: `.data/screenshots/calendar-student-${testInfo.project.name}.png`, fullPage: true });

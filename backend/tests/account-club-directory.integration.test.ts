@@ -46,10 +46,12 @@ describe.sequential('Student club directory', () => {
     const alphabeticClub = await tenants.fixture();
     const unavailableClub = await tenants.fixture();
     const privateDemoClub = await tenants.fixture();
+    const legacyClub = await tenants.fixture();
     const pagePrefix = `zzzzzzzzzz-directory-${randomUUID()}`;
     const alphaSlug = `${pagePrefix}-alpha`;
     const demoSlug = `${pagePrefix}-demo`;
     const hiddenSlug = `${pagePrefix}-hidden`;
+    const legacySlug = `${pagePrefix}-legacy`;
     const soloSlug = `${pagePrefix}-solo`;
     const zebraSlug = `${pagePrefix}-zebra`;
     await prisma.business.update({
@@ -67,6 +69,10 @@ describe.sequential('Student club directory', () => {
     await prisma.business.update({
       where: { id: privateDemoClub.business.id },
       data: { name: 'Directory Private Demo Club', slug: demoSlug, isDemo: true },
+    });
+    await prisma.business.update({
+      where: { id: legacyClub.business.id },
+      data: { name: 'Directory Legacy Club', slug: legacySlug, legacyReadOnly: true },
     });
     await prisma.user.update({
       where: { id: unavailableClub.coachUser.id },
@@ -112,26 +118,38 @@ describe.sequential('Student club directory', () => {
       },
     });
 
-    const soloResponse = await request(app).post('/api/auth/practice')
-      .set('Cookie', club.coachCookie).send({ name: 'Directory Solo Practice' }).expect(201);
-    const soloBusinessId = soloResponse.body.business.id as string;
-    tenants.own(soloBusinessId);
-    await prisma.business.update({ where: { id: soloBusinessId }, data: { slug: soloSlug } });
-    const soloMembership = await prisma.membership.findFirstOrThrow({
-      where: { businessId: soloBusinessId, userId: club.coachUser.id },
+    const historicalSolo = await prisma.$transaction(async tx => {
+      const business = await tx.business.create({
+        data: {
+          name: 'Directory Historical Solo Practice', slug: soloSlug,
+          ownerName: club.coachUser.name, email: club.coachUser.email,
+          kind: 'SOLO', legacyReadOnly: true,
+        },
+      });
+      const instructor = await tx.instructor.create({
+        data: {
+          businessId: business.id, name: club.coachUser.name, initials: 'DS',
+          email: club.coachUser.email,
+        },
+      });
+      await tx.membership.create({
+        data: { businessId: business.id, userId: club.coachUser.id, instructorId: instructor.id },
+      });
+      const location = await tx.location.create({
+        data: { businessId: business.id, name: 'Solo Court' },
+      });
+      await tx.service.create({
+        data: {
+          businessId: business.id, name: 'Solo tennis', category: 'Tennis',
+          locations: { create: {
+            locationId: location.id, price: 2_000, duration: 60,
+            instructors: { create: { instructorId: instructor.id } },
+          } },
+        },
+      });
+      return business;
     });
-    const soloLocation = await prisma.location.create({
-      data: { businessId: soloBusinessId, name: 'Solo Court' },
-    });
-    await prisma.service.create({
-      data: {
-        businessId: soloBusinessId, name: 'Solo tennis', category: 'Tennis',
-        locations: { create: {
-          locationId: soloLocation.id, price: 2_000, duration: 60,
-          instructors: { create: { instructorId: soloMembership.instructorId! } },
-        } },
-      },
-    });
+    tenants.own(historicalSolo.id);
 
     const cookie = await studentCookie();
     const entries: Array<Record<string, any>> = [];
@@ -168,8 +186,11 @@ describe.sequential('Student club directory', () => {
     expect(JSON.stringify(zebra)).not.toContain(club.instructor.id);
     expect(entries.some(entry => entry.business.slug === hiddenSlug)).toBe(false);
     expect(entries.some(entry => entry.business.slug === demoSlug)).toBe(false);
+    expect(entries.some(entry => entry.business.slug === legacySlug)).toBe(false);
     expect(entries.some(entry => entry.business.slug === soloSlug)).toBe(false);
     expect(seenCursors.has(alphaSlug)).toBe(true);
+    await request(app).get(`/api/public/${legacySlug}`).expect(404);
+    await request(app).get(`/api/public/${soloSlug}`).expect(404);
 
     for (const entry of ownEntries) {
       await request(app).get(`/api/public/${entry.business.slug}`).expect(200);

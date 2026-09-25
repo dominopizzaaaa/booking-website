@@ -1,4 +1,5 @@
 import express, { type ErrorRequestHandler } from 'express';
+import { createServer, type Server } from 'node:http';
 import request from 'supertest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,6 +9,7 @@ const loginEmail = 'rate-limit-user@example.test';
 const validPasswordHash = '$2b$12$QrsSSNoV/kdmGVRTVVmoIOKhMlSeSPFjGtV8.iKB7MHYFUPprZWyK';
 const envKeys = ['NODE_ENV', 'DATABASE_URL', 'E2E_DISABLE_RATE_LIMITS'] as const;
 const originalEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
+let authServer: Server | null = null;
 
 function setEnv(key: typeof envKeys[number], value: string | undefined) {
   if (value === undefined) delete process.env[key];
@@ -87,14 +89,34 @@ async function loadAuthHarness() {
     });
   };
   app.use(errorHandler);
-  return { app, compare };
+
+  // Reuse one listener for the quota loops. Passing the Express callback to
+  // every Supertest request opens and closes a new ephemeral listener, which
+  // becomes transport-flaky when this file runs late in the full suite.
+  const server = createServer(app);
+  authServer = server;
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+  return { server, compare };
 }
 
-function login(app: express.Express, password: string) {
-  return request(app).post('/api/auth/login').send({ email: loginEmail, password });
+function login(server: Server, password: string) {
+  return request(server).post('/api/auth/login').send({ email: loginEmail, password });
 }
 
-afterEach(() => {
+afterEach(async () => {
+  const server = authServer;
+  authServer = null;
+  if (server?.listening) {
+    await new Promise<void>((resolve, reject) => {
+      server.close(error => error ? reject(error) : resolve());
+    });
+  }
   vi.doUnmock('bcryptjs');
   vi.doUnmock('../src/db.js');
   vi.doUnmock('../src/seed.js');
@@ -122,32 +144,32 @@ describe.sequential('rate-limit enforcement', () => {
   });
 
   it('returns 429 after the configured failed-login quota is exhausted', async () => {
-    const { app, compare } = await loadAuthHarness();
+    const { server, compare } = await loadAuthHarness();
 
     for (let attempt = 1; attempt <= 30; attempt += 1) {
-      const response = await login(app, invalidPassword);
+      const response = await login(server, invalidPassword);
       expect(response.status, `failed login ${attempt} should remain inside the quota`).toBe(401);
     }
 
-    const limited = await login(app, invalidPassword);
+    const limited = await login(server, invalidPassword);
     expect(limited.status).toBe(429);
     expect(limited.body).toEqual({ error: 'Too many attempts. Please try again later.' });
     expect(compare).toHaveBeenCalledTimes(30);
   });
 
   it('does not spend the failed-login quota on successful logins', async () => {
-    const { app, compare } = await loadAuthHarness();
+    const { server, compare } = await loadAuthHarness();
 
     for (let attempt = 1; attempt <= 3; attempt += 1) {
-      const response = await login(app, validPassword);
+      const response = await login(server, validPassword);
       expect(response.status, `successful login ${attempt}`).toBe(200);
     }
     for (let attempt = 1; attempt <= 30; attempt += 1) {
-      const response = await login(app, invalidPassword);
+      const response = await login(server, invalidPassword);
       expect(response.status, `failed login ${attempt} should retain its full quota`).toBe(401);
     }
 
-    const limited = await login(app, invalidPassword);
+    const limited = await login(server, invalidPassword);
     expect(limited.status).toBe(429);
     expect(compare).toHaveBeenCalledTimes(33);
   });

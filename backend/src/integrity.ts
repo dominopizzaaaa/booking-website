@@ -96,8 +96,9 @@ export async function flagPrivateSessionsAfterClub(
         },
         select: { id: true, status: true, occurrences: true },
       });
-      if (existing) {
-        await tx.integrityFlag.update({
+      const wasDismissed = existing?.status === 'DISMISSED';
+      const flag = existing
+        ? await tx.integrityFlag.update({
           where: { id: existing.id },
           data: {
             occurrences: existing.occurrences + 1,
@@ -107,34 +108,44 @@ export async function flagPrivateSessionsAfterClub(
             outsideBusinessName: booking.business.name,
             detail,
             // A dismissed flag stays dismissed; the club already ruled on it.
-            ...(existing.status === 'DISMISSED' ? {} : { status: 'OPEN' }),
+            ...(wasDismissed ? {} : { status: 'OPEN' }),
+          },
+        })
+        : await tx.integrityFlag.create({
+          data: {
+            businessId: clubBusinessId,
+            instructorId: club.instructorId,
+            coachUserId,
+            studentUserId: student.userId,
+            coachName: club.coachName,
+            studentName: student.name,
+            bookingId: booking.id,
+            outsideBusinessId: booking.businessId,
+            outsideBusinessName: booking.business.name,
+            detail,
           },
         });
-        continue;
+      // A dismissal is the club's standing decision for this pair. Preserve
+      // it without repeatedly asking them to rule on the same relationship.
+      if (wasDismissed) continue;
+      if (existing) {
+        // A repeat is one current task, not a growing pile of stale tasks.
+        // Keep the history readable while refreshing the actionable alert.
+        await tx.notification.updateMany({
+          where: { businessId: clubBusinessId, integrityFlagId: flag.id, actionNeeded: true },
+          data: { actionNeeded: false },
+        });
       }
-      await tx.integrityFlag.create({
-        data: {
-          businessId: clubBusinessId,
-          instructorId: club.instructorId,
-          coachUserId,
-          studentUserId: student.userId,
-          coachName: club.coachName,
-          studentName: student.name,
-          bookingId: booking.id,
-          outsideBusinessId: booking.businessId,
-          outsideBusinessName: booking.business.name,
-          detail,
-        },
-      });
       await notifyWorkspace(tx, {
         businessId: clubBusinessId,
         // Integrity review belongs to the club account. Leaving this
         // business-wide keeps it out of every coach-scoped workspace,
         // including the implicated coach's.
         instructorId: null,
+        integrityFlagId: flag.id,
         type: 'INTEGRITY',
-        title: 'Private session flagged for review',
-        message: `${club.coachName} and ${student.name}, who train together through your club, now have a private session booked outside it. Open Integrity to review.`,
+        title: existing ? 'Another private session needs your review' : 'Private session needs your review',
+        message: `${club.coachName} and ${student.name}, who have trained through your club, booked ${existing ? 'another' : 'a'} private session outside it. Review the details and record your decision here.`,
         actionNeeded: true,
       });
       flagged += 1;
@@ -190,21 +201,30 @@ integrityRouter.get('/integrity-flags', requireClubAccount, asyncRoute(async (re
 
 integrityRouter.patch('/integrity-flags/:id', requireClubAccount, asyncRoute(async (req, res) => {
   const input = resolutionInput.parse(req.body);
-  const flag = await prisma.integrityFlag.findFirst({
-    where: { id: req.params.id, businessId: req.auth.business.id },
-    select: { id: true },
-  });
-  if (!flag) throw new HttpError(404, 'Flag not found');
   const resolved = input.status === 'DISMISSED' || input.status === 'UPHELD';
-  const updated = await prisma.integrityFlag.update({
-    where: { id: flag.id },
-    data: {
-      status: input.status,
-      resolutionNote: input.note,
-      resolvedAt: resolved ? new Date() : null,
-      resolvedByUserId: resolved ? req.auth.user.id : null,
-    },
-    include: flagInclude,
+  const updated = await prisma.$transaction(async tx => {
+    const flag = await tx.integrityFlag.findFirst({
+      where: { id: req.params.id, businessId: req.auth.business.id },
+      select: { id: true },
+    });
+    if (!flag) throw new HttpError(404, 'Flag not found');
+    const result = await tx.integrityFlag.update({
+      where: { id: flag.id },
+      data: {
+        status: input.status,
+        resolutionNote: input.note,
+        resolvedAt: resolved ? new Date() : null,
+        resolvedByUserId: resolved ? req.auth.user.id : null,
+      },
+      include: flagInclude,
+    });
+    if (resolved) {
+      await tx.notification.updateMany({
+        where: { businessId: req.auth.business.id, integrityFlagId: flag.id, actionNeeded: true },
+        data: { actionNeeded: false },
+      });
+    }
+    return result;
   });
   res.json(integrityFlagJson(updated));
 }));

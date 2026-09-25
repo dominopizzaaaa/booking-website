@@ -183,29 +183,30 @@ describe.sequential('Previously uncovered provider routes', () => {
       .send({ specialty: 'Foreign overwrite' }).expect(404);
 
     const updated = await request(app).patch(`/api/instructors/${f.instructor.id}`).set('Cookie', f.cookie).send({
-      specialty: 'Doubles strategy', color: '#335577', rescheduleNoticeHours: 72, active: false,
+      specialty: 'Doubles strategy', color: '#335577', rescheduleNoticeHours: 72,
     }).expect(200);
     expect(updated.body).toMatchObject({
       id: f.instructor.id, name: f.instructor.name, email: f.instructor.email,
-      specialty: 'Doubles strategy', color: '#335577', rescheduleNoticeHours: 72, active: false,
+      specialty: 'Doubles strategy', color: '#335577', rescheduleNoticeHours: 72, active: true,
     });
     expect(await prisma.instructor.findUniqueOrThrow({ where: { id: other.instructor.id } }))
       .toMatchObject({ specialty: other.instructor.specialty, active: true });
 
-    // A coach manages this same route in their own SOLO practice, but not while
-    // they are a roster coach inside somebody else's club.
-    const practice = await request(app).post('/api/auth/practice').set('Cookie', f.coachCookie)
-      .send({ name: 'Route Coverage Practice' }).expect(201);
-    tenants.own(practice.body.business.id);
-    const soloList = await request(app).get('/api/instructors').set('Cookie', f.coachCookie).expect(200);
-    expect(soloList.body).toEqual([expect.objectContaining({
-      id: practice.body.membership.instructorId, name: f.coachUser.name, active: true,
-    })]);
-    await request(app).patch(`/api/instructors/${practice.body.membership.instructorId}`)
-      .set('Cookie', f.coachCookie).send({ specialty: 'Solo specialist' }).expect(200);
-    const soloArchived = await request(app).delete(`/api/instructors/${practice.body.membership.instructorId}`)
-      .set('Cookie', f.coachCookie).expect(200);
-    expect(soloArchived.body).toEqual({ ok: true, deactivated: true });
+    // A roster coach cannot manage club-owned profile fields, but can set the
+    // one protection window that belongs to their own schedule.
+    await request(app).patch('/api/instructors/me').set('Cookie', f.coachCookie)
+      .send({ specialty: 'Coach overwrite' }).expect(400);
+    const selfUpdated = await request(app).patch('/api/instructors/me').set('Cookie', f.coachCookie)
+      .send({ rescheduleNoticeHours: 48 }).expect(200);
+    expect(selfUpdated.body).toMatchObject({
+      id: f.instructor.id, specialty: 'Doubles strategy', color: '#335577',
+      rescheduleNoticeHours: 48, active: true,
+    });
+    expect(await prisma.instructor.findUniqueOrThrow({ where: { id: f.instructor.id } }))
+      .toMatchObject({
+        specialty: 'Doubles strategy', color: '#335577',
+        rescheduleNoticeHours: 48, active: true,
+      });
   });
 
   it('hard-deletes disposable instructors but archives referenced history and removes bookability', async () => {

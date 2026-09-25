@@ -69,7 +69,8 @@ async function populateBusiness(
   // holds no roster entry; every coach below has their own account.
   const clubAccount = await tx.user.create({
     data: {
-      name: business.name, email, passwordHash, accountType: 'CLUB', phone: '', parentName: '', createdAt: business.createdAt,
+      name: business.name, email, username: `club_${tenantKey}`, sports: ['Tennis', 'Badminton'],
+      passwordHash, accountType: 'CLUB', phone: '', parentName: '', createdAt: business.createdAt,
     },
   });
   const clubMembership = await tx.membership.create({
@@ -82,6 +83,8 @@ async function populateBusiness(
         id: accountId,
         name: instructor.name,
         email: instructor.email,
+        username: `coach_${instructors.indexOf(instructor) + 1}_${tenantKey.slice(0, 14)}`,
+        sports: [instructor.specialty.startsWith('Badminton') ? 'Badminton' : 'Tennis'],
         passwordHash: samplePasswordHash,
         accountType: 'COACH',
         phone: '',
@@ -95,7 +98,14 @@ async function populateBusiness(
   }));
 
   const locations = await Promise.all([
-    { name: 'Kallang Tennis Centre', address: '52 Stadium Road, Singapore 397724', type: 'FACILITY', color: '#78915e', requiresApproval: false, travelMinutes: 20, notes: 'Meet beside the main entrance. Court reservations are arranged separately.' },
+    {
+      name: 'Kallang Tennis Centre', address: '52 Stadium Road, Singapore 397724', type: 'FACILITY', color: '#78915e',
+      requiresApproval: false, travelMinutes: 20, notes: 'Meet beside the main entrance.', sport: 'Tennis',
+      rentalEnabled: true, rentalUnitLabel: 'Court', rentalPrice: 3200, rentalStartInterval: 30, rentalMinDuration: 60,
+      rentalBookingIncrement: 30, rentalMaxDuration: 120, rentalNoticeHours: 2, rentalAdvanceDays: 60,
+      rentalCancellationHours: 24, rules: 'Non-marking shoes are required. Check in before entering the court.',
+      amenities: JSON.stringify(['Changing rooms', 'Racket hire', 'Water station']),
+    },
     { name: 'OCBC Arena', address: '5 Stadium Drive, Singapore 397631', type: 'RENTED', color: '#6f91a6', requiresApproval: true, travelMinutes: 20, notes: 'Rented badminton courts require venue confirmation. A Courtly booking does not reserve an external court.' },
     { name: 'Tanglin Club', address: '5 Stevens Road, Singapore 257814', type: 'FACILITY', color: '#b08a4f', requiresApproval: false, travelMinutes: 30, notes: 'Member or guest access required. Allow time to check in at reception.' },
     { name: 'Online', address: 'Online coaching · joining details shared after confirmation', type: 'ONLINE', color: '#84739c', requiresApproval: false, travelMinutes: 0, notes: 'Video technique review. Bring a recent recording and a little space to move.' },
@@ -146,6 +156,30 @@ async function populateBusiness(
     },
     include: { locations: true },
   })));
+  const rentalUnits = await Promise.all(['Court 1', 'Court 2', 'Court 3'].map(name => tx.venueUnit.create({
+    data: { businessId, locationId: locations[0].id, name },
+  })));
+  await tx.venueOpeningHour.createMany({
+    data: Array.from({ length: 7 }, (_, dayOfWeek) => ({
+      businessId, locationId: locations[0].id, dayOfWeek, startTime: '07:00', endTime: '21:00',
+    })),
+  });
+  const packageOffers = await Promise.all([
+    tx.packageOffer.create({ data: {
+      businessId, name: 'Racket Club Flex Pass', description: 'Ten credits for private tennis classes or a court reservation.',
+      price: 85000, totalCredits: 10, validityDays: 90, active: true,
+    } }),
+    tx.packageOffer.create({ data: {
+      businessId, name: 'Court Rental Bundle', description: 'Five credits for reserving a Kallang court.',
+      price: 14000, totalCredits: 5, validityDays: 60, active: true,
+    } }),
+  ]);
+  await tx.packageOfferService.create({
+    data: { offerId: packageOffers[0].id, businessId, serviceId: services[0].id },
+  });
+  await tx.packageOfferLocation.createMany({ data: packageOffers.map(offer => ({
+    offerId: offer.id, businessId, locationId: locations[0].id,
+  })) });
   await tx.availability.createMany({
     data: instructors.flatMap(instructor => locations.flatMap(location => Array.from({ length: 7 }, (_, dayOfWeek) => ({
       businessId, instructorId: instructor.id, locationId: location.id, dayOfWeek, startTime: '07:00', endTime: '21:00',
@@ -184,6 +218,8 @@ async function populateBusiness(
   await tx.user.createMany({
     data: students.map(student => ({
       id: student.userId, name: student.name, email: student.email,
+      username: `student_${students.indexOf(student) + 1}_${tenantKey.slice(0, 12)}`,
+      sports: student.notes.toLowerCase().includes('badminton') ? ['Badminton'] : ['Tennis'],
       passwordHash: samplePasswordHash, accountType: 'STUDENT',
       phone: student.phone, parentName: student.parentName, createdAt: student.createdAt,
     })),
@@ -191,18 +227,19 @@ async function populateBusiness(
   await tx.student.createMany({ data: students });
 
   const packageDefinitions = [
-    { student: 0, service: 0, name: 'Private Tennis · 10 lessons', totalCredits: 10, price: 850, paid: true },
-    { student: 9, service: 0, name: 'Private Tennis · 5 lessons', totalCredits: 5, price: 425, paid: true },
-    { student: 15, service: 0, name: 'Private Tennis · 5 lessons', totalCredits: 5, price: 425, paid: false },
-    { student: 1, service: 1, name: 'Junior Tennis · 8 lessons', totalCredits: 8, price: 280, paid: true },
-    { student: 3, service: 1, name: 'Junior Tennis · 8 lessons', totalCredits: 8, price: 280, paid: true },
-    { student: 5, service: 1, name: 'Junior Tennis · 8 lessons', totalCredits: 8, price: 280, paid: false },
-    { student: 12, service: 2, name: 'Badminton · 8 lessons', totalCredits: 8, price: 280, paid: true },
-    { student: 14, service: 3, name: 'Match Play · 6 sessions', totalCredits: 6, price: 300, paid: true },
-    { student: 16, service: null, name: 'Racket Club · 10 flexible credits', totalCredits: 10, price: 500, paid: false },
+    { student: 0, service: 0, offer: 0, name: 'Racket Club Flex Pass', totalCredits: 10, price: 850, paid: true },
+    { student: 9, service: 0, offer: null, name: 'Private Tennis · 5 lessons', totalCredits: 5, price: 425, paid: true },
+    { student: 15, service: 0, offer: null, name: 'Private Tennis · 5 lessons', totalCredits: 5, price: 425, paid: false },
+    { student: 1, service: 1, offer: null, name: 'Junior Tennis · 8 lessons', totalCredits: 8, price: 280, paid: true },
+    { student: 3, service: 1, offer: null, name: 'Junior Tennis · 8 lessons', totalCredits: 8, price: 280, paid: true },
+    { student: 5, service: 1, offer: null, name: 'Junior Tennis · 8 lessons', totalCredits: 8, price: 280, paid: false },
+    { student: 12, service: 2, offer: null, name: 'Badminton · 8 lessons', totalCredits: 8, price: 280, paid: true },
+    { student: 14, service: 3, offer: null, name: 'Match Play · 6 sessions', totalCredits: 6, price: 300, paid: true },
+    { student: 16, service: null, offer: null, name: 'Racket Club · 10 flexible credits', totalCredits: 10, price: 500, paid: false },
   ];
   const packages = packageDefinitions.map((pkg, index) => ({
-    id: randomUUID(), businessId, studentId: students[pkg.student].id, name: pkg.name,
+    id: randomUUID(), businessId, studentId: students[pkg.student].id,
+    offerId: pkg.offer === null ? null : packageOffers[pkg.offer].id, name: pkg.name,
     serviceId: pkg.service === null ? null : services[pkg.service].id,
     totalCredits: pkg.totalCredits, usedCredits: 0, price: pkg.price * 100, paid: pkg.paid,
     expiresAt: now.plus({ days: index === 3 ? 14 : 90 }).endOf('day').toJSDate(),
@@ -288,7 +325,58 @@ async function populateBusiness(
   }
 
   // All tenant foreign keys and package counters are persisted together.
+  packages[0].usedCredits += 1;
   await tx.lessonPackage.createMany({ data: packages });
+  await tx.lessonPackageService.create({
+    data: { packageId: packages[0].id, businessId, serviceId: services[0].id },
+  });
+  await tx.lessonPackageLocation.create({
+    data: { packageId: packages[0].id, businessId, locationId: locations[0].id },
+  });
+  const packageCheckoutAt = now.minus({ days: 2 });
+  const packageIntent = await tx.paymentIntent.create({ data: {
+    userId: students[0].userId, businessId, kind: 'PACKAGE', packageOfferId: packageOffers[0].id,
+    packageId: packages[0].id, amount: packages[0].price, currency: business.currency, status: 'SUCCEEDED',
+    provider: 'SIMULATED_STRIPE', providerReference: `sim_pi_seed_package_${tenantKey}`,
+    idempotencyKey: `seed-package-${tenantKey}`, createdAt: packageCheckoutAt.toJSDate(), confirmedAt: packageCheckoutAt.toJSDate(),
+  } });
+  const packagePayment = payments.find(payment => payment.packageId === packages[0].id);
+  if (packagePayment) {
+    packagePayment.paymentIntentId = packageIntent.id;
+    packagePayment.method = 'SIMULATED_STRIPE';
+    packagePayment.note = `Online checkout for ${packageOffers[0].name}`;
+  }
+  const rentalStart = now.plus({ days: 7 }).startOf('day').plus({ hours: 12 });
+  const rentalReservation = await tx.venueReservation.create({ data: {
+    businessId, locationId: locations[0].id, unitId: rentalUnits[0].id, userId: students[10].userId,
+    startAt: rentalStart.toJSDate(), endAt: rentalStart.plus({ minutes: 90 }).toJSDate(), duration: 90,
+    price: 4800, status: 'CONFIRMED', paymentStatus: 'PAID', notes: 'Sample online court reservation.',
+    createdAt: now.minus({ hours: 2 }).toJSDate(),
+  } });
+  const rentalIntent = await tx.paymentIntent.create({ data: {
+    userId: students[10].userId, businessId, kind: 'RENTAL', reservationId: rentalReservation.id, amount: 4800,
+    currency: business.currency, status: 'SUCCEEDED', provider: 'SIMULATED_STRIPE',
+    providerReference: `sim_pi_seed_rental_${tenantKey}`, idempotencyKey: `seed-rental-${tenantKey}`,
+    createdAt: now.minus({ hours: 2 }).toJSDate(), confirmedAt: now.minus({ hours: 2 }).toJSDate(),
+  } });
+  payments.push({
+    id: randomUUID(), businessId, studentId: students[10].id, paymentIntentId: rentalIntent.id, amount: 4800,
+    kind: 'STUDENT_TO_CLUB', method: 'SIMULATED_STRIPE', note: `Online venue rental · ${locations[0].name}`,
+    paidAt: now.minus({ hours: 2 }).toJSDate(),
+  });
+  const packageRentalStart = rentalStart.plus({ days: 1 });
+  const packageRental = await tx.venueReservation.create({ data: {
+    businessId, locationId: locations[0].id, unitId: rentalUnits[1].id, userId: students[0].userId,
+    startAt: packageRentalStart.toJSDate(), endAt: packageRentalStart.plus({ minutes: 60 }).toJSDate(), duration: 60,
+    price: 3200, status: 'CONFIRMED', paymentStatus: 'PACKAGE', packageId: packages[0].id, creditConsumed: true,
+    notes: 'Sample package-funded court reservation.', createdAt: now.minus({ hours: 1 }).toJSDate(),
+  } });
+  await tx.paymentIntent.create({ data: {
+    userId: students[0].userId, businessId, kind: 'RENTAL', reservationId: packageRental.id, amount: 0,
+    currency: business.currency, status: 'SUCCEEDED', provider: 'SIMULATED_STRIPE',
+    providerReference: `sim_pi_seed_rental_package_${tenantKey}`, idempotencyKey: `seed-rental-package-${tenantKey}`,
+    createdAt: now.minus({ hours: 1 }).toJSDate(), confirmedAt: now.minus({ hours: 1 }).toJSDate(),
+  } });
   await tx.booking.createMany({ data: bookings });
   await tx.participant.createMany({ data: participants });
   await tx.payment.createMany({ data: payments });

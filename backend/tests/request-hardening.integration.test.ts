@@ -101,7 +101,8 @@ describe.sequential('The HTTP request envelope', () => {
     it('issues an http-only, lax, root-path session cookie', async () => {
       const email = `${randomUUID()}@example.test`;
       const response = await request(app).post('/api/auth/register').send({
-        accountType: 'STUDENT', name: 'Cookie Student', email, password: 'Courtly-cookie-test-1',
+        accountType: 'STUDENT', name: 'Cookie Student', username: `cookie_${randomUUID().slice(0, 8)}`,
+        email, password: 'Courtly-cookie-test-1',
       });
       expect(response.status).toBe(201);
       const [cookie] = response.headers['set-cookie'] as unknown as string[];
@@ -133,17 +134,18 @@ describe.sequential('The HTTP request envelope', () => {
   describe('error translation', () => {
     it('turns a duplicate account into a conflict a person can act on', async () => {
       const email = `${randomUUID()}@example.test`;
-      const body = { accountType: 'STUDENT' as const, name: 'Twice Over', email, password: 'Courtly-duplicate-1' };
+      const body = { accountType: 'STUDENT' as const, name: 'Twice Over', username: `twice_${randomUUID().slice(0, 8)}`, email, password: 'Courtly-duplicate-1' };
       expect((await request(app).post('/api/auth/register').send(body)).status).toBe(201);
       const duplicate = await request(app).post('/api/auth/register').send(body);
       expect(duplicate.status).toBe(409);
-      expect(duplicate.body.error).toBe('This record already exists. Please use a different email or name.');
+      expect(duplicate.body.error).toBe('This record already exists. Please use a different email or username.');
       await prisma.user.deleteMany({ where: { email } });
     });
 
     it('names the first problem when a body fails validation', async () => {
       const response = await request(app).post('/api/auth/register').send({
-        accountType: 'STUDENT', name: 'Short Password', email: `${randomUUID()}@example.test`, password: 'short',
+        accountType: 'STUDENT', name: 'Short Password', username: `short_${randomUUID().slice(0, 8)}`,
+        email: `${randomUUID()}@example.test`, password: 'short',
       });
       expect(response.status).toBe(400);
       expect(response.body.error).toBe('Use a password with at least 12 characters');

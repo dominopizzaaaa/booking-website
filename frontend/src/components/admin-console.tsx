@@ -180,18 +180,18 @@ export function AdminConsole() {
               <h2 className="!text-[16px] !font-semibold !tracking-[-0.3px]">Businesses</h2>
               <span className="rounded-full bg-[#e9eee2] px-2 py-0.5 text-[11px] font-semibold text-[#6b7a5f]">{businesses.length}</span>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
+            <div className="grid w-full gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center">
+              <div className="relative w-full sm:w-64">
                 <label htmlFor="admin-business-search" className="sr-only">Search businesses</label>
                 <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#9aa48e]" />
                 <input ref={businessSearchRef} id="admin-business-search" type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search name, contact, email…" className="!min-h-11 !rounded-xl !border-[#dfe5dd] !pl-9 !pr-3 !text-base sm:!text-sm" />
               </div>
-              <div role="group" aria-label="Filter businesses" className="flex rounded-xl border border-[#dce4d4] bg-white p-1">
+              <div role="group" aria-label="Filter businesses" className="grid w-full grid-cols-3 rounded-xl border border-[#dce4d4] bg-white p-1 sm:flex sm:w-auto">
                 {(['all', 'real', 'demo'] as Filter[]).map(option => (
-                  <button key={option} aria-pressed={filter === option} onClick={() => setFilter(option)} className={cn('min-h-9 rounded-lg px-3 text-xs font-semibold capitalize transition', filter === option ? 'bg-[#174c3c] text-white' : 'text-[#6b7a5f] hover:bg-[#f2f5ec]')}>{option}</button>
+                  <button key={option} aria-pressed={filter === option} onClick={() => setFilter(option)} className={cn('min-h-11 rounded-lg px-3 text-xs font-semibold capitalize transition sm:min-h-9', filter === option ? 'bg-[#174c3c] text-white' : 'text-[#6b7a5f] hover:bg-[#f2f5ec]')}>{option}</button>
                 ))}
               </div>
-              <button onClick={event => { confirmationTriggerRef.current = event.currentTarget; setConfirm('demos'); }} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-[#e6d9c9] bg-[#fdf6ee] px-3.5 text-xs font-semibold text-[#70582e] transition hover:bg-[#faeede]"><Sparkles size={14} />Purge demos</button>
+              <button onClick={event => { confirmationTriggerRef.current = event.currentTarget; setConfirm('demos'); }} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-[#e6d9c9] bg-[#fdf6ee] px-3.5 text-xs font-semibold text-[#70582e] transition hover:bg-[#faeede] sm:w-auto"><Sparkles size={14} />Purge demos</button>
             </div>
           </div>
 

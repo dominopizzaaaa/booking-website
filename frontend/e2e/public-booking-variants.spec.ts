@@ -119,10 +119,10 @@ test.beforeAll(async ({}, workerInfo) => {
   provider = await playwrightRequest.newContext({ baseURL });
   try {
     await responseJson<AuthSession>(await coach.post('/api/auth/register', {
-      data: { accountType: 'COACH', name: coachName, email: coachEmail, password },
+      data: { accountType: 'COACH', name: coachName, username: `vc_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: coachEmail, password },
     }));
     await responseJson<AuthSession>(await student.post('/api/auth/register', {
-      data: { accountType: 'STUDENT', name: studentName, email: studentEmail, password },
+      data: { accountType: 'STUDENT', name: studentName, username: `vs_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: studentEmail, password },
     }));
     await student.dispose();
 
@@ -237,7 +237,9 @@ test.beforeAll(async ({}, workerInfo) => {
     }));
     const groupStartAt = localStart(groupDate, 10);
     const fullGroupStartAt = localStart(groupDate, 12);
-    const groupBooking = await responseJson<{ bookings: Booking[] }>(await coach.post('/api/bookings', {
+    // Seed groups as club assignments, then accept them as the coach so the
+    // public journey still exercises joining an already-confirmed class.
+    const groupBooking = await responseJson<{ bookings: Booking[] }>(await provider.post('/api/bookings', {
       data: {
         serviceId: groupService.id,
         instructorId,
@@ -249,8 +251,11 @@ test.beforeAll(async ({}, workerInfo) => {
         address: '',
       },
     }));
-    for (const existingStudent of workspace.students.slice(0, 3)) {
-      await responseJson<{ bookings: Booking[] }>(await coach.post('/api/bookings', {
+    await responseJson<Booking>(await coach.post(`/api/bookings/${groupBooking.bookings[0].id}/accept`, {
+      data: {},
+    }));
+    for (const [index, existingStudent] of workspace.students.slice(0, 3).entries()) {
+      const fullGroupBooking = await responseJson<{ bookings: Booking[] }>(await provider.post('/api/bookings', {
         data: {
           serviceId: groupService.id,
           instructorId,
@@ -262,6 +267,11 @@ test.beforeAll(async ({}, workerInfo) => {
           address: '',
         },
       }));
+      if (index === 0) {
+        await responseJson<Booking>(await coach.post(`/api/bookings/${fullGroupBooking.bookings[0].id}/accept`, {
+          data: {},
+        }));
+      }
     }
 
     const recurringStartAt = localStart(recurringDate, 10);
@@ -325,7 +335,7 @@ async function loginStudent(page: Page) {
 
 async function openLiveBooking(page: Page) {
   await page.goto(`/book/${setup.slug}`);
-  await expect(page.getByRole('heading', { name: 'Good days start with a lesson.', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Good days start with a class.', exact: true })).toBeVisible();
 }
 
 function visibleBookingAction(page: Page, name: string | RegExp) {
@@ -558,7 +568,7 @@ test('invalid slugs and slot failures provide working retry controls', async ({ 
   const fixture = retryCatalog(retrySlug);
   await page.route(`**/api/public/${retrySlug}`, route => fulfillJson(route, fixture));
   await page.getByRole('button', { name: 'Try again', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Good days start with a lesson.', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Good days start with a class.', exact: true })).toBeVisible();
 
   let slotsAvailable = false;
   const date = futureSingaporeDate(20);

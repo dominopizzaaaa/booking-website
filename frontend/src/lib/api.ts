@@ -1,4 +1,46 @@
-import { isManagerWorkspace, type WorkspaceResponse, type WorkspaceBooking, type PublicBusiness, type Slot, type BookingInput, type PublicBookingInput, type BookingResult, type ProviderBookingResult, type AuthSession, type AccountBooking, type AccountBookingsResult, type StudentClubDirectoryPage, type StudentClubDirectoryResult, type IntegrityFlag, type Payment, type RescheduleRequest, type VenueSearchResult, type CalendarConnectionStatus, type CalendarPreferences, type CalendarReturnTo } from './types';
+import {
+  isManagerWorkspace,
+  isWorkspaceResponse,
+  type AccountBooking,
+  type AccountBookingsResult,
+  type AccountDirectoryUser,
+  type AccountPackage,
+  type AuthSession,
+  type BookingInput,
+  type BookingResult,
+  type Business,
+  type CalendarConnectionStatus,
+  type CalendarPreferences,
+  type CalendarReturnTo,
+  type CheckoutInput,
+  type CheckoutResult,
+  type IntegrityFlag,
+  type PackageOffer,
+  type PackageOfferBusiness,
+  type PackageOfferInput,
+  type Payment,
+  type ProviderBookingResult,
+  type PublicBusiness,
+  type PublicBookingInput,
+  type RentalConfigInput,
+  type RentalConfigUpdate,
+  type RentalDetail,
+  type RentalLocationSaveInput,
+  type RentalLocationSaveResult,
+  type RentalListing,
+  type RentalReservation,
+  type RentalReservationInput,
+  type RentalReservationResult,
+  type RentalSlotsResult,
+  type RescheduleRequest,
+  type Slot,
+  type StudentClubDirectoryPage,
+  type StudentClubDirectoryResult,
+  type VenueSearchResult,
+  type WorkspaceBooking,
+  type WorkspaceResponse,
+  type WorkspaceWireResponse,
+} from './types';
 
 export class ApiError extends Error {
   constructor(message: string, public status: number, public details?: unknown) { super(message); }
@@ -19,7 +61,10 @@ export async function api<T = unknown>(path: string, options: RequestInit = {}):
  * normalised here rather than guarded at every use.
  */
 export async function loadWorkspace(): Promise<WorkspaceResponse> {
-  const workspace = await api<WorkspaceResponse>('/workspace');
+  const workspace = await api<WorkspaceWireResponse>('/workspace');
+  if (!isWorkspaceResponse(workspace)) {
+    throw new ApiError('This legacy practice workspace is no longer available. Choose a club workspace from your account.', 403);
+  }
   const common = {
     rescheduleRequests: workspace.rescheduleRequests ?? [],
     notifications: (workspace.notifications ?? []).map(notification => ({
@@ -27,6 +72,7 @@ export async function loadWorkspace(): Promise<WorkspaceResponse> {
       type: notification.type ?? 'NOTICE',
       actionNeeded: notification.actionNeeded ?? false,
       bookingId: notification.bookingId ?? null,
+      integrityFlagId: notification.integrityFlagId ?? null,
     })),
   };
   if (isManagerWorkspace(workspace)) {
@@ -34,13 +80,62 @@ export async function loadWorkspace(): Promise<WorkspaceResponse> {
   }
   return { ...workspace, ...common, clubAccount: false, packages: [], payments: [], integrityFlags: [] };
 }
+
+type CompatibleBusiness = Business;
+type CompatibleAuthSession = Omit<AuthSession, 'user' | 'membership' | 'business' | 'memberships'> & {
+  user: AuthSession['user'];
+  membership: (Omit<NonNullable<AuthSession['membership']>, 'business'> & { business: CompatibleBusiness }) | null;
+  business: CompatibleBusiness | null;
+  memberships: Array<Omit<AuthSession['memberships'][number], 'business'> & { business: CompatibleBusiness }>;
+};
+
+function readableUsername(user: CompatibleAuthSession['user']) {
+  if (user.username?.trim()) return user.username.trim();
+  const fromEmail = user.email.split('@')[0]?.toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 30);
+  return fromEmail && fromEmail.length >= 3 ? fromEmail : `user_${user.id.slice(0, 12).toLowerCase()}`;
+}
+
+/** Keep a rolling deployment usable while older auth payloads are still in flight. */
+export function normalizeAuthSession(value: CompatibleAuthSession): AuthSession {
+  const business = (candidate: CompatibleBusiness): Business => ({ ...candidate, legacyReadOnly: candidate.legacyReadOnly ?? false });
+  return {
+    ...value,
+    user: { ...value.user, username: readableUsername(value.user), sports: value.user.sports ?? [] },
+    membership: value.membership ? { ...value.membership, business: business(value.membership.business) } : null,
+    business: value.business ? business(value.business) : null,
+    memberships: (value.memberships ?? []).map(membership => ({ ...membership, business: business(membership.business) })),
+  };
+}
+
 export const loadPublicBusiness = (slug: string) => api<PublicBusiness>(`/public/${encodeURIComponent(slug)}`);
 export const loadSlots = (slug: string, values: { serviceId: string; instructorId: string; locationId: string; date: string }) => api<{ slots: Slot[] }>(`/public/${encodeURIComponent(slug)}/slots?${new URLSearchParams(values)}`);
 export const createBooking = (values: BookingInput) => api<ProviderBookingResult>('/bookings', { method: 'POST', body: JSON.stringify(values) });
 export const createPublicBooking = (slug: string, values: PublicBookingInput) => api<BookingResult>(`/public/${encodeURIComponent(slug)}/bookings`, { method: 'POST', body: JSON.stringify(values) });
-export const loadAuthSession = () => api<AuthSession>('/auth/me');
-export const loginStudentAccount = (values: { email: string; password: string }) => api<AuthSession>('/auth/login', { method: 'POST', body: JSON.stringify(values) });
-export const registerStudentAccount = (values: { name: string; email: string; password: string; phone?: string; parentName?: string }) => api<AuthSession>('/auth/register', { method: 'POST', body: JSON.stringify({ ...values, accountType: 'STUDENT' }) });
+export async function loadAuthSession(): Promise<AuthSession> {
+  return normalizeAuthSession(await api<CompatibleAuthSession>('/auth/me'));
+}
+export async function loginAccount(values: { email: string; password: string }): Promise<AuthSession> {
+  return normalizeAuthSession(await api<CompatibleAuthSession>('/auth/login', { method: 'POST', body: JSON.stringify(values) }));
+}
+export const loginStudentAccount = loginAccount;
+export type RegisterAccountInput = {
+  accountType: AuthSession['user']['accountType']; businessName?: string; name: string; username: string; sports?: string[];
+  email: string; password: string; phone?: string; parentName?: string;
+};
+export async function registerAccount(values: RegisterAccountInput): Promise<AuthSession> {
+  return normalizeAuthSession(await api<CompatibleAuthSession>('/auth/register', { method: 'POST', body: JSON.stringify(values) }));
+}
+export const registerStudentAccount = (values: Omit<RegisterAccountInput, 'accountType' | 'businessName'>) =>
+  registerAccount({ ...values, accountType: 'STUDENT' });
+export type AccountProfileInput = Partial<Pick<AuthSession['user'], 'name' | 'username' | 'sports' | 'phone' | 'parentName'>>;
+export async function updateAuthAccount(values: AccountProfileInput): Promise<AuthSession> {
+  return normalizeAuthSession(await api<CompatibleAuthSession>('/auth/me', { method: 'PATCH', body: JSON.stringify(values) }));
+}
+export type ClubProfileInput = Pick<Business, 'name' | 'ownerName' | 'email' | 'tagline' | 'color' | 'cancellationHours'>
+  & { username: string; sports: string[] };
+export async function updateClubProfile(values: ClubProfileInput): Promise<AuthSession> {
+  return normalizeAuthSession(await api<CompatibleAuthSession>('/auth/club-profile', { method: 'PATCH', body: JSON.stringify(values) }));
+}
 export const logoutAccount = () => api<{ ok: true }>('/auth/logout', { method: 'POST', body: JSON.stringify({}) });
 export async function loadAccountBookings(businessSlug?: string): Promise<AccountBookingsResult> {
   const query = businessSlug ? `?${new URLSearchParams({ businessSlug })}` : '';
@@ -113,6 +208,68 @@ export const recordCoachPayout = (values: { instructorId: string; amount: number
 export const searchVenues = (query: string) =>
   api<VenueSearchResult>(`/venues/search?${new URLSearchParams({ q: query })}`);
 
+export async function searchAccounts(query: string): Promise<AccountDirectoryUser[]> {
+  const value = await api<AccountDirectoryUser[] | { accounts: AccountDirectoryUser[] }>(
+    `/accounts/search?${new URLSearchParams({ q: query.trim() })}`,
+  );
+  return Array.isArray(value) ? value : value.accounts;
+}
+
+export const loadPackageOffers = () => api<{ offers: PackageOffer[] }>('/package-offers');
+export const createPackageOffer = (values: PackageOfferInput) =>
+  api<PackageOffer>('/package-offers', { method: 'POST', body: JSON.stringify(values) });
+export const updatePackageOffer = (id: string, values: Partial<PackageOfferInput>) =>
+  api<PackageOffer>(`/package-offers/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(values) });
+export const deletePackageOffer = (id: string) =>
+  api<{ deleted: boolean; archived: boolean }>(`/package-offers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+export const loadAccountPackageOffers = (businessSlug?: string) => {
+  const query = businessSlug ? `?${new URLSearchParams({ businessSlug })}` : '';
+  return api<{ business: PackageOfferBusiness; offers: PackageOffer[] }>(`/account/package-offers${query}`);
+};
+// These aliases match the student marketplace vocabulary used by the screens.
+export const getAccountPackageOffers = loadAccountPackageOffers;
+export const loadAccountPackages = () => api<{ packages: AccountPackage[] }>('/account/packages');
+export const getAccountPackages = loadAccountPackages;
+export const checkoutPackageOffer = (id: string, values: CheckoutInput) =>
+  api<CheckoutResult>(`/account/package-offers/${encodeURIComponent(id)}/checkout`, { method: 'POST', body: JSON.stringify(values) });
+export const checkoutBookingParticipant = (participantId: string, values: CheckoutInput) =>
+  api<CheckoutResult>(`/account/bookings/${encodeURIComponent(participantId)}/checkout`, { method: 'POST', body: JSON.stringify(values) });
+
+export const loadRentals = (filters: { query?: string; sport?: string; cursor?: string } = {}) => {
+  const parameters = new URLSearchParams();
+  if (filters.query) parameters.set('query', filters.query);
+  if (filters.sport) parameters.set('sport', filters.sport);
+  if (filters.cursor) parameters.set('cursor', filters.cursor);
+  const query = parameters.size ? `?${parameters}` : '';
+  return api<{ rentals: RentalListing[]; nextCursor: string | null }>(`/rentals${query}`);
+};
+export async function loadRental(id: string): Promise<RentalDetail> {
+  const result = await api<{ rental: RentalDetail }>(`/rentals/${encodeURIComponent(id)}`);
+  return result.rental;
+}
+export const loadRentalSlots = (id: string, values: { date: string; duration: number }) =>
+  api<RentalSlotsResult>(`/rentals/${encodeURIComponent(id)}/slots?${new URLSearchParams({ date: values.date, duration: String(values.duration) })}`);
+export const createRentalReservation = (id: string, values: RentalReservationInput) =>
+  api<RentalReservationResult>(`/rentals/${encodeURIComponent(id)}/reservations`, { method: 'POST', body: JSON.stringify(values) });
+export const loadAccountRentalReservations = () =>
+  api<{ reservations: RentalReservation[] }>('/rentals/reservations/mine');
+export const cancelRentalReservation = (id: string) =>
+  api<{ reservation: RentalReservation }>(`/rentals/reservations/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: JSON.stringify({}) });
+export async function createRental(values: RentalConfigInput): Promise<RentalDetail> {
+  const result = await api<{ rental: RentalDetail }>('/rentals', { method: 'POST', body: JSON.stringify(values) });
+  return result.rental;
+}
+export async function updateRental(id: string, values: RentalConfigUpdate): Promise<RentalDetail> {
+  const result = await api<{ rental: RentalDetail }>(`/rentals/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(values) });
+  return result.rental;
+}
+export const deleteRental = (id: string) =>
+  api<{ ok: true }>(`/rentals/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({}) });
+export const saveRentalLocation = (id: string, values: RentalLocationSaveInput) =>
+  api<RentalLocationSaveResult>(`/rental-locations/${encodeURIComponent(id)}`, {
+    method: 'PUT', body: JSON.stringify(values),
+  });
+
 type CalendarConnectionWire = {
   configured?: boolean | null; eligible?: boolean | null; provider?: CalendarConnectionStatus['provider'];
   state?: CalendarConnectionStatus['state'] | null; connected?: boolean | null; email?: string | null; calendarName?: string | null;
@@ -162,8 +319,6 @@ export const resolveIntegrityFlag = (id: string, status: IntegrityFlag['status']
   api<IntegrityFlag>(`/integrity-flags/${encodeURIComponent(id)}`, {
     method: 'PATCH', body: JSON.stringify({ status, note }),
   });
-export const createOwnPractice = (name: string) =>
-  api<AuthSession>('/auth/practice', { method: 'POST', body: JSON.stringify({ name }) });
 export const mutate = <T = unknown>(path: string, method: 'POST' | 'PATCH' | 'DELETE', values?: unknown) => api<T>(path, { method, body: values ? JSON.stringify(values) : undefined });
 
 export type AdminSession = { configured: boolean; authenticated: boolean };

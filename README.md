@@ -4,9 +4,9 @@ Courtly is a full-stack booking platform for coaching businesses. This repositor
 
 [![CI](https://github.com/dominopizzaaaa/booking-website/actions/workflows/ci.yml/badge.svg)](https://github.com/dominopizzaaaa/booking-website/actions/workflows/ci.yml)
 
-Courtly includes global student and coach accounts, dedicated club accounts, portable coach affiliations, multi-location and coach-aware availability, travel and preparation buffers, private and capacity-limited group lessons, atomic recurring bookings, pending venue approval, account-backed student booking and self-service, personal Google Calendar sync, packages, manual payment records, attendance, student/parent details, coach rosters, and responsive business workspaces. Defaults are SGD and Asia/Singapore.
+Courtly includes global student and coach accounts with public usernames and sport profiles, dedicated club accounts, portable coach affiliations, multi-location and coach-aware availability, travel and preparation buffers, private and capacity-limited Classes, atomic recurring bookings, pending venue approval, account-backed student booking and self-service, personal Google Calendar sync, package offers, owned-venue court rentals, simulated Stripe checkout, manual payment records, attendance, student/parent details, coach rosters, and responsive business workspaces. Defaults are SGD and Asia/Singapore.
 
-It also covers how a club and its coaches actually work together: a club assigns a student to a coach and the coach accepts before the lesson is confirmed; either side proposes a new time and the other agrees before a session moves; lessons booked through a club are paid to the club, which then records what it pays each coach; a coach can run their own practice alongside their club work, where students pay them directly; and a club is told when a coach and a student it introduced start training privately outside it.
+It also covers how a club and its coaches actually work together: a club assigns a student to a coach and the coach accepts before the class is confirmed; either side proposes a new time and the other agrees before a session moves; classes, package purchases, and venue rentals are paid to the club, which then records what it pays each coach; and a club is told when historical records show that a coach and a student it introduced trained privately outside it.
 
 Agents working on this repository should read [AGENTS.md](AGENTS.md) first.
 
@@ -14,30 +14,33 @@ Agents working on this repository should read [AGENTS.md](AGENTS.md) first.
 
 Courtly has exactly three account types: `STUDENT`, `COACH`, and `CLUB`. Students and coaches are people with portable global identities. A club account represents the organisation itself, belongs to its one club workspace, and is never a teaching profile.
 
-- **Students** create or sign in to a student account from a club's booking page. Signing in is required before a booking can be submitted. The resulting club-specific student record is linked to the global account, so the student can return to view receipts and booking history, then cancel or propose a reschedule for eligible sessions. New guest bookings and private management links are not supported; already-issued legacy links remain available only for their existing bookings.
-- **Coaches** register their own coach account. A club then adds that existing account to its roster; the resulting affiliation links the account to a coach profile in that club. Coaches can carry the same identity across multiple clubs and switch between those affiliations. They can also create one independent practice for personal students who have nothing to do with a club.
-- **Clubs** choose the club account type at sign-up, which creates their one club workspace. The business name becomes the club account's identity, while the person's name supplied at sign-up is kept as the club contact. The club account manages services, locations, coach affiliations, schedules, bookings, students, packages, payments, and settings. It has no coach profile and cannot teach a lesson; even a founder who coaches uses a separate `COACH` account and joins the roster like every other coach.
+- **Students** create or sign in to a student account from a club's booking page. Signing in is required before a booking can be submitted. The resulting club-specific student record is linked to the global account, so the student can return to view receipts and booking history, buy package offers, reserve club-owned courts, then cancel or propose a reschedule for eligible sessions. New guest bookings and private management links are not supported; already-issued legacy links remain available only for their existing bookings.
+- **Coaches** register their own coach account. A club finds the account by public username, name, or email and adds it to its roster with the coach's reschedule-notice window. Coaches carry the same identity across clubs and switch between those affiliations. Creating new independent practices is no longer supported.
+- **Clubs** choose the club account type at sign-up, which creates their one club workspace. The business name becomes the club account's identity, while the person's name supplied at sign-up is kept as the club contact. The club account manages Classes, locations, coach affiliations, schedules, bookings, students, package offers, rentals, payments, and settings. It has no coach profile and cannot teach a class; even a founder who coaches uses a separate `COACH` account and joins the roster like every other coach.
 
-Memberships are affiliations only: they connect an account to a business and, for a club coach, to that coach's roster profile. They do not contain workspace roles. Authority comes from the account type and workspace kind: the `CLUB` account manages its club, a `COACH` manages their own independent practice, and a coach inside a club is scoped to their own work. Each account-backed student record separately holds that student's club-specific booking, package, attendance, and payment context.
+Each account has one globally unique lowercase username (`a-z`, `0-9`, and `_`, 3–30 characters) and up to 20 chosen sports. Email and password remain the sign-in credentials; the username is the public/search handle used to find accounts.
 
-## How lessons are paid for
+Memberships are affiliations only: they connect an account to a business and, for a club coach, to that coach's roster profile. They do not contain workspace roles. Authority comes from the account type and active club affiliation: the `CLUB` account manages its club, while a coach inside a club is scoped to their own work. Each account-backed student record separately holds that student's club-specific booking, package, attendance, and payment context. Historical `SOLO` businesses and `DIRECT` payment routes remain immutable records, marked `legacyReadOnly` and excluded from login and workspace selection; no new direct commerce is created.
 
-A `CLUB` account creates a **club or academy** workspace at sign-up. A `COACH` can separately create one **independent practice**. The workspace kind is immutable, and every booking snapshots its payment route so the original arrangement remains explicit.
+## Classes, packages, rentals, and payments
 
-- In a club, the student pays the club. The club then records what it pays each coach, so both legs of the money path stay in one ledger.
-- In an independent practice, the student pays the coach directly.
+All new commercial activity belongs to a `CLUB` workspace. Every class booking snapshots `paymentRoute: 'CLUB'`, so the student pays the club and the club can later record a `CLUB_TO_COACH` payout. Legacy `SOLO`, `DIRECT`, and `STUDENT_TO_COACH` values are retained only so existing contractual history stays readable.
 
-A recorded payment can be reversed. The record stays in the ledger marked as reversed, and the lesson or package returns to unpaid, so a correction is visible rather than silent.
+- Clubs publish **Package offers** scoped to any non-empty combination of Classes and rentable locations. A purchase creates an immutable `LessonPackage` snapshot shown to the student under **My Packages**, including copied scope, credit count, price, and expiry.
+- A club can make an owned facility rentable by configuring its sport, courts or other units, opening hours, hourly price, duration rules, notice and cancellation windows, rules, and amenities. Every account can browse and reserve a specific unit and time from the in-app **Explore** destination: students choose **Explore → Venue rentals** in the five-tab player app, while coaches and clubs open **Explore** in their workspace.
+- Online checkout is deliberately simulated Stripe: the server derives price, currency, payer, and the club route; a successful `PaymentIntent` records the corresponding package, class, or rental payment atomically, while a simulated failure records only the failed intent. Package-funded reservations consume one credit and create no cash payment.
+
+A recorded payment can be reversed. The record stays in the ledger marked as reversed, and the class or package returns to unpaid, so a correction is visible rather than silent. An eligible rental cancellation restores its package credit exactly once, or marks a paid reservation refunded and reverses the linked student payment.
 
 Because a club invests in introducing its coaches to its students, Courtly flags it to the club when a coach and a student who train together through that club also book privately outside it. Courtly reports; it does not block the booking, and it does not tell the coach or the student. The club records what it found and closes the flag.
 
 ## Google Calendar
 
-Google Calendar is a personal, user-owned integration. A `STUDENT` can connect one Google account for lessons across every club, and a `COACH` can connect one for lessons across every club affiliation and their own practice. Connect it from the account's Profile (or the provider account page). An institutional `CLUB` account cannot connect a calendar or manage a coach's connection.
+Google Calendar is a personal, user-owned integration. A `STUDENT` can connect one Google account for classes across every club, and a `COACH` can connect one for classes across every club affiliation. Connect it from the account's Profile (or the provider account page). An institutional `CLUB` account cannot connect a calendar or manage a coach's connection.
 
 Courtly remains the source of truth:
 
-- Only confirmed lessons are published to Google. Pending assignments and lessons awaiting venue approval are not added.
+- Only confirmed Classes are published to Google. Pending assignments and Classes awaiting venue approval are not added.
 - Confirmed reschedules update the existing Google event and cancellations remove it asynchronously. Booking and reschedule requests commit in Courtly without waiting for Google, so a short delay or a retry after a provider outage is expected.
 - Editing or deleting a Google event never changes, reschedules, confirms, or cancels the Courtly booking. Make every booking change in Courtly.
 - The sync worker runs inside the backend process; there is no separate worker service or cron job to deploy.
@@ -50,7 +53,9 @@ OAuth tokens are encrypted at rest with deployment-managed keys and are never re
 
 - Node.js 22
 - npm 10 or newer
-- PostgreSQL 16 or newer, or the included local PostgreSQL helper
+- PostgreSQL 16 or newer, with the trusted `btree_gist` extension available,
+  or the included local PostgreSQL helper. The committed prerequisite migration
+  installs the extension when the deployment role is allowed to do so.
 
 ## Run locally
 
@@ -93,9 +98,9 @@ OAuth tokens are encrypted at rest with deployment-managed keys and are never re
 
 To create a persistent sample club and club account instead of using the demo workspace, optionally set `SEED_CLUB_EMAIL`, `SEED_CLUB_PASSWORD`, `SEED_BUSINESS_NAME`, and `SEED_BUSINESS_SLUG` in `backend/.env`, then run `npm run seed --prefix backend`. If `SEED_CLUB_PASSWORD` is omitted, the command prints a generated password once.
 
-For a temporary investor showcase on an already deployed account-aware environment, run `npm run demo:investors` with an explicit `INVESTOR_DEMO_BASE_URL` plus distinct `INVESTOR_DEMO_CLUB_PASSWORD`, `INVESTOR_DEMO_COACH_PASSWORD`, `INVESTOR_DEMO_STUDENT_PASSWORD`, and undisclosed `INVESTOR_DEMO_BACKGROUND_PASSWORD` values in the invoking shell. First-time provisioning also requires `INVESTOR_DEMO_ALLOW_CREATE=true`; later runs require the exact `INVESTOR_DEMO_EXPECTED_BUSINESS_ID` and `INVESTOR_DEMO_EXPECTED_BUSINESS_SLUG` printed by the first run. The builder uses normal authenticated APIs to create one `CLUB` account, portable `COACH` accounts, `STUDENT` accounts, and a `Courtly Investor Showcase` workspace with representative schedules, hosted court sessions, group classes, packages, payments, cancellations, coach acceptances, and venue approvals. It never stores supplied passwords in the repository, never retries mutations automatically, requires HTTPS outside loopback development, and anchors dates to workspace creation so reconciliation does not append a new schedule each day. Because normal club registration creates a non-demo workspace, delete the exact printed workspace ID from the platform admin console when the showcase is no longer needed; do not use the bulk demo purge action.
+For a temporary investor showcase on an already deployed account-aware environment, run `npm run demo:investors` with an explicit `INVESTOR_DEMO_BASE_URL` plus distinct `INVESTOR_DEMO_CLUB_PASSWORD`, `INVESTOR_DEMO_COACH_PASSWORD`, `INVESTOR_DEMO_STUDENT_PASSWORD`, and undisclosed `INVESTOR_DEMO_BACKGROUND_PASSWORD` values in the invoking shell. First-time provisioning also requires `INVESTOR_DEMO_ALLOW_CREATE=true`; later runs require the exact `INVESTOR_DEMO_EXPECTED_BUSINESS_ID` and `INVESTOR_DEMO_EXPECTED_BUSINESS_SLUG` printed by the first run. The builder uses normal authenticated APIs and fixed, mutually distinct `investor_demo_*` usernames to create one `CLUB` account, portable `COACH` accounts, `STUDENT` accounts, and a `Courtly Investor Showcase` workspace with representative schedules, hosted court sessions, group classes, packages, payments, cancellations, coach acceptances, and venue approvals. It never stores supplied passwords in the repository, never retries mutations automatically, requires HTTPS outside loopback development, and anchors dates to workspace creation so reconciliation does not append a new schedule each day. Because normal club registration creates a non-demo workspace, delete the exact printed workspace ID from the platform admin console when the showcase is no longer needed; do not use the bulk demo purge action.
 
-`npm run demo:elever` is a destructive, database-level replacement intended only for the approved Elever investor environment. It deletes every application row while preserving migrations and schema objects, then creates the Elever club, coach practices, students, sessions, and ledgers in one transaction. Take a verified backup and stop application writes first. Supply `ELEVER_RESET_CONFIRMATION`, all five `ELEVER_*_PASSWORD` variables, and `ELEVER_EXPECTED_DATABASE_SHA256`, which must equal the lowercase output of `printf %s "$DATABASE_URL" | shasum -a 256`. The fingerprint binds the confirmation to the exact connection string without storing or printing it. The command also refuses an unresolved migration or a migration name/checksum mismatch. Afterwards, run `npm run verify:elever` with `ELEVER_BASE_URL` and the four featured passwords. Keep every secret in the invoking shell or secret manager, never in a committed file.
+`npm run demo:elever` is a destructive, database-level replacement intended only for the approved Elever investor environment. It deletes every application row while preserving migrations and schema objects, then creates one club-only Elever marketplace in one transaction. The fixed October 2026 Asia/Singapore dataset contains the two affiliated coaches, the eight named investor students plus Student 1 through Student 12, weekly group Classes and varied 1:1 Classes, three Package offers, two purchased packages, simulated Stripe successes and a failure, an owned four-court badminton rental venue, four reservations, payouts, and a linked historical safeguard alert. It creates no active `SOLO` practice or new `DIRECT` session. Take a verified backup and stop application writes first. Supply `ELEVER_RESET_CONFIRMATION`, all five `ELEVER_*_PASSWORD` variables, and `ELEVER_EXPECTED_DATABASE_SHA256`, which must equal the lowercase SHA-256 of `DATABASE_URL` (for example, `printf %s "$DATABASE_URL" | shasum -a 256` on macOS or `printf %s "$DATABASE_URL" | sha256sum` on Linux). The fingerprint binds the confirmation to the exact connection string without storing or printing it. The command also refuses an unresolved migration or a migration name/checksum mismatch. Afterwards, run `npm run verify:elever` with `ELEVER_BASE_URL` and the four featured passwords. Keep every secret in the invoking shell or secret manager, never in a committed file.
 
 ## Checks
 
@@ -125,7 +130,7 @@ Deploy the backend to Railway first, then point the Vercel frontend at the Railw
 
 ### 1. Railway: PostgreSQL and Express API
 
-1. Create a Railway project and add a **PostgreSQL** database service. Railway generates its connection variables; no schema needs to be created manually.
+1. Create a Railway project and add a **PostgreSQL** database service. Railway generates its connection variables; no schema needs to be created manually. The generated database owner can install the trusted `btree_gist` extension through the committed prerequisite migration. On another managed PostgreSQL provider, ask an administrator to enable `btree_gist` before the first marketplace deployment if the application migration role cannot install extensions.
 2. Add a service from this GitHub repository for the Express API.
 3. In the API service settings, set **Root Directory** to `/backend`.
 4. Set the service's **Config File Path** to `/backend/railway.toml`. Railway does not resolve that path relative to the Root Directory.
@@ -187,6 +192,14 @@ For encryption-key rotation, add the new `keyId:base64` entry to `CALENDAR_TOKEN
 ## Production operations
 
 - Commit a new Prisma migration for every schema change. Railway runs `prisma migrate deploy` through `npm run db:migrate`; it does not run destructive development migrations or seed production automatically.
+- Marketplace migrations deliberately wait at most ten seconds for their
+  application-table locks. A `55P03` or `lock timeout` failure means concurrent
+  traffic prevented a safe migration start: stop writes or use a quiet release
+  window, mark only the exact failed migration as rolled back with
+  `prisma migrate resolve --rolled-back <migration_name>`, then redeploy. Do not
+  disable the timeout as the first response. An extension permission or missing
+  control-file error is different: have the database administrator enable
+  `btree_gist`, resolve the failed prerequisite migration, and retry.
 - Set `DEMO_ENABLED=false` when public demo creation is not wanted. Global student, coach, and club account registration and sign-in remain available.
 - Keep at least one backend instance running when Calendar is enabled because its asynchronous worker runs in the API process. A user-visible Calendar delay does not mean the Courtly booking failed; inspect worker/provider state before replaying a booking mutation.
 - To create an initial known club deliberately, run the Railway service's `npm run seed` command once with strong `SEED_CLUB_PASSWORD`, `SEED_CLUB_EMAIL`, `SEED_BUSINESS_NAME`, and `SEED_BUSINESS_SLUG` variables. The seed is idempotent for an existing slug and is not part of deployment.
@@ -204,9 +217,9 @@ Courtly ships a platform admin console at `/admin`, separate from `STUDENT`, `CO
 
 ## MVP boundaries
 
-- Courtly reserves coach time; it does not reserve an external court or room. Rented or approval-required venues stay pending until the club or independent coach secures them separately.
+- Class bookings reserve coach time. Separately, a club may publish its own facility inventory through Rentals; a confirmed rental reserves one specific Courtly-managed unit. A third-party or approval-required class venue still stays pending until the club secures it outside Courtly.
 - Venues can be looked up on Google Maps. Set `GOOGLE_MAPS_API_KEY` on the backend for live Places search; without it, pasting a Google Maps link still fills in the venue. The key stays server-side and never reaches the browser.
-- Lesson payments are tracked manually. No student payment gateway or business subscription checkout is connected.
+- Checkout uses a deterministic simulated Stripe provider for product demonstration and testable payment intent state. No live card network, fund movement, refunds, or business subscription billing is connected.
 - Confirmations and reminders are queued as in-app records. Email, SMS, and automated WhatsApp delivery are not connected.
-- Google Calendar is a one-way projection of confirmed Courtly lessons, not a two-way calendar editor. External edits never alter Courtly, and cached free/busy checks deliberately fail open when fresh data is unavailable.
+- Google Calendar is a one-way projection of confirmed Courtly Classes, not a two-way calendar editor. External edits never alter Courtly, and cached free/busy checks deliberately fail open when fresh data is unavailable.
 - Route-based travel calculations and waitlists are intentionally left for later integrations.

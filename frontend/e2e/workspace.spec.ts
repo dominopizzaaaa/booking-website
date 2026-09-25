@@ -83,17 +83,17 @@ test('club can inspect lessons and open booking form', async ({ page }) => {
   await create.click();
   const createDialog = page.getByRole('dialog', { name: 'Create' });
   await expect(createDialog.getByRole('heading', { name: 'Quick actions', exact: true })).toBeVisible();
-  for (const action of ['New booking', 'Students', 'Availability', 'Services', 'Locations', 'Payments']) {
+  for (const action of ['New booking', 'Students', 'Availability', 'Classes', 'Locations', 'Payments']) {
     await expect(createDialog.getByRole('button', { name: new RegExp(`^${action}\\b`) })).toBeVisible();
   }
   await createDialog.getByRole('button', { name: /^New booking\b/ }).click();
   const bookingDialog = page.getByRole('dialog', { name: 'Add a booking' });
   await expect(bookingDialog.getByRole('heading', { name: 'Add a booking' })).toBeVisible();
-  await expect(bookingDialog.getByLabel('Service', { exact: true })).toBeVisible();
+  await expect(bookingDialog.getByLabel('Class', { exact: true })).toBeVisible();
   await expect(bookingDialog.getByLabel('Location', { exact: true })).toBeVisible();
   await bookingDialog.getByRole('button', { name: 'Close dialog' }).click();
   await page.getByRole('button', { name: 'Search workspace' }).click();
-  await page.getByRole('textbox', { name: 'Search students and bookings' }).fill('tennis');
+  await page.getByRole('textbox', { name: 'Search people, students, and bookings' }).fill('tennis');
   await expect(page.getByRole('dialog').getByRole('button', { name: /Tennis/i }).first()).toBeVisible();
 });
 
@@ -131,7 +131,7 @@ test('booking states distinguish coach and venue waits and keep completed lesson
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: 'Completed status check', exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Propose a new time', exact: true })).toHaveCount(0);
-  await expect(dialog.getByRole('button', { name: 'Cancel lesson', exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Cancel class', exact: true })).toHaveCount(0);
 });
 
 test('navigation shows every connected management screen', async ({ page }) => {
@@ -139,10 +139,10 @@ test('navigation shows every connected management screen', async ({ page }) => {
   await expect(page.getByRole('heading', { name: /Your day, in a good place/ })).toBeVisible({ timeout: 45_000 });
 
   await openWorkspaceTab(page, 'Explore');
-  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Explore training grounds', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/\?tab=explore$/);
   await expect(page.locator('main')).toBeFocused();
-  await page.getByRole('button', { name: 'Open Calendar' }).click();
+  await page.getByRole('button', { name: 'Calendar', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Your calendar', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/\?tab=explore&view=calendar$/);
   await expect(page.locator('main')).toBeFocused();
@@ -150,7 +150,7 @@ test('navigation shows every connected management screen', async ({ page }) => {
   await expect(page.getByRole('dialog')).toBeVisible();
   await page.goBack();
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Explore training grounds', exact: true })).toBeVisible();
   await expect(page.locator('main')).toBeFocused();
   await page.goBack();
   await expect(page.getByRole('heading', { name: /Your day, in a good place/ })).toBeVisible();
@@ -158,7 +158,7 @@ test('navigation shows every connected management screen', async ({ page }) => {
   await expect(workspaceTab(await visibleWorkspaceNavigation(page), 'Home')).toHaveAttribute('aria-current', 'page');
   await expect(page).toHaveURL(/\?tab=home$/);
   await page.goForward();
-  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Explore training grounds', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/\?tab=explore$/);
   await expect(workspaceTab(await visibleWorkspaceNavigation(page), 'Explore')).toHaveAttribute('aria-current', 'page');
   await page.goForward();
@@ -170,20 +170,19 @@ test('navigation shows every connected management screen', async ({ page }) => {
     ['calendar', 'Calendar', 'Your calendar'],
     ['bookings', 'Bookings', 'Bookings'],
     ['students', 'Students', 'Students'],
-    ['services', 'Services', 'Services'],
+    ['services', 'Classes', 'Classes'],
     ['locations', 'Locations', 'Locations'],
     ['team', 'My coaches', 'My coaches'],
     ['availability', 'Availability', 'Availability'],
-    ['packages', 'Lesson packages', 'Lesson packages'],
+    ['packages', 'Packages', 'Package offers'],
     ['payments', 'Payments', 'Payments'],
     ['insights', 'Insights', 'Insights'],
-    ['integrity', 'Integrity', 'Integrity'],
   ] as const;
 
   for (const [view, label, heading] of destinations) {
     await openWorkspaceTab(page, 'Explore');
-    await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
-    await page.getByRole('button', { name: `Open ${label}`, exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Explore training grounds', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: label, exact: true }).click();
     await expect(page.locator('main').getByRole('heading', { name: heading, exact: true })).toBeVisible();
     await expect(page).toHaveURL(new RegExp(`\\?tab=explore&view=${view}$`));
     await expect(workspaceTab(await visibleWorkspaceNavigation(page), 'Explore')).toHaveAttribute('aria-current', 'page');
@@ -198,6 +197,7 @@ test('navigation shows every connected management screen', async ({ page }) => {
 
   await openWorkspaceTab(page, 'Profile');
   await expect(page.locator('main').getByText('Club account', { exact: true })).toBeVisible();
+  await expect(page.locator('main').getByRole('link', { name: 'Edit username & sports', exact: true })).toHaveAttribute('href', '/account');
   await expect(page).toHaveURL(/\?tab=profile$/);
   await expect(workspaceTab(await visibleWorkspaceNavigation(page), 'Profile')).toHaveAttribute('aria-current', 'page');
   await page.locator('main').getByRole('button', { name: 'Club settings', exact: true }).click();
@@ -212,7 +212,7 @@ test('stale workspace history returns to the current workspace home', async ({ p
   const workspace = await (await page.request.get('/api/workspace')).json();
 
   await openWorkspaceTab(page, 'Explore');
-  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Explore training grounds', exact: true })).toBeVisible();
   await page.evaluate(() => {
     const staleState = { ...(window.history.state || {}), workspaceBusinessId: 'another-business' };
     window.history.replaceState(staleState, '', '/?tab=explore&view=calendar');

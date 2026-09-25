@@ -258,14 +258,14 @@ export function AvailabilityView({ data, refresh }: WorkspaceProps) {
             <Empty
               title={
                 isCoach
-                  ? "Your instructor profile is not linked"
-                  : "Start with your instructor roster"
+                  ? "Your coach profile is not linked"
+                  : "Start with your coach roster"
               }
               icon={CalendarDays}
             >
               {isCoach
-                ? "Ask the club to link your coach account to a coach profile."
-                : "Add an instructor in Team, then set their weekly working hours here."}
+                ? "Ask the club to link your coach account to its roster."
+                : "Add a coach in My coaches, then set their weekly working hours here."}
             </Empty>
           ) : (
             <div>
@@ -336,7 +336,7 @@ export function AvailabilityView({ data, refresh }: WorkspaceProps) {
           )}
           <div className="border-t border-[#edf0e8] bg-[#fbfcfa] p-4">
             <p className="text-[10px] leading-relaxed text-stone-400">
-              Available slots also respect service notice periods, lesson
+              Available slots also respect class notice periods, lesson
               buffers, travel time, existing bookings, and blocked dates.
               Changing hours never cancels a booking.
             </p>
@@ -544,8 +544,8 @@ export function AvailabilityView({ data, refresh }: WorkspaceProps) {
             : !data.instructors.some((i) => i.active)) ||
             !data.locations.some((l) => l.active)) && (
             <p className="text-xs text-amber-800">
-              Add an active instructor and location before creating weekly
-              hours.
+              Add a rostered coach and an active location before creating
+              weekly hours.
             </p>
           )}
         </Editor>
@@ -611,9 +611,7 @@ export function AvailabilityView({ data, refresh }: WorkspaceProps) {
 export function SettingsView({ data, refresh }: ManagementProps) {
   const [editing, setEditing] = useState(false);
   const business = data.business;
-  const canManageBusiness =
-    data.user.accountType === "CLUB" ||
-    (data.user.accountType === "COACH" && business.kind === "SOLO");
+  const canManageBusiness = data.user.accountType === "CLUB";
   const bookingPath = `/book/${encodeURIComponent(business.slug)}`;
   const bookingUrl =
     typeof window !== "undefined"
@@ -715,7 +713,7 @@ export function SettingsView({ data, refresh }: ManagementProps) {
             </div>
             <div className="px-4 pb-5 sm:px-6 sm:pb-6">
               <p className="mb-4 text-xs leading-relaxed text-stone-500">
-                Share a single link so students can see your services and book
+                Share a single link so students can see your classes and book
                 an available lesson.
               </p>
               <label htmlFor="settings-booking-link">Public booking URL</label>
@@ -758,7 +756,7 @@ export function SettingsView({ data, refresh }: ManagementProps) {
                 {
                   name: "Online payments",
                   description:
-                    "No payment gateway is connected. Payments are recorded manually after you receive them offline.",
+                    "Student checkout currently uses simulated Stripe. No real card is charged; connect live Stripe before taking real payments.",
                 },
                 {
                   name: "Email & SMS delivery",

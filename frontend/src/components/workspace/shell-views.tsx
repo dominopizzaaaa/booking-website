@@ -22,7 +22,6 @@ import {
   Pencil,
   Plus,
   Settings2,
-  ShieldAlert,
   ShieldCheck,
   Ticket,
   UserRound,
@@ -33,10 +32,11 @@ import { toast } from 'sonner';
 import { CalendarConnectionCard } from '@/components/calendar-connection-card';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
-import { mutate } from '@/lib/api';
-import { alertAppearance, alertPageSize, sortAlerts } from '@/lib/alerts';
+import { mutate, updateAuthAccount } from '@/lib/api';
+import { alertAppearance, alertPageSize, linkedIntegrityFlag, sortAlerts } from '@/lib/alerts';
 import { isManagerWorkspace, type AccountType, type AuthSession, type BusinessKind, type ManagerWorkspace, type Notification, type WorkspaceResponse, type WorkspaceUser } from '@/lib/types';
 import { initials, shortDate, time } from '@/lib/utils';
+import { IntegrityAlertDetail } from './management-integrity';
 
 export const exploreViewIds = [
   'calendar',
@@ -49,7 +49,6 @@ export const exploreViewIds = [
   'packages',
   'payments',
   'insights',
-  'integrity',
 ] as const;
 
 export type ExploreViewId = (typeof exploreViewIds)[number];
@@ -122,18 +121,17 @@ type ManagerExploreItem = Omit<ExploreItem, 'detail'> & {
 const sharedExploreItems: ExploreItem[] = [
   { id: 'calendar', label: 'Calendar', description: 'See lessons, time, and venue status at a glance.', icon: CalendarDays, detail: data => `${data.bookings.length} total bookings` },
   { id: 'bookings', label: 'Bookings', description: 'Review every lesson and open its full details.', icon: Ticket, detail: data => `${data.bookings.filter(booking => booking.status === 'PENDING').length} awaiting venue` },
-  { id: 'students', label: 'Students', description: 'Keep player details, notes, and lesson history together.', icon: Users, detail: data => `${data.students.length} student${data.students.length === 1 ? '' : 's'}` },
+  { id: 'students', label: 'Students', description: 'Keep player details, notes, and class history together.', icon: Users, detail: data => `${data.students.length} student${data.students.length === 1 ? '' : 's'}` },
   { id: 'locations', label: 'Locations', description: 'Manage venues, travel time, and approval rules.', icon: MapPin, detail: data => `${data.locations.filter(location => location.active).length} active` },
   { id: 'availability', label: 'Availability', description: 'Manage teaching windows and protect time away.', icon: Clock3, detail: data => `${data.availability.length} weekly windows` },
 ];
 
 const managerExploreItems: ManagerExploreItem[] = [
-  { id: 'services', label: 'Services', description: 'Shape the lessons students can choose and book.', icon: Gift, detail: data => `${data.services.filter(service => service.active).length} active` },
+  { id: 'services', label: 'Classes', description: 'Shape the classes students can choose and book.', icon: Gift, detail: data => `${data.services.filter(service => service.active).length} active` },
   { id: 'team', label: 'My coaches', description: 'Add coaches to your roster and keep their details together.', icon: UsersRound, detail: data => `${data.instructors.filter(instructor => instructor.active).length} active` },
-  { id: 'packages', label: 'Lesson packages', description: 'Track lesson credits and student commitments.', icon: Ticket, detail: data => `${data.packages.length} package${data.packages.length === 1 ? '' : 's'}` },
-  { id: 'payments', label: 'Payments', description: 'Record offline receipts and follow unpaid lessons.', icon: CreditCard, detail: data => `${data.payments.length} recorded` },
+  { id: 'packages', label: 'Packages', description: 'Track class and rental credits and student commitments.', icon: Ticket, detail: data => `${data.packages.length} package${data.packages.length === 1 ? '' : 's'}` },
+  { id: 'payments', label: 'Payments', description: 'Review simulated Stripe checkouts, receipts, and unpaid classes.', icon: CreditCard, detail: data => `${data.payments.length} recorded` },
   { id: 'insights', label: 'Insights', description: 'Understand attendance, lessons, and recorded receipts.', icon: ChartNoAxesCombined, detail: data => `${data.bookings.filter(booking => booking.status === 'COMPLETED').length} completed lessons` },
-  { id: 'integrity', label: 'Integrity', description: 'Review coaches and students training privately outside the club.', icon: ShieldAlert, detail: data => `${data.integrityFlags.filter(flag => flag.status === 'OPEN').length} open` },
 ];
 const exploreItems = [...sharedExploreItems, ...managerExploreItems];
 
@@ -142,7 +140,6 @@ const exploreGroups: { title: string; ids: ExploreViewId[] }[] = [
   { title: 'People', ids: ['students', 'team'] },
   { title: 'Business setup', ids: ['services', 'locations'] },
   { title: 'Money & reporting', ids: ['packages', 'payments', 'insights'] },
-  { title: 'Oversight', ids: ['integrity'] },
 ];
 
 export function ExploreHub({ data, onNavigate }: { data: WorkspaceResponse; onNavigate: (view: string) => void }) {
@@ -227,6 +224,7 @@ export function AlertsView({ data, refresh, onOpenBooking, onNavigate }: {
   const unread = ordered.filter(notification => !notification.read);
   const shown = showAll ? ordered : ordered.slice(0, alertPageSize);
   const open = openId ? ordered.find(notification => notification.id === openId) ?? null : null;
+  const integrityFlag = linkedIntegrityFlag(open, data.integrityFlags);
 
   async function markRead(ids?: string[]) {
     setMarkingRead(true);
@@ -308,9 +306,17 @@ export function AlertsView({ data, refresh, onOpenBooking, onNavigate }: {
             </div>
             <p className="mt-5 text-sm leading-relaxed text-stone-600">{open.message}</p>
             {open.actionNeeded && <p className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-[#f6ebd5] px-3 py-1 text-[10px] font-semibold text-[#70582e]">This one needs you</p>}
+            {appearance.kind === 'integrity' && integrityFlag && <IntegrityAlertDetail
+              flag={integrityFlag}
+              refresh={refresh}
+              onResolved={() => setOpenId(null)}
+              actionable={open.actionNeeded}
+            />}
+            {appearance.kind === 'integrity' && !integrityFlag && <p className="mt-5 rounded-xl bg-[#f5f7f1] p-3 text-xs leading-relaxed text-[#59675c]">
+              This review is no longer available. The alert remains here as a record.
+            </p>}
             <div className="mt-6 flex flex-wrap gap-2 border-t border-[#edf0e8] pt-5">
               {open.bookingId && onOpenBooking && <Button onClick={() => { const id = open.bookingId!; setOpenId(null); onOpenBooking(id); }}>Go to this booking<ArrowRight size={14} /></Button>}
-              {appearance.kind === 'integrity' && onNavigate && <Button variant="outline" onClick={() => { setOpenId(null); onNavigate('integrity'); }}>Open Integrity<ArrowRight size={14} /></Button>}
               {appearance.kind === 'payment' && onNavigate && <Button variant="outline" onClick={() => { setOpenId(null); onNavigate('payments'); }}>Open Payments<ArrowRight size={14} /></Button>}
               <Button variant="ghost" onClick={() => setOpenId(null)}>Close</Button>
             </div>
@@ -333,7 +339,7 @@ type ProfileViewProps = {
 
 /** Tools a club account expects to reach from its own profile page. */
 const clubProfileShortcuts: ExploreViewId[] = [
-  'team', 'calendar', 'bookings', 'students', 'services', 'locations', 'payments', 'integrity',
+  'team', 'calendar', 'bookings', 'students', 'services', 'locations', 'packages', 'payments',
 ];
 
 /**
@@ -341,18 +347,18 @@ const clubProfileShortcuts: ExploreViewId[] = [
  *
  * A club account is the club, not a person, so it leads with the club's name
  * and opens business settings instead of editing a personal profile. A coach
- * keeps one personal profile while moving between their practice and clubs.
+ * keeps one personal profile while moving between clubs that hired them.
  */
 export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusinessSettings, onHelp, onSignOut, onNavigate }: ProfileViewProps) {
   const isCoach = data.user.accountType === 'COACH';
   const clubAccount = data.user.accountType === 'CLUB';
-  const isClub = data.business.kind !== 'SOLO';
-  const isSoloCoach = isCoach && !isClub;
-  const isClubCoach = isCoach && isClub;
-  const canManageBusiness = clubAccount || isSoloCoach;
+  const isClubCoach = isCoach;
+  const canManageBusiness = clubAccount;
+  const clubMemberships = data.memberships.filter(membership =>
+    membership.active && membership.business.kind === 'CLUB' && !membership.business.legacyReadOnly,
+  );
   const bookingReadiness = getBookingReadiness(data);
   const bookingPath = `/book/${encodeURIComponent(data.business.slug)}`;
-  const openFlags = data.integrityFlags.filter(flag => flag.status === 'OPEN').length;
   const awaitingCoach = data.bookings.filter(booking => booking.coachAcceptance === 'PENDING').length;
   const shortcuts = clubProfileShortcuts
     .map(id => exploreItems.find(item => item.id === id))
@@ -374,11 +380,11 @@ export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusiness
           {initials(clubAccount ? data.business.name : data.user.name)}
         </span>
         <div className="min-w-0 flex-1">
-          <p className="eyebrow">{clubAccount ? (isClub ? 'Club account' : 'Business account') : 'Personal profile'}</p>
+          <p className="eyebrow">{clubAccount ? 'Club account' : 'Personal profile'}</p>
           <h1 id="workspace-profile-title" className="mt-2 truncate">{clubAccount ? data.business.name : data.user.name}</h1>
           <p className="mt-1 break-all text-xs text-stone-500">{clubAccount ? (data.business.tagline || data.business.email) : data.user.email}</p>
           <div className="mt-3 flex flex-wrap gap-2">
-            <span className="badge">{clubAccount ? 'Club manager' : isSoloCoach ? 'Coach · Own practice' : 'Coach'}</span>
+            <span className="badge">{clubAccount ? 'Club manager' : 'Coach'}</span>
             {clubAccount && <span className="badge bg-stone-100! text-stone-500!">Managed by {data.business.name}</span>}
             {!clubAccount && data.user.phone && <span className="badge bg-stone-100! text-stone-500!">{data.user.phone}</span>}
           </div>
@@ -392,9 +398,8 @@ export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusiness
 
     {clubAccount && onNavigate && <section className="mb-5" aria-labelledby="workspace-profile-tools">
       <h2 id="workspace-profile-tools" className="mb-3 text-sm text-[#405744]">Running {data.business.name}</h2>
-      {(openFlags > 0 || awaitingCoach > 0) && <div className="mb-3 flex flex-wrap gap-2">
+      {awaitingCoach > 0 && <div className="mb-3 flex flex-wrap gap-2">
         {awaitingCoach > 0 && <button type="button" className="badge pending" onClick={() => onNavigate('bookings')}>{awaitingCoach} lesson{awaitingCoach === 1 ? '' : 's'} awaiting a coach</button>}
-        {openFlags > 0 && <button type="button" className="badge pending" onClick={() => onNavigate('integrity')}>{openFlags} flag{openFlags === 1 ? '' : 's'} to review</button>}
       </div>}
       <div className="grid gap-2 sm:grid-cols-2">
         {shortcuts.map(item => {
@@ -419,27 +424,28 @@ export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusiness
     <div className="workspace-profile-grid grid items-start gap-5 lg:grid-cols-[1.15fr_0.85fr]">
       <div className="space-y-5">
         <section className="panel overflow-hidden">
-          <div className="panel-heading"><div className="flex items-center gap-2"><Building2 size={17} className="text-[#839677]" /><h2 className="text-[#294735]">{clubAccount ? 'This club' : isClub ? 'My clubs & academies' : 'My practice'}</h2></div><span className="badge">{data.business.isDemo ? 'Demo workspace' : clubAccount ? 'Club' : isSoloCoach ? 'Own practice' : 'Coach'}</span></div>
+          <div className="panel-heading"><div className="flex items-center gap-2"><Building2 size={17} className="text-[#839677]" /><h2 className="text-[#294735]">{clubAccount ? 'This club' : 'My clubs & academies'}</h2></div><span className="badge">{data.business.isDemo ? 'Demo workspace' : clubAccount ? 'Club' : 'Coach'}</span></div>
           <div className="px-5 pb-5 sm:px-6 sm:pb-6">
             <div className="flex items-center gap-3 rounded-xl bg-[#f5f7f1] p-4"><span className="business-avatar !h-11 !w-11 shrink-0">{initials(data.business.name)}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-[#294735]">{data.business.name}</p><p className="mt-1 text-[10px] text-stone-500">{data.business.tagline || 'Your coaching business, beautifully connected.'}</p></div></div>
             {isClubCoach && <p className="mt-3 text-[11px] leading-relaxed text-stone-500">
-              {data.memberships.length > 1
-                ? `You coach at ${data.memberships.length} clubs or academies. A club adds you to its roster; you cannot join one yourself.`
+              {clubMemberships.length > 1
+                ? `You coach at ${clubMemberships.length} clubs or academies. A club adds you to its roster; you cannot join one yourself.`
                 : 'A club or academy adds you to its roster. You cannot join one yourself.'}
             </p>}
-            <div className={`mt-4 grid gap-2 ${isSoloCoach ? 'sm:grid-cols-2' : ''}`}>
+            <div className="mt-4 grid gap-2">
               {/* A club account operates one club, so there is nothing to
                   switch between and the switcher would only confuse. */}
               {isCoach && <Button variant="outline" onClick={onSwitchWorkspace}><UsersRound size={14} />Switch workspace</Button>}
               {canManageBusiness && <Button variant="outline" onClick={onBusinessSettings}><Settings2 size={14} />{clubAccount ? 'Club settings' : 'Business settings'}</Button>}
+              {clubAccount && <Button variant="outline" asChild><a href="/account"><UserRound size={14} />Edit username &amp; sports</a></Button>}
             </div>
           </div>
         </section>
         {canManageBusiness && <section className="panel overflow-hidden">
           <div className="panel-heading"><div className="flex items-center gap-2"><Link2 size={17} className="text-[#839677]" /><h2 className="text-[#294735]">Your booking link</h2></div><span className="badge">{bookingReadiness.publicReady ? 'Ready' : 'Setup needed'}</span></div>
-          <div className="px-5 pb-5 sm:px-6 sm:pb-6"><p className="text-xs leading-relaxed text-stone-500">{bookingReadiness.publicReady ? 'Share this page so students can choose a service and find an available lesson.' : 'Preview the page now. Finish your location, service assignment, and matching availability before sharing it.'}</p><div className="mt-4 flex min-w-0 items-center gap-2 rounded-xl border border-[#e3e8df] bg-[#fafbf8] p-3"><span className="min-w-0 flex-1 truncate text-xs text-stone-600">{bookingPath}</span>{bookingReadiness.publicReady && <Button size="icon" variant="ghost" aria-label="Copy booking link" onClick={() => void copyBookingLink()}><Copy size={14} /></Button>}</div><div className="mt-3 grid grid-cols-1 gap-2 sm:flex">{bookingReadiness.publicReady && <Button size="sm" onClick={() => void copyBookingLink()}><Copy size={13} />Copy link</Button>}<Button size="sm" variant="outline" asChild><a href={bookingPath} target="_blank" rel="noreferrer"><ExternalLink size={13} />Preview booking page</a></Button></div></div>
+          <div className="px-5 pb-5 sm:px-6 sm:pb-6"><p className="text-xs leading-relaxed text-stone-500">{bookingReadiness.publicReady ? 'Share this page so students can choose a class and find an available lesson.' : 'Preview the page now. Finish your location, class assignment, and matching availability before sharing it.'}</p><div className="mt-4 flex min-w-0 items-center gap-2 rounded-xl border border-[#e3e8df] bg-[#fafbf8] p-3"><span className="min-w-0 flex-1 truncate text-xs text-stone-600">{bookingPath}</span>{bookingReadiness.publicReady && <Button size="icon" variant="ghost" aria-label="Copy booking link" onClick={() => void copyBookingLink()}><Copy size={14} /></Button>}</div><div className="mt-3 grid grid-cols-1 gap-2 sm:flex">{bookingReadiness.publicReady && <Button size="sm" onClick={() => void copyBookingLink()}><Copy size={13} />Copy link</Button>}<Button size="sm" variant="outline" asChild><a href={bookingPath} target="_blank" rel="noreferrer"><ExternalLink size={13} />Preview booking page</a></Button></div></div>
         </section>}
-        {canManageBusiness && isClub && <section className="panel overflow-hidden">
+        {canManageBusiness && <section className="panel overflow-hidden">
           <div className="panel-heading"><div className="flex items-center gap-2"><ShieldCheck size={17} className="text-[#839677]" /><h2 className="text-[#294735]">How money moves</h2></div></div>
           <div className="px-5 pb-5 text-xs leading-relaxed text-stone-500 sm:px-6 sm:pb-6">
             <p>Every lesson booked through {data.business.name} is paid to the club. The club then records what it pays each coach, so the club&rsquo;s books stay complete and a coach is never paid twice for the same lesson.</p>
@@ -453,12 +459,13 @@ export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusiness
         {isCoach && onNavigate && <section className="panel overflow-hidden">
           <div className="panel-heading"><h2 className="text-[#294735]">My workspaces</h2></div>
           <div className="px-5 pb-5 sm:px-6 sm:pb-6">
-            <ul className="space-y-2">{data.memberships.map(membership => <li key={membership.id} className="flex items-center gap-2.5 rounded-xl bg-[#f5f7f1] p-3">
+            <ul className="space-y-2">{clubMemberships.map(membership => <li key={membership.id} className="flex items-center gap-2.5 rounded-xl bg-[#f5f7f1] p-3">
               <span className="business-avatar !h-8 !w-8 shrink-0 !text-[10px]">{initials(membership.business.name)}</span>
               <span className="min-w-0 flex-1 truncate text-xs text-[#344b39]">{membership.business.name}</span>
               {membership.businessId === data.business.id && <span className="badge !text-[9px]">Current</span>}
             </li>)}</ul>
-            <p className="mt-3 text-[10px] leading-relaxed text-stone-500">Your own practice appears here alongside each club or academy that adds you to its roster.</p>
+            {!clubMemberships.length && <p className="rounded-xl bg-[#f5f7f1] p-3 text-xs text-stone-500">No active club affiliations.</p>}
+            <p className="mt-3 text-[10px] leading-relaxed text-stone-500">Clubs and academies appear here after they add your coach account to their roster.</p>
           </div>
         </section>}
         {data.business.isDemo && <section className="rounded-2xl border border-[#e1e8d6] bg-[#eef3e6] p-5"><ShieldCheck size={21} className="text-[#7c9169]" /><h2 className="mt-3 text-[#294735]">A private place to explore</h2><p className="mt-2 text-xs leading-relaxed text-[#77866d]">Your changes stay in this demo workspace. When you&rsquo;re ready, create a business of your own.</p><Button className="mt-4 w-full" asChild><a href="/signup">Create your own workspace</a></Button></section>}
@@ -487,20 +494,20 @@ export function CreateDialog({ open, onOpenChange, data, accountType: accountTyp
   const actions = [
     { label: 'Students', description: 'Manage student records', view: 'students', icon: Users, coach: false },
     { label: 'Availability', description: 'Shape your teaching week', view: 'availability', icon: Clock3, coach: true },
-    { label: 'Services', description: 'Add or edit a lesson', view: 'services', icon: Gift, coach: false },
+    { label: 'Classes', description: 'Add or edit a class', view: 'services', icon: Gift, coach: false },
     { label: 'Locations', description: isClubCoach ? 'Find or add a teaching venue' : 'Manage teaching venues', view: 'locations', icon: MapPin, coach: true },
-    { label: 'Payments', description: 'Record an offline receipt', view: 'payments', icon: CreditCard, coach: false },
+    { label: 'Payments', description: 'Review simulated checkout and receipts', view: 'payments', icon: CreditCard, coach: false },
   ].filter(action => !isClubCoach || action.coach);
   function go(view: string) { onOpenChange(false); onNavigate(view); }
   const ownerManagedBlockers = [
-    readiness && !readiness.hasActiveInstructor && (isCoach ? 'an active coach roster profile' : 'an active instructor'),
-    readiness && !readiness.hasAssignedService && (isCoach ? 'a service assigned to you at an active location' : 'an active service assigned to an active instructor'),
+    readiness && !readiness.hasActiveInstructor && (isCoach ? 'your coach roster profile' : 'a coach on the roster'),
+    readiness && !readiness.hasAssignedService && (isCoach ? 'a class assigned to you at an active location' : 'an active class assigned to a rostered coach'),
     readiness && !readiness.hasLinkedStudent && 'a linked student account',
   ].filter((item): item is string => !!item);
   const missingBookingSetup = [
     readiness && !readiness.hasActiveLocation && 'an active location',
     ...ownerManagedBlockers,
-    readiness && readiness.hasAssignedService && !readiness.hasMatchingAvailability && 'availability for that instructor and location',
+    readiness && readiness.hasAssignedService && !readiness.hasMatchingAvailability && 'availability for that coach and location',
   ].filter((item): item is string => !!item);
   const primarySetupView = readiness && !readiness.hasActiveLocation ? 'locations'
     : readiness && !readiness.hasActiveInstructor ? 'team'
@@ -508,11 +515,11 @@ export function CreateDialog({ open, onOpenChange, data, accountType: accountTyp
       : readiness && !readiness.hasMatchingAvailability ? 'availability'
         : 'students';
   const setupMessage = isClubCoach
-    ? `${readiness && !readiness.hasActiveLocation ? 'Add an active location.' : ''}${readiness && !readiness.hasActiveLocation && ownerManagedBlockers.length ? ' Then ask' : ownerManagedBlockers.length ? 'Ask' : ''}${ownerManagedBlockers.length ? ` the club to add ${ownerManagedBlockers.join(', ')}.` : ''}${readiness && !readiness.hasMatchingAvailability && readiness.hasAssignedService ? `${(readiness && !readiness.hasActiveLocation) || ownerManagedBlockers.length ? ' Then set' : 'Set'} availability for your assigned service location.` : ''}`
+    ? `${readiness && !readiness.hasActiveLocation ? 'Add an active location.' : ''}${readiness && !readiness.hasActiveLocation && ownerManagedBlockers.length ? ' Then ask' : ownerManagedBlockers.length ? 'Ask' : ''}${ownerManagedBlockers.length ? ` the club to add ${ownerManagedBlockers.join(', ')}.` : ''}${readiness && !readiness.hasMatchingAvailability && readiness.hasAssignedService ? `${(readiness && !readiness.hasActiveLocation) || ownerManagedBlockers.length ? ' Then set' : 'Set'} availability for your assigned class location.` : ''}`
     : `Complete ${missingBookingSetup.join(', ')} first.`;
   const showNewBooking = readiness?.staffBookingReady ?? true;
   const setupView = isClubCoach && ownerManagedBlockers.length && primarySetupView !== 'locations' ? 'explore' : primarySetupView;
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="workspace-create-dialog max-w-lg"><DialogTitle className="sr-only">Create</DialogTitle><h2 className="text-lg font-semibold">Quick actions</h2><DialogDescription className="mt-2 text-xs text-stone-500">Start a booking or open a tool that supports your work.</DialogDescription>{showNewBooking ? <Button className="mt-5 h-auto w-full justify-start gap-3 rounded-xl p-4 text-left" onClick={() => { onOpenChange(false); window.requestAnimationFrame(onNewBooking); }}><span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/15"><Plus size={18} /></span><span><span className="block text-xs font-semibold">New booking</span><span className="mt-1 block text-[10px] font-normal text-white/75">Choose a lesson, student, place, and time</span></span></Button> : <div className="mt-5 rounded-xl border border-[#e8dfc8] bg-[#fbf8ef] p-4"><p className="text-xs font-semibold text-[#6e6246]">New booking needs a little setup</p><p className="mt-1.5 text-[10px] leading-relaxed text-[#8f8265]">{setupMessage}</p><Button variant="outline" size="sm" className="mt-3" onClick={() => go(setupView)}>{setupView === 'explore' ? 'View your tools' : setupView === 'locations' ? 'Add a location' : setupView === 'team' ? 'Open your team' : setupView === 'services' ? 'Set up services' : setupView === 'availability' ? 'Set availability' : 'Open students'}<ArrowRight size={13} /></Button></div>}<div className="mt-4"><p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-stone-400">Go to</p><div className="grid gap-2 sm:grid-cols-2">{actions.map(action => { const Icon = action.icon; return <button key={action.view} type="button" className="workspace-create-action flex min-h-20 items-center gap-3 rounded-xl border border-[#e3e8df] p-3 text-left transition hover:bg-[#f7f9f4]" onClick={() => go(action.view)}><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-[#edf2e7] text-[#6e835f]"><Icon size={16} /></span><span><span className="block text-xs font-semibold text-[#344b39]">{action.label}</span><span className="mt-1 block text-[10px] text-stone-500">{action.description}</span></span></button>; })}</div></div></DialogContent></Dialog>;
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="workspace-create-dialog max-w-lg"><DialogTitle className="sr-only">Create</DialogTitle><h2 className="text-lg font-semibold">Quick actions</h2><DialogDescription className="mt-2 text-xs text-stone-500">Start a booking or open a tool that supports your work.</DialogDescription>{showNewBooking ? <Button className="mt-5 h-auto w-full justify-start gap-3 rounded-xl p-4 text-left" onClick={() => { onOpenChange(false); window.requestAnimationFrame(onNewBooking); }}><span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/15"><Plus size={18} /></span><span><span className="block text-xs font-semibold">New booking</span><span className="mt-1 block text-[10px] font-normal text-white/75">Choose a lesson, student, place, and time</span></span></Button> : <div className="mt-5 rounded-xl border border-[#e8dfc8] bg-[#fbf8ef] p-4"><p className="text-xs font-semibold text-[#6e6246]">New booking needs a little setup</p><p className="mt-1.5 text-[10px] leading-relaxed text-[#8f8265]">{setupMessage}</p><Button variant="outline" size="sm" className="mt-3" onClick={() => go(setupView)}>{setupView === 'explore' ? 'View your tools' : setupView === 'locations' ? 'Add a location' : setupView === 'team' ? 'Open your team' : setupView === 'services' ? 'Set up classes' : setupView === 'availability' ? 'Set availability' : 'Open students'}<ArrowRight size={13} /></Button></div>}<div className="mt-4"><p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-stone-400">Go to</p><div className="grid gap-2 sm:grid-cols-2">{actions.map(action => { const Icon = action.icon; return <button key={action.view} type="button" className="workspace-create-action flex min-h-20 items-center gap-3 rounded-xl border border-[#e3e8df] p-3 text-left transition hover:bg-[#f7f9f4]" onClick={() => go(action.view)}><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-[#edf2e7] text-[#6e835f]"><Icon size={16} /></span><span><span className="block text-xs font-semibold text-[#344b39]">{action.label}</span><span className="mt-1 block text-[10px] text-stone-500">{action.description}</span></span></button>; })}</div></div></DialogContent></Dialog>;
 }
 
 export function PersonalProfileDialog({ open, onOpenChange, user, refresh }: { open: boolean; onOpenChange: (open: boolean) => void; user: WorkspaceUser; refresh: () => Promise<void> }) {
@@ -520,10 +527,14 @@ export function PersonalProfileDialog({ open, onOpenChange, user, refresh }: { o
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
+    const username = String(form.get('username') || '').trim().toLowerCase();
+    const sports = String(form.get('sports') || '').split(',').map(value => value.trim()).filter(Boolean);
     setSaving(true);
     try {
-      await mutate<AuthSession>('/auth/me', 'PATCH', {
+      await updateAuthAccount({
         name: String(form.get('name') || '').trim(),
+        username,
+        sports,
         phone: String(form.get('phone') || '').trim(),
         parentName: String(form.get('parentName') || '').trim(),
       });
@@ -536,5 +547,5 @@ export function PersonalProfileDialog({ open, onOpenChange, user, refresh }: { o
       setSaving(false);
     }
   }
-  return <Dialog open={open} onOpenChange={next => { if (!saving) onOpenChange(next); }}><DialogContent className="workspace-personal-profile-dialog max-w-lg" onEscapeKeyDown={event => { if (saving) event.preventDefault(); }} onPointerDownOutside={event => { if (saving) event.preventDefault(); }}><DialogTitle className="text-lg font-semibold">Edit personal profile</DialogTitle><DialogDescription className="mt-2 text-xs leading-relaxed text-stone-500">These details belong to your Courtly account and travel with you when you switch businesses.</DialogDescription><form className="mt-5 space-y-4" onSubmit={submit}><div><label htmlFor="personal-profile-name">Name</label><input id="personal-profile-name" name="name" defaultValue={user.name} autoComplete="name" required disabled={saving} /></div><div><label htmlFor="personal-profile-email">Email</label><input id="personal-profile-email" name="email" type="email" defaultValue={user.email} autoComplete="email" readOnly aria-describedby="personal-profile-email-note" /><p id="personal-profile-email-note" className="mt-1.5 text-[10px] leading-relaxed text-stone-400">Your sign-in email cannot be changed here.</p></div><div><label htmlFor="personal-profile-phone">Phone <span className="font-normal text-stone-400">(optional)</span></label><input id="personal-profile-phone" name="phone" type="tel" defaultValue={user.phone || ''} autoComplete="tel" disabled={saving} /></div><div><label htmlFor="personal-profile-parent-name">Parent or guardian name <span className="font-normal text-stone-400">(optional)</span></label><input id="personal-profile-parent-name" name="parentName" defaultValue={user.parentName || ''} autoComplete="name" disabled={saving} /></div><div className="flex justify-end gap-2 pt-2"><Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>Cancel</Button><Button type="submit" disabled={saving}>{saving && <Loader2 size={14} className="animate-spin" />}Save profile</Button></div></form></DialogContent></Dialog>;
+  return <Dialog open={open} onOpenChange={next => { if (!saving) onOpenChange(next); }}><DialogContent className="workspace-personal-profile-dialog max-w-lg" onEscapeKeyDown={event => { if (saving) event.preventDefault(); }} onPointerDownOutside={event => { if (saving) event.preventDefault(); }}><DialogTitle className="text-lg font-semibold">Edit personal profile</DialogTitle><DialogDescription className="mt-2 text-xs leading-relaxed text-stone-500">These details belong to your Courtly account and travel with you when you switch businesses.</DialogDescription><form className="mt-5 space-y-4" onSubmit={submit}><div><label htmlFor="personal-profile-name">Name</label><input id="personal-profile-name" name="name" defaultValue={user.name} autoComplete="name" required disabled={saving} /></div><div><label htmlFor="personal-profile-username">Username</label><input id="personal-profile-username" name="username" defaultValue={user.username || ''} autoComplete="username" minLength={3} maxLength={30} pattern="[a-z0-9_]{3,30}" required disabled={saving} /></div><div><label htmlFor="personal-profile-sports">Sports <span className="font-normal text-stone-400">(comma-separated)</span></label><input id="personal-profile-sports" name="sports" defaultValue={(user.sports ?? []).join(', ')} maxLength={819} placeholder="Tennis, badminton, padel" disabled={saving} /></div><div><label htmlFor="personal-profile-email">Email</label><input id="personal-profile-email" name="email" type="email" defaultValue={user.email} autoComplete="email" readOnly aria-describedby="personal-profile-email-note" /><p id="personal-profile-email-note" className="mt-1.5 text-[10px] leading-relaxed text-stone-400">Your sign-in email cannot be changed here.</p></div><div><label htmlFor="personal-profile-phone">Phone <span className="font-normal text-stone-400">(optional)</span></label><input id="personal-profile-phone" name="phone" type="tel" defaultValue={user.phone || ''} autoComplete="tel" disabled={saving} /></div><div><label htmlFor="personal-profile-parent-name">Parent or guardian name <span className="font-normal text-stone-400">(optional)</span></label><input id="personal-profile-parent-name" name="parentName" defaultValue={user.parentName || ''} autoComplete="name" disabled={saving} /></div><div className="flex justify-end gap-2 pt-2"><Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>Cancel</Button><Button type="submit" disabled={saving}>{saving && <Loader2 size={14} className="animate-spin" />}Save profile</Button></div></form></DialogContent></Dialog>;
 }

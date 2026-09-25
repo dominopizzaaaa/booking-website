@@ -48,8 +48,8 @@ async function visibleWorkspaceNavigation(page: Page): Promise<Locator> {
 async function openWorkspaceView(page: Page, label: string) {
   const navigation = await visibleWorkspaceNavigation(page);
   await navigation.getByRole('button', { name: 'Explore', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: `Open ${label}`, exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Explore training grounds', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: label, exact: true }).click();
 }
 
 async function expectWorkspaceHomeUrl(page: Page) {
@@ -98,7 +98,7 @@ test('student creates an account, books, views history, and cancels', async ({ p
   // session before entering the account-required public booking journey.
   await page.request.post('/api/auth/logout', { data: {} });
   await page.goto(`/book/${workspace.business.slug}`);
-  await expect(page.getByRole('heading', { name: 'Good days start with a lesson.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Good days start with a class.' })).toBeVisible();
   await page.getByRole('button', { name: new RegExp(escapeRegExp(service.name)) }).click();
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await page.getByRole('button', { name: new RegExp(escapeRegExp(location.name)) }).click();
@@ -112,6 +112,7 @@ test('student creates an account, books, views history, and cancels', async ({ p
   const studentEmail = uniqueEmail('jamie', testInfo.project.name);
   await page.getByRole('tab', { name: 'Create account' }).click();
   await page.getByLabel('Full name').fill(studentName);
+  await page.getByLabel('Username', { exact: true }).fill(`bj_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`);
   await page.getByLabel('Email address').fill(studentEmail);
   await page.getByLabel('Password').fill(password);
   await page.getByLabel(/^Phone/).fill('+65 9123 4567');
@@ -379,6 +380,10 @@ test('student shell guards stale actions and exposes current sessions and action
       }],
     },
   }));
+  await page.route('**/api/account/packages', route => route.fulfill({ json: { packages: [] } }));
+  await page.route(/\/api\/rentals(?:\?.*)?$/, route => route.fulfill({
+    json: { rentals: [], nextCursor: null },
+  }));
 
   await page.goto(`/manage?slug=${business.slug}&tab=home`);
   await expect(page.getByRole('heading', { name: 'My bookings' })).toBeVisible();
@@ -412,7 +417,7 @@ test('student shell guards stale actions and exposes current sessions and action
   await expect(page.locator('section[aria-labelledby="booking-history"]')).toHaveCount(0);
 
   const studentNavigation = page.getByRole('navigation', { name: 'Student navigation' });
-  const alertsButton = studentNavigation.getByRole('button', { name: 'Alerts, 1 unread alert' });
+  const alertsButton = studentNavigation.getByRole('button', { name: /^Alerts/ });
   await expect(alertsButton).toHaveAccessibleName('Alerts, 1 unread alert');
   await alertsButton.click();
 
@@ -444,6 +449,7 @@ test('club sign-up creates an empty affiliation and sign-in restores it', async 
   await page.getByRole('radio', { name: 'Club or academy', exact: true }).click();
   await page.getByLabel('Contact name', { exact: true }).fill('Alex Test');
   await page.getByLabel('Club or academy name', { exact: true }).fill('Alex Coaching');
+  await page.getByLabel('Username', { exact: true }).fill(`bc_${email.split('@')[0].replace(/-/g, '_').slice(-27)}`);
   await page.getByLabel(/Email/i).fill(email);
   await page.getByLabel(/^Password/i).fill(password);
   await page.getByRole('button', { name: 'Create your workspace' }).click();
@@ -479,10 +485,10 @@ test('club sign-up creates an empty affiliation and sign-in restores it', async 
 test('self-registered coach is linked to a club by its club account', async ({ page }, testInfo) => {
   test.setTimeout(120_000);
   const coachEmail = uniqueEmail('coach', testInfo.project.name);
-  const practiceName = `Casey Practice ${projectId(testInfo.project.name)} ${Date.now()}`;
   await page.goto('/signup');
-  await page.getByRole('radio', { name: /Coach/ }).click();
+  await page.getByRole('radio', { name: 'Coach', exact: true }).click();
   await page.getByLabel(/Your full name/i).fill('Casey Coach');
+  await page.getByLabel('Username', { exact: true }).fill(`bco_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-26)}`);
   await page.getByLabel(/Email/i).fill(coachEmail);
   await page.getByLabel(/^Password/i).fill(password);
   await page.getByRole('button', { name: 'Create coach account' }).click();
@@ -525,8 +531,9 @@ test('self-registered coach is linked to a club by its club account', async ({ p
   const coachAccessDialog = page.getByRole('dialog');
   await expect(coachAccessDialog.getByRole('heading', { name: 'Add coach access', exact: true })).toBeVisible();
   await coachAccessDialog
-    .getByRole('textbox', { name: 'Courtly coach account email', exact: true })
+    .getByRole('searchbox', { name: 'Courtly coach account', exact: true })
     .fill(coachEmail);
+  await coachAccessDialog.getByRole('spinbutton', { name: 'Reschedule notice (hours)', exact: true }).fill('24');
   const retainedProfile = coachAccessDialog.getByLabel('Coach profile (optional)')
     .locator(`option[value="${claimedInstructor.id}"]`);
   await expect(retainedProfile).toBeDisabled();
@@ -545,7 +552,7 @@ test('self-registered coach is linked to a club by its club account', async ({ p
   await expect(linkedCoach).toBeVisible();
   await expect(linkedCoach).toContainText('Casey Coach');
 
-  // The new coach receives their own catalog and lesson history. A departed
+  // The new coach receives their own catalog and class history. A departed
   // coach's retained profile is never reassigned merely to make demo data
   // visible in the scoped workspace.
   const location = clubWorkspace.locations.find(candidate => candidate.active && !candidate.requiresApproval);
@@ -629,18 +636,17 @@ test('self-registered coach is linked to a club by its club account', async ({ p
   await expect(page.locator('main').getByRole('button', { name: 'Booking page', exact: true })).toHaveCount(0);
   await expect(page.locator('main').getByText('Your booking page', { exact: true })).toHaveCount(0);
   await coachNavigation.getByRole('button', { name: 'Explore', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
-  await expect(page.getByText(/Business setup, coach access, packages, payments, and reporting are managed/)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Explore training grounds', exact: true })).toBeVisible();
   for (const label of ['Calendar', 'Bookings', 'Students', 'Locations', 'Availability']) {
-    await expect(page.getByRole('button', { name: `Open ${label}`, exact: true })).toBeEnabled();
+    await expect(page.getByRole('button', { name: label, exact: true })).toBeEnabled();
   }
-  for (const label of ['Services', 'My coaches', 'Lesson packages', 'Payments', 'Insights', 'Integrity']) {
-    await expect(page.getByRole('button', { name: `Open ${label}`, exact: true })).toHaveCount(0);
+  for (const label of ['Classes', 'My coaches', 'Packages', 'Payments', 'Insights', 'Integrity']) {
+    await expect(page.getByRole('button', { name: label, exact: true })).toHaveCount(0);
   }
 
   // A coach can discover a venue before the club assigns it to a service. It
   // remains visible after refresh, but existing venue settings stay read-only.
-  await page.getByRole('button', { name: 'Open Locations', exact: true }).click();
+  await page.getByRole('button', { name: 'Locations', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Locations', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Add location', exact: true }).click();
   const locationDialog = page.getByRole('dialog');
@@ -654,22 +660,25 @@ test('self-registered coach is linked to a club by its club account', async ({ p
   await expect(page.getByRole('heading', { name: 'Coach Discovery Court', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: /Edit location/ })).toHaveCount(0);
   await page.goto('/?tab=explore');
-  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Explore training grounds', exact: true })).toBeVisible();
 
-  await coachNavigation.getByRole('button', { name: 'Create', exact: true }).click();
-  const createDialog = page.getByRole('dialog', { name: 'Create' });
-  await expect(createDialog.getByRole('heading', { name: 'Quick actions', exact: true })).toBeVisible();
-  await expect(createDialog.getByRole('button', { name: /^New booking\b/ })).toBeVisible();
-  for (const action of ['Availability', 'Locations']) {
-    await expect(createDialog.getByRole('button', { name: new RegExp(`^${action}\\b`) })).toBeVisible();
+  for (const label of ['Home', 'Explore', 'Book', 'Profile']) {
+    await expect(coachNavigation.getByRole('button', { name: label, exact: true })).toBeVisible();
   }
-  for (const action of ['Students', 'Services', 'Payments']) {
-    await expect(createDialog.getByRole('button', { name: new RegExp(`^${action}\\b`) })).toHaveCount(0);
-  }
-  await createDialog.getByRole('button', { name: 'Close dialog' }).click();
+  await expect(coachNavigation.getByRole('button', { name: /^Alerts/ })).toBeVisible();
+  await expect(coachNavigation.getByRole('button', { name: 'Create', exact: true })).toHaveCount(0);
+  await coachNavigation.getByRole('button', { name: 'Book', exact: true }).click();
+  const coachBookingDialog = page.getByRole('dialog', { name: 'Add a booking' });
+  await expect(coachBookingDialog).toBeVisible();
+  await expect(coachBookingDialog.getByLabel('1-1 session', { exact: true })).toBeVisible();
+  await expect(coachBookingDialog.getByLabel('Instructor', { exact: true })).toHaveCount(0);
+  const sessionDetails = coachBookingDialog.getByRole('group', { name: '1-1 session details' });
+  await expect(sessionDetails).toContainText(clubWorkspace.business.name);
+  await expect(sessionDetails).toContainText(/Duration/);
+  await coachBookingDialog.getByRole('button', { name: 'Close dialog' }).click();
 
   await page.goto('/?tab=explore&view=payments');
-  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Explore training grounds', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/\?tab=explore$/);
   await expect(page.locator('main')).not.toContainText('A clear picture of money');
 
@@ -684,84 +693,20 @@ test('self-registered coach is linked to a club by its club account', async ({ p
   await expect(page).toHaveURL(/\?tab=profile$/);
   await expect(page.locator('main').getByRole('button', { name: 'Business settings', exact: true })).toHaveCount(0);
 
-  // A coach creates their one direct-payment practice from the account UI.
-  // The endpoint also selects it, so entering the new workspace is part of the
-  // same user journey rather than an API-only setup shortcut.
+  // Coaches only work through clubs that hire them. The retired practice
+  // endpoint and its UI must not recreate a player-like private workspace.
   await page.goto('/account');
   await expect(page.getByRole('heading', { name: /Welcome, Casey Coach/ })).toBeVisible();
-  const accountWorkspaces = page.locator('section', {
-    has: page.getByRole('heading', { name: 'Your coaching workspaces' }),
-  });
+  const accountWorkspaces = page.getByRole('region', { name: 'Your coaching workspaces' });
   await expect(accountWorkspaces.getByRole('button').filter({ hasText: clubWorkspace.business.name })).toBeVisible();
-  await page.getByLabel('Name your practice').fill(practiceName);
-  const createPracticeResponse = page.waitForResponse(response =>
-    response.request().method() === 'POST'
-      && new URL(response.url()).pathname === '/api/auth/practice',
-  );
-  await page.getByRole('button', { name: /Create practice/ }).click();
-  expect((await createPracticeResponse).status()).toBe(201);
-  await expectWorkspaceHomeUrl(page);
-  await expect(page.getByRole('heading', { name: /Your day, in a good place/ })).toBeVisible();
-
-  const soloWorkspace = await (await page.request.get('/api/workspace')).json() as ManagerWorkspace;
-  expect(soloWorkspace.business).toMatchObject({ name: practiceName, kind: 'SOLO' });
-  expect(soloWorkspace.user.accountType).toBe('COACH');
-  expect(soloWorkspace.memberships.filter((membership: { business: { kind: string } }) => membership.business.kind === 'SOLO')).toHaveLength(1);
-  expect(soloWorkspace.memberships.filter((membership: { business: { kind: string } }) => membership.business.kind === 'CLUB')).toHaveLength(1);
-
-  let switchedNavigation = await visibleWorkspaceNavigation(page);
-  await expect(page.getByText("This week's earnings", { exact: true })).toBeVisible();
-  await expect(page.getByText('Outstanding', { exact: true })).toBeVisible();
-  await switchedNavigation.getByRole('button', { name: 'Explore', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Open Services', exact: true })).toBeEnabled();
-  await expect(page.getByRole('button', { name: 'Open Payments', exact: true })).toBeEnabled();
-
-  await switchedNavigation.getByRole('button', { name: 'Profile', exact: true }).click();
-  const affiliationList = page.locator('section', {
-    has: page.getByRole('heading', { name: 'My workspaces' }),
-  });
-  await expect(affiliationList.getByRole('listitem').filter({ hasText: clubWorkspace.business.name })).toBeVisible();
-  await expect(affiliationList.getByRole('listitem').filter({ hasText: practiceName })).toBeVisible();
-
-  await page.getByRole('button', { name: 'Switch workspace' }).click();
-  let workspaceDialog = page.getByRole('dialog', { name: 'Switch workspace' });
-  const clubOption = workspaceDialog.getByRole('button').filter({ hasText: clubWorkspace.business.name });
-  const soloOption = workspaceDialog.getByRole('button').filter({ hasText: practiceName });
-  await expect(clubOption).toContainText(/Club or academy/);
-  await expect(soloOption).toContainText(/Own practice/);
-  await expect(soloOption).toContainText(/Current/);
-  await clubOption.click();
-  await expectWorkspaceHomeUrl(page);
-  await expect(page.getByRole('region', { name: 'Coach snapshot' })).toBeVisible();
-  await expect(page.getByText("This week's earnings", { exact: true })).toHaveCount(0);
-  await expect(page.getByText('Outstanding', { exact: true })).toHaveCount(0);
-
-  const switchedClubWorkspace = await (await page.request.get('/api/workspace')).json();
-  expect(switchedClubWorkspace.business).toMatchObject({ id: clubWorkspace.business.id, kind: 'CLUB' });
-  switchedNavigation = await visibleWorkspaceNavigation(page);
-  await switchedNavigation.getByRole('button', { name: 'Explore', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Open Availability', exact: true })).toBeEnabled();
-  await expect(page.getByRole('button', { name: 'Open Payments', exact: true })).toHaveCount(0);
-
-  // Switching back from the club-scoped workspace resets stale tab/view state
-  // and restores the manager-only business and financial tools.
-  await switchedNavigation.getByRole('button', { name: 'Profile', exact: true }).click();
-  await page.getByRole('button', { name: 'Switch workspace' }).click();
-  workspaceDialog = page.getByRole('dialog', { name: 'Switch workspace' });
-  await workspaceDialog.getByRole('button').filter({ hasText: practiceName }).click();
-  await expectWorkspaceHomeUrl(page);
-  await expect(page.getByText("This week's earnings", { exact: true })).toBeVisible();
-  await expect(page.getByText('Outstanding', { exact: true })).toBeVisible();
-  const switchedSoloWorkspace = await (await page.request.get('/api/workspace')).json();
-  expect(switchedSoloWorkspace.business).toMatchObject({ id: soloWorkspace.business.id, kind: 'SOLO' });
-  expect(switchedSoloWorkspace.memberships.filter((membership: { business: { kind: string } }) => membership.business.kind === 'SOLO')).toHaveLength(1);
-
-  await page.goto('/account');
-  await expect(page.getByRole('heading', { name: /Welcome, Casey Coach/ })).toBeVisible();
-  const finalAffiliations = page.locator('section', {
-    has: page.getByRole('heading', { name: 'Your coaching workspaces' }),
-  });
-  await expect(finalAffiliations.getByRole('button').filter({ hasText: clubWorkspace.business.name })).toBeVisible();
-  await expect(finalAffiliations.getByRole('button').filter({ hasText: practiceName })).toBeVisible();
   await expect(page.getByLabel('Name your practice')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Create practice/ })).toHaveCount(0);
+  await expect(accountWorkspaces).not.toContainText('Own practice');
+  const retiredPractice = await page.request.post('/api/auth/practice', {
+    data: { name: 'A practice that must not be created' },
+  });
+  expect(retiredPractice.status()).toBe(404);
+  const currentWorkspace = await (await page.request.get('/api/workspace')).json() as CoachClubWorkspace;
+  expect(currentWorkspace.business).toMatchObject({ id: clubWorkspace.business.id, kind: 'CLUB' });
+  expect(currentWorkspace.memberships.every(membership => membership.business.kind === 'CLUB')).toBe(true);
 });

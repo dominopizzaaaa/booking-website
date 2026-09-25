@@ -35,14 +35,14 @@ export type AccountType = 'STUDENT' | 'COACH' | 'CLUB';
  * Who runs this business.
  *
  * There is no stored role to consult: what an account may do follows from what
- * it is. A club account runs its club. A coach runs their own practice, where
- * there is no club to answer to, but inside someone else's club they are a
- * coach and nothing more.
+ * it is. A club account runs its club. Coaches operate only inside active
+ * club affiliations; retained solo-practice rows are historical and cannot
+ * reach workspace routes.
  */
 export function managesBusiness(auth: Pick<AuthContext, 'user' | 'business'>) {
   if (!auth.business) return false;
-  return (auth.user.accountType === 'CLUB' && auth.business.kind === 'CLUB')
-    || (auth.user.accountType === 'COACH' && auth.business.kind === 'SOLO');
+  return auth.user.accountType === 'CLUB' && auth.business.kind === 'CLUB'
+    && !auth.business.legacyReadOnly;
 }
 
 /**
@@ -61,8 +61,8 @@ export const requireBusinessManager: RequestHandler = (req, _res, next) => {
 };
 
 /**
- * Staff belongs to a club. A coach's own practice has exactly one member — the
- * coach — so it never grows a roster.
+ * Staff belongs to a club. Only the institutional club account may change its
+ * roster; a coach affiliation never grants that authority.
  */
 export const requireClubAccount: RequestHandler = (req, _res, next) => {
   const auth = (req as AuthRequest).auth;

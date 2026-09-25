@@ -1,5 +1,5 @@
 import { expect, test, type APIResponse, type Page, type Response } from '@playwright/test';
-import type { Availability, AvailabilityException, Location, ManagerWorkspace, Service, Student } from '../src/lib/types';
+import type { Availability, AvailabilityException, ManagerWorkspace, RentalLocationSaveResult, Service, Student } from '../src/lib/types';
 
 function projectId(projectName: string) {
   if (projectName === 'desktop-1440') return 'desktop';
@@ -94,19 +94,28 @@ test('club management mutations persist across the responsive workspace', async 
   await dialog.locator('input[name="requiresApproval"]').check();
   await expectNoHorizontalOverflow(page);
 
-  let responsePromise = mutationResponse(page, 'POST', '/api/locations');
+  let responsePromise = page.waitForResponse(response =>
+    response.request().method() === 'PUT'
+      && new URL(response.url()).pathname.startsWith('/api/rental-locations/rental_loc_'),
+  );
   await dialog.getByRole('button', { name: 'Save location', exact: true }).click();
   let response = await responsePromise;
-  const location = await responseJson<Location>(response);
+  const locationResult = await responseJson<RentalLocationSaveResult>(response);
+  const location = locationResult.location;
+  expect(new URL(response.url()).pathname).toBe(`/api/rental-locations/${location.id}`);
   expect(response.request().postDataJSON()).toMatchObject({
-    name: locationName,
-    address: '10 Rally Road, Singapore',
-    type: 'RENTED',
-    requiresApproval: true,
-    travelMinutes: 25,
-    notes: 'Check in at the east desk.',
-    active: true,
-    source: 'MANUAL',
+    mode: 'CREATE',
+    location: {
+      name: locationName,
+      address: '10 Rally Road, Singapore',
+      type: 'RENTED',
+      requiresApproval: true,
+      travelMinutes: 25,
+      notes: 'Check in at the east desk.',
+      active: true,
+      source: 'MANUAL',
+    },
+    rental: { enabled: false },
   });
   await expect(dialog).toHaveCount(0);
   await expect(catalogCard(page, locationName)).toContainText('Venue confirmation required');
@@ -126,18 +135,22 @@ test('club management mutations persist across the responsive workspace', async 
   await dialog.locator('input[name="requiresApproval"]').uncheck();
   await expect(dialog.locator('input[name="active"]')).toBeChecked();
 
-  responsePromise = mutationResponse(page, 'PATCH', `/api/locations/${location.id}`);
+  responsePromise = mutationResponse(page, 'PUT', `/api/rental-locations/${location.id}`);
   await dialog.getByRole('button', { name: 'Save location', exact: true }).click();
   response = await responsePromise;
-  await responseJson<Location>(response);
+  await responseJson<RentalLocationSaveResult>(response);
   expect(response.request().postDataJSON()).toMatchObject({
-    name: editedLocationName,
-    address: '20 Practice Lane, Singapore',
-    type: 'FACILITY',
-    requiresApproval: false,
-    travelMinutes: 15,
-    notes: 'Use the side entrance after 6pm.',
-    active: true,
+    mode: 'UPDATE',
+    location: {
+      name: editedLocationName,
+      address: '20 Practice Lane, Singapore',
+      type: 'FACILITY',
+      requiresApproval: false,
+      travelMinutes: 15,
+      notes: 'Use the side entrance after 6pm.',
+      active: true,
+    },
+    rental: { enabled: false },
   });
   await expect(dialog).toHaveCount(0);
   await expect(catalogCard(page, editedLocationName)).toContainText('Use the side entrance after 6pm.');
@@ -151,9 +164,9 @@ test('club management mutations persist across the responsive workspace', async 
   await expectNoHorizontalOverflow(page);
 
   await page.goto('/?tab=explore&view=services');
-  await expect(page.locator('main').getByRole('heading', { name: 'Services', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Add service', exact: true }).click();
-  dialog = page.getByRole('dialog', { name: 'Create a service' });
+  await expect(page.locator('main').getByRole('heading', { name: 'Classes', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Add class', exact: true }).click();
+  dialog = page.getByRole('dialog', { name: 'Create a class' });
   await dialog.locator('input[name="name"]').fill(serviceName);
   await dialog.locator('input[name="category"]').fill('Racket skills');
   await dialog.locator('#service-type').selectOption('GROUP');
@@ -170,7 +183,7 @@ test('club management mutations persist across the responsive workspace', async 
   await expectNoHorizontalOverflow(page);
 
   responsePromise = mutationResponse(page, 'POST', '/api/services');
-  await dialog.getByRole('button', { name: 'Create service', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Create class', exact: true }).click();
   response = await responsePromise;
   const service = await responseJson<Service>(response);
   expect(response.request().postDataJSON()).toMatchObject({
@@ -200,7 +213,7 @@ test('club management mutations persist across the responsive workspace', async 
   });
 
   await catalogCard(page, serviceName).getByRole('button', { name: `Edit ${serviceName}`, exact: true }).click();
-  dialog = page.getByRole('dialog', { name: 'Edit service' });
+  dialog = page.getByRole('dialog', { name: 'Edit class' });
   await dialog.locator('input[name="name"]').fill(editedServiceName);
   await dialog.locator('input[name="category"]').fill('Performance');
   await dialog.locator('textarea[name="description"]').fill('An updated clinic for tactical match play.');
@@ -211,7 +224,7 @@ test('club management mutations persist across the responsive workspace', async 
   await dialog.locator(`input[name="duration-${location.id}"]`).fill('90');
 
   responsePromise = mutationResponse(page, 'PATCH', `/api/services/${service.id}`);
-  await dialog.getByRole('button', { name: 'Save service', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Save class', exact: true }).click();
   response = await responsePromise;
   await responseJson<Service>(response);
   expect(response.request().postDataJSON()).toMatchObject({
@@ -240,16 +253,16 @@ test('club management mutations persist across the responsive workspace', async 
   });
 
   await catalogCard(page, editedServiceName).getByRole('button', { name: `Edit ${editedServiceName}`, exact: true }).click();
-  dialog = page.getByRole('dialog', { name: 'Edit service' });
+  dialog = page.getByRole('dialog', { name: 'Edit class' });
   await dialog.locator('input[name="active"]').uncheck();
   responsePromise = mutationResponse(page, 'PATCH', `/api/services/${service.id}`);
-  await dialog.getByRole('button', { name: 'Save service', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Save class', exact: true }).click();
   response = await responsePromise;
   await responseJson<Service>(response);
   expect(response.request().postDataJSON()).toMatchObject({ active: false });
   await expect(dialog).toHaveCount(0);
   await expect(catalogCard(page, editedServiceName)).toHaveCount(0);
-  await page.getByLabel('Filter services', { exact: true }).selectOption('archived');
+  await page.getByLabel('Filter classes', { exact: true }).selectOption('archived');
   await expect(catalogCard(page, editedServiceName)).toContainText('Archived');
   expect((await workspace(page)).services.find(candidate => candidate.id === service.id)?.active).toBe(false);
   await expectNoHorizontalOverflow(page);
@@ -329,11 +342,15 @@ test('club management mutations persist across the responsive workspace', async 
   await catalogCard(page, editedLocationName).getByRole('button', { name: 'Edit location', exact: true }).click();
   dialog = page.getByRole('dialog', { name: 'Edit location' });
   await dialog.locator('input[name="active"]').uncheck();
-  responsePromise = mutationResponse(page, 'PATCH', `/api/locations/${location.id}`);
+  responsePromise = mutationResponse(page, 'PUT', `/api/rental-locations/${location.id}`);
   await dialog.getByRole('button', { name: 'Save location', exact: true }).click();
   response = await responsePromise;
-  await responseJson<Location>(response);
-  expect(response.request().postDataJSON()).toMatchObject({ active: false });
+  await responseJson<RentalLocationSaveResult>(response);
+  expect(response.request().postDataJSON()).toMatchObject({
+    mode: 'UPDATE',
+    location: { active: false },
+    rental: { enabled: false },
+  });
   await expect(dialog).toHaveCount(0);
   await expect(catalogCard(page, editedLocationName)).toContainText('Archived');
   expect((await workspace(page)).locations.find(candidate => candidate.id === location.id)?.active).toBe(false);

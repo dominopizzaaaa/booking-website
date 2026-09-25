@@ -189,6 +189,11 @@ async function deleteBusinessDeep(tx: Prisma.TransactionClient, businessId: stri
     }
   }
   await tx.payment.deleteMany({ where: { businessId } });
+  // Online checkout history pins its target rows with RESTRICT relations.
+  // Remove intents first, then reservations, before clearing lesson/package
+  // records during an explicit whole-business teardown.
+  await tx.paymentIntent.deleteMany({ where: { businessId } });
+  await tx.venueReservation.deleteMany({ where: { businessId } });
   await tx.participant.deleteMany({ where: { booking: { businessId } } });
   await tx.booking.deleteMany({ where: { businessId } });
   await tx.lessonPackage.deleteMany({ where: { businessId } });

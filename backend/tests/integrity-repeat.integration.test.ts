@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { app } from '../src/app.js';
+import { flagPrivateSessionsAfterClub } from '../src/integrity.js';
 import {
   TestTenants, createAccount, createStudent, prisma, verifyTestDatabase, type Fixture,
 } from './fixtures.js';
@@ -41,64 +42,73 @@ describe('Club safeguard identity and repeat detections', () => {
     }).expect(201);
     expect(clubLesson.body.bookings[0].paymentRoute).toBe('CLUB');
 
-    const practiceAuth = await request(app).post('/api/auth/practice')
-      .set('Cookie', club.coachCookie)
-      .send({ name: 'Repeat Safeguard Practice' })
-      .expect(201);
-    const practice = await prisma.business.findUniqueOrThrow({
-      where: { id: practiceAuth.body.business.id },
-    });
-    tenants.own(practice.id);
-    const practiceInstructor = await prisma.instructor.findUniqueOrThrow({
-      where: { id: practiceAuth.body.membership.instructorId },
-    });
-    const practiceLocation = await prisma.location.create({
-      data: { businessId: practice.id, name: 'Practice Court', travelMinutes: 20 },
-    });
-    const practiceService = await prisma.service.create({
-      data: {
-        businessId: practice.id,
-        name: 'Direct coaching',
-        type: 'PRIVATE',
-        capacity: 1,
-        duration: 60,
-        price: 8000,
-        noticeHours: 0,
-        bufferMinutes: 0,
-        locations: {
-          create: {
-            locationId: practiceLocation.id,
-            price: 8000,
-            duration: 60,
-            instructors: { create: { instructorId: practiceInstructor.id } },
+    const historical = await prisma.$transaction(async tx => {
+      const business = await tx.business.create({
+        data: {
+          name: 'Repeat Safeguard Practice',
+          slug: `repeat-safeguard-practice-${randomUUID()}`,
+          ownerName: club.coachUser.name,
+          email: club.coachUser.email,
+          kind: 'SOLO',
+          legacyReadOnly: true,
+        },
+      });
+      const instructor = await tx.instructor.create({
+        data: {
+          businessId: business.id,
+          name: club.coachUser.name,
+          initials: 'TC',
+          email: club.coachUser.email,
+        },
+      });
+      const membership = await tx.membership.create({
+        data: {
+          businessId: business.id,
+          userId: club.coachUser.id,
+          instructorId: instructor.id,
+        },
+      });
+      const location = await tx.location.create({
+        data: { businessId: business.id, name: 'Practice Court', travelMinutes: 20 },
+      });
+      const service = await tx.service.create({
+        data: {
+          businessId: business.id,
+          name: 'Direct coaching',
+          type: 'PRIVATE',
+          capacity: 1,
+          duration: 60,
+          price: 8000,
+          noticeHours: 0,
+          bufferMinutes: 0,
+          locations: {
+            create: {
+              locationId: location.id,
+              price: 8000,
+              duration: 60,
+              instructors: { create: { instructorId: instructor.id } },
+            },
           },
         },
-      },
+      });
+      const student = await tx.student.create({
+        data: {
+          businessId: business.id,
+          userId: studentAccount.id,
+          name: studentAccount.name,
+          initials: 'RS',
+          email: studentAccount.email,
+        },
+      });
+      return { business, instructor, membership, location, service, student };
     });
-    await prisma.availability.createMany({
-      data: Array.from({ length: 7 }, (_, dayOfWeek) => ({
-        businessId: practice.id,
-        instructorId: practiceInstructor.id,
-        locationId: practiceLocation.id,
-        dayOfWeek,
-        startTime: '08:00',
-        endTime: '20:00',
-      })),
-    });
-    const practiceStudent = await prisma.student.create({
-      data: {
-        businessId: practice.id,
-        userId: studentAccount.id,
-        name: studentAccount.name,
-        initials: 'RS',
-        email: studentAccount.email,
-      },
-    });
+    tenants.own(historical.business.id);
+    expect(historical.business).toMatchObject({ kind: 'SOLO', legacyReadOnly: true });
 
     // Removing a coach must revoke access and bookability without erasing the
     // account link on the historical club roster. The coach can keep using a
-    // separate practice, and that retained identity must still drive the club
-    // safeguard when they next book this student privately.
+    // retained historical practice, and that identity must still drive the
+    // safeguard when Courtly audits an old direct booking.
     await request(app).post('/api/auth/switch-workspace')
       .set('Cookie', club.coachCookie)
       .send({ membershipId: club.coachMembership.id })
@@ -140,29 +150,47 @@ describe('Club safeguard identity and repeat detections', () => {
 
     await request(app).post('/api/auth/switch-workspace')
       .set('Cookie', club.coachCookie)
-      .send({ membershipId: practiceAuth.body.membership.id })
-      .expect(200);
+      .send({ membershipId: historical.membership.id })
+      .expect(403);
 
-    const createDirectLesson = async (days: number) => {
-      const response = await request(app).post('/api/bookings')
-        .set('Cookie', club.coachCookie)
-        .send({
-          serviceId: practiceService.id,
-          instructorId: practiceInstructor.id,
-          locationId: practiceLocation.id,
-          startAt: club.starts.plus({ days }).toISO(),
-          studentId: practiceStudent.id,
-        })
-        .expect(201);
-      expect(response.body.bookings[0].paymentRoute).toBe('DIRECT');
-      return response.body.bookings[0].id as string;
+    const createHistoricalDirectLesson = async (days: number) => {
+      const startAt = club.starts.plus({ days });
+      const created = await prisma.$transaction(async tx => {
+        // Reconstruct the old contract without reopening SOLO commerce to current writes.
+        await tx.$executeRawUnsafe(`SET LOCAL session_replication_role = replica`);
+        const booking = await tx.booking.create({
+          data: {
+            businessId: historical.business.id,
+            serviceId: historical.service.id,
+            instructorId: historical.instructor.id,
+            locationId: historical.location.id,
+            startAt: startAt.toJSDate(),
+            endAt: startAt.plus({ minutes: 60 }).toJSDate(),
+            duration: 60,
+            type: 'PRIVATE',
+            capacity: 1,
+            price: 8000,
+            paymentRoute: 'DIRECT',
+            createdByUserId: club.coachUser.id,
+            createdByRole: 'COACH',
+            participants: {
+              create: { studentId: historical.student.id, price: 8000 },
+            },
+          },
+        });
+        await tx.$executeRawUnsafe(`SET LOCAL session_replication_role = origin`);
+        await flagPrivateSessionsAfterClub(tx, booking.id);
+        return booking;
+      });
+      expect(created.paymentRoute).toBe('DIRECT');
+      return created.id;
     };
     const integrityAlerts = () => prisma.notification.findMany({
       where: { businessId: club.business.id, type: 'INTEGRITY' },
       orderBy: { createdAt: 'asc' },
     });
 
-    const firstBookingId = await createDirectLesson(2);
+    const firstBookingId = await createHistoricalDirectLesson(2);
     const firstFlag = await prisma.integrityFlag.findFirstOrThrow({
       where: {
         businessId: club.business.id,
@@ -174,17 +202,22 @@ describe('Club safeguard identity and repeat detections', () => {
       bookingId: firstBookingId,
       occurrences: 1,
       status: 'OPEN',
-      outsideBusinessId: practice.id,
+      outsideBusinessId: historical.business.id,
     });
     const alertsAfterFirst = await integrityAlerts();
     expect(alertsAfterFirst).toHaveLength(1);
+    expect(alertsAfterFirst[0]).toMatchObject({
+      integrityFlagId: firstFlag.id,
+      instructorId: null,
+      actionNeeded: true,
+    });
 
     await request(app).patch(`/api/integrity-flags/${firstFlag.id}`)
       .set('Cookie', club.cookie)
       .send({ status: 'REVIEWING', note: 'Checking with the coach' })
       .expect(200);
 
-    const secondBookingId = await createDirectLesson(3);
+    const secondBookingId = await createHistoricalDirectLesson(3);
     const reopened = await prisma.integrityFlag.findUniqueOrThrow({ where: { id: firstFlag.id } });
     expect(reopened).toMatchObject({
       bookingId: secondBookingId,
@@ -200,7 +233,10 @@ describe('Club safeguard identity and repeat detections', () => {
         studentUserId: studentAccount.id,
       },
     })).toBe(1);
-    expect((await integrityAlerts()).map(alert => alert.id)).toEqual([alertsAfterFirst[0].id]);
+    const alertsAfterSecond = await integrityAlerts();
+    expect(alertsAfterSecond).toHaveLength(2);
+    expect(alertsAfterSecond.every(alert => alert.integrityFlagId === firstFlag.id)).toBe(true);
+    expect(alertsAfterSecond.filter(alert => alert.actionNeeded)).toHaveLength(1);
 
     const dismissed = await request(app).patch(`/api/integrity-flags/${firstFlag.id}`)
       .set('Cookie', club.cookie)
@@ -208,7 +244,7 @@ describe('Club safeguard identity and repeat detections', () => {
       .expect(200);
     expect(dismissed.body.resolvedAt).not.toBeNull();
 
-    const thirdBookingId = await createDirectLesson(4);
+    const thirdBookingId = await createHistoricalDirectLesson(4);
     const stillDismissed = await prisma.integrityFlag.findUniqueOrThrow({ where: { id: firstFlag.id } });
     expect(stillDismissed).toMatchObject({
       bookingId: thirdBookingId,
@@ -225,7 +261,10 @@ describe('Club safeguard identity and repeat detections', () => {
         studentUserId: studentAccount.id,
       },
     })).toBe(1);
-    expect((await integrityAlerts()).map(alert => alert.id)).toEqual([alertsAfterFirst[0].id]);
+    const alertsAfterDismissedRepeat = await integrityAlerts();
+    expect(alertsAfterDismissedRepeat.map(alert => alert.id))
+      .toEqual(alertsAfterSecond.map(alert => alert.id));
+    expect(alertsAfterDismissedRepeat.every(alert => !alert.actionNeeded)).toBe(true);
 
     const listed = await request(app).get('/api/integrity-flags')
       .set('Cookie', club.cookie)
@@ -235,7 +274,7 @@ describe('Club safeguard identity and repeat detections', () => {
       occurrences: 3,
       status: 'DISMISSED',
       flaggedSessionAt: club.starts.plus({ days: 4 }).toUTC().toISO(),
-      flaggedServiceName: practiceService.name,
+      flaggedServiceName: historical.service.name,
     })]));
 
     const restored = await request(app).post('/api/staff')

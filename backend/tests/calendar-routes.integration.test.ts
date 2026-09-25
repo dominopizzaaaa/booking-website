@@ -61,6 +61,22 @@ describe.sequential('Google Calendar account routes', () => {
       .send({ returnTo: '//attacker.invalid' }).expect(400);
   });
 
+  it('allows a coach account to start personal calendar authorization', async () => {
+    const response = await request(app).post('/api/calendar/google/connect')
+      .set('Cookie', fixture.coachCookie)
+      .send({ returnTo: '/?tab=profile' })
+      .expect(200);
+    const state = new URL(response.body.authorizationUrl).searchParams.get('state')!;
+    const attempt = await prisma.calendarOAuthAttempt.findUniqueOrThrow({
+      where: { stateDigest: createHash('sha256').update(state).digest('hex') },
+    });
+
+    expect(attempt).toMatchObject({
+      userId: fixture.coachUser.id,
+      returnTo: '/?tab=profile',
+    });
+  });
+
   it('stores only a state digest and an encrypted verifier bound to the user session', async () => {
     const response = await request(app).post('/api/calendar/google/connect').set('Cookie', studentCookie)
       .send({ returnTo: '/manage?tab=profile' }).expect(200);

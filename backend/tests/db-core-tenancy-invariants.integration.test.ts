@@ -270,10 +270,16 @@ describe.sequential('database core tenancy invariants', () => {
       await expectSqlState23514(() => db.$executeRawUnsafe(
         `UPDATE "Service" SET "businessId"='club-b' WHERE id='package-service-a'`,
       ));
-      expect(await db.lessonPackage.findUniqueOrThrow({ where: { id: 'package-a' } }))
+      expect(await db.lessonPackage.findUniqueOrThrow({
+        where: { id: 'package-a' },
+        select: { businessId: true, serviceId: true },
+      }))
         .toMatchObject({ businessId: 'club-a', serviceId: 'package-service-a' });
       await db.$executeRawUnsafe(`DELETE FROM "Service" WHERE id='deletable-package-service-a'`);
-      expect(await db.lessonPackage.findUniqueOrThrow({ where: { id: 'deletable-package' } }))
+      expect(await db.lessonPackage.findUniqueOrThrow({
+        where: { id: 'deletable-package' },
+        select: { businessId: true, serviceId: true },
+      }))
         .toMatchObject({ businessId: 'club-a', serviceId: null });
 
       const invalidWrites = [

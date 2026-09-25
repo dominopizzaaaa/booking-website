@@ -241,6 +241,7 @@ const providerWorkspace: ManagerWorkspace = {
     id: 'notification-1',
     type: 'INTEGRITY',
     bookingId: null,
+    integrityFlagId: 'flag-1',
     title: 'Review a private booking pattern',
     message: 'A coach and student also booked outside the club.',
     read: true,
@@ -332,6 +333,10 @@ async function mockStudent(page: Page) {
       }],
     },
   }));
+  await page.route('**/api/account/packages', route => route.fulfill({ json: { packages: [] } }));
+  await page.route(/\/api\/rentals(?:\?.*)?$/, route => route.fulfill({
+    json: { rentals: [], nextCursor: null },
+  }));
 }
 
 async function mockProvider(page: Page) {
@@ -372,6 +377,26 @@ test.describe('automated WCAG checks', () => {
     await expectNoWcagViolations(page);
   });
 
+  test('customer sign-in and sign-up screens have no detectable WCAG A or AA violations', async ({ page }) => {
+    await page.goto('/login');
+    await expect(page.getByRole('heading', { name: 'Good to see you again.', exact: true })).toBeVisible();
+    await expectNoWcagViolations(page);
+
+    await page.goto('/signup');
+    await expect(page.getByRole('heading', { name: 'Make room for more.', exact: true })).toBeVisible();
+    await expectNoWcagViolations(page);
+
+    await page.getByRole('radio', { name: 'Student', exact: true }).check();
+    await expect(page.getByLabel('Username', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('Sports optional', { exact: true })).toBeVisible();
+    await expectNoWcagViolations(page);
+
+    await page.getByRole('radio', { name: 'Club or academy', exact: true }).check();
+    await expect(page.getByLabel('Club or academy name', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('Contact name', { exact: true })).toBeVisible();
+    await expectNoWcagViolations(page);
+  });
+
   test('admin dashboard has no detectable WCAG A or AA violations', async ({ page }) => {
     await mockAdmin(page);
     await page.goto('/admin');
@@ -390,6 +415,10 @@ test.describe('automated WCAG checks', () => {
     await page.route('**/api/account/clubs*', route => route.fulfill({ json: { clubs: [] } }));
     await page.route('**/api/account/bookings*', route => route.fulfill({ json: { bookings: [] } }));
     await page.route('**/api/account/notifications', route => route.fulfill({ json: { notifications: [] } }));
+    await page.route('**/api/account/packages', route => route.fulfill({ json: { packages: [] } }));
+    await page.route(/\/api\/rentals(?:\?.*)?$/, route => route.fulfill({
+      json: { rentals: [], nextCursor: null },
+    }));
 
     await page.goto('/manage?tab=profile');
     await expect(page.getByRole('heading', { name: 'Profile', exact: true })).toBeVisible();
@@ -528,14 +557,9 @@ test.describe('automated WCAG checks', () => {
     await expectNoWcagViolations(page);
   });
 
-  test('populated provider integrity and alerts have no detectable WCAG A or AA violations', async ({ page }) => {
+  test('populated provider integrity alert and review have no detectable WCAG A or AA violations', async ({ page }) => {
     await freezeClock(page);
     await mockProvider(page);
-
-    await page.goto('/?tab=explore&view=integrity');
-    await expect(page.getByRole('heading', { name: 'Integrity', exact: true })).toBeVisible();
-    await expect(page.getByText('Jordan Coach & Avery Student', { exact: true })).toBeVisible();
-    await expectNoWcagViolations(page);
 
     await page.goto('/?tab=alerts');
     await expect(page.getByRole('heading', { name: 'Alerts', exact: true })).toBeVisible();
@@ -665,7 +689,7 @@ test('student search and custom tablists support keyboard-only operation', async
 
   const profile = page.getByRole('dialog', { name: 'Amelia Wong' });
   const studentTabs = profile.getByRole('tablist', { name: 'Student records' });
-  const lessonHistory = studentTabs.getByRole('tab', { name: /^Lesson history/ });
+  const lessonHistory = studentTabs.getByRole('tab', { name: /^Class history/ });
   const packages = studentTabs.getByRole('tab', { name: /^Packages/ });
   await expect(lessonHistory).toHaveAttribute('tabindex', '0');
   await expect(packages).toHaveAttribute('tabindex', '-1');

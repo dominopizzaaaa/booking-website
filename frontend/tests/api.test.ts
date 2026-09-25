@@ -5,7 +5,7 @@ import {
   normalizeCalendarConnection, respondToRescheduleRequest, reversePayment, searchVenues,
   syncGoogleCalendar, updateCalendarConnection,
 } from '../src/lib/api';
-import { isCoachClubWorkspace, isManagerWorkspace, type WorkspaceResponse } from '../src/lib/types';
+import { isCoachClubWorkspace, isManagerWorkspace, type WorkspaceResponse, type WorkspaceWireResponse } from '../src/lib/types';
 
 type Call = { url: string; init: RequestInit };
 let calls: Call[] = [];
@@ -104,13 +104,13 @@ describe('loadWorkspace', () => {
   it('gives an untyped notification row a neutral type instead of dropping it', async () => {
     respond({ ...baseWorkspace, notifications: [{ id: 'n1', title: 'Something happened' }] });
     const workspace = await loadWorkspace();
-    expect(workspace.notifications[0]).toMatchObject({ type: 'NOTICE', actionNeeded: false, bookingId: null });
+    expect(workspace.notifications[0]).toMatchObject({ type: 'NOTICE', actionNeeded: false, bookingId: null, integrityFlagId: null });
   });
 
   it('preserves a typed notification exactly as sent', async () => {
-    respond({ ...baseWorkspace, notifications: [{ id: 'n1', type: 'INTEGRITY', actionNeeded: true, bookingId: 'bk1' }] });
+    respond({ ...baseWorkspace, notifications: [{ id: 'n1', type: 'INTEGRITY', actionNeeded: true, bookingId: 'bk1', integrityFlagId: 'flag-1' }] });
     const workspace = await loadWorkspace();
-    expect(workspace.notifications[0]).toMatchObject({ type: 'INTEGRITY', actionNeeded: true, bookingId: 'bk1' });
+    expect(workspace.notifications[0]).toMatchObject({ type: 'INTEGRITY', actionNeeded: true, bookingId: 'bk1', integrityFlagId: 'flag-1' });
   });
 
   // A coach inside a club sees their own schedule and none of the club's
@@ -137,11 +137,21 @@ describe('loadWorkspace', () => {
     expect(workspace.payments).toHaveLength(1);
     expect(workspace.integrityFlags).toHaveLength(1);
   });
+
+  it('rejects a legacy solo workspace so the shell returns the coach to their account', async () => {
+    respond({
+      ...baseWorkspace,
+      business: { id: 'solo-1', kind: 'SOLO', legacyReadOnly: true },
+      user: { accountType: 'COACH' },
+      clubAccount: false,
+    });
+    await expect(loadWorkspace()).rejects.toMatchObject({ status: 403 });
+  });
 });
 
 describe('workspace role guards', () => {
   const workspace = (accountType: string, kind: string) =>
-    ({ user: { accountType }, business: { kind } }) as unknown as WorkspaceResponse;
+    ({ user: { accountType }, business: { kind } }) as unknown as WorkspaceWireResponse;
 
   it('treats only a coach inside a club as coach-scoped', () => {
     expect(isCoachClubWorkspace(workspace('COACH', 'CLUB'))).toBe(true);
@@ -149,10 +159,14 @@ describe('workspace role guards', () => {
     expect(isCoachClubWorkspace(workspace('CLUB', 'CLUB'))).toBe(false);
   });
 
-  it('treats a club account and a coach running their own practice as managers', () => {
+  it('treats only a usable club account as a manager', () => {
     expect(isManagerWorkspace(workspace('CLUB', 'CLUB'))).toBe(true);
-    expect(isManagerWorkspace(workspace('COACH', 'SOLO'))).toBe(true);
+    expect(isManagerWorkspace(workspace('COACH', 'SOLO'))).toBe(false);
     expect(isManagerWorkspace(workspace('COACH', 'CLUB'))).toBe(false);
+    expect(isManagerWorkspace({
+      ...workspace('CLUB', 'CLUB'),
+      business: { kind: 'CLUB', legacyReadOnly: true },
+    } as WorkspaceResponse)).toBe(false);
   });
 });
 

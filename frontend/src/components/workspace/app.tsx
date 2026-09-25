@@ -21,17 +21,17 @@ import { formatInTimeZone } from 'date-fns-tz';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
-import { api, ApiError, loadWorkspace, mutate } from '@/lib/api';
-import type { AccountType, AuthSession, BusinessKind, Membership, WorkspaceResponse } from '@/lib/types';
+import { api, ApiError, loadWorkspace, mutate, searchAccounts } from '@/lib/api';
+import type { AccountDirectoryUser, AccountType, AuthSession, BusinessKind, Membership, WorkspaceResponse } from '@/lib/types';
 import { initials, shortDate } from '@/lib/utils';
 import Dashboard, { CalendarView } from './dashboard';
 import { ManagementView } from './management';
 import { NewBookingDialog, BookingDetail } from './booking-dialogs';
+import { RentalExplore } from './rental-explore';
 import {
   AlertsView,
   canAccessExploreView,
   CreateDialog,
-  ExploreHub,
   isExploreView,
   PersonalProfileDialog,
   ProfileView,
@@ -47,14 +47,13 @@ const viewTitles: Record<string, string> = {
   calendar: 'Calendar',
   bookings: 'Bookings',
   students: 'Students',
-  services: 'Services',
+  services: 'Classes',
   locations: 'Locations',
   team: 'My coaches',
   availability: 'Availability',
-  packages: 'Lesson packages',
+  packages: 'Packages',
   payments: 'Payments',
   insights: 'Insights',
-  integrity: 'Integrity',
   settings: 'Settings',
 };
 
@@ -100,6 +99,9 @@ export default function WorkspaceApp() {
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState('');
+  const [accountResults, setAccountResults] = useState<AccountDirectoryUser[]>([]);
+  const [accountSearchLoading, setAccountSearchLoading] = useState(false);
+  const [accountSearchError, setAccountSearchError] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
@@ -208,6 +210,37 @@ export default function WorkspaceApp() {
   }, []);
 
   useEffect(() => {
+    const query = search.trim();
+    const searchableQuery = query.startsWith('@') ? query.slice(1) : query;
+    if (!searchOpen || searchableQuery.length < 3) {
+      setAccountResults([]);
+      setAccountSearchLoading(false);
+      setAccountSearchError('');
+      return;
+    }
+
+    let active = true;
+    setAccountResults([]);
+    setAccountSearchLoading(true);
+    setAccountSearchError('');
+    const timer = window.setTimeout(() => {
+      void searchAccounts(query)
+        .then(result => { if (active) setAccountResults(result); })
+        .catch(cause => {
+          if (!active) return;
+          setAccountResults([]);
+          setAccountSearchError(cause instanceof Error ? cause.message : 'People search is unavailable right now.');
+        })
+        .finally(() => { if (active) setAccountSearchLoading(false); });
+    }, 250);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [search, searchOpen]);
+
+  useEffect(() => {
     const media = window.matchMedia('(max-width: 760px)');
     const update = () => setIsMobile(media.matches);
     update();
@@ -305,7 +338,9 @@ export default function WorkspaceApp() {
   const accountType = data.user.accountType;
   const isCoach = accountType === 'COACH';
   const clubAccount = accountType === 'CLUB';
-  const memberships = data.memberships;
+  const clubMemberships = data.memberships.filter(membership =>
+    membership.active && membership.business.kind === 'CLUB' && !membership.business.legacyReadOnly,
+  );
   const title = isCoach && view === 'availability' ? 'Your availability' : viewTitles[view] || 'Workspace';
   const primaryTab = primaryTabForView(view);
   const searchResults = search.trim().length > 0 ? data.students.filter(student => `${student.name} ${student.email}`.toLowerCase().includes(search.toLowerCase())).slice(0, 5) : [];
@@ -318,10 +353,10 @@ export default function WorkspaceApp() {
         ['4', 'Record attendance', 'Open a booking after the lesson to mark each student as attended or a no-show.'],
       ]
     : [
-        ['1', 'Make yourself at home', 'Add the places your coaches teach, then create your services. Set duration, pricing, and coaches for each location.'],
+        ['1', 'Make yourself at home', 'Add the places your coaches teach, then create your classes. Set duration, pricing, and coaches for each location.'],
         ['2', 'Give your week some shape', 'Set location-specific working hours in Availability. Travel buffers protect time between venues; blocked dates keep your days off clear.'],
         ['3', 'Let the bookings come to you', 'Share your booking link. Students see only available slots. Recurring lessons are checked together, so conflicts never silently slip through.'],
-        ['4', 'Keep the real world in the loop', 'A pending lesson holds instructor time, but does not reserve a court. Secure your venue separately, then confirm it. Payments and messages are manual in this MVP.'],
+        ['4', 'Keep the real world in the loop', 'A pending class holds coach time, but does not reserve a court. Secure an external venue separately, then confirm it. Student checkout uses simulated Stripe, so no real card is charged.'],
       ];
 
   const primaryNavigation = [
@@ -337,11 +372,11 @@ export default function WorkspaceApp() {
       {/* A club account operates one club, so the sidebar shows the club
           rather than a switcher that can only lead back to itself. */}
       {clubAccount
-        ? <div className="workspace-switch text-left"><span className="business-avatar">{initials(data.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-[11px] font-semibold">{data.business.name}</span><span className="mt-1 block text-[9px] text-[#59675c]">{data.business.isDemo ? 'Demo workspace' : data.business.kind === 'SOLO' ? 'Coaching practice' : 'Club account'}</span></span></div>
-        : <button className="workspace-switch text-left" aria-haspopup="dialog" onClick={() => setWorkspaceOpen(true)}><span className="business-avatar">{initials(data.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-[11px] font-semibold">{data.business.name}</span><span className="mt-1 block text-[9px] text-[#59675c]">{data.business.isDemo ? 'Demo workspace' : data.business.kind === 'SOLO' ? 'Own practice' : memberships.length > 1 ? `${memberships.length} workspaces` : 'Coach workspace'}</span></span><ChevronsUpDown size={12} className="text-[#59675c]" /></button>}
+        ? <div className="workspace-switch text-left"><span className="business-avatar">{initials(data.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-[11px] font-semibold">{data.business.name}</span><span className="mt-1 block text-[9px] text-[#59675c]">{data.business.isDemo ? 'Demo workspace' : 'Club account'}</span></span></div>
+        : <button className="workspace-switch text-left" aria-haspopup="dialog" onClick={() => setWorkspaceOpen(true)}><span className="business-avatar">{initials(data.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-[11px] font-semibold">{data.business.name}</span><span className="mt-1 block text-[9px] text-[#59675c]">{data.business.isDemo ? 'Demo workspace' : clubMemberships.length > 1 ? `${clubMemberships.length} club workspaces` : 'Coach workspace'}</span></span><ChevronsUpDown size={12} className="text-[#59675c]" /></button>}
       <nav className="workspace-primary-nav workspace-primary-nav-desktop mt-5 flex-1" aria-label="Primary">
         {primaryNavigation.slice(0, 2).map(item => <button key={item.id} type="button" className={`nav-link workspace-primary-tab workspace-primary-tab-${item.id} ${primaryTab === item.id ? 'active' : ''}`} aria-current={primaryTab === item.id ? 'page' : undefined} onClick={item.action}><item.icon size={18} strokeWidth={1.65} /><span>{item.label}</span></button>)}
-        <button type="button" className="nav-link workspace-primary-tab workspace-primary-tab-create" aria-haspopup="dialog" aria-expanded={createOpen} onClick={() => setCreateOpen(true)}><Plus size={19} strokeWidth={1.8} /><span>Create</span></button>
+        <button type="button" className="nav-link workspace-primary-tab workspace-primary-tab-create" aria-haspopup="dialog" aria-expanded={isCoach ? bookingOpen : createOpen} onClick={() => isCoach ? setBookingOpen(true) : setCreateOpen(true)}><Plus size={19} strokeWidth={1.8} /><span>{isCoach ? 'Book' : 'Create'}</span></button>
         {primaryNavigation.slice(2).map(item => <button key={item.id} type="button" className={`nav-link workspace-primary-tab workspace-primary-tab-${item.id} ${primaryTab === item.id ? 'active' : ''}`} aria-current={primaryTab === item.id ? 'page' : undefined} onClick={item.action}><item.icon size={18} strokeWidth={1.65} /><span>{item.label}</span>{item.id === 'alerts' && unread > 0 && <span className="nav-count workspace-tab-badge">{unread}<span className="sr-only"> unread</span></span>}</button>)}
       </nav>
       <div className="sidebar-bottom">
@@ -361,7 +396,7 @@ export default function WorkspaceApp() {
           </nav>
         )}
         {view === 'overview' ? <Dashboard key={data.business.id} data={data} onNavigate={navigate} onNew={() => setBookingOpen(true)} onBooking={setSelectedBookingId} />
-          : view === 'explore' ? <ExploreHub data={data} onNavigate={navigate} />
+          : view === 'explore' ? <RentalExplore data={data} onNavigate={navigate} />
           : view === 'alerts' ? <AlertsView data={data} refresh={refresh} onOpenBooking={openBookingById} onNavigate={navigate} />
           : view === 'profile' ? <ProfileView data={data} onEditProfile={() => setProfileEditorOpen(true)} onSwitchWorkspace={() => setWorkspaceOpen(true)} onBusinessSettings={() => navigate('settings')} onHelp={() => setHelpOpen(true)} onSignOut={() => void signOut()} onNavigate={navigate} />
           : view === 'calendar' || view === 'bookings' ? <CalendarView key={`${data.business.id}:${view}`} data={data} onNew={() => setBookingOpen(true)} onBooking={setSelectedBookingId} listOnly={view === 'bookings'} />
@@ -372,20 +407,20 @@ export default function WorkspaceApp() {
     <nav className="mobile-bottom workspace-primary-nav workspace-primary-nav-mobile" aria-label="Mobile navigation">
       <button type="button" className={`workspace-primary-tab workspace-primary-tab-home ${primaryTab === 'home' ? 'active' : ''}`} aria-current={primaryTab === 'home' ? 'page' : undefined} onClick={() => navigate('overview')}><House size={20} strokeWidth={1.7} /><span>Home</span></button>
       <button type="button" className={`workspace-primary-tab workspace-primary-tab-explore ${primaryTab === 'explore' ? 'active' : ''}`} aria-current={primaryTab === 'explore' ? 'page' : undefined} onClick={() => navigate('explore')}><Compass size={20} strokeWidth={1.7} /><span>Explore</span></button>
-      <button type="button" className="mobile-bottom-new workspace-primary-tab workspace-primary-tab-create" aria-label="Create" aria-haspopup="dialog" aria-expanded={createOpen} onClick={() => setCreateOpen(true)}><span className="mobile-bottom-new-icon"><Plus size={23} strokeWidth={2} /></span><span>Create</span></button>
+      <button type="button" className="mobile-bottom-new workspace-primary-tab workspace-primary-tab-create" aria-label={isCoach ? 'Book' : 'Create'} aria-haspopup="dialog" aria-expanded={isCoach ? bookingOpen : createOpen} onClick={() => isCoach ? setBookingOpen(true) : setCreateOpen(true)}><span className="mobile-bottom-new-icon"><Plus size={23} strokeWidth={2} /></span><span>{isCoach ? 'Book' : 'Create'}</span></button>
       <button type="button" className={`workspace-primary-tab workspace-primary-tab-alerts relative ${primaryTab === 'alerts' ? 'active' : ''}`} aria-current={primaryTab === 'alerts' ? 'page' : undefined} onClick={() => navigate('alerts')}><Bell size={20} strokeWidth={1.7} /><span>Alerts</span>{unread > 0 && <span className="workspace-tab-badge absolute right-[27%] top-2 h-1.5 w-1.5 rounded-full bg-[#a18f58]"><span className="sr-only">{unread} unread</span></span>}</button>
       <button type="button" className={`workspace-primary-tab workspace-primary-tab-profile ${primaryTab === 'profile' ? 'active' : ''}`} aria-current={primaryTab === 'profile' ? 'page' : undefined} onClick={() => navigate('profile')}><UserRound size={20} strokeWidth={1.7} /><span>Profile</span></button>
     </nav>
 
-    <CreateDialog open={createOpen} onOpenChange={setCreateOpen} data={data} onNewBooking={() => setBookingOpen(true)} onNavigate={navigate} />
+    {!isCoach && <CreateDialog open={createOpen} onOpenChange={setCreateOpen} data={data} onNewBooking={() => setBookingOpen(true)} onNavigate={navigate} />}
     <NewBookingDialog data={data} open={bookingOpen} onClose={() => setBookingOpen(false)} refresh={refresh} />
     <BookingDetail bookingId={selectedBookingId} data={data} onClose={() => setSelectedBookingId(null)} refresh={refresh} />
     <PersonalProfileDialog open={profileEditorOpen} onOpenChange={setProfileEditorOpen} user={data.user} refresh={refresh} />
 
-    <Dialog open={searchOpen} onOpenChange={setSearchOpen}><DialogContent><DialogTitle className="text-lg font-semibold">Search workspace</DialogTitle><DialogDescription className="mt-2 text-xs text-stone-400">Search students and bookings.</DialogDescription><div className="relative mt-5"><Search className="absolute left-3 top-3 text-stone-400" size={17} /><input aria-label="Search students and bookings" autoFocus value={search} onChange={event => setSearch(event.target.value)} placeholder="A student or booking detail…" className="!pl-10" /></div><div className="mt-4 max-h-80 space-y-1 overflow-y-auto">{searchResults.map(student => <button key={student.id} className="flex w-full items-center gap-3 rounded-lg p-3 text-left hover:bg-stone-50" onClick={() => { navigate('students'); setSearchOpen(false); }}><Users size={16} className="text-stone-400" /><span className="text-xs">{student.name}<span className="mt-1 block text-[10px] text-stone-400">{student.email}</span></span></button>)}{bookingResults.map(booking => <button key={booking.id} className="flex w-full items-center gap-3 rounded-lg p-3 text-left hover:bg-stone-50" onClick={() => { setSelectedBookingId(booking.id); setSearchOpen(false); }}><CalendarDays size={16} className="text-stone-400" /><span className="text-xs">{booking.serviceName}<span className="mt-1 block text-[10px] text-stone-400">{booking.locationName} · {shortDate(booking.startAt)}</span></span></button>)}{search && !bookingResults.length && !searchResults.length && <p className="py-7 text-center text-xs text-stone-400">No matches just yet. Try another search.</p>}{!search && <p className="py-5 text-center text-xs text-stone-400">Tip: press Ctrl/Command+K to search from anywhere.</p>}</div></DialogContent></Dialog>
+    <Dialog open={searchOpen} onOpenChange={setSearchOpen}><DialogContent><DialogTitle className="text-lg font-semibold">Search workspace</DialogTitle><DialogDescription className="mt-2 text-xs text-stone-400">Search Courtly people by name, username, or exact email, alongside local students and bookings.</DialogDescription><div className="relative mt-5"><Search className="absolute left-3 top-3 text-stone-400" size={17} /><input aria-label="Search people, students, and bookings" autoFocus value={search} onChange={event => setSearch(event.target.value)} placeholder="Name, username, exact email, or booking…" className="!pl-10" /></div><div className="mt-4 max-h-80 space-y-1 overflow-y-auto" aria-live="polite" aria-busy={accountSearchLoading}>{accountResults.map(account => <div key={account.username} className="flex w-full items-center gap-3 rounded-lg p-3 text-left"><UserRound size={16} className="shrink-0 text-stone-400" /><span className="min-w-0 flex-1 text-xs"><span className="block truncate">{account.name}</span><span className="mt-1 block truncate text-[10px] text-stone-400">@{account.username}{account.sports.length ? ` · ${account.sports.join(', ')}` : ''}</span></span><span className="text-[9px] font-semibold uppercase tracking-wide text-stone-400">{account.accountType.toLowerCase()}</span></div>)}{searchResults.map(student => <button key={student.id} className="flex w-full items-center gap-3 rounded-lg p-3 text-left hover:bg-stone-50" onClick={() => { navigate('students'); setSearchOpen(false); }}><Users size={16} className="text-stone-400" /><span className="text-xs">{student.name}<span className="mt-1 block text-[10px] text-stone-400">Local student · {student.email}</span></span></button>)}{bookingResults.map(booking => <button key={booking.id} className="flex w-full items-center gap-3 rounded-lg p-3 text-left hover:bg-stone-50" onClick={() => { setSelectedBookingId(booking.id); setSearchOpen(false); }}><CalendarDays size={16} className="text-stone-400" /><span className="text-xs">{booking.serviceName}<span className="mt-1 block text-[10px] text-stone-400">{booking.locationName} · {shortDate(booking.startAt)}</span></span></button>)}{accountSearchLoading && <p className="flex items-center justify-center gap-2 py-3 text-xs text-stone-400"><Loader2 size={14} className="animate-spin" />Searching people…</p>}{accountSearchError && <p role="alert" className="rounded-lg bg-red-50 p-3 text-xs text-red-700">{accountSearchError}</p>}{search && !accountSearchLoading && !accountResults.length && !bookingResults.length && !searchResults.length && <p className="py-7 text-center text-xs text-stone-400">No matches just yet. Try another search.</p>}{!search && <p className="py-5 text-center text-xs text-stone-400">Tip: press Ctrl/Command+K to search from anywhere.</p>}</div></DialogContent></Dialog>
 
     <Dialog open={helpOpen} onOpenChange={setHelpOpen}><DialogContent><DialogTitle className="text-lg font-semibold">{isCoach ? 'Help with your coaching workspace' : 'A little help to get going'}</DialogTitle><DialogDescription className="mt-2 text-xs text-stone-400">{isCoach ? 'Your schedule, students, availability, and attendance—all in one place.' : 'Less admin. More time doing what you love.'}</DialogDescription><div className="mt-6 space-y-5 text-xs leading-relaxed">{helpSteps.map(([number, heading, body]) => <div className="flex gap-3" key={number}><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#edf2e5] text-[#7e926c]">{number}</span><div><h3>{heading}</h3><p className="mt-1 text-stone-500">{body}</p></div></div>)}</div></DialogContent></Dialog>
 
-    <Dialog open={workspaceOpen && !clubAccount} onOpenChange={open => { if (!switchingMembershipId) setWorkspaceOpen(open); }}><DialogContent onEscapeKeyDown={event => { if (switchingMembershipId) event.preventDefault(); }} onPointerDownOutside={event => { if (switchingMembershipId) event.preventDefault(); }}><DialogTitle className="text-lg font-semibold">Switch workspace</DialogTitle><DialogDescription className="mt-2 text-xs leading-relaxed text-stone-500">Use the same Courtly coach account for your own practice and every club or academy that adds you to its roster.</DialogDescription><div className="mt-5 space-y-2">{memberships.map(membership => { const current = membership.id === data.membership?.id || membership.business.id === data.business.id; const kind = membership.business.kind === 'SOLO' ? 'Own practice' : 'Club or academy'; return <button key={membership.id} type="button" disabled={!!switchingMembershipId || !membership.active} onClick={() => void switchWorkspace(membership)} className={`flex min-h-16 w-full items-center gap-3 rounded-xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-55 ${current ? 'border-[#cbd9bf] bg-[#f0f5e9]' : 'border-[#e3e8df] hover:bg-[#f8faf6]'}`}><span className="business-avatar shrink-0">{initials(membership.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-semibold text-[#344b39]">{membership.business.name}</span><span className="mt-1 block text-[10px] text-stone-500">{membership.active ? kind : `${kind} · inactive`}</span></span>{switchingMembershipId === membership.id ? <Loader2 size={16} className="shrink-0 animate-spin text-[#69805e]" /> : current ? <span className="flex items-center gap-1 text-[10px] font-semibold text-[#66805a]"><Check size={13} />Current</span> : null}</button>; })}{!memberships.length && <p className="rounded-xl bg-stone-50 p-4 text-xs leading-relaxed text-stone-500">This is your only available workspace.</p>}</div></DialogContent></Dialog>
+    <Dialog open={workspaceOpen && !clubAccount} onOpenChange={open => { if (!switchingMembershipId) setWorkspaceOpen(open); }}><DialogContent onEscapeKeyDown={event => { if (switchingMembershipId) event.preventDefault(); }} onPointerDownOutside={event => { if (switchingMembershipId) event.preventDefault(); }}><DialogTitle className="text-lg font-semibold">Switch workspace</DialogTitle><DialogDescription className="mt-2 text-xs leading-relaxed text-stone-500">Switch between clubs or academies that have added your coach account to their roster.</DialogDescription><div className="mt-5 space-y-2">{clubMemberships.map(membership => { const current = membership.id === data.membership?.id || membership.business.id === data.business.id; return <button key={membership.id} type="button" disabled={!!switchingMembershipId || current} aria-current={current ? 'true' : undefined} onClick={() => void switchWorkspace(membership)} className={`flex min-h-16 w-full items-center gap-3 rounded-xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-55 ${current ? 'border-[#cbd9bf] bg-[#f0f5e9]' : 'border-[#e3e8df] hover:bg-[#f8faf6]'}`}><span className="business-avatar shrink-0">{initials(membership.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-semibold text-[#344b39]">{membership.business.name}</span><span className="mt-1 block text-[10px] text-stone-500">Club or academy</span></span>{switchingMembershipId === membership.id ? <Loader2 size={16} className="shrink-0 animate-spin text-[#69805e]" /> : current ? <span className="flex items-center gap-1 text-[10px] font-semibold text-[#66805a]"><Check size={13} />Current</span> : null}</button>; })}{!clubMemberships.length && <p className="rounded-xl bg-stone-50 p-4 text-xs leading-relaxed text-stone-500">No active club workspaces are available.</p>}</div></DialogContent></Dialog>
   </div>;
 }

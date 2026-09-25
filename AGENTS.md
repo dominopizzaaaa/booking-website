@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 2.7.0** · Last updated 2026-09-25
+**Version 3.0.9** · Last updated 2026-09-25
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -25,24 +25,26 @@ not a person, and never teaches. A founder who also coaches uses a separate
 `COACH` account which the club adds to its roster.
 
 `Membership` is only an affiliation link. It has no role: a club has one
-membership to its own business; a coach has one per club that added them and
-optionally one to their own `SOLO` practice; a student has none. Permissions
-come from `User.accountType` plus `Business.kind`.
+membership to its own business; a coach has one per club that added them; a
+student has none. Permissions come from `User.accountType` plus
+`Business.kind`. Existing `SOLO` memberships may remain as inaccessible
+history, but Courtly creates no new private-practice workspace or direct sale.
 
-### The two money paths — the single most important rule
+### The money path — the single most important rule
 
-`Business.kind` decides how a lesson is paid for, and it is **snapshotted onto
+`Business.kind` decides how a class is paid for, and it is **snapshotted onto
 every booking as `Booking.paymentRoute`** at creation time.
 
-- `CLUB` → `paymentRoute: 'CLUB'`. The student pays the club; the club later
-  records a payout to the coach (`Payment.kind: 'CLUB_TO_COACH'`). Money never
-  goes student → coach for a club lesson.
-- `SOLO` → `paymentRoute: 'DIRECT'`. A coach's own practice; the student pays
-  the coach (`Payment.kind: 'STUDENT_TO_COACH'`).
+- New bookings always belong to a `CLUB` and snapshot `paymentRoute: 'CLUB'`.
+  The student pays the club; the club later records a payout to the coach
+  (`Payment.kind: 'CLUB_TO_COACH'`).
+- `SOLO`, `DIRECT`, and `STUDENT_TO_COACH` remain valid only for immutable
+  historical records. Migrated `SOLO` businesses have `legacyReadOnly: true`
+  and cannot be selected as a workspace or receive new commercial writes.
 
 Never re-derive the route from the business at read time. `Business.kind` is
 immutable after creation, and the booking snapshot remains the contractual
-record of the terms under which that lesson was booked.
+record of the terms under which that class was booked.
 
 ### The club safeguard
 
@@ -62,7 +64,7 @@ backend/           Express + Prisma API (TypeScript, ESM)
   src/
     app.ts         Express wiring, middleware order, /api/health capabilities
     config.ts      Environment reading; every env var enters here
-    auth.ts        Sessions, register/login, workspace switching, /auth/practice
+    auth.ts        Sessions, register/login, profiles, workspace switching
     http.ts        Errors, manager/club guards, coachScope, initials()
     serializers.ts authState, bookingJson, membershipJson, isClubAccount
     scheduling.ts  Slot evaluation, conflict/travel rules, booking creation
@@ -71,13 +73,16 @@ backend/           Express + Prisma API (TypeScript, ESM)
     notifications.ts  Typed workspace alerts (notifyWorkspace)
     account-notifications.ts  Student profile, alerts, and /api/account/*
     bookings.ts    Bookings, coach acceptance, payments, payouts, reversal
-    crud.ts        Services, instructors, locations, students, packages, …
+    crud.ts        Classes, instructors, locations, students, packages, …
     staff.ts       Club-created coach affiliations
     venues.ts      Google Maps venue lookup
     calendar.ts    Personal Google OAuth and connection API
     calendar-crypto.ts  OAuth-token encryption and key rotation
     google-calendar.ts  Narrow Google Calendar HTTP client
     calendar-sync.ts  Async event projection and free/busy refresh worker
+    account-directory.ts  Authenticated public account search
+    commerce.ts    Package offers, My Packages, simulated checkout
+    rentals.ts     Rental discovery, inventory, slots, and reservations
     workspace.ts   The single GET /api/workspace payload
     public.ts      Public booking page + student self-service
     admin.ts       Platform console (ADMIN_PASSWORD gated; not an account type)
@@ -115,6 +120,9 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
 | Change what the workspace shows | `backend/src/workspace.ts` **and** `frontend/src/lib/types.ts` |
 | Change student booking UI | `frontend/src/components/student-app.tsx` |
 | Change student club discovery | `backend/src/public.ts`, then `frontend/src/components/student-app.tsx` |
+| Change public account search | `backend/src/account-directory.ts`, then the account/roster UI |
+| Change package offers or checkout | `backend/src/commerce.ts`, then `frontend/src/lib/types.ts` |
+| Change rentals | `backend/src/rentals.ts`, then the student and workspace rental views |
 | Change Google Calendar OAuth/sync | `backend/src/calendar.ts`, `calendar-sync.ts`, `google-calendar.ts`, then `frontend/src/components/calendar-connection-card.tsx` |
 | Change provider UI | `frontend/src/components/workspace/` |
 | Change slot / conflict rules | `backend/src/scheduling.ts` |
@@ -126,6 +134,17 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
 ## 4. Data model notes that are easy to get wrong
 
 - **Money is integer minor units (cents) everywhere.** Never a float.
+- **Usernames are canonical public identity.** Every `User.username` is
+  globally unique, lowercase, 3–30 characters, and contains only `a-z`, `0-9`,
+  or `_`. Login remains email + password. Profiles may contain up to 20 sports;
+  trim values, reject empties, cap each at 40 characters, and de-duplicate
+  case-insensitively while preserving the first display spelling.
+- **Authenticated account search is public-profile discovery, not an email
+  enumeration oracle.** Names and usernames support bounded case-insensitive
+  substring matching; email matches are exact and case-insensitive. Responses
+  contain only `name`, `username`, `accountType`, and `sports`, and are capped
+  at 20 accounts. Queries require at least three effective characters and each
+  authenticated account receives 60 searches per five-minute window.
 - **`Business` ≠ account.** A `CLUB` account has one business; a `COACH`
   account can be affiliated with several. `Membership` stores that link, not
   a role. `Student` is a *business-specific* record linked to a global `User`.
@@ -136,9 +155,10 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
   the canonical profile. Unlinked historical rows retain local profile edits.
   The database only permits a linked `User` whose account type is `STUDENT`.
 - **Permission derivation has one definition.** `managesBusiness()` and
-  `coachScoped()` in `http.ts` distinguish a club, a coach running their own
-  `SOLO` practice, and a coach working inside a club. Do not recreate these
-  checks from membership counts or instructor presence.
+  `coachScoped()` in `http.ts` distinguish the club account and a coach working
+  inside a club. Do not recreate these checks from membership counts or
+  instructor presence. A membership is usable only when it is active, belongs
+  to a `CLUB`, and its business is not `legacyReadOnly`.
 - **An instructor row is not bookable on its own.** `bookableInstructorWhere()`
   in `scheduling.ts` is the shared predicate: active roster row + active
   membership + registered provider account. Use it, do not re-implement it.
@@ -148,15 +168,19 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
   composite `(id, businessId)` foreign keys; join rows use deferred keyed
   constraints. Never move a record between businesses: create or explicitly
   relink the correct tenant-owned record instead.
-- **`Participant` is the student's place in a booking**, and is what student
+- **`Participant` is the student's place in a class booking**, and is what student
   self-service acts on — not the booking.
 - A **`CLUB` account is single-club and has no instructor**. `staff.ts` only
   adds registered `COACH` accounts; coaches may appear on several rosters.
   `isClubAccount()` in `serializers.ts` is the shared identity check.
 - Removing a coach from a club is a soft deactivation, not a deleted
-  affiliation. Keep the membership and instructor IDs so historical lessons
+  affiliation. Keep the membership and instructor IDs so historical classes
   still identify the coach for the club safeguard; re-adding the same account
   restores those retained records.
+- Adding a coach resolves a registered account by exact username/email or an
+  unambiguous exact name. Apply a supplied `Instructor.rescheduleNoticeHours`
+  inside the same transaction when creating, claiming, or restoring the roster
+  entry; omitted values preserve the database default or retained setting.
 - A coach working in a club may create a teaching venue, including through the
   Google Maps finder, and sees the club's active venues so a new one remains
   visible after saving. Editing, archiving, and service assignment remain with
@@ -168,6 +192,45 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
   sport labels come from those services' `category` values. Keep the directory
   response public-safe and use booking history only to distinguish "Your clubs"
   from clubs the student has not booked with yet.
+
+### Package offers and simulated checkout
+
+`PackageOffer` is the club-owned marketplace product. It must scope credits to
+at least one active Class (`PackageOfferService`) and/or active rentable
+facility (`PackageOfferLocation`). Archiving stops new purchases; it must not
+erase purchase history. A successful package checkout snapshots the offer's
+name, price, credits, expiry, and all scopes into `LessonPackage` plus its join
+rows. Students see those purchases as **My Packages**.
+
+`PaymentIntent` is the idempotent checkout record for `PACKAGE`, `BOOKING`, or
+`RENTAL`; the implemented provider is deliberately `SIMULATED_STRIPE`. The
+server owns amount, currency, payment route, and target. A successful paid
+checkout creates exactly one `STUDENT_TO_CLUB` `Payment`; a failed simulation
+creates only a failed intent. Reusing one user's idempotency key with a
+different target or outcome is a conflict.
+
+### Owned-venue rentals
+
+A rental extends an existing club-owned active `Location` whose `type` is
+`FACILITY`; it is not a teaching booking and does not reserve a third-party
+court. `Location` owns the public configuration, `VenueUnit` is the individual
+Court/resource inventory, and `VenueOpeningHour` stores recurring local wall
+clock hours interpreted in the business timezone. `VenueReservation`
+snapshots unit, interval, duration, price, payment state, and optional package
+credit. `Location.rentalPrice` is cents per hour and duration is prorated.
+
+Public rental discovery includes only active, non-demo, non-legacy `CLUB`
+facilities with rental enabled, an active unit, and opening hours. Sport
+filtering is case-insensitive against the location's one `sport`. Reservations
+take an advisory lock for the unit, reject overlap, and enforce the venue's
+notice, advance, duration, increment, opening-hour, and cancellation rules. A
+package reservation consumes one eligible rental credit and creates no cash
+payment; timely cancellation restores that credit once. A paid cancellation
+refunds the intent and reverses its student payment when one exists.
+After insertion, a reservation's identity, unit, interval, price, package, and
+stored terms are immutable. Its only state change is an atomic `CONFIRMED` or
+`PENDING` to `CANCELLED` + `REFUNDED` transition that retains `packageId`,
+clears `creditConsumed`, and records `cancelledAt`; cancelled rows cannot reopen.
 
 ### Booking lifecycle
 
@@ -189,7 +252,7 @@ only become `CONFIRMED` after coach acceptance, and `COMPLETED` may only follow
 although internal notes may still be corrected.
 Cancellation and coach accept/decline also close once `endAt` is reached.
 Attendance may be marked only after `endAt`, only on `CONFIRMED` or `COMPLETED`
-lessons, and only after any required coach acceptance.
+classes, and only after any required coach acceptance.
 
 ### Rescheduling is a negotiation, not an edit
 
@@ -221,8 +284,8 @@ for it.
 ### Google Calendar is a projection, never the booking record
 
 The integration belongs to the global `User`. A `STUDENT` connects once for
-lessons across clubs, and a portable `COACH` connects once across club
-affiliations and their `SOLO` practice. A `CLUB` account is institutional and
+classes across clubs, and a portable `COACH` connects once across club
+affiliations. A `CLUB` account is institutional and
 cannot connect a calendar or administer a coach's credentials.
 
 Courtly is always authoritative. Only `CONFIRMED` bookings have a desired
@@ -266,7 +329,7 @@ an authenticated global account but no selected workspace; the mutating routes
 still use strict bodies. OAuth return targets are restricted to `/account`,
 `/?tab=profile`, and `/manage?tab=profile`.
 
-### Payments are reversible, never deleted
+### Payments and intents are auditable, never deleted
 
 `DELETE /api/payments/:id` sets `reversedAt` and recomputes `participant.paid` /
 `package.paid`. Every balance query must filter `reversedAt: null`. Coach
@@ -278,8 +341,8 @@ and requires the named student, coach, and optional booking to belong to the
 payment's business. Packages are likewise pinned to a student in their own
 business, and payments can only name packages from that same business. A
 booking-linked student receipt follows the booking's snapshotted
-`paymentRoute`; an unbound receipt follows immutable `Business.kind`, and a
-coach payout is valid only for a `CLUB`. A booking with payment history cannot
+`paymentRoute`; an unbound legacy receipt follows immutable `Business.kind`,
+and a coach payout is valid only for a `CLUB`. A booking with payment history cannot
 be deleted independently because that would erase the contractual route; the
 explicit business teardown deletes payments before bookings.
 The student on a booking receipt must be a participant in that booking; the
@@ -288,6 +351,11 @@ receipt and a participant's package must name the package owner. A
 payment may target a booking or a package, never both, and a coach payout cannot
 target a package. Reversal is serialized per financial party: only one
 concurrent request reverses the row, recomputes balances, and emits alerts.
+`Payment.paymentIntentId` is unique and links a successful simulated checkout
+to its ledger result. Rental payments deliberately have neither `bookingId`
+nor `packageId`; their intent points to the `VenueReservation`. Club and coach
+renters have an intent but no `Payment`, because the legacy ledger requires a
+student payer or coach payee and must not fabricate either identity.
 
 ---
 
@@ -300,7 +368,10 @@ with `paymentRoute: 'CLUB'` at a different business.
 It **reports, and does not block**. One `IntegrityFlag` per
 club + coach + student pair; repeats raise `occurrences`. A `DISMISSED` flag
 stays dismissed. Only the `CLUB` account can read or resolve flags — never a
-coach working in that club.
+coach working in that club. Integrity review lives inside Alerts rather than a
+standalone navigation surface. The actionable `INTEGRITY` notification links
+its exact flag through `integrityFlagId`; repeated detections refresh the
+linked alert, and resolving the flag clears its action state.
 
 ---
 
@@ -325,9 +396,8 @@ a detail dialog that links through to the subject.
 - Errors are user-facing sentences, thrown as `HttpError(status, message)`.
 - Zod `.strict()` on every request body; unknown fields are a 400.
 - Provider routes are mounted behind `requireAuth` + `requireWorkspace`;
-  use `requireBusinessManager` for a club or own-practice manager,
-  `requireClubAccount` for club-only actions, and `coachScope()` to keep a
-  coach working in a club in their lane.
+  use `requireClubAccount` for club-only management and `coachScope()` to keep
+  a coach working in a club in their lane.
 - Concurrency: `lockInstructors()` (advisory lock) before any read-then-write
   on a schedule, then reload state after waiting. Reschedule decisions also
   lock the request. Financial writes and reversals take the party advisory lock
@@ -400,13 +470,26 @@ Playwright projects in one command from `frontend/`; they share test artifacts.
 
 ### Migrations that audit before they enforce
 
-`20260917210000_account_shape_invariants` and the migrations through
-`20260917250000_core_tenancy_invariants` audit existing rows inside their
-transactions before installing checks, foreign keys, or triggers, and abort
-the whole transaction otherwise. This includes
+`20260917210000_account_shape_invariants`, the migrations through
+`20260917250000_core_tenancy_invariants`, and
+`20260925200000_marketplace_packages_rentals` audit or repair existing rows
+inside their transactions before installing checks, foreign keys, or triggers,
+and abort the whole transaction otherwise. This includes
 `20260917240000_financial_target_invariants` and the final core-tenancy audit.
 That is deliberate: enforcement added around invalid data would either fail
 later or quietly permit the exception forever.
+
+`20260925150000_enable_btree_gist` is an ordered prerequisite for the rental
+overlap exclusion constraint. It installs the trusted PostgreSQL `btree_gist`
+extension before the marketplace migration takes broad application-table
+locks. The production migration role must be allowed to install that extension,
+or a database administrator must enable it first. The marketplace migration's
+ten-second `lock_timeout` is deliberately fail-fast: on SQLSTATE `55P03`, stop
+writes or deploy in a quiet window, resolve only the failed migration as rolled
+back, and retry instead of removing the timeout. Extension permission or
+control-file errors require the prerequisite to be installed, not a longer lock
+wait. Its credit-balance audit reports invalid historical `LessonPackage` IDs
+before any schema change; repair those counters before retrying.
 
 The consequence is that a deploy fails fast (`P3009`) rather than half-applying.
 `20260917205000_single_club_account_per_club` exists to make the audit pass on
@@ -424,11 +507,13 @@ migration name reported as failed, then deploy again. For example:
 npx prisma migrate resolve --rolled-back 20260917210000_account_shape_invariants
 npx prisma migrate resolve --rolled-back 20260917240000_financial_target_invariants
 npx prisma migrate resolve --rolled-back 20260917250000_core_tenancy_invariants
+npx prisma migrate resolve --rolled-back 20260925150000_enable_btree_gist
+npx prisma migrate resolve --rolled-back 20260925200000_marketplace_packages_rentals
 npx prisma migrate deploy
 ```
 
 Run only the `migrate resolve` line for the migration that actually failed;
-the three commands above are examples, not a sequence to apply blindly.
+the commands above are examples, not a sequence to apply blindly.
 
 Before changing account, affiliation, financial, or tenant shapes, check the
 invariants still hold: apply the chain to a scratch database *and* to a copy
@@ -471,17 +556,99 @@ quickest way to tell which mode a deployment is in.
   kept compiling but should not gain features. Delete it when convenient.
 - `legacy-booking.tsx` and `/manage/[token]` serve management links issued
   before account-only booking. No new tokens are minted.
-- Lesson payments, confirmations, and reminders are recorded in-app only. No
-  gateway, email, or SMS is connected.
-- Courtly reserves *coach time*, never an external court. A venue needing
-  approval leaves the booking `PENDING` for a human to secure.
+- Class confirmations and reminders are recorded in-app only. No email or SMS
+  delivery is connected, and simulated Stripe never moves real funds.
+- A Class reserves coach time, not an external court. A third-party venue
+  needing approval leaves the booking `PENDING`; only the separate Rentals
+  workflow reserves an owned `VenueUnit`.
 - Google Calendar is a one-way, eventually consistent view of confirmed
-  lessons. Remote edits do not change Courtly, and stale external free/busy
+  Classes. Remote edits do not change Courtly, and stale external free/busy
   data never blocks scheduling.
 
 ---
 
 ## Changelog
+
+### 3.0.9 — 2026-09-25
+
+Sealed venue-reservation contract snapshots at the database boundary while
+retaining the application cancellation/refund transition and package provenance.
+
+### 3.0.8 — 2026-09-25
+
+Corrected the migration-recovery guidance after adding the marketplace and
+`btree_gist` prerequisite examples.
+
+### 3.0.7 — 2026-09-25
+
+Made `CLUB` the schema and database default for new booking payment-route
+snapshots without rewriting retained `DIRECT` history. The marketplace migration
+now diagnoses invalid historical package credit counters before changing the
+schema, and `btree_gist` is installed by an earlier deployment prerequisite so
+extension setup does not run while broad application-table locks are held.
+
+### 3.0.6 — 2026-09-25
+
+Locked a club's currency at the database boundary after any successful or
+refunded checkout. This includes coach and club rental purchases that
+intentionally have no legacy `Payment` ledger row.
+
+### 3.0.5 — 2026-09-25
+
+Sealed successful, refunded, and failed simulated-Stripe payment intents at the
+database boundary. Their checkout contract can no longer be rewritten,
+downgraded, or deleted outside a complete business teardown; the only terminal
+transition is from successful payment to refund, serialized with commercial
+teardown. A club's currency likewise becomes immutable after checkout history
+exists so historical amounts are never reinterpreted.
+
+### 3.0.4 — 2026-09-25
+
+Made every offer-backed package retain its checkout-time student, name, scope,
+credit count, price, and expiry while still allowing transactional credit use
+and payment refunds. Its paid state must also agree with the successful or
+refunded checkout evidence. The invariants are enforced by both the package API
+and the database, including after the package backs a venue reservation.
+
+### 3.0.3 — 2026-09-25
+
+Gave every API-driven investor-showcase persona a deterministic, valid public
+username so first-run provisioning satisfies the 3.0 account contract, and
+corrected rental documentation to point to the in-app Explore destination.
+
+### 3.0.2 — 2026-09-25
+
+Made retained SOLO, DIRECT, and read-only booking records immutable through
+student, legacy-link, provider, reschedule, and booking-ledger mutation routes.
+Simulated package and class checkout now also refuses demo businesses.
+
+### 3.0.1 — 2026-09-25
+
+Hardened authenticated account discovery so exact email remains a supported
+lookup input without exposing login emails or database IDs in results. Added a
+three-character minimum and a per-account search quota.
+
+### 3.0.0 — 2026-09-25
+
+Reshaped Courtly around club commerce. Every account now has a canonical
+public username and multi-sport profile, account search supports roster
+discovery, and a coach's reschedule-notice window is captured when the club
+adds them. Coaches no longer receive an active own-practice `SOLO` workspace,
+and new independent practices and direct payments are retired; retained
+`SOLO`, `DIRECT`, and `STUDENT_TO_COACH` data stays immutable and
+inaccessible as active workspace history. The UI now calls bookable coaching
+products Classes. Clubs publish scoped Package offers, students retain
+purchased snapshots under My Packages, and package, class, and rental checkout
+runs through idempotent simulated Stripe intents without moving real funds.
+Clubs can also make owned facilities rentable with unit inventory, opening
+hours, pricing, and policy configuration; students, coaches, and clubs browse
+and reserve courts through Explore with cash or eligible package credits.
+Integrity review now lives directly in Alerts through an explicit
+notification-to-flag link. Personal Google Calendar remains a one-way
+projection of confirmed Courtly Classes: remote edits never mutate Courtly.
+The Elever production fixture is a deterministic October 2026 club-only
+marketplace with 20 students, Classes, packages, simulated checkout, and court
+reservations.
 
 ### 2.7.0 — 2026-09-25
 

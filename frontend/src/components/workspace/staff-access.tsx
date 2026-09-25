@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/compone
 import { api, mutate } from '@/lib/api';
 import type { AccountType } from '@/lib/types';
 import { initials } from '@/lib/utils';
-import { Editor, Empty, Field, errorMessage, text, type ManagementProps } from './management-ui';
+import { Editor, Empty, Field, errorMessage, numeric, text, type ManagementProps } from './management-ui';
 
 type StaffUser = {
   id: string;
@@ -59,7 +59,7 @@ function ClubStaffAccess({ data, refresh }: ManagementProps) {
     </div>
     <div className="mb-5 flex items-start gap-3 rounded-xl border border-[#e3e9db] bg-[#eff3e9] p-4">
       <ShieldCheck size={18} className="mt-0.5 shrink-0 text-[#6d7d62]" />
-      <div className="space-y-1.5 text-xs leading-relaxed text-[#5c7054]"><p><strong className="font-semibold">Accounts stay personal.</strong> Ask the coach to register first, then enter the same email they used for Courtly. You never create or handle their password.</p><p>Removing access only unlinks this club. Their account, other club memberships, coach profile, and lesson history remain intact.</p></div>
+      <div className="space-y-1.5 text-xs leading-relaxed text-[#5c7054]"><p><strong className="font-semibold">Accounts stay personal.</strong> Ask the coach to register first, then find their account by username, email, or exact name. You never create or handle their password.</p><p>Removing access only unlinks this club. Their account, other club memberships, coach profile, and booking history remain intact.</p></div>
     </div>
     <div className="panel overflow-hidden" aria-busy={loading}>
       {loading ? <p role="status" className="flex items-center justify-center gap-2 p-8 text-xs text-stone-500"><Loader2 size={16} className="animate-spin" />Loading staff access…</p> : error ? <div className="space-y-3 p-5"><p role="alert" className="text-xs text-red-700">{error}</p><Button variant="outline" size="sm" onClick={() => { void loadStaff().catch(() => {}); }}>Try again</Button></div> : staff.length ? <ul className="divide-y divide-[#edf0e8]">
@@ -83,13 +83,17 @@ function ClubStaffAccess({ data, refresh }: ManagementProps) {
 
 function StaffEditor({ staffUser, staff, data, refresh, onSaved, onClose }: ManagementProps & { staffUser: StaffUser | null; staff: StaffUser[]; onSaved: (user: StaffUser) => void; onClose: () => void }) {
   const [instructorId, setInstructorId] = useState(staffUser?.instructorId || '');
-  return <Editor title={staffUser ? 'Edit coach access' : 'Add coach access'} description={staffUser ? 'Change the roster profile linked to this coach. Their personal profile and login stay unchanged.' : 'Enter the email of an existing Courtly coach account. If they have not registered yet, ask them to create a coach account first.'} onClose={onClose} refresh={refresh} success={staffUser ? 'Coach access updated' : 'Coach added'} submitLabel={staffUser ? 'Save coach access' : 'Add coach'} onSubmit={async form => {
+  return <Editor title={staffUser ? 'Edit coach access' : 'Add coach access'} description={staffUser ? 'Change the roster profile linked to this coach. Their personal profile and login stay unchanged.' : 'Find an existing Courtly coach account. If they have not registered yet, ask them to create a coach account first.'} onClose={onClose} refresh={refresh} success={staffUser ? 'Coach access updated' : 'Coach added'} submitLabel={staffUser ? 'Save coach access' : 'Add coach'} onSubmit={async form => {
     const values = { instructorId: instructorId || null };
-    const user = await mutate<StaffUser>(`/staff${staffUser ? `/${staffUser.id}` : ''}`, staffUser ? 'PATCH' : 'POST', staffUser ? values : { ...values, email: text(form, 'staff-email') });
+    const user = await mutate<StaffUser>(`/staff${staffUser ? `/${staffUser.id}` : ''}`, staffUser ? 'PATCH' : 'POST', staffUser ? values : {
+      ...values, query: text(form, 'staff-query'),
+      rescheduleNoticeHours: numeric(form, 'staff-reschedule-notice-hours'),
+    });
     onSaved(user);
   }}>
     <div className="form-grid max-sm:grid-cols-1!">
-      {staffUser ? <div className="field-wide flex items-center gap-3 rounded-xl border border-[#e3e9db] bg-[#f8faf6] p-4"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#e9f0e2] text-[#617851]"><Link2 size={17} /></span><div className="min-w-0"><p className="text-xs font-semibold text-[#344b39]">{staffUser.name}</p><p className="mt-1 break-all text-[11px] text-stone-500">{staffUser.email}</p></div></div> : <Field label="Courtly coach account email" name="staff-email" type="email" required maxLength={254} autoComplete="email" wide hint="This must match an account the coach registered themselves." />}
+      {staffUser ? <div className="field-wide flex items-center gap-3 rounded-xl border border-[#e3e9db] bg-[#f8faf6] p-4"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#e9f0e2] text-[#617851]"><Link2 size={17} /></span><div className="min-w-0"><p className="text-xs font-semibold text-[#344b39]">{staffUser.name}</p><p className="mt-1 break-all text-[11px] text-stone-500">{staffUser.email}</p></div></div> : <Field label="Courtly coach account" name="staff-query" type="search" required maxLength={254} autoComplete="off" wide hint="Use an exact username or email, or an unambiguous exact name." />}
+      {!staffUser && <Field label="Reschedule notice (hours)" name="staff-reschedule-notice-hours" type="number" min="0" max="720" step="1" defaultValue={24} required hint="How far ahead students must request a new class time." />}
       <Field label="Coach profile (optional)" name="staff-instructor"><select id="staff-instructor" value={instructorId} onChange={event => setInstructorId(event.target.value)}><option value="">Create a coach profile automatically</option>{data.instructors.map(instructor => {
         const assigned = staff.some(user => user.instructorId === instructor.id && user.id !== staffUser?.id);
         const retained = !instructor.accountLinkAvailable && instructor.id !== staffUser?.instructorId;

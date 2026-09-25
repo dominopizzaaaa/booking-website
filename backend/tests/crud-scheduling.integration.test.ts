@@ -384,7 +384,7 @@ describe.sequential('CRUD and schedule routes', () => {
     expect(noWindows.body.slots).toEqual([]);
   });
 
-  it('updates club identity atomically, rejects immutable fields, and lets a coach manage only their solo practice', async () => {
+  it('updates club identity atomically, rejects immutable fields, and retires new solo practices', async () => {
     const originalSlug = f.business.slug;
     const updated = await request(app).patch('/api/business').set('Cookie', f.cookie).send({
       name: 'Courtly Test Academy', ownerName: 'Institution Contact', email: 'HELLO@EXAMPLE.TEST',
@@ -407,23 +407,16 @@ describe.sequential('CRUD and schedule routes', () => {
       name: 'Courtly Test Academy', kind: 'CLUB', slug: originalSlug,
     });
 
-    const practice = await request(app).post('/api/auth/practice').set('Cookie', f.coachCookie)
-      .send({ name: 'Coach Solo Practice' }).expect(201);
-    tenants.own(practice.body.business.id);
-    const soloUpdated = await request(app).patch('/api/business').set('Cookie', f.coachCookie)
-      .send({ name: 'Renamed Solo Practice', currency: 'sgd' }).expect(200);
-    expect(soloUpdated.body).toMatchObject({
-      id: practice.body.business.id, kind: 'SOLO', name: 'Renamed Solo Practice', currency: 'SGD',
+    const before = await prisma.membership.count({
+      where: { userId: f.coachUser.id, business: { kind: 'SOLO' } },
     });
-    expect(await prisma.user.findUniqueOrThrow({ where: { id: f.coachUser.id } })).toMatchObject({ name: 'Test Coach' });
-
-    const soloLocation = await request(app).post('/api/locations').set('Cookie', f.coachCookie)
-      .send({ name: 'Solo court' }).expect(201);
-    const soloService = await request(app).post('/api/services').set('Cookie', f.coachCookie)
-      .send({ name: 'Solo private lesson' }).expect(201);
-    expect(soloService.body.locations).toEqual([expect.objectContaining({
-      locationId: soloLocation.body.id, price: 8_000, duration: 60,
-    })]);
+    await request(app).post('/api/auth/practice').set('Cookie', f.coachCookie)
+      .send({ name: 'Coach Solo Practice' }).expect(404);
+    expect(await prisma.membership.count({
+      where: { userId: f.coachUser.id, business: { kind: 'SOLO' } },
+    })).toBe(before);
+    expect(await prisma.user.findUniqueOrThrow({ where: { id: f.coachUser.id } }))
+      .toMatchObject({ name: 'Test Coach' });
   });
 
   it('marks provider notifications read atomically within the club or coach scope', async () => {

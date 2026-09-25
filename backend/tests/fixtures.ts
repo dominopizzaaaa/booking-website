@@ -36,6 +36,7 @@ export class TestTenants {
       const createdUser = await tx.user.create({
         data: {
           name: `Test business ${id}`, email: `${id}-club@example.test`,
+          username: `club_${id.slice(-12).replace(/-/g, '_')}`,
           passwordHash: 'not-used-by-this-test', accountType: 'CLUB',
         },
       });
@@ -73,6 +74,7 @@ export class TestTenants {
     const coachUser = await prisma.user.create({
       data: {
         name: 'Test Coach', email: `${id}-coach@example.test`,
+        username: `coach_${id.slice(-12).replace(/-/g, '_')}`,
         passwordHash: 'not-used-by-this-test', accountType: 'COACH',
       },
     });
@@ -112,6 +114,8 @@ export class TestTenants {
           select: { userId: true },
         })).map(membership => membership.userId);
         await tx.payment.deleteMany({ where: { businessId } });
+        await tx.paymentIntent.deleteMany({ where: { businessId } });
+        await tx.venueReservation.deleteMany({ where: { businessId } });
         await tx.participant.deleteMany({ where: { booking: { businessId } } });
         await tx.booking.deleteMany({ where: { businessId } });
         await tx.lessonPackage.deleteMany({ where: { businessId } });
@@ -157,11 +161,13 @@ export function publicInputFor(f: Fixture, overrides: Partial<PublicBookingInput
 
 export async function createAccount(
   f: Fixture,
-  overrides: Partial<{ name: string; email: string; passwordHash: string | null; accountType: string; phone: string; parentName: string }> = {},
+  overrides: Partial<{ name: string; username: string; email: string; passwordHash: string | null; accountType: string; sports: string[]; phone: string; parentName: string }> = {},
 ) {
+  const identity = randomUUID().replace(/-/g, '');
   const user = await prisma.user.create({
     data: {
-      name: 'Test Student', email: `${randomUUID()}@example.test`, passwordHash: 'not-used-by-this-test',
+      name: 'Test Student', username: `student_${identity.slice(0, 18)}`,
+      email: `${identity}@example.test`, passwordHash: 'not-used-by-this-test',
       accountType: 'STUDENT', phone: '', parentName: '', ...overrides,
     },
   });

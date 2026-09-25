@@ -96,7 +96,10 @@ describe.sequential('Public API security regressions', () => {
       data: { businessId: f.business.id, name: 'Unclaimed Coach', initials: 'UC', active: true },
     });
     const unclaimedUser = await prisma.user.create({
-      data: { name: 'Unclaimed Coach', email: `${randomUUID()}@unclaimed.courtly.invalid`, accountType: 'COACH' },
+      data: {
+        name: 'Unclaimed Coach', username: `unclaimed_${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+        email: `${randomUUID()}@unclaimed.courtly.invalid`, accountType: 'COACH',
+      },
     });
     f.tracker.ownUser(unclaimedUser.id);
     await prisma.membership.create({
@@ -251,7 +254,7 @@ describe.sequential('Public API security regressions', () => {
     expect(JSON.stringify(secondHistory.body)).not.toContain(firstNote);
   });
 
-  it('honors a management link migrated from the original plaintext-token schema', async () => {
+  it('upgrades a management link migrated from the original plaintext-token schema for an active club', async () => {
     const account = await accountSession({ name: 'Migrated Link Player' });
     const created = await request(app).post(`/api/public/${f.business.slug}/bookings`)
       .set('Cookie', account.cookie).send(publicInputFor(f)).expect(201);

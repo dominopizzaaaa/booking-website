@@ -17,6 +17,9 @@ import { accountRouter } from './account-notifications.js';
 import { venuesRouter } from './venues.js';
 import { integrityRouter } from './integrity.js';
 import { calendarRouter } from './calendar.js';
+import { accountDirectoryRouter } from './account-directory.js';
+import { commerceRouter } from './commerce.js';
+import { rentalsRouter } from './rentals.js';
 import { HttpError } from './http.js';
 import { prisma } from './db.js';
 export const app = express();
@@ -48,6 +51,7 @@ app.get('/api/health', async (_req, res) => {
     capabilities: {
       accountProfile: true, rescheduleRequests: true, coachAcceptance: true,
       paymentReversal: true, integrityFlags: true,
+      simulatedStripe: true, packageMarketplace: true, venueRentals: true, accountDirectory: true,
       venueSearch: config.googleMapsApiKey ? 'google-places' : 'maps-link',
       googleCalendar: config.googleCalendar.enabled ? 'configured' : 'disabled',
     },
@@ -57,6 +61,13 @@ app.get('/api/health', async (_req, res) => {
 app.use('/api/auth', authRouter);
 app.use('/api', adminRouter);
 app.use('/api', publicRouter);
+app.use('/api', accountDirectoryRouter);
+// Commerce contains both global student checkout routes and club-workspace
+// management routes, so each endpoint applies its own narrower guard.
+app.use('/api', commerceRouter);
+// Rental discovery is global to every signed-in account; manager mutations
+// apply their club-only checks inside the router.
+app.use('/api', requireAuth, rentalsRouter);
 // Calendar grants belong to the global person, not a selected workspace.
 app.use('/api/calendar', requireAuth, calendarRouter);
 app.use('/api/account', requireAuth, requireStudent, accountRouter);
@@ -69,7 +80,7 @@ const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
   if (error instanceof HttpError) { res.status(error.status).json({ error: error.message, ...error.details }); return; }
   if (error instanceof ZodError) { res.status(400).json({ error: error.issues[0]?.message || 'Invalid input', issues: error.flatten() }); return; }
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
-    if (error.code === 'P2002') { res.status(409).json({ error: 'This record already exists. Please use a different email or name.' }); return; }
+    if (error.code === 'P2002') { res.status(409).json({ error: 'This record already exists. Please use a different email or username.' }); return; }
     if (['P2025', 'P2003'].includes(error.code)) { res.status(400).json({ error: 'Record not found or still in use by another record' }); return; }
     if (error.code === 'P2034') { res.status(409).json({ error: 'Another update occurred at the same time. Please try again.' }); return; }
   }
