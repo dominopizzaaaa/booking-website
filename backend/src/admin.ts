@@ -1,6 +1,6 @@
 import { Router, type RequestHandler, type Response } from 'express';
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { rateLimit } from 'express-rate-limit';
 import { prisma } from './db.js';
@@ -155,6 +155,39 @@ async function deleteBusinessDeep(tx: Prisma.TransactionClient, businessId: stri
     } },
     select: { userId: true },
   })).map(membership => membership.userId);
+  const conditionalUserIds = [...new Set([...disposableUserIds, ...placeholderUserIds])].sort();
+  const deletionCandidateUserIds = [...new Set([...institutionalUserIds, ...conditionalUserIds])].sort();
+  if (deletionCandidateUserIds.length) {
+    // OAuth completion takes a foreign-key lock on its user. Locking the same
+    // rows closes the gap between checking for a connection and deleting the
+    // account, so a concurrent callback cannot lose newly stored credentials.
+    await tx.$queryRaw(Prisma.sql`
+      SELECT "id" FROM "User"
+      WHERE "id" IN (${Prisma.join(deletionCandidateUserIds)})
+      ORDER BY "id"
+      FOR UPDATE
+    `);
+    const conditionallyRemovableUserIds = conditionalUserIds.length
+      ? (await tx.user.findMany({
+        where: {
+          id: { in: conditionalUserIds },
+          memberships: { none: { businessId: { not: businessId } } },
+          students: { none: { businessId: { not: businessId } } },
+        },
+        select: { id: true },
+      })).map(user => user.id)
+      : [];
+    const userIdsToDelete = [...new Set([...institutionalUserIds, ...conditionallyRemovableUserIds])];
+    const connected = userIdsToDelete.length
+      ? await tx.calendarConnection.findFirst({
+        where: { userId: { in: userIdsToDelete } },
+        select: { id: true },
+      })
+      : null;
+    if (connected) {
+      throw new HttpError(409, 'This business cannot be deleted while an account that would be removed still has a Google Calendar connection. Disconnect the calendar and wait for cleanup to finish, then try again.');
+    }
+  }
   await tx.payment.deleteMany({ where: { businessId } });
   await tx.participant.deleteMany({ where: { booking: { businessId } } });
   await tx.booking.deleteMany({ where: { businessId } });
@@ -167,11 +200,10 @@ async function deleteBusinessDeep(tx: Prisma.TransactionClient, businessId: stri
   if (institutionalUserIds.length) {
     await tx.user.deleteMany({ where: { id: { in: institutionalUserIds } } });
   }
-  const removableUserIds = [...new Set([...disposableUserIds, ...placeholderUserIds])];
-  if (removableUserIds.length) {
+  if (conditionalUserIds.length) {
     await tx.user.deleteMany({
       where: {
-        id: { in: removableUserIds },
+        id: { in: conditionalUserIds },
         memberships: { none: {} },
         students: { none: {} },
       },

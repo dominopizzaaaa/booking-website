@@ -137,7 +137,9 @@ test('student creates an account, books, views history, and cancels', async ({ p
   await studentNavigation.getByRole('button', { name: 'Explore', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
   await expectStudentManageUrl(page, workspace.business.slug, 'explore');
-  await expect(page.getByRole('heading', { name: workspace.business.name, exact: true })).toBeVisible();
+  // Demo workspaces remain usable for this end-to-end booking journey but are
+  // deliberately private and must never appear in the public club directory.
+  await expect(page.getByRole('heading', { name: workspace.business.name, exact: true })).toHaveCount(0);
   await expect(studentNavigation.getByRole('button', { name: 'Explore', exact: true })).toHaveAttribute('aria-current', 'page');
 
   await studentNavigation.getByRole('button', { name: 'Book', exact: true }).click();

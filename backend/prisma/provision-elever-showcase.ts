@@ -46,7 +46,9 @@ if (new Set(Object.values(credentials).map(credential => credential.password)).s
 }
 
 const allApplicationTables = [
-  'AccountNotification', 'AuthSession', 'Availability', 'AvailabilityException', 'Booking',
+  'AccountNotification', 'CalendarBusyInterval', 'CalendarEventProjection', 'CalendarOAuthAttempt',
+  'CalendarRevocationJob',
+  'CalendarSyncJob', 'CalendarConnection', 'AuthSession', 'Availability', 'AvailabilityException', 'Booking',
   'Business', 'Instructor', 'IntegrityFlag', 'LessonPackage', 'Location', 'Membership',
   'Notification', 'Participant', 'Payment', 'RescheduleRequest', 'Service',
   'ServiceInstructor', 'ServiceLocation', 'Student', 'User',

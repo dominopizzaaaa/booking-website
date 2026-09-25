@@ -6,6 +6,7 @@ import { notifyWorkspace } from './notifications.js';
 import { createBookingAccountAlerts } from './account-notifications.js';
 import { evaluateSlot, lockInstructors, schedulingContext } from './scheduling.js';
 import { bookingInclude, bookingJson } from './serializers.js';
+import { enqueueCalendarSync } from './calendar-sync.js';
 
 type Tx = Prisma.TransactionClient;
 
@@ -163,8 +164,10 @@ export async function createRescheduleRequest(
     throw new HttpError(400, 'Choose a time different from the current one');
   }
   const ctx = await schedulingContext(tx, options.businessId, booking.serviceId, booking.instructorId, booking.locationId);
-  const slot = await evaluateSlot(tx, ctx, proposedStart, booking.id, {
-    duration: booking.duration, bufferMinutes: booking.bufferMinutes,
+  const slot = await evaluateSlot(tx, ctx, proposedStart, {
+    excludeBookingId: booking.id,
+    snapshot: { duration: booking.duration, bufferMinutes: booking.bufferMinutes },
+    studentUserIds: booking.participants.map(participant => participant.student.userId),
   });
   if (!slot.available || slot.groupId) {
     throw new HttpError(409, 'That time is not available', {
@@ -265,8 +268,10 @@ export async function acceptRescheduleRequest(
   assertInsideRescheduleWindow(booking, booking.instructor, booking.business);
 
   const ctx = await schedulingContext(tx, booking.businessId, booking.serviceId, booking.instructorId, booking.locationId);
-  const slot = await evaluateSlot(tx, ctx, request.proposedStartAt, booking.id, {
-    duration: booking.duration, bufferMinutes: booking.bufferMinutes,
+  const slot = await evaluateSlot(tx, ctx, request.proposedStartAt, {
+    excludeBookingId: booking.id,
+    snapshot: { duration: booking.duration, bufferMinutes: booking.bufferMinutes },
+    studentUserIds: booking.participants.map(participant => participant.student.userId),
   });
   if (!slot.available || slot.groupId) {
     // The proposal went stale. Close it rather than leaving a request that can
@@ -322,6 +327,7 @@ export async function acceptRescheduleRequest(
     request.requestedByRole === 'STUDENT' ? 'RESCHEDULE_ACCEPTED' : 'RESCHEDULED',
     booking.participants.map(p => p.student.userId),
   );
+  await enqueueCalendarSync(tx, booking.id);
   return {
     outcome: 'ACCEPTED' as const,
     request: await loadRequest(tx, request.id),

@@ -4,7 +4,7 @@ Courtly is a full-stack booking platform for coaching businesses. This repositor
 
 [![CI](https://github.com/dominopizzaaaa/booking-website/actions/workflows/ci.yml/badge.svg)](https://github.com/dominopizzaaaa/booking-website/actions/workflows/ci.yml)
 
-The working MVP includes global student and coach accounts, dedicated club accounts, portable coach affiliations, multi-location and coach-aware availability, travel and preparation buffers, private and capacity-limited group lessons, atomic recurring bookings, pending venue approval, account-backed student booking and self-service, packages, manual payment records, attendance, student/parent details, coach rosters, and responsive business workspaces. Defaults are SGD and Asia/Singapore.
+Courtly includes global student and coach accounts, dedicated club accounts, portable coach affiliations, multi-location and coach-aware availability, travel and preparation buffers, private and capacity-limited group lessons, atomic recurring bookings, pending venue approval, account-backed student booking and self-service, personal Google Calendar sync, packages, manual payment records, attendance, student/parent details, coach rosters, and responsive business workspaces. Defaults are SGD and Asia/Singapore.
 
 It also covers how a club and its coaches actually work together: a club assigns a student to a coach and the coach accepts before the lesson is confirmed; either side proposes a new time and the other agrees before a session moves; lessons booked through a club are paid to the club, which then records what it pays each coach; a coach can run their own practice alongside their club work, where students pay them directly; and a club is told when a coach and a student it introduced start training privately outside it.
 
@@ -30,6 +30,21 @@ A `CLUB` account creates a **club or academy** workspace at sign-up. A `COACH` c
 A recorded payment can be reversed. The record stays in the ledger marked as reversed, and the lesson or package returns to unpaid, so a correction is visible rather than silent.
 
 Because a club invests in introducing its coaches to its students, Courtly flags it to the club when a coach and a student who train together through that club also book privately outside it. Courtly reports; it does not block the booking, and it does not tell the coach or the student. The club records what it found and closes the flag.
+
+## Google Calendar
+
+Google Calendar is a personal, user-owned integration. A `STUDENT` can connect one Google account for lessons across every club, and a `COACH` can connect one for lessons across every club affiliation and their own practice. Connect it from the account's Profile (or the provider account page). An institutional `CLUB` account cannot connect a calendar or manage a coach's connection.
+
+Courtly remains the source of truth:
+
+- Only confirmed lessons are published to Google. Pending assignments and lessons awaiting venue approval are not added.
+- Confirmed reschedules update the existing Google event and cancellations remove it asynchronously. Booking and reschedule requests commit in Courtly without waiting for Google, so a short delay or a retry after a provider outage is expected.
+- Editing or deleting a Google event never changes, reschedules, confirms, or cancels the Courtly booking. Make every booking change in Courtly.
+- The sync worker runs inside the backend process; there is no separate worker service or cron job to deploy.
+
+Connected students and coaches may also enable external-conflict checks. Courtly reads Google free/busy data and caches only bounded busy time intervals; it never retains external event titles, descriptions, attendees, locations, or other event details. The cache is advisory: when it is stale or Google is unavailable, scheduling fails open and Courtly's own availability and conflict rules continue to apply.
+
+OAuth tokens are encrypted at rest with deployment-managed keys and are never returned to the browser. Disconnecting first queues removal of Courtly's projected events, then revokes and deletes the stored grant; this is asynchronous, and events may need manual removal if Google stays unavailable. If the integration is disabled after someone has connected, disconnect still removes Courtly's local credentials and projections, but the user must remove any remaining Courtly events or grant from Google. If Google consent is revoked, the refresh grant expires, or required permissions change, Courtly marks the connection for reconnection; existing Courtly bookings are unaffected.
 
 ## Requirements
 
@@ -123,6 +138,11 @@ Deploy the backend to Railway first, then point the Vercel frontend at the Railw
    | `DEMO_ENABLED` | `false` (recommended) to prevent public demo-data growth; use `true` only for a monitored showcase |
    | `ADMIN_PASSWORD` | A long, random secret to unlock the platform admin console at `/admin`. Leave unset to disable the admin console entirely. |
    | `GOOGLE_MAPS_API_KEY` | Optional. A Google Places API key enabling venue search. Leave unset to keep the paste-a-Maps-link fallback, which needs no key. |
+   | `GOOGLE_CALENDAR_CLIENT_ID` | OAuth 2.0 web client ID from Google Cloud. Leave the Calendar variables unset to disable the integration. |
+   | `GOOGLE_CALENDAR_CLIENT_SECRET` | OAuth 2.0 web client secret from Google Cloud. |
+   | `GOOGLE_CALENDAR_REDIRECT_URI` | Exact public callback URI registered in Google Cloud, normally `https://YOUR-VERCEL-DOMAIN/api/calendar/google/callback`. |
+   | `CALENDAR_TOKEN_ENCRYPTION_KEYS` | Comma-separated `keyId:base64` token-encryption keys; each key must decode to exactly 32 bytes. |
+   | `CALENDAR_TOKEN_ACTIVE_KEY_ID` | ID from the key list used for new token encryption. |
 
    Do not set `PORT`; Railway injects it.
    `APP_ORIGIN` is added after Vercel assigns the frontend URL. It can remain unset for this initial health-only deployment because no browser will use the API yet.
@@ -143,10 +163,32 @@ Deploy the backend to Railway first, then point the Vercel frontend at the Railw
 
 Preview deployments have a different origin on every build. If previews need authenticated mutations, add the desired preview origins to Railway's `APP_ORIGIN`; otherwise keep previews connected only for read-only checks or omit the Preview `BACKEND_URL`.
 
+### 3. Google Cloud: optional Calendar integration
+
+Google Calendar uses an OAuth web client and the public Vercel origin. The callback still reaches Railway through the existing same-origin `/api/*` rewrite. Configure it as follows:
+
+1. In a Google Cloud project, enable the **Google Calendar API**, configure the OAuth consent screen, and add the users who may connect while the application remains in testing mode. Courtly requests `openid`, `email`, and `https://www.googleapis.com/auth/calendar.events`: identity ties the grant to the signed-in Courtly user, while the Calendar scope writes Courtly events and reads only the fields needed to derive private busy intervals. Complete Google's publishing and verification requirements before offering the integration beyond those test users.
+2. Create an **OAuth 2.0 Client ID** with application type **Web application**.
+3. Add the exact production redirect URI `https://YOUR-VERCEL-DOMAIN/api/calendar/google/callback` under **Authorized redirect URIs**. Replace the placeholder with the canonical Vercel or custom frontend domain; do not use the Railway domain and do not add a trailing slash. For local development, separately register `http://localhost:3000/api/calendar/google/callback`. Google requires an exact match.
+4. Generate a 32-byte token-encryption key:
+
+   ```bash
+   openssl rand -base64 32
+   ```
+
+   Copy the output directly into the Railway secret manager, for example as `CALENDAR_TOKEN_ENCRYPTION_KEYS=v1:OUTPUT_FROM_OPENSSL`, and set `CALENDAR_TOKEN_ACTIVE_KEY_ID=v1`. Do not commit the output, paste it into tickets or chat, or leave it in a checked-in `.env` file.
+5. Set all five Calendar variables on the Railway API service: `GOOGLE_CALENDAR_CLIENT_ID`, `GOOGLE_CALENDAR_CLIENT_SECRET`, `GOOGLE_CALENDAR_REDIRECT_URI`, `CALENDAR_TOKEN_ENCRYPTION_KEYS`, and `CALENDAR_TOKEN_ACTIVE_KEY_ID`. The redirect variable must be the same Vercel callback registered in step 3. Redeploy the backend.
+6. Check `https://YOUR-RAILWAY-DOMAIN/api/health`. Its `capabilities.googleCalendar` value is `"configured"` only when the complete server-side configuration is usable; otherwise it is `"disabled"`. A configured capability says the OAuth feature is available, not that any particular user is connected.
+
+The API process also runs the durable Calendar sync, event-cleanup, OAuth-revocation, and free/busy refresh worker, so a normal Railway backend deployment needs no second service. Calendar outages do not roll back Courtly changes; relevant work is coalesced in the outbox and retries asynchronously. A grant returned by Google is recorded as an encrypted revocation job until the callback has durably saved the connection, so a database failure after token exchange does not silently strand access. Disabled deployments and users without a relevant connection or projection do not accumulate booking-sync jobs. Monitor reconnect-required states and provider errors after releases.
+
+For encryption-key rotation, add the new `keyId:base64` entry to `CALENDAR_TOKEN_ENCRYPTION_KEYS`, switch `CALENDAR_TOKEN_ACTIVE_KEY_ID`, and redeploy. Keep every old key in the list until no stored token uses it; removing a key prematurely makes those connections unreadable and forces users to reconnect. Rotate the Google client secret independently in Google Cloud and Railway. Preview domains need individually registered callback URIs and matching backend configuration; Google does not accept a wildcard Vercel callback.
+
 ## Production operations
 
 - Commit a new Prisma migration for every schema change. Railway runs `prisma migrate deploy` through `npm run db:migrate`; it does not run destructive development migrations or seed production automatically.
 - Set `DEMO_ENABLED=false` when public demo creation is not wanted. Global student, coach, and club account registration and sign-in remain available.
+- Keep at least one backend instance running when Calendar is enabled because its asynchronous worker runs in the API process. A user-visible Calendar delay does not mean the Courtly booking failed; inspect worker/provider state before replaying a booking mutation.
 - To create an initial known club deliberately, run the Railway service's `npm run seed` command once with strong `SEED_CLUB_PASSWORD`, `SEED_CLUB_EMAIL`, `SEED_BUSINESS_NAME`, and `SEED_BUSINESS_SLUG` variables. The seed is idempotent for an existing slug and is not part of deployment.
 - Check the Railway health endpoint after releases. It returns `503` if PostgreSQL cannot be reached.
 - Treat Railway and Vercel environment changes as production changes. Never copy the generated `DATABASE_URL` into GitHub, Vercel, or committed files; only the backend needs database access.
@@ -166,4 +208,5 @@ Courtly ships a platform admin console at `/admin`, separate from `STUDENT`, `CO
 - Venues can be looked up on Google Maps. Set `GOOGLE_MAPS_API_KEY` on the backend for live Places search; without it, pasting a Google Maps link still fills in the venue. The key stays server-side and never reaches the browser.
 - Lesson payments are tracked manually. No student payment gateway or business subscription checkout is connected.
 - Confirmations and reminders are queued as in-app records. Email, SMS, and automated WhatsApp delivery are not connected.
-- External calendar sync, route-based travel calculations, waitlists, and marketplace discovery are intentionally left for later integrations.
+- Google Calendar is a one-way projection of confirmed Courtly lessons, not a two-way calendar editor. External edits never alter Courtly, and cached free/busy checks deliberately fail open when fresh data is unavailable.
+- Route-based travel calculations and waitlists are intentionally left for later integrations.

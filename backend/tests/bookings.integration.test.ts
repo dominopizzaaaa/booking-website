@@ -791,7 +791,9 @@ describe.sequential('Global account authentication and workspace memberships', (
     const ownStudent = await createStudent(first);
     const foreignStudent = await createStudent(second);
     const own = await createBookings(first.business.id, inputFor(first, { studentId: ownStudent.id, student: undefined }));
-    const foreign = await createBookings(second.business.id, inputFor(second, { studentId: foreignStudent.id, student: undefined }));
+    const foreign = await createBookings(second.business.id, inputFor(second, {
+      studentId: foreignStudent.id, student: undefined, startAt: second.starts.plus({ hours: 2 }).toISO()!,
+    }));
 
     expect((await first.agent.get('/api/workspace').expect(200)).body.business.id).toBe(first.business.id);
     const switched = await first.agent.post('/api/auth/switch-workspace')

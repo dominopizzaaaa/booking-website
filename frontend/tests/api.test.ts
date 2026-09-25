@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  ApiError, adminBusinesses, api, cancelAccountBooking, loadAccountBookings, loadAccountClubs,
-  loadSlots, loadWorkspace, respondToRescheduleRequest, reversePayment, searchVenues,
+  ApiError, adminBusinesses, api, beginGoogleCalendarConnection, cancelAccountBooking, disconnectGoogleCalendar,
+  loadAccountBookings, loadAccountClubs, loadCalendarConnection, loadSlots, loadWorkspace,
+  normalizeCalendarConnection, respondToRescheduleRequest, reversePayment, searchVenues,
+  syncGoogleCalendar, updateCalendarConnection,
 } from '../src/lib/api';
 import { isCoachClubWorkspace, isManagerWorkspace, type WorkspaceResponse } from '../src/lib/types';
 
@@ -235,6 +237,68 @@ describe('loadAccountClubs', () => {
       status: 502,
     });
     expect(calls).toHaveLength(2);
+  });
+});
+
+describe('calendar connection', () => {
+  it('normalises an absent connection and preference fields', async () => {
+    expect(normalizeCalendarConnection(undefined)).toEqual({
+      configured: false, eligible: false, provider: null, state: 'DISCONNECTED', connected: false,
+      email: null, calendarName: null, syncEnabled: false, busyCheckEnabled: false, connectedAt: null,
+      lastSyncedAt: null, lastBusyAt: null, busyCacheExpiresAt: null, error: null,
+    });
+
+    respond(null);
+    expect(await loadCalendarConnection()).toEqual({
+      configured: false, eligible: false, provider: null, state: 'DISCONNECTED', connected: false,
+      email: null, calendarName: null, syncEnabled: false, busyCheckEnabled: false, connectedAt: null,
+      lastSyncedAt: null, lastBusyAt: null, busyCacheExpiresAt: null, error: null,
+    });
+
+    respond({ configured: true, eligible: true, provider: 'GOOGLE', state: 'ACTIVE', connected: true, syncEnabled: true });
+    expect(await loadCalendarConnection()).toEqual({
+      configured: true, eligible: true, provider: 'GOOGLE', state: 'ACTIVE', connected: true,
+      email: null, calendarName: null, syncEnabled: true, busyCheckEnabled: false, connectedAt: null,
+      lastSyncedAt: null, lastBusyAt: null, busyCacheExpiresAt: null, error: null,
+    });
+  });
+
+  it('constructs connect and preference requests', async () => {
+    respond({ authorizationUrl: 'https://accounts.google.com/o/oauth2/auth' });
+    await beginGoogleCalendarConnection('/?tab=profile');
+    expect(calls[0]).toMatchObject({
+      url: '/api/calendar/google/connect',
+      init: { method: 'POST', body: JSON.stringify({ returnTo: '/?tab=profile' }) },
+    });
+
+    respond({ state: 'ACTIVE', syncEnabled: false, busyCheckEnabled: true });
+    const status = await updateCalendarConnection({ syncEnabled: false });
+    expect(calls[0]).toMatchObject({
+      url: '/api/calendar/connection',
+      init: { method: 'PATCH', body: JSON.stringify({ syncEnabled: false }) },
+    });
+    expect(status).toMatchObject({ syncEnabled: false, busyCheckEnabled: true });
+  });
+
+  it('sends explicit empty sync and disconnect bodies and accepts an ok disconnect envelope', async () => {
+    respond({ provider: 'GOOGLE', state: 'ACTIVE', connected: true });
+    await syncGoogleCalendar();
+    expect(calls[0]).toMatchObject({
+      url: '/api/calendar/sync', init: { method: 'POST', body: '{}' },
+    });
+
+    respond({ ok: true, status: { state: 'DISCONNECTED', provider: null, email: null } });
+    const status = await disconnectGoogleCalendar();
+    expect(calls[0]).toMatchObject({
+      url: '/api/calendar/connection', init: { method: 'DELETE', body: '{}' },
+    });
+    expect(status).toMatchObject({ provider: null, state: 'DISCONNECTED', email: null });
+
+    respond({ provider: null, state: 'DISCONNECTED', email: null });
+    expect(await disconnectGoogleCalendar()).toMatchObject({ provider: null, state: 'DISCONNECTED', email: null });
+
+    respond({ ok: true });
+    expect(await disconnectGoogleCalendar()).toBeNull();
   });
 });
 

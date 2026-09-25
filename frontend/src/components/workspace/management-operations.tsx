@@ -761,11 +761,6 @@ export function SettingsView({ data, refresh }: ManagementProps) {
                     "No payment gateway is connected. Payments are recorded manually after you receive them offline.",
                 },
                 {
-                  name: "External calendars",
-                  description:
-                    "Calendar sync is not connected. Your workspace schedule is the source for booking availability.",
-                },
-                {
                   name: "Email & SMS delivery",
                   description:
                     "External message delivery is not connected. Check in-app notifications and contact students directly.",
@@ -788,9 +783,20 @@ export function SettingsView({ data, refresh }: ManagementProps) {
                   </p>
                 </div>
               ))}
-              <p className="text-[10px] text-stone-400">
-                Connection setup will be available in a later release.
-              </p>
+              <div className="border-b border-[#edf0e8] pb-5 last:border-0 last:pb-0">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-xs text-[#344b39]">Google Calendar</h3>
+                  <span className="badge bg-[#edf2e7]! text-[#58704e]!">{data.user.accountType === "CLUB" ? "Coach-managed" : "Managed in Profile"}</span>
+                </div>
+                <p className="mt-2 text-[11px] leading-relaxed text-stone-500">
+                  {data.user.accountType === "CLUB"
+                    ? "Calendar connections are personal. Each coach connects their own Google Calendar from their Courtly profile."
+                    : "Your Google Calendar connection follows your coach account across every workspace. Manage it from Profile."}
+                </p>
+                <Button size="sm" variant="outline" className="mt-3" asChild>
+                  <a href="/?tab=profile">{data.user.accountType === "CLUB" ? "View calendar guidance" : "Open Profile"}</a>
+                </Button>
+              </div>
             </div>
           </section>
           <section className="rounded-xl border border-[#e1e8d6] bg-[#eef3e6] p-5 sm:p-6">

@@ -14,6 +14,16 @@ export type Location = { id: string; name: string; address: string; type: 'FACIL
 export type VenueSource = 'MANUAL' | 'GOOGLE_MAPS';
 export type VenueCandidate = { placeId: string; name: string; address: string; mapsUrl: string; latitude: number | null; longitude: number | null; source: VenueSource };
 export type VenueSearchResult = { configured: boolean; results: VenueCandidate[] };
+export type CalendarProvider = 'GOOGLE';
+export type CalendarConnectionState = 'DISCONNECTED' | 'ACTIVE' | 'REAUTH_REQUIRED' | 'ERROR' | 'DISCONNECTING';
+export type CalendarPreferences = { syncEnabled: boolean; busyCheckEnabled: boolean };
+export type CalendarReturnTo = '/account' | '/?tab=profile' | '/manage?tab=profile';
+export type CalendarConnectionStatus = {
+  configured: boolean; eligible: boolean; provider: CalendarProvider | null;
+  state: CalendarConnectionState; connected: boolean; email: string | null; calendarName: string | null;
+  syncEnabled: boolean; busyCheckEnabled: boolean; connectedAt: string | null;
+  lastSyncedAt: string | null; lastBusyAt: string | null; busyCacheExpiresAt: string | null; error: string | null;
+};
 export type PublicInstructor = Pick<Instructor, 'id' | 'name' | 'initials' | 'color' | 'specialty' | 'active'>;
 export type PublicLocation = Pick<Location, 'id' | 'name' | 'address' | 'type' | 'color' | 'requiresApproval' | 'active'> & { mapsUrl?: string };
 export type PublicBookingBusiness = Pick<Business, 'name' | 'slug' | 'ownerName' | 'timezone' | 'currency' | 'color' | 'tagline' | 'cancellationHours'> & { kind?: BusinessKind };

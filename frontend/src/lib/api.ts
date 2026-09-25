@@ -1,4 +1,4 @@
-import { isManagerWorkspace, type WorkspaceResponse, type WorkspaceBooking, type PublicBusiness, type Slot, type BookingInput, type PublicBookingInput, type BookingResult, type ProviderBookingResult, type AuthSession, type AccountBooking, type AccountBookingsResult, type StudentClubDirectoryPage, type StudentClubDirectoryResult, type IntegrityFlag, type Payment, type RescheduleRequest, type VenueSearchResult } from './types';
+import { isManagerWorkspace, type WorkspaceResponse, type WorkspaceBooking, type PublicBusiness, type Slot, type BookingInput, type PublicBookingInput, type BookingResult, type ProviderBookingResult, type AuthSession, type AccountBooking, type AccountBookingsResult, type StudentClubDirectoryPage, type StudentClubDirectoryResult, type IntegrityFlag, type Payment, type RescheduleRequest, type VenueSearchResult, type CalendarConnectionStatus, type CalendarPreferences, type CalendarReturnTo } from './types';
 
 export class ApiError extends Error {
   constructor(message: string, public status: number, public details?: unknown) { super(message); }
@@ -112,6 +112,52 @@ export const recordCoachPayout = (values: { instructorId: string; amount: number
 
 export const searchVenues = (query: string) =>
   api<VenueSearchResult>(`/venues/search?${new URLSearchParams({ q: query })}`);
+
+type CalendarConnectionWire = {
+  configured?: boolean | null; eligible?: boolean | null; provider?: CalendarConnectionStatus['provider'];
+  state?: CalendarConnectionStatus['state'] | null; connected?: boolean | null; email?: string | null; calendarName?: string | null;
+  syncEnabled?: boolean | null; busyCheckEnabled?: boolean | null; connectedAt?: string | null;
+  lastSyncedAt?: string | null; lastBusyAt?: string | null; busyCacheExpiresAt?: string | null; error?: string | null;
+};
+
+export function normalizeCalendarConnection(value: CalendarConnectionWire | null | undefined): CalendarConnectionStatus {
+  return {
+    configured: value?.configured ?? false,
+    eligible: value?.eligible ?? false,
+    provider: value?.provider ?? null,
+    state: value?.state ?? 'DISCONNECTED',
+    connected: value?.connected ?? false,
+    email: value?.email ?? null,
+    calendarName: value?.calendarName ?? null,
+    syncEnabled: value?.syncEnabled ?? false,
+    busyCheckEnabled: value?.busyCheckEnabled ?? false,
+    connectedAt: value?.connectedAt ?? null,
+    lastSyncedAt: value?.lastSyncedAt ?? null,
+    lastBusyAt: value?.lastBusyAt ?? null,
+    busyCacheExpiresAt: value?.busyCacheExpiresAt ?? null,
+    error: value?.error ?? null,
+  };
+}
+
+export async function loadCalendarConnection(): Promise<CalendarConnectionStatus> {
+  return normalizeCalendarConnection(await api<CalendarConnectionWire | null>('/calendar/connection'));
+}
+export const beginGoogleCalendarConnection = (returnTo: CalendarReturnTo) =>
+  api<{ authorizationUrl: string }>('/calendar/google/connect', { method: 'POST', body: JSON.stringify({ returnTo }) });
+export async function updateCalendarConnection(values: Partial<CalendarPreferences>): Promise<CalendarConnectionStatus> {
+  return normalizeCalendarConnection(await api<CalendarConnectionWire>('/calendar/connection', { method: 'PATCH', body: JSON.stringify(values) }));
+}
+export async function syncGoogleCalendar(): Promise<CalendarConnectionStatus> {
+  return normalizeCalendarConnection(await api<CalendarConnectionWire>('/calendar/sync', { method: 'POST', body: JSON.stringify({}) }));
+}
+export async function disconnectGoogleCalendar(): Promise<CalendarConnectionStatus | null> {
+  const value = await api<CalendarConnectionWire | ({ ok: true; status?: CalendarConnectionWire | null } & CalendarConnectionWire) | null>('/calendar/connection', { method: 'DELETE', body: JSON.stringify({}) });
+  if (!value) return null;
+  if (!('ok' in value) || !value.ok) return normalizeCalendarConnection(value);
+  if (value.status) return normalizeCalendarConnection(value.status);
+  const hasInlineStatus = Object.keys(value).some(key => key !== 'ok' && key !== 'status');
+  return hasInlineStatus ? normalizeCalendarConnection(value) : null;
+}
 export const resolveIntegrityFlag = (id: string, status: IntegrityFlag['status'], note = '') =>
   api<IntegrityFlag>(`/integrity-flags/${encodeURIComponent(id)}`, {
     method: 'PATCH', body: JSON.stringify({ status, note }),

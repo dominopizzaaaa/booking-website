@@ -39,6 +39,7 @@ import {
   type ReactNode,
 } from 'react';
 import { CourtlyLogo } from '@/components/public-booking';
+import { CalendarConnectionCard } from '@/components/calendar-connection-card';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import {
   ApiError,
@@ -2867,6 +2868,12 @@ export function StudentApp({ slug }: { slug?: string }) {
                 </form>
               </DialogContent>
             </Dialog>
+
+            <CalendarConnectionCard
+              accountType={session.user.accountType}
+              returnTo="/manage?tab=profile"
+              className="mt-6"
+            />
 
             <section className="mt-9" aria-labelledby="profile-booking-history">
               <div>

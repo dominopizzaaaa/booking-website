@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 2.6.0** · Last updated 2026-09-25
+**Version 2.7.0** · Last updated 2026-09-25
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -74,6 +74,10 @@ backend/           Express + Prisma API (TypeScript, ESM)
     crud.ts        Services, instructors, locations, students, packages, …
     staff.ts       Club-created coach affiliations
     venues.ts      Google Maps venue lookup
+    calendar.ts    Personal Google OAuth and connection API
+    calendar-crypto.ts  OAuth-token encryption and key rotation
+    google-calendar.ts  Narrow Google Calendar HTTP client
+    calendar-sync.ts  Async event projection and free/busy refresh worker
     workspace.ts   The single GET /api/workspace payload
     public.ts      Public booking page + student self-service
     admin.ts       Platform console (ADMIN_PASSWORD gated; not an account type)
@@ -88,6 +92,7 @@ frontend/          Next.js App Router (TypeScript, Tailwind)
     alerts.ts      Alert icon/tone vocabulary shared by both apps
     utils.ts       cn, money, dates, initials()
   src/components/
+    calendar-connection-card.tsx  Shared student/coach personal integration UI
     student-app.tsx         The student app (/manage) — five-tab shell
     workspace/              The provider workspace (/)
     public-booking.tsx      Public booking page for /book/[slug]
@@ -110,6 +115,7 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
 | Change what the workspace shows | `backend/src/workspace.ts` **and** `frontend/src/lib/types.ts` |
 | Change student booking UI | `frontend/src/components/student-app.tsx` |
 | Change student club discovery | `backend/src/public.ts`, then `frontend/src/components/student-app.tsx` |
+| Change Google Calendar OAuth/sync | `backend/src/calendar.ts`, `calendar-sync.ts`, `google-calendar.ts`, then `frontend/src/components/calendar-connection-card.tsx` |
 | Change provider UI | `frontend/src/components/workspace/` |
 | Change slot / conflict rules | `backend/src/scheduling.ts` |
 | Change alert icons or ordering | `frontend/src/lib/alerts.ts` |
@@ -211,6 +217,54 @@ after a later participant cancellation or affiliation deactivation.
 `POST /api/bookings/:id/reschedule` (one-sided) still exists but **refuses any
 booking with a registered student or pending coach acceptance**. Do not reach
 for it.
+
+### Google Calendar is a projection, never the booking record
+
+The integration belongs to the global `User`. A `STUDENT` connects once for
+lessons across clubs, and a portable `COACH` connects once across club
+affiliations and their `SOLO` practice. A `CLUB` account is institutional and
+cannot connect a calendar or administer a coach's credentials.
+
+Courtly is always authoritative. Only `CONFIRMED` bookings have a desired
+Google event; pending bookings do not. Accepted reschedules update that
+projection and cancellations remove it asynchronously. Never import a Google
+edit into a `Booking`, and never make a successful Courtly mutation wait for a
+provider call. The backend process runs the durable worker that reconciles
+queued event projections and retries provider failures.
+Booking mutations enqueue only when Calendar is configured and a connected
+coach, active linked student, existing projection, or existing job makes the
+booking relevant. Keep that gate: disabled deployments and unrelated users
+must not accumulate dead outbox work.
+
+External conflict checking for students and coaches is advisory. It may use
+only a fresh cache of Google free/busy intervals, never event titles,
+descriptions, attendees, locations, or other details. If the cache is stale or
+unavailable, fail open and apply Courtly's normal availability and conflict
+rules. Do not call Google from inside the scheduling transaction or instructor
+advisory lock.
+
+OAuth tokens are encrypted with `CALENDAR_TOKEN_ENCRYPTION_KEYS`; the active
+ID chooses the key for new writes, while old keys remain available for reads
+during rotation. Tokens and provider error bodies never enter API serializers,
+logs, alerts, or client state. Calendar tests mock Google; no test calls the
+live provider.
+
+The six Calendar tables separate connections, OAuth attempts, encrypted
+post-exchange revocation jobs, event projections, booking-sync jobs, and
+privacy-minimized busy intervals. A callback must durably record a revocation
+job immediately after token exchange and delete it only in the transaction
+that persists the connection and initial outbox work. Provider HTTP never runs
+inside an explicit database transaction. Disconnect remains available after
+Calendar configuration is removed so local credentials and projections can
+still be discarded; in that state provider-side cleanup is necessarily left
+to the user.
+
+The account-level routes are `GET /api/calendar/connection`, `POST
+/api/calendar/google/connect`, `GET /api/calendar/google/callback`, `PATCH` and
+`DELETE /api/calendar/connection`, and `POST /api/calendar/sync`. They require
+an authenticated global account but no selected workspace; the mutating routes
+still use strict bodies. OAuth return targets are restricted to `/account`,
+`/?tab=profile`, and `/manage?tab=profile`.
 
 ### Payments are reversible, never deleted
 
@@ -392,6 +446,10 @@ with real data, since only the second exercises repair and historical audits.
 | `E2E_DISABLE_RATE_LIMITS` | backend | Explicit non-production-only bypass for the full browser suite; never deploy |
 | `ADMIN_PASSWORD` | backend | Unlocks `/admin`; unset disables it entirely |
 | `GOOGLE_MAPS_API_KEY` | backend | **Optional.** Enables Places venue search |
+| `GOOGLE_CALENDAR_CLIENT_ID`, `GOOGLE_CALENDAR_CLIENT_SECRET` | backend | Optional Google OAuth web-client credentials |
+| `GOOGLE_CALENDAR_REDIRECT_URI` | backend | Exact public `/api/calendar/google/callback` URI registered with Google |
+| `CALENDAR_TOKEN_ENCRYPTION_KEYS` | backend | Comma-separated `keyId:base64` keys; each decodes to 32 bytes |
+| `CALENDAR_TOKEN_ACTIVE_KEY_ID` | backend | Key ID used to encrypt new OAuth tokens |
 | `BACKEND_URL` | frontend | Server-side rewrite target; build-time |
 | `ELEVER_RESET_CONFIRMATION` | one-off CLI | Exact destructive-operation phrase required by `demo:elever` |
 | `ELEVER_EXPECTED_DATABASE_SHA256` | one-off CLI | SHA-256 fingerprint of the exact `DATABASE_URL` targeted by `demo:elever` |
@@ -417,10 +475,23 @@ quickest way to tell which mode a deployment is in.
   gateway, email, or SMS is connected.
 - Courtly reserves *coach time*, never an external court. A venue needing
   approval leaves the booking `PENDING` for a human to secure.
+- Google Calendar is a one-way, eventually consistent view of confirmed
+  lessons. Remote edits do not change Courtly, and stale external free/busy
+  data never blocks scheduling.
 
 ---
 
 ## Changelog
+
+### 2.7.0 — 2026-09-25
+
+Added user-owned Google Calendar integration for student and coach accounts.
+Confirmed Courtly lessons project asynchronously to personal calendars, while
+reschedules and cancellations reconcile without making provider availability
+part of the booking transaction. Optional external-conflict checks cache only
+free/busy intervals and fail open when fresh data is unavailable. OAuth tokens
+are encrypted with rotatable deployment keys; club accounts cannot connect,
+and Google edits never alter Courtly.
 
 ### 2.6.0 — 2026-09-25
 
