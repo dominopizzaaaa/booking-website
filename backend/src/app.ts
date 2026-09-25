@@ -16,6 +16,7 @@ import { staffRouter } from './staff.js';
 import { accountRouter } from './account-notifications.js';
 import { venuesRouter } from './venues.js';
 import { integrityRouter } from './integrity.js';
+import { calendarRouter } from './calendar.js';
 import { HttpError } from './http.js';
 import { prisma } from './db.js';
 export const app = express();
@@ -48,6 +49,7 @@ app.get('/api/health', async (_req, res) => {
       accountProfile: true, rescheduleRequests: true, coachAcceptance: true,
       paymentReversal: true, integrityFlags: true,
       venueSearch: config.googleMapsApiKey ? 'google-places' : 'maps-link',
+      googleCalendar: config.googleCalendar.enabled ? 'configured' : 'disabled',
     },
   }); }
   catch { res.status(503).json({ error: 'Database is unavailable' }); }
@@ -55,6 +57,8 @@ app.get('/api/health', async (_req, res) => {
 app.use('/api/auth', authRouter);
 app.use('/api', adminRouter);
 app.use('/api', publicRouter);
+// Calendar grants belong to the global person, not a selected workspace.
+app.use('/api/calendar', requireAuth, calendarRouter);
 app.use('/api/account', requireAuth, requireStudent, accountRouter);
 // Account-only public booking management installs its own authentication
 // middleware. Every provider route below additionally requires an active,

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import bcrypt from 'bcryptjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -14,6 +15,9 @@ const prismaCli = fileURLToPath(new URL('../node_modules/prisma/build/index.js',
 const tsxCli = fileURLToPath(new URL('../node_modules/tsx/dist/cli.mjs', import.meta.url));
 const provisioner = fileURLToPath(new URL('../prisma/provision-elever-showcase.ts', import.meta.url));
 const resetConfirmation = 'DELETE ALL COURTLY APPLICATION DATA AND PROVISION ELEVER';
+const expectedMigrationCount = readdirSync(new URL('../prisma/migrations/', import.meta.url), { withFileTypes: true })
+  .filter(entry => entry.isDirectory())
+  .length;
 
 const passwords = {
   club: 'Test-Elever-Club!2026',
@@ -24,7 +28,9 @@ const passwords = {
 } as const;
 
 const applicationTables = [
-  'AccountNotification', 'AuthSession', 'Availability', 'AvailabilityException', 'Booking',
+  'AccountNotification', 'CalendarBusyInterval', 'CalendarEventProjection', 'CalendarOAuthAttempt',
+  'CalendarRevocationJob',
+  'CalendarSyncJob', 'CalendarConnection', 'AuthSession', 'Availability', 'AvailabilityException', 'Booking',
   'Business', 'Instructor', 'IntegrityFlag', 'LessonPackage', 'Location', 'Membership',
   'Notification', 'Participant', 'Payment', 'RescheduleRequest', 'Service',
   'ServiceInstructor', 'ServiceLocation', 'Student', 'User',
@@ -315,7 +321,7 @@ describe.sequential('Elever showcase provisioner integration', () => {
     )).toBe(true);
 
     const counts = await snapshot(database);
-    expect(counts._prisma_migrations.count).toBe(16);
+    expect(counts._prisma_migrations.count).toBe(expectedMigrationCount);
     expect(await database.$queryRawUnsafe<Array<{ failed: number; rolledBack: number }>>(`
       SELECT
         COUNT(*) FILTER (WHERE finished_at IS NULL AND rolled_back_at IS NULL)::int AS failed,
@@ -324,6 +330,12 @@ describe.sequential('Elever showcase provisioner integration', () => {
     `)).toEqual([{ failed: 0, rolledBack: 0 }]);
     expect(Object.fromEntries(applicationTables.map(table => [table, counts[table].count]))).toEqual({
       AccountNotification: 2,
+      CalendarBusyInterval: 0,
+      CalendarEventProjection: 0,
+      CalendarOAuthAttempt: 0,
+      CalendarRevocationJob: 0,
+      CalendarSyncJob: 0,
+      CalendarConnection: 0,
       AuthSession: 0,
       Availability: 28,
       AvailabilityException: 0,

@@ -44,6 +44,7 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
         paymentReversal: true,
         integrityFlags: true,
         venueSearch: 'maps-link',
+        googleCalendar: 'disabled',
       },
     });
 

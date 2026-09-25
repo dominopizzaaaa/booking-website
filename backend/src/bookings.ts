@@ -6,6 +6,7 @@ import { bookingInput, cancelBooking, createBookings, lockInstructors, reschedul
 import { bookingInclude, bookingJson, paymentJson, withoutBookingFinancials } from './serializers.js';
 import { createBookingAccountAlerts } from './account-notifications.js';
 import { notifyWorkspace } from './notifications.js';
+import { enqueueCalendarSync } from './calendar-sync.js';
 import {
   acceptRescheduleRequest,
   createRescheduleRequest,
@@ -120,6 +121,7 @@ bookingsRouter.patch('/bookings/:id', asyncRoute(async (req, res) => {
           : body.status === 'COMPLETED' ? 'COMPLETED'
             : null;
       if (event) await createBookingAccountAlerts(tx, current.id, event);
+      await enqueueCalendarSync(tx, current.id);
     }
     if (body.notes !== undefined) await tx.booking.update({ where: { id: current.id }, data: { notes: body.notes } });
     return tx.booking.findUniqueOrThrow({ where: { id: current.id }, include: bookingInclude });
@@ -181,6 +183,7 @@ bookingsRouter.post('/bookings/:id/accept', asyncRoute(async (req, res) => {
       message: `${updated.service.name} with ${updated.instructor.name} was accepted.${venuePending ? ' The venue still needs to be secured.' : ''}`,
     });
     await createBookingAccountAlerts(tx, current.id, 'COACH_ACCEPTED');
+    await enqueueCalendarSync(tx, current.id);
     return updated;
   });
   const json = bookingJson(result);

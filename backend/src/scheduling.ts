@@ -8,6 +8,8 @@ import { bookingInclude, bookingJson } from './serializers.js';
 import { createBookingAccountAlerts } from './account-notifications.js';
 import { notifyWorkspace } from './notifications.js';
 import { flagPrivateSessionsAfterClub } from './integrity.js';
+import { enqueueCalendarSync } from './calendar-sync.js';
+import { config } from './config.js';
 
 const bookingSelection = {
   serviceId: z.string().min(1), instructorId: z.string().min(1), locationId: z.string().min(1),
@@ -92,7 +94,25 @@ export const bookableInstructorWhere = (businessId?: string): Prisma.InstructorW
 });
 
 export async function lockInstructors(tx: Tx, ids: string[]) {
-  for (const id of [...new Set(ids)].sort()) await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${id}, 0))`;
+  const instructorIds = [...new Set(ids)].sort();
+  const instructors = await tx.instructor.findMany({
+    where: { id: { in: instructorIds } },
+    select: { membership: { select: { userId: true } } },
+  });
+  // A coach is portable across workspaces. Serialize their whole Courtly
+  // schedule by global account before retaining the per-roster lock used by
+  // existing lifecycle writers and historical, unlinked instructors.
+  const coachUserIds = [...new Set(instructors.flatMap(instructor =>
+    instructor.membership?.userId ? [instructor.membership.userId] : [],
+  ))].sort();
+  for (const userId of coachUserIds) await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 0))`;
+  for (const id of instructorIds) await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${id}, 0))`;
+}
+
+async function lockStudents(tx: Tx, userIds: Array<string | null | undefined>) {
+  for (const userId of [...new Set(userIds.filter((id): id is string => !!id))].sort()) {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`student:${userId}`}, 0))`;
+  }
 }
 export function travelMinutes(from: { id: string; travelMinutes: number }, to: { id: string; travelMinutes: number }) {
   return from.id === to.id ? 0 : Math.max(from.travelMinutes, to.travelMinutes);
@@ -119,7 +139,10 @@ export async function schedulingContext(tx: Tx, businessId: string, serviceId: s
   const [business, service, instructor, location, blocks, exceptions] = await Promise.all([
     tx.business.findUniqueOrThrow({ where: { id: businessId } }),
     tx.service.findFirst({ where: { id: serviceId, businessId, active: true }, include: { locations: { include: { instructors: true } } } }),
-    tx.instructor.findFirst({ where: { id: instructorId, ...bookableInstructorWhere(businessId) } }),
+    tx.instructor.findFirst({
+      where: { id: instructorId, ...bookableInstructorWhere(businessId) },
+      include: { membership: { select: { userId: true } } },
+    }),
     tx.location.findFirst({ where: { id: locationId, businessId, active: true } }),
     tx.availability.findMany({ where: { businessId, instructorId, locationId } }),
     tx.availabilityException.findMany({ where: { businessId, instructorId } }),
@@ -130,7 +153,42 @@ export async function schedulingContext(tx: Tx, businessId: string, serviceId: s
   return { business, service, instructor, location, blocks, exceptions, assignment };
 }
 type Context = Awaited<ReturnType<typeof schedulingContext>>;
-export async function evaluateSlot(tx: Tx, ctx: Context, startAt: Date, excludeBookingId?: string, snapshot?: { duration: number; bufferMinutes: number }) {
+type SlotEvaluationOptions = {
+  excludeBookingId?: string;
+  snapshot?: { duration: number; bufferMinutes: number };
+  studentUserIds?: Array<string | null | undefined>;
+};
+
+async function hasCachedCalendarBusy(
+  tx: Tx,
+  candidate: { userId: string; startAt: Date; endAt: Date },
+) {
+  if (!config.googleCalendar.enabled) return false;
+  return (await tx.calendarBusyInterval.findFirst({
+    where: {
+      connection: { userId: candidate.userId, status: 'ACTIVE', busyCheckEnabled: true },
+      expiresAt: { gt: new Date() },
+      startAt: { lt: candidate.endAt },
+      endAt: { gt: candidate.startAt },
+    },
+    select: { id: true },
+  })) !== null;
+}
+
+export async function evaluateSlot(
+  tx: Tx,
+  ctx: Context,
+  startAt: Date,
+  optionsOrBookingId: SlotEvaluationOptions | string = {},
+  legacySnapshot?: { duration: number; bufferMinutes: number },
+) {
+  // Accept the old positional form while callers migrate to the options bag.
+  const options = typeof optionsOrBookingId === 'string'
+    ? { excludeBookingId: optionsOrBookingId, snapshot: legacySnapshot }
+    : optionsOrBookingId;
+  const { excludeBookingId, snapshot } = options;
+  const studentUserIds = [...new Set(options.studentUserIds?.filter((id): id is string => !!id) ?? [])];
+  await lockStudents(tx, studentUserIds);
   const duration = snapshot?.duration ?? ctx.assignment.duration;
   const buffer = snapshot?.bufferMinutes ?? ctx.service.bufferMinutes;
   const endAt = new Date(startAt.getTime() + duration * 60_000);
@@ -139,11 +197,58 @@ export async function evaluateSlot(tx: Tx, ctx: Context, startAt: Date, excludeB
   const local = DateTime.fromJSDate(startAt, { zone: ctx.business.timezone });
   if (ctx.exceptions.some(e => e.date === local.toISODate())) return result('Coach is unavailable on this date');
   if (!fitsWorkingHours(startAt, endAt, ctx.business.timezone, ctx.blocks, buffer)) return result('Outside working hours at this location');
-  const nearby = await tx.booking.findMany({ where: { businessId: ctx.business.id, instructorId: ctx.instructor.id, status: { not: 'CANCELLED' }, id: excludeBookingId ? { not: excludeBookingId } : undefined, startAt: { lt: new Date(endAt.getTime() + 86400_000) }, endAt: { gt: new Date(startAt.getTime() - 86400_000) } }, include: { location: true, participants: { where: { cancelledAt: null } } } });
-  const group = nearby.find(b => ctx.service.type === 'GROUP' && b.type === 'GROUP' && b.serviceId === ctx.service.id && b.locationId === ctx.location.id && b.startAt.getTime() === startAt.getTime());
+  const coachUserId = ctx.instructor.membership?.userId;
+  const nearby = await tx.booking.findMany({
+    where: {
+      ...(coachUserId
+        ? { instructor: { membership: { is: { userId: coachUserId } } } }
+        : { businessId: ctx.business.id, instructorId: ctx.instructor.id }),
+      status: { not: 'CANCELLED' },
+      id: excludeBookingId ? { not: excludeBookingId } : undefined,
+      startAt: { lt: new Date(endAt.getTime() + 86400_000) },
+      endAt: { gt: new Date(startAt.getTime() - 86400_000) },
+    },
+    include: { location: true, participants: { where: { cancelledAt: null } } },
+  });
+  // Joining an existing group is the only same-time booking that is not a
+  // coach conflict. It must remain local to the selected business and roster.
+  const group = nearby.find(b => b.businessId === ctx.business.id
+    && b.instructorId === ctx.instructor.id
+    && ctx.service.type === 'GROUP' && b.type === 'GROUP'
+    && b.serviceId === ctx.service.id && b.locationId === ctx.location.id
+    && b.startAt.getTime() === startAt.getTime());
   if (group && (group.endAt.getTime() !== endAt.getTime() || group.status === 'COMPLETED')) return result('Existing group has a different duration or is completed');
   const conflict = nearby.find(b => b.id !== group?.id && hasTimeConflict({ startAt, endAt, location: ctx.location, bufferMinutes: buffer }, b));
   if (conflict) return result(conflict.locationId === ctx.location.id ? 'Coach already has a session or preparation buffer' : 'Coach is booked elsewhere or needs travel time');
+  const excludedBookingIds = [excludeBookingId, group?.id].filter((id): id is string => !!id);
+  if (studentUserIds.length && await tx.booking.findFirst({
+    where: {
+      status: { in: ['PENDING', 'CONFIRMED'] },
+      ...(excludedBookingIds.length ? { id: { notIn: excludedBookingIds } } : {}),
+      startAt: { lt: endAt },
+      endAt: { gt: startAt },
+      participants: {
+        some: { cancelledAt: null, student: { userId: { in: studentUserIds } } },
+      },
+    },
+    select: { id: true },
+  })) {
+    return result('Student already has a session at this time');
+  }
+  // Courtly-authored events are omitted when the worker builds this cache, so
+  // the candidate cannot collide with its own projection on a reschedule.
+  if (coachUserId && await hasCachedCalendarBusy(tx, {
+    userId: coachUserId, startAt, endAt,
+  })) {
+    return result('Coach has a conflict in their connected calendar');
+  }
+  for (const studentUserId of studentUserIds) {
+    if (await hasCachedCalendarBusy(tx, {
+      userId: studentUserId, startAt, endAt,
+    })) {
+      return result('Student has a conflict in their connected calendar');
+    }
+  }
   const remaining = group ? group.capacity - group.participants.length : ctx.service.capacity;
   if (remaining <= 0) return result('This group is full');
   return result('', remaining, group?.id);
@@ -230,7 +335,7 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
   const conflicts = [];
   for (let week = 0; week < input.repeatWeeks; week++) {
     const date = first.plus({ weeks: week }).toJSDate();
-    const slot = await evaluateSlot(tx, ctx, date);
+    const slot = await evaluateSlot(tx, ctx, date, { studentUserIds: [student.userId] });
     if (!slot.available) conflicts.push({ date: date.toISOString(), reason: slot.reason });
     if (slot.groupId && await tx.participant.findFirst({ where: { bookingId: slot.groupId, studentId: student.id, cancelledAt: null } })) conflicts.push({ date: date.toISOString(), reason: 'Student is already enrolled in this group' });
     occurrences.push(slot);
@@ -267,6 +372,7 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
     const participantData = { managementTokenHash: null, managementTokenExpiresAt: null, managementTokenRevokedAt: null, notes: accountBooking ? input.notes : '', price: sessionSnapshot.price, packageId: pkg?.id ?? null, paid: pkg?.paid ?? false, creditConsumed: !!pkg, cancelledAt: null, attendance: 'UNMARKED' };
     if (existing) await tx.participant.update({ where: { id: existing.id }, data: participantData });
     else await tx.participant.create({ data: { bookingId, studentId: student.id, ...participantData } });
+    await enqueueCalendarSync(tx, bookingId);
     const booking = await tx.booking.findUniqueOrThrow({ where: { id: bookingId }, include: bookingInclude });
     const json = bookingJson(booking, { includeNotes: !accountBooking });
     booked.push(accountBooking
@@ -324,6 +430,7 @@ export async function cancelBooking(tx: Tx, businessId: string, bookingId: strin
   await tx.booking.update({ where: { id: bookingId }, data: { status: 'CANCELLED' } });
   await notifyWorkspace(tx, { businessId, instructorId: current.instructorId, bookingId, type: 'CANCELLATION', title: 'Session cancelled', message: 'Package credits were restored. Cancellation notification queued; no external message has been sent.' });
   await createBookingAccountAlerts(tx, bookingId, 'PROVIDER_CANCELLED');
+  await enqueueCalendarSync(tx, bookingId);
 }
 
 export async function rescheduleBooking(tx: Tx, businessId: string, bookingId: string, changes: { startAt: string }) {
@@ -347,11 +454,16 @@ export async function rescheduleBooking(tx: Tx, businessId: string, bookingId: s
   // booking before availability evaluation or writes so retries are harmless.
   if (startAt.getTime() === booking.startAt.getTime()) return bookingJson(booking);
   const ctx = await schedulingContext(tx, businessId, booking.serviceId, booking.instructorId, booking.locationId);
-  const slot = await evaluateSlot(tx, ctx, startAt, booking.id, { duration: booking.duration, bufferMinutes: booking.bufferMinutes });
+  const slot = await evaluateSlot(tx, ctx, startAt, {
+    excludeBookingId: booking.id,
+    snapshot: { duration: booking.duration, bufferMinutes: booking.bufferMinutes },
+    studentUserIds: booking.participants.map(participant => participant.student.userId),
+  });
   if (!slot.available || slot.groupId) throw new HttpError(409, 'Requested time is unavailable', { conflicts: [{ date: changes.startAt, reason: slot.reason || 'A group already occupies that time' }] });
   if (booking.participants.some(p => p.package && p.package.expiresAt < startAt)) throw new HttpError(400, 'Package would expire before the rescheduled session');
   const updated = await tx.booking.update({ where: { id: booking.id }, data: { startAt, endAt: slot.endAt, instructorId: ctx.instructor.id, locationId: ctx.location.id, status: (ctx.location.requiresApproval || ctx.location.type === 'RENTED') ? 'PENDING' : 'CONFIRMED' }, include: bookingInclude });
   await notifyWorkspace(tx, { businessId, instructorId: updated.instructorId, bookingId: updated.id, type: 'RESCHEDULE', title: 'Session rescheduled', message: 'Schedule updated. Change notification and reminder queued in Courtly; external delivery is not configured.' });
   await createBookingAccountAlerts(tx, booking.id, 'RESCHEDULED');
+  await enqueueCalendarSync(tx, booking.id);
   return bookingJson(updated);
 }

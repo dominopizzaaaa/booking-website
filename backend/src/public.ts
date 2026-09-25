@@ -12,6 +12,7 @@ import { bookingInclude, bookingJson, publicBookingBusiness, publicInstructor, p
 import { bookableInstructorWhere, createBookings, evaluateSlot, lockInstructors, publicBookingInput, refundParticipant, rescheduleBooking, schedulingContext } from './scheduling.js';
 import { createBookingAccountAlerts } from './account-notifications.js';
 import { notifyWorkspace } from './notifications.js';
+import { enqueueCalendarSync } from './calendar-sync.js';
 import {
   acceptRescheduleRequest,
   assertInsideRescheduleWindow,
@@ -382,6 +383,7 @@ publicRouter.post('/manage/:token/cancel', bookingLimit, asyncRoute(async (req, 
     await tx.participant.update({ where: { id: participant.id }, data: { cancelledAt: new Date() } });
     const remaining = await tx.participant.count({ where: { bookingId: participant.bookingId, cancelledAt: null } });
     if (!remaining) await tx.booking.update({ where: { id: participant.bookingId }, data: { status: 'CANCELLED' } });
+    await enqueueCalendarSync(tx, participant.bookingId);
     await notifyWorkspace(tx, {
       businessId: participant.booking.businessId, instructorId: participant.booking.instructorId,
       bookingId: participant.bookingId, type: 'CANCELLATION', actionNeeded: true,
@@ -448,6 +450,7 @@ publicRouter.post('/account/bookings/:participantId/cancel', bookingLimit, requi
     await tx.participant.update({ where: { id: participant.id }, data: { cancelledAt: new Date() } });
     const remaining = await tx.participant.count({ where: { bookingId: participant.bookingId, cancelledAt: null } });
     if (!remaining) await tx.booking.update({ where: { id: participant.bookingId }, data: { status: 'CANCELLED' } });
+    await enqueueCalendarSync(tx, participant.bookingId);
     await notifyWorkspace(tx, { businessId: participant.booking.businessId, instructorId: participant.booking.instructorId, bookingId: participant.bookingId, type: 'CANCELLATION', actionNeeded: true, title: 'Student cancelled a booking', message: 'The student cancelled through their account. Any consumed package credit was restored. Cancellation notice queued; no external message sent.' });
     await createBookingAccountAlerts(tx, participant.bookingId, 'STUDENT_CANCELLED', [req.auth.user.id]);
   });

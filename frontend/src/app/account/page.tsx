@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ArrowRight, Building2, Check, Loader2, LogOut, Pencil, Plus, RefreshCw, ShieldCheck, UserRound, X } from 'lucide-react';
+import { CalendarConnectionCard } from '@/components/calendar-connection-card';
 import { CourtlyLogo } from '@/components/public-booking';
 import { Button } from '@/components/ui/button';
 import { api, ApiError, createOwnPractice, mutate } from '@/lib/api';
@@ -237,6 +238,8 @@ export default function AccountPage() {
                   {clubAccount && <div className="rounded-xl bg-[#f4f7ef] p-4 sm:col-span-2"><p className="text-[10px] uppercase tracking-[1.2px] text-stone-400">Sign-in email</p><p className="mt-1 break-all text-xs font-semibold text-[#405941]">{state.user.email}</p><p className="mt-1 text-[10px] text-stone-500">Separate from the public contact email above.</p></div>}
                 </div>}
               </section>
+
+              <CalendarConnectionCard accountType={state.user.accountType} returnTo="/account" />
 
               <section className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-workspaces-heading">
                 <div className="flex items-start gap-3"><ShieldCheck size={18} className="mt-0.5 shrink-0 text-[#6f865f]" /><div><h2 id="account-workspaces-heading" className="text-sm text-[#405941]">{clubAccount ? 'Your club workspace' : 'Your coaching workspaces'}</h2><p className="mt-1 text-[11px] leading-relaxed text-stone-500">{clubAccount ? 'A club account has one club and never switches to another.' : `Clubs add your coach account using ${state.user.email}. Your password always remains yours.`}</p></div></div>

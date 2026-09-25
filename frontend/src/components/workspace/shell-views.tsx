@@ -30,6 +30,7 @@ import {
   UsersRound,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { CalendarConnectionCard } from '@/components/calendar-connection-card';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { mutate } from '@/lib/api';
@@ -448,6 +449,7 @@ export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusiness
       </div>
       <aside className="space-y-5">
         <section className="panel overflow-hidden"><div className="panel-heading"><h2 className="text-[#294735]">Account &amp; support</h2></div><div className="workspace-profile-actions px-3 pb-3"><button type="button" className="nav-link !min-h-11" onClick={clubAccount ? onBusinessSettings : onEditProfile}><UserRound size={16} />{clubAccount ? 'Club details' : 'Personal details'}<ArrowRight size={13} className="ml-auto" /></button><button type="button" className="nav-link !min-h-11" onClick={onHelp}><HelpCircle size={16} />A little help<ArrowRight size={13} className="ml-auto" /></button><button type="button" className="nav-link !min-h-11 text-[#8b625c]!" onClick={onSignOut}><LogOut size={16} />Sign out</button></div></section>
+        <CalendarConnectionCard accountType={data.user.accountType} returnTo="/?tab=profile" />
         {isCoach && onNavigate && <section className="panel overflow-hidden">
           <div className="panel-heading"><h2 className="text-[#294735]">My workspaces</h2></div>
           <div className="px-5 pb-5 sm:px-6 sm:pb-6">
