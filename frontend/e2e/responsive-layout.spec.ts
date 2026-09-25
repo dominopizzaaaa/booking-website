@@ -129,16 +129,17 @@ test.describe('every screen fits the screen it is on', () => {
     // A booking page is the first thing a prospective student ever sees, and
     // they see it on a phone.
     await page.goto(`/book/${slug}`);
-    await expect(page.getByRole('heading', { name: 'Good days start with a lesson.', exact: true }))
+    await expect(page.getByRole('heading', { name: 'Good days start with a class.', exact: true }))
       .toBeVisible({ timeout: 45_000 });
     await expectNoSidewaysScroll(page);
 
+    const studentEmail = uniqueEmail('layout-student', testInfo.project.name);
     await page.goto('/signup');
     const accountTypes = page.getByRole('group', { name: 'I’m joining Courtly as', exact: true });
     await accountTypes.getByRole('radio', { name: 'Student', exact: true }).check();
     await page.getByLabel('Your full name', { exact: true }).fill('Layout Student');
-    await page.getByLabel('Email address', { exact: true })
-      .fill(uniqueEmail('layout-student', testInfo.project.name));
+    await page.getByLabel('Username', { exact: true }).fill(`rls_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-26)}`);
+    await page.getByLabel('Email address', { exact: true }).fill(studentEmail);
     await page.getByLabel('Password', { exact: true }).fill(password);
     await page.getByRole('button', { name: 'Create student account', exact: true }).click();
 

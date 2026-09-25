@@ -2,7 +2,7 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { app } from '../src/app.js';
 import {
-  TestTenants, createAccount, createPackage, createSession, createStudent, prisma, verifyTestDatabase, type Fixture,
+  TestTenants, createPackage, createSession, createStudent, prisma, verifyTestDatabase, type Fixture,
 } from './fixtures.js';
 
 const tenants = new TestTenants();
@@ -92,56 +92,41 @@ describe.sequential('Provider reschedule response privacy', () => {
     expectFinancialBookingFields(accepted.body.booking, pkg.id);
   });
 
-  it('keeps full reschedule booking financials for a coach managing a solo practice', async () => {
-    const practice = await request(app).post('/api/auth/practice')
-      .set('Cookie', club.coachCookie).send({ name: 'Solo Privacy Practice' }).expect(201);
-    const businessId = practice.body.business.id as string;
-    const instructorId = practice.body.membership.instructorId as string;
-    tenants.own(businessId);
+  it('keeps retained solo practices out of provider reschedule routes', async () => {
+    const historical = await prisma.$transaction(async tx => {
+      const business = await tx.business.create({
+        data: {
+          name: 'Retained Privacy Practice', slug: `retained-privacy-${club.business.id}`,
+          ownerName: club.coachUser.name, email: club.coachUser.email,
+          kind: 'SOLO', legacyReadOnly: true,
+        },
+      });
+      const instructor = await tx.instructor.create({
+        data: {
+          businessId: business.id, name: club.coachUser.name, initials: 'TC',
+          email: club.coachUser.email,
+        },
+      });
+      const membership = await tx.membership.create({
+        data: {
+          businessId: business.id, userId: club.coachUser.id, instructorId: instructor.id,
+        },
+      });
+      return { business, membership };
+    });
+    tenants.own(historical.business.id);
+    const legacySession = await createSession(club, club.coachUser.id, historical.membership.id);
+    const { booking, studentSession } = await clubBooking(9);
+    const requestId = await studentProposal(booking, studentSession.cookie, 10);
 
-    const location = await prisma.location.create({
-      data: { businessId, name: 'Solo Privacy Court', travelMinutes: 20 },
-    });
-    const service = await prisma.service.create({
-      data: {
-        businessId, name: 'Solo Privacy Lesson', type: 'PRIVATE', capacity: 1,
-        duration: 60, price: 8000, noticeHours: 0, bufferMinutes: 0,
-        locations: { create: {
-          locationId: location.id, price: 8000, duration: 60,
-          instructors: { create: { instructorId } },
-        } },
-      },
-    });
-    await prisma.availability.createMany({
-      data: Array.from({ length: 7 }, (_, dayOfWeek) => ({
-        businessId, instructorId, locationId: location.id, dayOfWeek, startTime: '08:00', endTime: '20:00',
-      })),
-    });
-    const studentAccount = await createAccount(club, { name: 'Solo Privacy Student' });
-    const studentSession = await createSession(club, studentAccount.id);
-    const student = await prisma.student.create({
-      data: {
-        businessId, userId: studentAccount.id, name: studentAccount.name, initials: 'SP', email: studentAccount.email,
-      },
-    });
-    const pkg = await prisma.lessonPackage.create({
-      data: {
-        businessId, studentId: student.id, serviceId: service.id, name: 'Solo Privacy Package',
-        totalCredits: 5, usedCredits: 0, price: 40000, expiresAt: club.starts.plus({ months: 6 }).toJSDate(), paid: true,
-      },
-    });
-    const created = await request(app).post('/api/bookings').set('Cookie', club.coachCookie).send({
-      serviceId: service.id, instructorId, locationId: location.id,
-      startAt: club.starts.plus({ days: 9 }).toISO(), studentId: student.id, packageId: pkg.id,
-    }).expect(201);
-    const booking = created.body.bookings[0] as { id: string; participants: Array<{ id: string }> };
-    const proposed = await request(app)
-      .post(`/api/account/bookings/${booking.participants[0]!.id}/reschedule-requests`)
-      .set('Cookie', studentSession.cookie).send({ startAt: club.starts.plus({ days: 10 }).toISO() }).expect(201);
-    const accepted = await request(app)
-      .post(`/api/reschedule-requests/${proposed.body.rescheduleRequest.id}/accept`)
-      .set('Cookie', club.coachCookie).send({}).expect(200);
-
-    expectFinancialBookingFields(accepted.body.booking, pkg.id);
+    const denied = await request(app).post(`/api/reschedule-requests/${requestId}/accept`)
+      .set('Cookie', legacySession.cookie).send({}).expect(403);
+    expect(denied.body.error).toBe('Select a business workspace to continue');
+    expect(await prisma.authSession.findUniqueOrThrow({ where: { id: legacySession.session.id } }))
+      .toMatchObject({ activeMembershipId: null });
+    expect(await prisma.rescheduleRequest.findUniqueOrThrow({ where: { id: requestId } }))
+      .toMatchObject({ status: 'PENDING' });
+    expect(await prisma.booking.findUniqueOrThrow({ where: { id: booking.id } }))
+      .toMatchObject({ startAt: club.starts.plus({ days: 9 }).toJSDate() });
   });
 });

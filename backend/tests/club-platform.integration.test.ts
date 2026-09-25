@@ -4,6 +4,7 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { app } from '../src/app.js';
 import { initials } from '../src/http.js';
+import { flagPrivateSessionsAfterClub } from '../src/integrity.js';
 import { parseMapsLink } from '../src/venues.js';
 import {
   TestTenants, createAccount, createStudent, createSession, prisma, publicInputFor,
@@ -346,53 +347,68 @@ describe('Club and coach platform', () => {
       startAt: club.starts.plus({ days: 9 }).toISO(), studentId: clubStudent.id,
     }).expect(201);
 
-    // The same coach account now runs its own practice, where students pay the
-    // coach directly.
-    const practiceAuth = await request(app).post('/api/auth/practice')
-      .set('Cookie', coach.session.cookie).send({ name: 'Roster Coach Practice' }).expect(201);
-    const practiceBusiness = await prisma.business.findUniqueOrThrow({ where: { id: practiceAuth.body.business.id } });
-    tenants.own(practiceBusiness.id);
-    const practiceInstructor = await prisma.instructor.findUniqueOrThrow({
-      where: { id: practiceAuth.body.membership.instructorId },
+    // The private booking is retained history. New SOLO commercial writes are
+    // disabled, but the contractual DIRECT snapshot must still drive review.
+    const historical = await prisma.$transaction(async tx => {
+      const business = await tx.business.create({
+        data: {
+          name: 'Roster Coach Practice', slug: `roster-coach-practice-${randomUUID()}`,
+          ownerName: coach.account.name, email: coach.account.email, kind: 'SOLO', legacyReadOnly: true,
+        },
+      });
+      const instructor = await tx.instructor.create({
+        data: {
+          businessId: business.id, name: coach.account.name, initials: 'RC', email: coach.account.email,
+        },
+      });
+      const membership = await tx.membership.create({
+        data: { businessId: business.id, userId: coach.account.id, instructorId: instructor.id },
+      });
+      const location = await tx.location.create({
+        data: { businessId: business.id, name: 'Private Court', travelMinutes: 20 },
+      });
+      const service = await tx.service.create({
+        data: {
+          businessId: business.id, name: 'Private coaching', type: 'PRIVATE',
+          capacity: 1, duration: 60, price: 8000, noticeHours: 0, bufferMinutes: 0,
+          locations: { create: {
+            locationId: location.id, price: 8000, duration: 60,
+            instructors: { create: { instructorId: instructor.id } },
+          } },
+        },
+      });
+      const student = await tx.student.create({
+        data: {
+          businessId: business.id, name: 'Shared Student', initials: 'SS',
+          email: studentAccount.email, userId: studentAccount.id,
+        },
+      });
+      const startAt = club.starts.plus({ days: 10 });
+      // Reconstruct the old contract without reopening SOLO commerce to current writes.
+      await tx.$executeRawUnsafe(`SET LOCAL session_replication_role = replica`);
+      const booking = await tx.booking.create({
+        data: {
+          businessId: business.id, serviceId: service.id, instructorId: instructor.id,
+          locationId: location.id, startAt: startAt.toJSDate(),
+          endAt: startAt.plus({ minutes: 60 }).toJSDate(), duration: 60, type: 'PRIVATE',
+          capacity: 1, price: 8000, paymentRoute: 'DIRECT',
+          createdByUserId: coach.account.id, createdByRole: 'COACH',
+          participants: { create: { studentId: student.id, price: 8000 } },
+        },
+      });
+      await tx.$executeRawUnsafe(`SET LOCAL session_replication_role = origin`);
+      await flagPrivateSessionsAfterClub(tx, booking.id);
+      return { business, membership, booking };
     });
-    const practiceLocation = await prisma.location.create({
-      data: { businessId: practiceBusiness.id, name: 'Private Court', travelMinutes: 20 },
-    });
-    const practiceService = await prisma.service.create({
-      data: {
-        businessId: practiceBusiness.id, name: 'Private coaching', type: 'PRIVATE',
-        capacity: 1, duration: 60, price: 8000, noticeHours: 0, bufferMinutes: 0,
-        locations: { create: {
-          locationId: practiceLocation.id, price: 8000, duration: 60,
-          instructors: { create: { instructorId: practiceInstructor.id } },
-        } },
-      },
-    });
-    await prisma.availability.createMany({
-      data: Array.from({ length: 7 }, (_, dayOfWeek) => ({
-        businessId: practiceBusiness.id, instructorId: practiceInstructor.id, locationId: practiceLocation.id,
-        dayOfWeek, startTime: '08:00', endTime: '20:00',
-      })),
-    });
-    const practiceStudent = await prisma.student.create({
-      data: {
-        businessId: practiceBusiness.id, name: 'Shared Student', initials: 'SS',
-        email: studentAccount.email, userId: studentAccount.id,
-      },
-    });
-    const priv = await request(app).post('/api/bookings')
-      .set('Cookie', coach.session.cookie)
-      .send({
-        serviceId: practiceService.id, instructorId: practiceInstructor.id, locationId: practiceLocation.id,
-        startAt: club.starts.plus({ days: 10 }).toISO(), studentId: practiceStudent.id,
-      }).expect(201);
-    expect(priv.body.bookings[0].paymentRoute).toBe('DIRECT');
+    tenants.own(historical.business.id);
+    expect(historical.business).toMatchObject({ kind: 'SOLO', legacyReadOnly: true });
+    expect(historical.booking.paymentRoute).toBe('DIRECT');
 
     const flags = await request(app).get('/api/integrity-flags').set('Cookie', club.cookie).expect(200);
     const flag = flags.body.flags.find((candidate: { studentName: string }) => candidate.studentName === 'Shared Student');
     expect(flag).toMatchObject({
       status: 'OPEN', type: 'PRIVATE_SESSION_AFTER_CLUB', coachName: 'Roster Coach',
-      outsideBusinessName: practiceBusiness.name,
+      outsideBusinessName: historical.business.name,
     });
     expect(flag.detail).toContain('paid directly to the coach');
 
@@ -443,22 +459,22 @@ describe('Club and coach platform', () => {
       .set('Cookie', coach.session.cookie).send({ rescheduleNoticeHours: 1 }).expect(403);
   });
 
-  it('gives a coach their own practice where students pay them directly, without joining a club', async () => {
+  it('keeps a coach account global when private-practice creation is unavailable', async () => {
     const email = `${randomUUID()}@example.test`;
     const account = await createAccount(club, {
       name: 'Independent Coach', email, accountType: 'COACH', passwordHash: await bcrypt.hash(password, 4),
     });
     const agent = request.agent(app);
     await agent.post('/api/auth/login').send({ email, password }).expect(200);
-    const created = await agent.post('/api/auth/practice').send({ name: 'Independent Coaching' }).expect(201);
-    tenants.own(created.body.business.id);
-    expect(created.body.business).toMatchObject({ kind: 'SOLO', name: 'Independent Coaching' });
-    // The coach stays a coach: a practice is not a club, and no second role
-    // is invented for running one.
-    expect(created.body.user.accountType).toBe('COACH');
-    expect(created.body.membership.businessId).toBe(created.body.business.id);
-    // One practice per coach; a club is joined only by being added to it.
-    await agent.post('/api/auth/practice').send({ name: 'Another Practice' }).expect(409);
-    void account;
+    const created = await agent.post('/api/auth/practice')
+      .send({ name: 'Independent Coaching' }).expect(403);
+    expect(created.body.error).toBe('Select a business workspace to continue');
+    const auth = await agent.get('/api/auth/me').expect(200);
+    expect(auth.body).toMatchObject({
+      user: { id: account.id, accountType: 'COACH' }, membership: null, business: null, memberships: [],
+    });
+    expect(await prisma.business.count({
+      where: { kind: 'SOLO', memberships: { some: { userId: account.id } } },
+    })).toBe(0);
   });
 });

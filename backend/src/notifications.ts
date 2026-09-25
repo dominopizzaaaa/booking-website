@@ -29,6 +29,7 @@ type ProviderAlert = {
   businessId: string;
   instructorId?: string | null;
   bookingId?: string | null;
+  integrityFlagId?: string | null;
   type: NotificationType;
   title: string;
   message: string;
@@ -46,6 +47,7 @@ export function notifyWorkspace(tx: Tx, alert: ProviderAlert) {
       businessId: alert.businessId,
       instructorId: alert.instructorId ?? null,
       bookingId: alert.bookingId ?? null,
+      integrityFlagId: alert.integrityFlagId ?? null,
       type: alert.type,
       title: alert.title,
       message: alert.message,

@@ -34,6 +34,25 @@ describe.sequential('The money ledger', () => {
     return { booking, participant: booking.participants[0], studentId: booking.participants[0].studentId };
   }
 
+  async function purchasedPackage(rentalLocationId?: string) {
+    const account = await createAccount(f);
+    const student = await createStudent(f, { userId: account.id, name: account.name, email: account.email });
+    const { cookie } = await createSession(f, account.id);
+    const offer = await prisma.packageOffer.create({ data: {
+      businessId: f.business.id, name: 'Online five-class pass', description: '',
+      price: 40_000, totalCredits: 5, validityDays: 180,
+      services: { create: { serviceId: f.service.id } },
+      ...(rentalLocationId ? { rentalLocations: { create: { locationId: rentalLocationId } } } : {}),
+    } });
+    const checkout = await request(app).post(`/api/account/package-offers/${offer.id}/checkout`)
+      .set('Cookie', cookie).send({ idempotencyKey: randomUUID(), simulatedOutcome: 'SUCCEEDED' });
+    expect(checkout.status).toBe(201);
+    const payment = await prisma.payment.findUniqueOrThrow({
+      where: { paymentIntentId: checkout.body.paymentIntent.id },
+    });
+    return { account, student, cookie, packageId: checkout.body.package.id as string, payment };
+  }
+
   describe('a lesson paid in instalments', () => {
     // Coaches are paid in cash as often as not, and a student who is short
     // this week settles the rest next week. Neither instalment may be lost,
@@ -132,6 +151,36 @@ describe.sequential('The money ledger', () => {
   });
 
   describe('a package paid in instalments', () => {
+    it('serializes package scopes from every legacy package response', async () => {
+      const student = await createStudent(f);
+      const created = await request(app).post('/api/packages').set('Cookie', f.cookie).send({
+        studentId: student.id, name: 'Manual pass', serviceId: f.service.id, totalCredits: 5,
+        price: 40_000, expiresAt: f.starts.plus({ months: 6 }).toUTC().toISO(), paid: false,
+      });
+      expect(created.status).toBe(201);
+      expect(created.body).toMatchObject({ serviceIds: [], rentalLocationIds: [] });
+
+      const rental = await prisma.location.create({ data: {
+        businessId: f.business.id, name: 'Package rental court', type: 'FACILITY', active: true,
+        rentalEnabled: true, sport: 'Tennis', rentalPrice: 2500,
+      } });
+      const purchased = await purchasedPackage(rental.id);
+      const listed = await request(app).get('/api/packages').set('Cookie', f.cookie);
+      expect(listed.status).toBe(200);
+      expect(listed.body).toContainEqual(expect.objectContaining({
+        id: purchased.packageId, serviceIds: [f.service.id], rentalLocationIds: [rental.id],
+      }));
+
+      const updated = await request(app).patch(`/api/packages/${purchased.packageId}`)
+        .set('Cookie', f.cookie).send({ name: 'Renamed online pass' });
+      expect(updated.status).toBe(409);
+      expect(updated.body.error).toBe(
+        'A purchased package keeps the student, name, scope, credits, price, and expiry agreed at checkout',
+      );
+      expect(await prisma.lessonPackage.findUniqueOrThrow({ where: { id: purchased.packageId } }))
+        .toMatchObject({ name: 'Online five-class pass' });
+    });
+
     it('settles every lesson riding on the package at the moment it is paid off', async () => {
       const student = await createStudent(f);
       const pkg = await createPackage(f, student.id, { paid: false, price: 40_000, totalCredits: 5 });
@@ -178,6 +227,59 @@ describe.sequential('The money ledger', () => {
       });
       expect(response.status).toBe(400);
       expect(response.body.error).toBe('Record payment against this participant’s package instead');
+    });
+
+    it('refunds an unused online package but refuses once one of its credits backs a live lesson', async () => {
+      const unused = await purchasedPackage();
+      const refunded = await reverse(unused.payment.id, 'Student changed their mind');
+      expect(refunded.status).toBe(200);
+      expect(await prisma.lessonPackage.findUniqueOrThrow({ where: { id: unused.packageId } }))
+        .toMatchObject({ paid: false, usedCredits: 0 });
+      expect(await prisma.paymentIntent.findUniqueOrThrow({ where: { id: unused.payment.paymentIntentId! } }))
+        .toMatchObject({ status: 'REFUNDED' });
+
+      const consumed = await purchasedPackage();
+      await prisma.lessonPackage.update({ where: { id: consumed.packageId }, data: { usedCredits: 1 } });
+      const consumedRejection = await reverse(consumed.payment.id, 'Refund after redemption');
+      expect(consumedRejection.status).toBe(409);
+      expect(consumedRejection.body.error).toBe('This purchased package has already been used and cannot be refunded');
+
+      const used = await purchasedPackage();
+      const booking = await request(app).post(`/api/public/${f.business.slug}/bookings`)
+        .set('Cookie', used.cookie).send({
+          serviceId: f.service.id, instructorId: f.instructor.id, locationId: f.location.id,
+          startAt: f.starts.plus({ days: 1 }).toISO(), repeatWeeks: 1, packageId: used.packageId, notes: '',
+        });
+      expect(booking.status).toBe(201);
+      // The live relationship is independently protective even if a damaged
+      // legacy credit counter understates prior use.
+      await prisma.lessonPackage.update({ where: { id: used.packageId }, data: { usedCredits: 0 } });
+
+      const rejected = await reverse(used.payment.id, 'Refund after redemption');
+      expect(rejected.status).toBe(409);
+      expect(rejected.body.error).toBe('This purchased package has already been used and cannot be refunded');
+      expect(await prisma.lessonPackage.findUniqueOrThrow({ where: { id: used.packageId } }))
+        .toMatchObject({ paid: true, usedCredits: 0 });
+      expect(await prisma.payment.findUniqueOrThrow({ where: { id: used.payment.id } }))
+        .toMatchObject({ reversedAt: null });
+
+      const rentalLocation = await prisma.location.create({ data: {
+        businessId: f.business.id, name: 'Purchased pass court', type: 'FACILITY', active: true,
+        rentalEnabled: true, sport: 'Tennis', rentalPrice: 2500,
+      } });
+      const rentalUse = await purchasedPackage(rentalLocation.id);
+      const rentalUnit = await prisma.venueUnit.create({ data: {
+        businessId: f.business.id, locationId: rentalLocation.id, name: 'Court 1',
+      } });
+      await prisma.venueReservation.create({ data: {
+        businessId: f.business.id, locationId: rentalLocation.id, unitId: rentalUnit.id,
+        userId: rentalUse.account.id, startAt: f.starts.plus({ days: 3 }).toJSDate(),
+        endAt: f.starts.plus({ days: 3, hours: 1 }).toJSDate(), duration: 60, price: 2500,
+        status: 'CONFIRMED', paymentStatus: 'PACKAGE', packageId: rentalUse.packageId, creditConsumed: true,
+      } });
+      const rentalRejection = await reverse(rentalUse.payment.id, 'Refund after rental booking');
+      expect(rentalRejection.status).toBe(409);
+      expect(rentalRejection.body.error).toBe('This purchased package has already been used and cannot be refunded');
     });
   });
 
@@ -242,6 +344,40 @@ describe.sequential('The money ledger', () => {
       expect(response.body.error).toBe('Record a payment against a booking or a package, not both');
     });
 
+    it('leaves a rental checkout for the reservation cancellation flow to refund', async () => {
+      const account = await createAccount(f);
+      const student = await createStudent(f, { userId: account.id, name: account.name, email: account.email });
+      const { reservation, intent, payment } = await prisma.$transaction(async tx => {
+        const unit = await tx.venueUnit.create({ data: {
+          businessId: f.business.id, locationId: f.location.id, name: 'Court 1',
+        } });
+        const reservation = await tx.venueReservation.create({ data: {
+          businessId: f.business.id, locationId: f.location.id, unitId: unit.id,
+          userId: account.id, startAt: f.starts.plus({ days: 2 }).toJSDate(),
+          endAt: f.starts.plus({ days: 2, hours: 1 }).toJSDate(), duration: 60, price: 2500,
+          status: 'CONFIRMED', paymentStatus: 'PAID',
+        } });
+        const intent = await tx.paymentIntent.create({ data: {
+          userId: account.id, businessId: f.business.id, kind: 'RENTAL', reservationId: reservation.id,
+          amount: 2500, currency: f.business.currency, status: 'SUCCEEDED',
+          providerReference: `sim_pi_${randomUUID()}`, idempotencyKey: randomUUID(), confirmedAt: new Date(),
+        } });
+        const payment = await tx.payment.create({ data: {
+          businessId: f.business.id, studentId: student.id, paymentIntentId: intent.id,
+          amount: 2500, kind: 'STUDENT_TO_CLUB', method: 'SIMULATED_STRIPE',
+        } });
+        return { reservation, intent, payment };
+      });
+
+      const rejected = await reverse(payment.id, 'Wrong time');
+      expect(rejected.status).toBe(409);
+      expect(rejected.body.error).toBe('Cancel the rental reservation to refund this payment');
+      expect(await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } })).toMatchObject({ reversedAt: null });
+      expect(await prisma.paymentIntent.findUniqueOrThrow({ where: { id: intent.id } })).toMatchObject({ status: 'SUCCEEDED' });
+      expect(await prisma.venueReservation.findUniqueOrThrow({ where: { id: reservation.id } }))
+        .toMatchObject({ status: 'CONFIRMED', paymentStatus: 'PAID' });
+    });
+
     // A coach inside a club is kept out of the club's books entirely: not the
     // ledger, not the payouts, and not a receipt of their own.
     it('keeps the ledger out of a club coach’s reach', async () => {
@@ -268,34 +404,57 @@ describe.sequential('The money ledger', () => {
     });
   });
 
-  describe('a coach running their own practice', () => {
-    it('is paid by the student directly and cannot pay itself a club payout', async () => {
+  describe('a retained historical solo practice', () => {
+    it('keeps direct receipts auditable but cannot make new ledger writes', async () => {
       const coach = await createAccount(f, {
         name: `Solo Coach ${randomUUID()}`, accountType: 'COACH', passwordHash: 'registered-provider-account',
       });
-      const { cookie } = await createSession(f, coach.id);
-      const practice = await request(app).post('/api/auth/practice').set('Cookie', cookie)
-        .send({ name: `Solo practice ${randomUUID()}` });
-      expect(practice.status).toBe(201);
-      const businessId = practice.body.business.id as string;
-      tenants.own(businessId);
+      const historical = await prisma.$transaction(async tx => {
+        const business = await tx.business.create({
+          data: {
+            name: 'Historical Solo Practice', slug: `historical-solo-${randomUUID()}`,
+            ownerName: coach.name, email: coach.email, kind: 'SOLO', legacyReadOnly: true,
+          },
+        });
+        const instructor = await tx.instructor.create({
+          data: { businessId: business.id, name: coach.name, initials: 'SC', email: coach.email },
+        });
+        const membership = await tx.membership.create({
+          data: { businessId: business.id, userId: coach.id, instructorId: instructor.id },
+        });
+        return { business, instructor, membership };
+      });
+      tenants.own(historical.business.id);
 
       const student = await prisma.student.create({
         data: {
-          businessId, userId: (await createAccount(f, { name: 'Direct Student' })).id,
+          businessId: historical.business.id, userId: (await createAccount(f, { name: 'Direct Student' })).id,
           name: 'Direct Student', initials: 'DS', email: `${randomUUID()}@example.test`,
         },
       });
-      const receipt = await request(app).post('/api/payments').set('Cookie', cookie)
-        .send({ studentId: student.id, amount: 8_000, method: 'CASH' });
-      expect(receipt.status).toBe(201);
-      expect(receipt.body.kind).toBe('STUDENT_TO_COACH');
+      const receipt = await prisma.$transaction(async tx => {
+        // Model a receipt retained from before SOLO practices became read-only.
+        await tx.$executeRawUnsafe(`SET LOCAL session_replication_role = replica`);
+        return tx.payment.create({
+          data: {
+            businessId: historical.business.id, studentId: student.id, amount: 8_000,
+            method: 'CASH', kind: 'STUDENT_TO_COACH',
+          },
+        });
+      });
+      expect(receipt.kind).toBe('STUDENT_TO_COACH');
 
-      const payout = await request(app).post('/api/payouts').set('Cookie', cookie)
-        .send({ instructorId: practice.body.membership.instructorId, amount: 5_000, method: 'CASH' });
-      expect(payout.status).toBe(400);
-      expect(payout.body.error)
-        .toBe('Coach payouts apply to a club or academy. An independent coach is paid directly by their students.');
+      await expect(prisma.payment.create({
+        data: {
+          businessId: historical.business.id, studentId: student.id,
+          amount: 5_000, method: 'CASH', kind: 'STUDENT_TO_COACH',
+        },
+      })).rejects.toThrow('Payment cannot create new commercial records for a SOLO or read-only business');
+
+      const { cookie } = await createSession(f, coach.id, historical.membership.id);
+      await request(app).post('/api/payments').set('Cookie', cookie)
+        .send({ studentId: student.id, amount: 1_000, method: 'CASH' }).expect(403);
+      expect(await prisma.payment.count({ where: { businessId: historical.business.id } })).toBe(1);
     });
   });
 });

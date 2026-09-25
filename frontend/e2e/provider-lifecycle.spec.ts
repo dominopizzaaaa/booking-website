@@ -78,7 +78,7 @@ test('provider records attendance and notes before completing an ended session',
   await expect(dialog.getByRole('heading', { name: serviceName, exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Mark completed', exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Propose a new time', exact: true })).toHaveCount(0);
-  await expect(dialog.getByRole('button', { name: 'Cancel lesson', exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Cancel class', exact: true })).toHaveCount(0);
 
   const attendanceRequest = page.waitForRequest(request =>
     request.method() === 'PATCH'
@@ -89,7 +89,7 @@ test('provider records attendance and notes before completing an ended session',
   await expect(dialog.getByRole('button', { name: 'Attended', exact: true })).toHaveClass(/bg-\[#214e3e\]/);
 
   const notes = 'Strong footwork and consistent recovery between shots.';
-  await dialog.getByLabel('Internal lesson notes', { exact: true }).fill(notes);
+  await dialog.getByLabel('Internal class notes', { exact: true }).fill(notes);
   const notesRequest = page.waitForRequest(request =>
     request.method() === 'PATCH' && new URL(request.url()).pathname === `/api/bookings/${booking.id}`,
   );
@@ -103,10 +103,10 @@ test('provider records attendance and notes before completing an ended session',
   );
   await dialog.getByRole('button', { name: 'Mark completed', exact: true }).click();
   expect((await completionRequest).postDataJSON()).toEqual({ status: 'COMPLETED' });
-  await expect(page.getByText('Session marked completed', { exact: true })).toBeVisible();
+  await expect(page.getByText('Class marked completed', { exact: true })).toBeVisible();
   await expect(dialog.getByText('completed', { exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Mark completed', exact: true })).toHaveCount(0);
-  await expect(dialog.getByLabel('Internal lesson notes', { exact: true })).toHaveValue(notes);
+  await expect(dialog.getByLabel('Internal class notes', { exact: true })).toHaveValue(notes);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
 
   await dialog.getByRole('button', { name: 'Close dialog' }).click();
@@ -115,7 +115,7 @@ test('provider records attendance and notes before completing an ended session',
   await expect(dialog.getByRole('heading', { name: futureBooking.serviceName, exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Mark completed', exact: true })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Propose a new time', exact: true })).toBeVisible();
-  await expect(dialog.getByRole('button', { name: 'Cancel lesson', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Cancel class', exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Attended', exact: true })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'No-show', exact: true })).toHaveCount(0);
 });
@@ -153,17 +153,17 @@ test('an open provider booking switches actions when the lesson end passes', asy
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: boundaryBooking.serviceName, exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Propose a new time', exact: true })).toBeVisible();
-  await expect(dialog.getByRole('button', { name: 'Cancel lesson', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Cancel class', exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Attended', exact: true })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'No-show', exact: true })).toHaveCount(0);
 
   await dialog.getByRole('button', { name: 'Propose a new time', exact: true }).click();
-  await expect(dialog.getByLabel('New lesson time')).toBeVisible();
+  await expect(dialog.getByLabel('New class time')).toBeVisible();
   await page.clock.runFor(60_050);
 
-  await expect(dialog.getByLabel('New lesson time')).toHaveCount(0);
+  await expect(dialog.getByLabel('New class time')).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Propose a new time', exact: true })).toHaveCount(0);
-  await expect(dialog.getByRole('button', { name: 'Cancel lesson', exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Cancel class', exact: true })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Mark completed', exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Attended', exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'No-show', exact: true })).toBeVisible();
@@ -249,11 +249,11 @@ test('an ended lesson keeps pending reschedule cleanup available without reopeni
 
   let requestRegion = dialog.getByRole('region', { name: 'Pending reschedule request' });
   await expect(requestRegion).toContainText('Reschedule request needs closing');
-  await expect(requestRegion).toContainText('The original lesson has ended, so this proposal can no longer be accepted. Decline the request to close it.');
+  await expect(requestRegion).toContainText('The original class has ended, so this proposal can no longer be accepted. Decline the request to close it.');
   await expect(requestRegion.getByRole('button', { name: 'Accept new time', exact: true })).toHaveCount(0);
   await expect(requestRegion.getByRole('button', { name: 'Decline', exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Propose a new time', exact: true })).toHaveCount(0);
-  await expect(dialog.getByRole('button', { name: 'Cancel lesson', exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Cancel class', exact: true })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Mark completed', exact: true })).toBeVisible();
 
   const declineRequest = page.waitForRequest(request =>
@@ -269,12 +269,12 @@ test('an ended lesson keeps pending reschedule cleanup available without reopeni
   const outgoingRow = page.getByRole('row').filter({ hasText: outgoingBooking.serviceName });
   await outgoingRow.getByRole('button', { name: /Open booking details/ }).click();
   requestRegion = dialog.getByRole('region', { name: 'Pending reschedule request' });
-  await expect(requestRegion).toContainText('The original lesson has ended, so this proposal can no longer be accepted. Withdraw the request to close it.');
+  await expect(requestRegion).toContainText('The original class has ended, so this proposal can no longer be accepted. Withdraw the request to close it.');
   await expect(requestRegion.getByRole('button', { name: 'Accept new time', exact: true })).toHaveCount(0);
   await expect(requestRegion.getByRole('button', { name: 'Decline', exact: true })).toHaveCount(0);
   await expect(requestRegion.getByRole('button', { name: 'Withdraw request', exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Propose a new time', exact: true })).toHaveCount(0);
-  await expect(dialog.getByRole('button', { name: 'Cancel lesson', exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Cancel class', exact: true })).toHaveCount(0);
 
   const withdrawRequest = page.waitForRequest(request =>
     request.method() === 'POST'
@@ -363,7 +363,7 @@ test('provider reschedule controls require the exact provider role that raised t
 
   let requestRegion = dialog.getByRole('region', { name: 'Pending reschedule request' });
   await expect(requestRegion).toContainText('The coach proposed a new time');
-  await expect(requestRegion).toContainText('The session keeps its current time until the student replies. Only the coach account that raised it can withdraw the request.');
+  await expect(requestRegion).toContainText('The class keeps its current time until the student replies. Only the coach account that raised it can withdraw the request.');
   await expect(requestRegion.getByRole('button', { name: 'Withdraw request', exact: true })).toHaveCount(0);
   await expect(requestRegion.getByRole('button', { name: 'Accept new time', exact: true })).toHaveCount(0);
   await expect(requestRegion.getByRole('button', { name: 'Decline', exact: true })).toHaveCount(0);
@@ -375,7 +375,7 @@ test('provider reschedule controls require the exact provider role that raised t
 
   requestRegion = dialog.getByRole('region', { name: 'Pending reschedule request' });
   await expect(requestRegion).toContainText('Reschedule request needs closing');
-  await expect(requestRegion).toContainText('The original lesson has ended, so this proposal can no longer be accepted. Only the club account that raised it can withdraw the request.');
+  await expect(requestRegion).toContainText('The original class has ended, so this proposal can no longer be accepted. Only the club account that raised it can withdraw the request.');
   await expect(requestRegion.getByRole('button', { name: 'Withdraw request', exact: true })).toHaveCount(0);
   await expect(requestRegion.getByRole('button', { name: 'Accept new time', exact: true })).toHaveCount(0);
   await expect(requestRegion.getByRole('button', { name: 'Decline', exact: true })).toHaveCount(0);

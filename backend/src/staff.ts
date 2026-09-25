@@ -4,17 +4,31 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { prisma } from './db.js';
 import { asyncRoute, HttpError, initials, requireClubAccount, type AuthRequest } from './http.js';
+import { resolveRegisteredAccountIdentity } from './account-directory.js';
 
 export const staffRouter = Router();
 
 const idSchema = z.string().trim().min(1).max(200);
 const instructorIdSchema = idSchema.nullable().optional();
+const rescheduleNoticeHoursSchema = z.number().int().min(0).max(720).optional();
 // Everyone a club adds is a coach: there is no other thing to be. The club
 // account is the club, and it is created with the club rather than invited.
-const createStaffSchema = z.object({
+const legacyCreateStaffSchema = z.object({
   email: z.string().trim().max(254).email().transform(value => value.toLowerCase()),
   instructorId: instructorIdSchema,
+  rescheduleNoticeHours: rescheduleNoticeHoursSchema,
 }).strict();
+const queryCreateStaffSchema = z.object({
+  query: z.string().trim().min(2).max(254),
+  instructorId: instructorIdSchema,
+  rescheduleNoticeHours: rescheduleNoticeHoursSchema,
+}).strict();
+const createStaffSchema = z.union([queryCreateStaffSchema, legacyCreateStaffSchema])
+  .transform(input => ({
+    query: 'query' in input ? input.query : input.email,
+    instructorId: input.instructorId,
+    rescheduleNoticeHours: input.rescheduleNoticeHours,
+  }));
 const updateStaffSchema = z.object({
   instructorId: instructorIdSchema,
 }).strict();
@@ -22,7 +36,7 @@ const updateStaffSchema = z.object({
 // Select identity fields explicitly so password hashes never enter a staff response.
 const staffSelect = {
   id: true, userId: true, instructorId: true, active: true, createdAt: true,
-  user: { select: { name: true, email: true, accountType: true } },
+  user: { select: { name: true, username: true, email: true, accountType: true, sports: true } },
 } satisfies Prisma.MembershipSelect;
 type StaffMembership = Prisma.MembershipGetPayload<{ select: typeof staffSelect }>;
 type InstructorAffiliation = {
@@ -35,8 +49,10 @@ const staffJson = (membership: StaffMembership) => ({
   id: membership.id,
   userId: membership.userId,
   name: membership.user.name,
+  username: membership.user.username,
   email: membership.user.email,
   accountType: membership.user.accountType,
+  sports: membership.user.sports,
   instructorId: membership.instructorId,
   active: membership.active,
   createdAt: membership.createdAt,
@@ -115,11 +131,16 @@ async function removePlaceholder(
   });
 }
 
-const newInstructor = (businessId: string, user: { name: string; email: string }) => ({
+const newInstructor = (
+  businessId: string,
+  user: { name: string; email: string },
+  rescheduleNoticeHours?: number,
+) => ({
   business: { connect: { id: businessId } },
   name: user.name,
   email: user.email,
   initials: initials(user.name),
+  ...(rescheduleNoticeHours === undefined ? {} : { rescheduleNoticeHours }),
 });
 
 staffRouter.get('/staff', requireClubAccount, asyncRoute(async (req, res) => {
@@ -139,12 +160,9 @@ staffRouter.post('/staff', requireClubAccount, asyncRoute(async (req, res) => {
   const input = createStaffSchema.parse(req.body);
   const businessId = clubBusinessId(req);
   const staff = await prisma.$transaction(async tx => {
-    const user = await tx.user.findUnique({
-      where: { email: input.email },
-      select: { id: true, name: true, email: true, passwordHash: true, accountType: true },
-    });
-    if (!user || user.passwordHash === null) {
-      throw new HttpError(404, 'No registered Courtly account was found for this email. Ask this person to self-register first');
+    const user = await resolveRegisteredAccountIdentity(tx, input.query);
+    if (!user) {
+      throw new HttpError(404, 'No registered Courtly account was found for this name, username, or email. Ask this person to self-register first.');
     }
     if (user.accountType === 'STUDENT') {
       throw new HttpError(400, 'This account is registered as a student, not a coach');
@@ -179,7 +197,10 @@ staffRouter.post('/staff', requireClubAccount, asyncRoute(async (req, res) => {
       });
       const activated = await tx.instructor.updateMany({
         where: { id: existing.instructorId, businessId },
-        data: { active: true, name: user.name, email: user.email, initials: initials(user.name) },
+        data: {
+          active: true, name: user.name, email: user.email, initials: initials(user.name),
+          ...(input.rescheduleNoticeHours === undefined ? {} : { rescheduleNoticeHours: input.rescheduleNoticeHours }),
+        },
       });
       if (activated.count !== 1) {
         throw new HttpError(409, 'This former coach affiliation is missing its retained coach profile. Contact support before restoring access.');
@@ -200,7 +221,7 @@ staffRouter.post('/staff', requireClubAccount, asyncRoute(async (req, res) => {
         // club is reconnecting an existing profile with history behind it.
         ...(input.instructorId
           ? { instructor: { connect: { id: input.instructorId } } }
-          : { instructor: { create: newInstructor(businessId, user) } }),
+          : { instructor: { create: newInstructor(businessId, user, input.rescheduleNoticeHours) } }),
       },
       select: staffSelect,
     });
@@ -209,7 +230,10 @@ staffRouter.post('/staff', requireClubAccount, asyncRoute(async (req, res) => {
       if (!linked) throw new HttpError(400, 'Instructor membership must belong to this business');
       await tx.instructor.update({
         where: { id: created.instructorId },
-        data: { active: true, name: created.user.name, email: created.user.email, initials: initials(created.user.name) },
+        data: {
+          active: true, name: created.user.name, email: created.user.email, initials: initials(created.user.name),
+          ...(input.rescheduleNoticeHours === undefined ? {} : { rescheduleNoticeHours: input.rescheduleNoticeHours }),
+        },
       });
     }
     return { staff: created, restored: false };

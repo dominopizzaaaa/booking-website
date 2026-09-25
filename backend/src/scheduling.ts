@@ -35,6 +35,44 @@ export const publicBookingInput = z.object({
 export type BookingInput = z.infer<typeof bookingInput>;
 export type PublicBookingInput = z.infer<typeof publicBookingInput>;
 export type Tx = Prisma.TransactionClient;
+
+export function assertWritableClubBooking(booking: {
+  paymentRoute: string;
+  business: { kind: string; legacyReadOnly: boolean };
+}) {
+  if (booking.paymentRoute !== 'CLUB' || booking.business.kind !== 'CLUB' || booking.business.legacyReadOnly) {
+    throw new HttpError(409, 'This historical booking is read-only and cannot be changed');
+  }
+}
+
+type BookingPackage = Prisma.LessonPackageGetPayload<{ include: { services: true } }>;
+
+/**
+ * Lock and load one entitlement before consuming it. Marketplace packages use
+ * their snapshotted service joins; packages created through the legacy club
+ * workflow retain the old nullable serviceId semantics. Rental scope is not a
+ * lesson restriction: it is consumed only by the separate venue-reservation
+ * flow, so a combined offer can spend its shared credits on either product.
+ */
+export async function selectEligibleLessonPackage(
+  tx: Tx, input: { packageId: string; businessId: string; studentId: string; serviceId: string; sessionDates: Date[] },
+): Promise<BookingPackage> {
+  await tx.$queryRaw`SELECT id FROM "LessonPackage" WHERE id = ${input.packageId} AND "businessId" = ${input.businessId} FOR UPDATE`;
+  const pkg = await tx.lessonPackage.findFirst({
+    where: { id: input.packageId, businessId: input.businessId, studentId: input.studentId },
+    include: { services: true },
+  });
+  if (!pkg) throw new HttpError(400, 'Package does not belong to this student or business');
+  const coversService = pkg.offerId
+    ? pkg.services.some(scope => scope.serviceId === input.serviceId)
+    : !pkg.serviceId || pkg.serviceId === input.serviceId;
+  if (!coversService) throw new HttpError(400, 'Package does not cover this service');
+  if (pkg.offerId && !pkg.paid) throw new HttpError(400, 'Package must be paid before it can be used');
+  if (input.sessionDates.some(date => date > pkg.expiresAt) || pkg.expiresAt < new Date()) {
+    throw new HttpError(400, 'Package expires before one or more sessions');
+  }
+  return pkg;
+}
 /**
  * Who is creating this booking, which decides two things that cannot be
  * derived later: whether the coach still has to accept it, and whose name
@@ -329,6 +367,12 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
   await lockInstructors(tx, [input.instructorId]);
   const ctx = await schedulingContext(tx, businessId, input.serviceId, input.instructorId, input.locationId);
   const accountBooking = 'studentUserId' in options;
+  if (!accountBooking && options.actor?.accountType === 'COACH' && ctx.business.kind === 'CLUB') {
+    if (!options.actor.instructorId || input.instructorId !== options.actor.instructorId) {
+      throw new HttpError(403, 'Coaches can only create lessons on their own schedule');
+    }
+    if (ctx.service.type !== 'PRIVATE') throw new HttpError(403, 'Coaches can only create private lessons');
+  }
   const student = await resolveBookingStudent(tx, businessId, input, options);
   const first = DateTime.fromISO(input.startAt, { zone: ctx.business.timezone });
   const occurrences = [];
@@ -341,12 +385,12 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
     occurrences.push(slot);
   }
   if (conflicts.length) throw new HttpError(409, 'One or more requested sessions are unavailable. No bookings were created.', { conflicts });
-  let pkg = null;
+  let pkg: BookingPackage | null = null;
   if (input.packageId) {
-    await tx.$queryRaw`SELECT id FROM "LessonPackage" WHERE id = ${input.packageId} AND "businessId" = ${businessId} FOR UPDATE`;
-    pkg = await tx.lessonPackage.findFirst({ where: { id: input.packageId, businessId, studentId: student.id } });
-    if (!pkg || (pkg.serviceId && pkg.serviceId !== input.serviceId)) throw new HttpError(400, 'Package does not belong to this student or service');
-    if (occurrences.some(s => s.startAt > pkg!.expiresAt) || pkg.expiresAt < new Date()) throw new HttpError(400, 'Package expires before one or more sessions');
+    pkg = await selectEligibleLessonPackage(tx, {
+      packageId: input.packageId, businessId, studentId: student.id, serviceId: input.serviceId,
+      sessionDates: occurrences.map(slot => slot.startAt),
+    });
     const updated = await tx.lessonPackage.updateMany({ where: { id: pkg.id, usedCredits: { lte: pkg.totalCredits - occurrences.length } }, data: { usedCredits: { increment: occurrences.length } } });
     if (!updated.count) throw new HttpError(409, 'Not enough package credits for all sessions');
   }
@@ -419,11 +463,14 @@ export async function refundParticipant(tx: Tx, participant: { id: string; packa
   if (changed.count) await tx.lessonPackage.updateMany({ where: { id: participant.packageId, usedCredits: { gt: 0 } }, data: { usedCredits: { decrement: 1 } } });
 }
 export async function cancelBooking(tx: Tx, businessId: string, bookingId: string) {
-  let booking = await tx.booking.findFirst({ where: { id: bookingId, businessId } });
+  const booking = await tx.booking.findFirst({ where: { id: bookingId, businessId } });
   if (!booking) throw new HttpError(404, 'Booking not found');
   await lockInstructors(tx, [booking.instructorId]);
-  const current = await tx.booking.findUniqueOrThrow({ where: { id: bookingId }, include: { participants: true } });
+  const current = await tx.booking.findUniqueOrThrow({
+    where: { id: bookingId }, include: { business: true, participants: true },
+  });
   if (current.instructorId !== booking.instructorId) throw new HttpError(409, 'Session changed concurrently. Please retry.');
+  assertWritableClubBooking(current);
   if (current.status === 'COMPLETED') throw new HttpError(400, 'A completed session cannot be cancelled');
   if (current.status === 'CANCELLED') return;
   for (const participant of current.participants) await refundParticipant(tx, participant);
@@ -440,11 +487,12 @@ export async function rescheduleBooking(tx: Tx, businessId: string, bookingId: s
   const booking = await tx.booking.findUniqueOrThrow({
     where: { id: bookingId },
     include: {
-      service: true, instructor: true, location: true,
+      business: true, service: true, instructor: true, location: true,
       participants: { include: { student: true, package: true }, where: { cancelledAt: null } },
     },
   });
   if (booking.instructorId !== original.instructorId) throw new HttpError(409, 'Session changed concurrently. Please retry.');
+  assertWritableClubBooking(booking);
   if (['CANCELLED', 'COMPLETED'].includes(booking.status)) throw new HttpError(400, 'Only active sessions can be rescheduled');
   if (booking.coachAcceptance === 'PENDING') {
     throw new HttpError(400, 'This lesson is still waiting for the coach to accept it. Reschedule it once it is confirmed.');

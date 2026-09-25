@@ -42,11 +42,11 @@ test('a coach accepts a lesson assigned by the club from the booking dialog', as
   const locationName = `Assignment court ${runId}`;
 
   await responseJson(await page.request.post('/api/auth/register', {
-    data: { accountType: 'COACH', name: coachName, email: coachEmail, password },
+    data: { accountType: 'COACH', name: coachName, username: `ac_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: coachEmail, password },
   }));
   await logout(page);
   await responseJson(await page.request.post('/api/auth/register', {
-    data: { accountType: 'STUDENT', name: studentName, email: studentEmail, password },
+    data: { accountType: 'STUDENT', name: studentName, username: `as_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: studentEmail, password },
   }));
   await logout(page);
 
@@ -123,7 +123,7 @@ test('a coach accepts a lesson assigned by the club from the booking dialog', as
   let dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: serviceName, exact: true })).toBeVisible();
   await expect(dialog.getByText('Awaiting coach', { exact: true })).toBeVisible();
-  await expect(dialog.getByRole('button', { name: 'Accept lesson', exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Accept class', exact: true })).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Close dialog' }).click();
 
   // A club payout is its own ledger party: it belongs to the coach, not to an
@@ -173,13 +173,13 @@ test('a coach accepts a lesson assigned by the club from the booking dialog', as
     exact: true,
   }).click();
   dialog = page.getByRole('dialog');
-  await expect(dialog.getByText('The club assigned this lesson. The student does not need to accept it, but the coach does before it is confirmed.')).toBeVisible();
+  await expect(dialog.getByText('The club assigned this class. The student does not need to accept it, but the coach does before it is confirmed.')).toBeVisible();
 
   const acceptanceResponse = page.waitForResponse(response =>
     response.request().method() === 'POST'
       && new URL(response.url()).pathname === `/api/bookings/${booking.id}/accept`,
   );
-  await dialog.getByRole('button', { name: 'Accept lesson', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Accept class', exact: true }).click();
   const acceptance = await acceptanceResponse;
   expect(acceptance.ok(), await acceptance.text()).toBeTruthy();
   const accepted = await acceptance.json() as CoachScopedBooking;
@@ -190,9 +190,9 @@ test('a coach accepts a lesson assigned by the club from the booking dialog', as
   expect(accepted.participants[0]).not.toHaveProperty('packageId');
 
   await expect(dialog.getByText('Awaiting coach', { exact: true })).toHaveCount(0);
-  await expect(dialog.getByRole('button', { name: 'Accept lesson', exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Accept class', exact: true })).toHaveCount(0);
   await expect(dialog.getByText('confirmed', { exact: true })).toBeVisible();
-  await expect(page.getByText('Lesson accepted', { exact: true })).toBeVisible();
+  await expect(page.getByText('Class accepted', { exact: true })).toBeVisible();
 
   const coachWorkspace = await responseJson<{ bookings: CoachScopedBooking[] }>(await page.request.get('/api/workspace'));
   expect(coachWorkspace.bookings.find(candidate => candidate.id === booking.id)).toMatchObject({

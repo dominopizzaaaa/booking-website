@@ -10,7 +10,7 @@ export type { AccountType } from './http.js';
 export const publicBusiness = (b: Business) => ({
   id: b.id, name: b.name, slug: b.slug, ownerName: b.ownerName, email: b.email, timezone: b.timezone,
   currency: b.currency, color: b.color, tagline: b.tagline, cancellationHours: b.cancellationHours,
-  kind: b.kind, isDemo: b.isDemo,
+  kind: b.kind, isDemo: b.isDemo, legacyReadOnly: b.legacyReadOnly,
 });
 export const publicBookingBusiness = (b: Business) => ({
   name: b.name, slug: b.slug, ownerName: b.ownerName, timezone: b.timezone, currency: b.currency,
@@ -27,7 +27,8 @@ export const publicLocation = (location: any) => ({
 
 // Account identity and workspace authorization are deliberately serialized separately.
 export const userJson = (user: User) => ({
-  id: user.id, name: user.name, email: user.email, phone: user.phone, parentName: user.parentName,
+  id: user.id, name: user.name, username: user.username, email: user.email, sports: user.sports,
+  phone: user.phone, parentName: user.parentName,
   accountType: user.accountType as AccountType,
 });
 export const workspaceUserJson = (user: User, membership: Pick<Membership, 'instructorId'>) => ({
@@ -46,6 +47,12 @@ export const membershipJson = (membership: MembershipWithBusiness) => ({
  */
 export const isClubAccount = (user: Pick<User, 'accountType'>) => user.accountType === 'CLUB';
 
+export const isSupportedWorkspaceMembership = (membership: MembershipWithBusiness) =>
+  membership.business.kind === 'CLUB' && !membership.business.legacyReadOnly;
+
+export const isAccessibleWorkspaceMembership = (membership: MembershipWithBusiness) =>
+  membership.active && isSupportedWorkspaceMembership(membership);
+
 export type AuthState = {
   user: ReturnType<typeof userJson>;
   membership: ReturnType<typeof membershipJson> | null;
@@ -62,13 +69,16 @@ export async function authState(userId: string, activeMembershipId?: string | nu
     where: { id: userId },
     include: { memberships: { include: { business: true }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] } },
   });
-  const { memberships, ...user } = account;
+  const { memberships: allMemberships, ...user } = account;
+  // Retained SOLO and read-only legacy businesses remain historical records,
+  // but cannot re-enter the active account or workspace experience.
+  const memberships = allMemberships.filter(isSupportedWorkspaceMembership);
   const selected = account.accountType === 'STUDENT' || activeMembershipId === null
     ? null
     : activeMembershipId === undefined
-      ? memberships.find(candidate => candidate.active && candidate.userId === account.id
+      ? memberships.find(candidate => isAccessibleWorkspaceMembership(candidate) && candidate.userId === account.id
         && candidate.businessId === candidate.business.id) ?? null
-      : memberships.find(candidate => candidate.id === activeMembershipId && candidate.active
+      : memberships.find(candidate => candidate.id === activeMembershipId && isAccessibleWorkspaceMembership(candidate)
         && candidate.userId === account.id && candidate.businessId === candidate.business.id) ?? null;
   return {
     user: userJson(user),
@@ -122,7 +132,20 @@ export function bookingJson(b: FullBooking, options: { includeNotes?: boolean } 
   return { id: b.id, serviceId: b.serviceId, serviceName: b.service.name, instructorId: b.instructorId, instructorName: b.instructor.name, locationId: b.locationId, locationName: b.location.name, locationColor: b.location.color, startAt: b.startAt.toISOString(), endAt: b.endAt.toISOString(), status: b.status, type: b.type, capacity: b.capacity, price: b.price, paymentRoute: b.paymentRoute, coachAcceptance: b.coachAcceptance, createdByRole: b.createdByRole, ...(options.includeNotes === false ? {} : { notes: b.notes }), address: b.address, recurringId: b.recurringId,
     participants: b.participants.filter(p => !p.cancelledAt).map(p => ({ id: p.id, studentId: p.studentId, name: p.student.name, email: p.student.email, attendance: p.attendance, paid: p.paid, price: p.price, packageId: p.packageId, notes: p.notes })) };
 }
-export const packageJson = (p: any) => ({ id: p.id, studentId: p.studentId, studentName: p.student.name, name: p.name, serviceId: p.serviceId, totalCredits: p.totalCredits, usedCredits: p.usedCredits, price: p.price, expiresAt: p.expiresAt.toISOString(), paid: p.paid });
+export const packageInclude = {
+  student: { select: { name: true } },
+  services: { select: { serviceId: true }, orderBy: { serviceId: 'asc' as const } },
+  rentalLocations: { select: { locationId: true }, orderBy: { locationId: 'asc' as const } },
+} satisfies Prisma.LessonPackageInclude;
+export type FullPackage = Prisma.LessonPackageGetPayload<{ include: typeof packageInclude }>;
+
+export const packageJson = (p: FullPackage) => ({
+  id: p.id, studentId: p.studentId, studentName: p.student.name, offerId: p.offerId, name: p.name,
+  serviceId: p.serviceId, serviceIds: p.services.map(scope => scope.serviceId),
+  rentalLocationIds: p.rentalLocations.map(scope => scope.locationId),
+  totalCredits: p.totalCredits, usedCredits: p.usedCredits, price: p.price,
+  expiresAt: p.expiresAt.toISOString(), paid: p.paid,
+});
 
 /** One wire shape for receipts and payouts; the party is determined by kind. */
 export const paymentJson = (p: any) => {

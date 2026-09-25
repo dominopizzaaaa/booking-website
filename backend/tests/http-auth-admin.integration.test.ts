@@ -43,6 +43,10 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
         coachAcceptance: true,
         paymentReversal: true,
         integrityFlags: true,
+        simulatedStripe: true,
+        packageMarketplace: true,
+        venueRentals: true,
+        accountDirectory: true,
         venueSearch: 'maps-link',
         googleCalendar: 'disabled',
       },
@@ -114,19 +118,21 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
     const password = 'Courtly-http-test-123';
     const missingTypeEmail = `${randomUUID()}@example.test`;
     const missingType = await request(app).post('/api/auth/register').send({
-      name: 'Missing Type', email: missingTypeEmail, password,
+      name: 'Missing Type', username: `missing_${randomUUID().slice(0, 8)}`, email: missingTypeEmail, password,
     }).expect(400);
     expect(missingType.body.error).toBeTruthy();
 
     const missingClubNameEmail = `${randomUUID()}@example.test`;
     const missingClubName = await request(app).post('/api/auth/register').send({
-      accountType: 'CLUB', name: 'Club Contact', email: missingClubNameEmail, password,
+      accountType: 'CLUB', name: 'Club Contact', username: `club_${randomUUID().slice(0, 8)}`,
+      email: missingClubNameEmail, password,
     }).expect(400);
     expect(missingClubName.body.error).toBe('A club or academy name is required');
 
     const unknownRegistrationEmail = `${randomUUID()}@example.test`;
     await request(app).post('/api/auth/register').send({
-      accountType: 'STUDENT', name: 'Strict Registration', email: unknownRegistrationEmail, password,
+      accountType: 'STUDENT', name: 'Strict Registration', username: `strict_${randomUUID().slice(0, 8)}`,
+      email: unknownRegistrationEmail, password,
       businessKind: 'SOLO',
     }).expect(400);
     expect(await prisma.user.count({
@@ -134,11 +140,13 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
     })).toBe(0);
 
     const email = `${randomUUID()}@example.test`;
+    const username = `http_${randomUUID().slice(0, 8)}`;
     const registered = await request(app).post('/api/auth/register').send({
-      accountType: 'STUDENT', name: 'HTTP Student', email: email.toUpperCase(), password,
+      accountType: 'STUDENT', name: 'HTTP Student', username: username.toUpperCase(),
+      email: email.toUpperCase(), password,
     }).expect(201);
     tenants.ownUser(registered.body.user.id);
-    expect(registered.body.user).toMatchObject({ email, accountType: 'STUDENT' });
+    expect(registered.body.user).toMatchObject({ username, email, accountType: 'STUDENT' });
 
     await request(app).post('/api/auth/login').send({
       email: 'not-an-email', password: 'short',
@@ -152,23 +160,12 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
     expect(loggedIn.body.user).toMatchObject({ id: registered.body.user.id, email });
   });
 
-  it('denies solo-practice creation to student and club accounts', async () => {
+  it('does not expose the retired solo-practice route', async () => {
     const club = await tenants.fixture();
-    const student = await createAccount(club, {
-      name: 'Practice Student', accountType: 'STUDENT',
-      email: `${randomUUID()}@example.test`,
-    });
-    const studentSession = await createSession(club, student.id);
-
-    const studentDenied = await request(app).post('/api/auth/practice')
-      .set('Cookie', studentSession.cookie).send({ name: 'Student Practice' }).expect(403);
-    expect(studentDenied.body.error).toBe('Only a coach account can run its own practice');
-
-    const clubDenied = await request(app).post('/api/auth/practice')
-      .set('Cookie', club.cookie).send({ name: 'Club Practice' }).expect(403);
-    expect(clubDenied.body.error).toBe('Only a coach account can run its own practice');
+    await request(app).post('/api/auth/practice')
+      .set('Cookie', club.cookie).send({ name: 'Club Practice' }).expect(404);
     expect(await prisma.business.count({
-      where: { kind: 'SOLO', memberships: { some: { userId: { in: [student.id, club.user.id] } } } },
+      where: { kind: 'SOLO', memberships: { some: { userId: club.user.id } } },
     })).toBe(0);
   });
 

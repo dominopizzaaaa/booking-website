@@ -50,7 +50,7 @@ test('club settings and coach access persist through the responsive UI', async (
   // Account and tenant creation are setup. Every policy or access change below
   // is submitted through the same controls a club account uses.
   await responseJson(await page.request.post('/api/auth/register', {
-    data: { accountType: 'COACH', name: coachName, email: coachEmail, password },
+    data: { accountType: 'COACH', name: coachName, username: `stc_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-26)}`, email: coachEmail, password },
   }));
   await responseJson(await page.request.post('/api/auth/logout', { data: {} }));
   await responseJson(await page.request.post('/api/auth/demo', { data: {} }));
@@ -191,7 +191,10 @@ test('club settings and coach access persist through the responsive UI', async (
 
     await accessSection.getByRole('button', { name: 'Add coach', exact: true }).click();
     dialog = page.getByRole('dialog', { name: 'Add coach access' });
-    await dialog.getByRole('textbox', { name: 'Courtly coach account email', exact: true }).fill(coachEmail);
+    await dialog.getByRole('searchbox', { name: 'Courtly coach account', exact: true }).fill(coachEmail);
+    const restoredNoticeHours = 72;
+    await dialog.getByRole('spinbutton', { name: 'Reschedule notice (hours)', exact: true })
+      .fill(String(restoredNoticeHours));
     const readdProfileSelect = dialog.getByLabel('Coach profile (optional)', { exact: true });
     const retainedProfile = readdProfileSelect.locator(`option[value="${retainedInstructorId}"]`);
     await expect(retainedProfile).toBeDisabled();
@@ -204,7 +207,8 @@ test('club settings and coach access persist through the responsive UI', async (
     expect(response.status()).toBe(200);
     expect(response.request().postDataJSON()).toEqual({
       instructorId: null,
-      email: coachEmail,
+      query: coachEmail,
+      rescheduleNoticeHours: restoredNoticeHours,
     });
     expect(restored).toMatchObject({
       id: added.id,
@@ -217,7 +221,7 @@ test('club settings and coach access persist through the responsive UI', async (
     await expect(page.getByText('Coach added', { exact: true })).toBeVisible();
     await expect(coachRow).toContainText(`Coach profile: ${coachName}`);
     expect((await workspace(page)).instructors.find(candidate => candidate.id === retainedInstructorId))
-      .toMatchObject({ active: true, accountLinkAvailable: false });
+      .toMatchObject({ active: true, accountLinkAvailable: false, rescheduleNoticeHours: restoredNoticeHours });
     await expectNoHorizontalOverflow(page);
   });
 });

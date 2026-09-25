@@ -112,6 +112,10 @@ async function mockStudent(page: Page, clubs: StudentClubDirectoryEntry[] = dire
   await page.route('**/api/account/bookings*', route => route.fulfill({ json: { bookings: [knownBooking] } }));
   await page.route('**/api/account/clubs*', route => route.fulfill({ json: { clubs } }));
   await page.route('**/api/account/notifications', route => route.fulfill({ json: { notifications: [] } }));
+  await page.route('**/api/account/packages', route => route.fulfill({ json: { packages: [] } }));
+  await page.route(/\/api\/rentals(?:\?.*)?$/, route => route.fulfill({
+    json: { rentals: [], nextCursor: null },
+  }));
 }
 
 test('student Explore separates familiar clubs from discovery and filters the directory', async ({ page }) => {
@@ -191,6 +195,10 @@ test('Explore waits for booking history before assigning relationship categories
     await route.fulfill({ json: { bookings: [knownBooking] } });
   });
   await page.route('**/api/account/notifications', route => route.fulfill({ json: { notifications: [] } }));
+  await page.route('**/api/account/packages', route => route.fulfill({ json: { packages: [] } }));
+  await page.route(/\/api\/rentals(?:\?.*)?$/, route => route.fulfill({
+    json: { rentals: [], nextCursor: null },
+  }));
 
   await page.goto('/manage?tab=explore');
   await expect(page.getByText('Finding clubs…')).toBeVisible();

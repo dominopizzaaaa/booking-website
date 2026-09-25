@@ -73,11 +73,11 @@ test('an assigned coach can decline a package lesson and every affected role see
   const packageName = `Decline credit ${runId}`;
 
   await responseJson(await page.request.post('/api/auth/register', {
-    data: { accountType: 'COACH', name: coachName, email: coachEmail, password },
+    data: { accountType: 'COACH', name: coachName, username: `dc_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: coachEmail, password },
   }));
   await logout(page);
   await responseJson(await page.request.post('/api/auth/register', {
-    data: { accountType: 'STUDENT', name: studentName, email: studentEmail, password },
+    data: { accountType: 'STUDENT', name: studentName, username: `ds_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: studentEmail, password },
   }));
   await logout(page);
 
@@ -184,7 +184,7 @@ test('an assigned coach can decline a package lesson and every affected role see
   await expect(bookingDialog.getByRole('heading', { name: serviceName, exact: true })).toBeVisible();
   await expect(bookingDialog.getByText('Awaiting coach', { exact: true })).toBeVisible();
   await expect(bookingDialog.getByText(
-    'The club assigned this lesson. The student does not need to accept it, but the coach does before it is confirmed.',
+    'The club assigned this class. The student does not need to accept it, but the coach does before it is confirmed.',
     { exact: true },
   )).toBeVisible();
 
@@ -197,7 +197,7 @@ test('an assigned coach can decline a package lesson and every affected role see
   const confirmation = await confirmationPromise;
   expect(confirmation.type()).toBe('confirm');
   expect(confirmation.message()).toBe(
-    'Decline this lesson? The slot is released, any package credit is returned, and the club is asked to reassign it.',
+    'Decline this class? The slot is released, any package credit is returned, and the club is asked to reassign it.',
   );
   await confirmation.accept();
   await declineClick;
@@ -216,10 +216,10 @@ test('an assigned coach can decline a package lesson and every affected role see
   expect(declined.participants[0]).not.toHaveProperty('price');
   expect(declined.participants[0]).not.toHaveProperty('packageId');
 
-  await expect(page.getByText('Lesson declined', { exact: true })).toBeVisible();
+  await expect(page.getByText('Class declined', { exact: true })).toBeVisible();
   await expect(bookingDialog.getByText('cancelled', { exact: true })).toBeVisible();
   await expect(bookingDialog.getByText('Awaiting coach', { exact: true })).toHaveCount(0);
-  await expect(bookingDialog.getByRole('button', { name: 'Accept lesson', exact: true })).toHaveCount(0);
+  await expect(bookingDialog.getByRole('button', { name: 'Accept class', exact: true })).toHaveCount(0);
   await expect(bookingDialog.getByRole('button', { name: 'Cannot teach this', exact: true })).toHaveCount(0);
   await expectNoHorizontalOverflow(page);
   await bookingDialog.getByRole('button', { name: 'Close dialog' }).click();
@@ -241,7 +241,7 @@ test('an assigned coach can decline a package lesson and every affected role see
   });
 
   await page.goto('/?tab=explore&view=packages');
-  await expect(page.locator('main').getByRole('heading', { name: 'Lesson packages', exact: true })).toBeVisible();
+  await expect(page.locator('main').getByRole('heading', { name: 'Package offers', exact: true })).toBeVisible();
   const packageCard = page.locator('main article').filter({ hasText: packageName });
   await expect(packageCard).toContainText(/2\s*credits left/);
   await expect(packageCard.getByText('0 of 2 used', { exact: true })).toBeVisible();
@@ -284,7 +284,7 @@ test('an assigned coach can decline a package lesson and every affected role see
   await expectNoHorizontalOverflow(page);
 });
 
-test('a club can move an integrity flag through review and close it with a recorded decision', async ({ page }) => {
+test('a club reviews an integrity flag entirely from its alert', async ({ page }) => {
   await responseJson(await page.request.post('/api/auth/demo', { data: {} }));
   const workspace = await responseJson<ManagerWorkspace>(await page.request.get('/api/workspace'));
   const coachName = 'Jordan Review';
@@ -309,7 +309,21 @@ test('a club can move an integrity flag through review and close it with a recor
   const decisions: Array<{ status: IntegrityFlag['status']; note: string }> = [];
 
   await page.route('**/api/workspace', route => route.fulfill({
-    json: { ...workspace, integrityFlags: [flag] },
+    json: {
+      ...workspace,
+      notifications: [{
+        id: 'integrity-alert-role-action-gap',
+        type: 'INTEGRITY',
+        bookingId: null,
+        integrityFlagId: flag.id,
+        title: 'Review a private booking pattern',
+        message: 'A coach and student also booked outside the club.',
+        read: true,
+        actionNeeded: flag.status === 'OPEN' || flag.status === 'REVIEWING',
+        createdAt: flag.lastSeenAt,
+      }],
+      integrityFlags: [flag],
+    },
   }));
   await page.route(`**/api/integrity-flags/${flag.id}`, async route => {
     const decision = route.request().postDataJSON() as { status: IntegrityFlag['status']; note: string };
@@ -324,30 +338,29 @@ test('a club can move an integrity flag through review and close it with a recor
     await route.fulfill({ json: flag });
   });
 
-  await page.goto('/?tab=explore&view=integrity');
-  await expect(page.locator('main').getByRole('heading', { name: 'Integrity', exact: true })).toBeVisible();
-  const openStat = page.locator('article.stat-card').filter({ hasText: 'Open flags' });
-  const reviewingStat = page.locator('article.stat-card').filter({ hasText: 'Under review' });
-  const closedStat = page.locator('article.stat-card').filter({ hasText: 'Closed' });
-  await expect(openStat.getByText('1', { exact: true })).toBeVisible();
-  await expect(reviewingStat.getByText('0', { exact: true })).toBeVisible();
-  await expect(closedStat.getByText('0', { exact: true })).toBeVisible();
+  await page.goto('/?tab=alerts');
+  await expect(page.locator('main').getByRole('heading', { name: 'Alerts', exact: true })).toBeVisible();
+  const alert = page.getByRole('button', { name: 'Read alert: Review a private booking pattern', exact: true });
+  await expect(alert.getByText('Action needed', { exact: true })).toBeVisible();
+  await alert.click();
 
-  let flagCard = page.locator('article.panel').filter({ hasText: `${coachName} & ${studentName}` });
-  await expect(flagCard.getByRole('heading', { name: `${coachName} & ${studentName}`, exact: true })).toBeVisible();
-  await expect(flagCard).toContainText('2 private sessions noticed');
-  await expect(flagCard).toContainText('Private match preparation');
+  let alertDialog = page.getByRole('dialog', { name: 'Review a private booking pattern' });
+  await expect(alertDialog).toContainText(`${coachName} & ${studentName}`);
+  await expect(alertDialog).toContainText('2 private sessions noticed');
+  await expect(alertDialog).toContainText('Private match preparation');
 
   const reviewRequest = page.waitForRequest(request =>
     request.method() === 'PATCH'
       && new URL(request.url()).pathname === `/api/integrity-flags/${flag.id}`,
   );
-  await flagCard.getByRole('button', { name: 'I’m looking into this', exact: true }).click();
+  await alertDialog.getByRole('button', { name: 'Reviewing', exact: true }).click();
   expect((await reviewRequest).postDataJSON()).toEqual({ status: 'REVIEWING', note: '' });
   await expect(page.getByText('Flag marked reviewing', { exact: true })).toBeVisible();
-  await expect(flagCard.getByText('Reviewing', { exact: true })).toBeVisible();
-  await expect(openStat.getByText('0', { exact: true })).toBeVisible();
-  await expect(reviewingStat.getByText('1', { exact: true })).toBeVisible();
+  await expect(alertDialog).toHaveCount(0);
+
+  await alert.click();
+  alertDialog = page.getByRole('dialog', { name: 'Review a private booking pattern' });
+  await expect(alertDialog.getByText('Reviewing', { exact: true })).toBeVisible();
 
   const decisionNote = 'The club confirmed that this breached the coaching agreement.';
   const upholdRequest = page.waitForRequest(request =>
@@ -356,23 +369,23 @@ test('a club can move an integrity flag through review and close it with a recor
       && request.postDataJSON().status === 'UPHELD',
   );
   const promptPromise = page.waitForEvent('dialog');
-  const upholdClick = flagCard.getByRole('button', { name: 'Uphold this flag', exact: true }).click();
+  const upholdClick = alertDialog.getByRole('button', { name: 'Uphold', exact: true }).click();
   const prompt = await promptPromise;
   expect(prompt.type()).toBe('prompt');
-  expect(prompt.message()).toBe('Record this as upheld. What did you conclude?');
+  expect(prompt.message()).toBe('Uphold this review. What did you conclude?');
   await prompt.accept(decisionNote);
   await upholdClick;
   expect((await upholdRequest).postDataJSON()).toEqual({ status: 'UPHELD', note: decisionNote });
 
   await expect(page.getByText('Flag marked upheld', { exact: true })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Nothing needs a decision', exact: true })).toBeVisible();
-  await expect(reviewingStat.getByText('0', { exact: true })).toBeVisible();
-  await expect(closedStat.getByText('1', { exact: true })).toBeVisible();
-  await page.getByLabel('Filter flags', { exact: true }).selectOption('resolved');
+  await expect(alertDialog).toHaveCount(0);
+  await expect(alert.getByText('Action needed', { exact: true })).toHaveCount(0);
 
-  flagCard = page.locator('article.panel').filter({ hasText: `${coachName} & ${studentName}` });
-  await expect(flagCard.getByText('Upheld', { exact: true })).toBeVisible();
-  await expect(flagCard).toContainText(`Your note: ${decisionNote}`);
+  await alert.click();
+  alertDialog = page.getByRole('dialog', { name: 'Review a private booking pattern' });
+  await expect(alertDialog.getByText('Upheld', { exact: true })).toBeVisible();
+  await expect(alertDialog).toContainText(`Your note: ${decisionNote}`);
+  await expect(alertDialog).toContainText('This review has been closed.');
   expect(decisions).toEqual([
     { status: 'REVIEWING', note: '' },
     { status: 'UPHELD', note: decisionNote },
@@ -385,8 +398,10 @@ test('the account page saves a coach profile and keeps the new details after rel
     user: {
       id: 'account-profile-coach',
       name: 'Morgan Coach',
+      username: 'morgan_coach',
       email: 'morgan.coach@example.test',
       accountType: 'COACH',
+      sports: ['Tennis'],
       phone: '+65 8000 1000',
       parentName: '',
     },
@@ -394,11 +409,11 @@ test('the account page saves a coach profile and keeps the new details after rel
     business: null,
     memberships: [],
   };
-  const updates: Array<{ name: string; phone: string }> = [];
+  const updates: Array<{ name: string; phone: string; username: string; sports: string[] }> = [];
 
   await page.route('**/api/auth/me', async route => {
     if (route.request().method() === 'PATCH') {
-      const update = route.request().postDataJSON() as { name: string; phone: string };
+      const update = route.request().postDataJSON() as { name: string; phone: string; username: string; sports: string[] };
       updates.push(update);
       session = { ...session, user: { ...session.user, ...update } };
     }
@@ -409,6 +424,8 @@ test('the account page saves a coach profile and keeps the new details after rel
   await expect(page.getByRole('heading', { name: 'Welcome, Morgan Coach.', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Edit personal profile', exact: true }).click();
   await expect(page.getByLabel('Full name', { exact: true })).toHaveValue('Morgan Coach');
+  await expect(page.getByLabel('Username', { exact: true })).toHaveValue('morgan_coach');
+  await expect(page.getByLabel(/^Sports/)).toHaveValue('Tennis');
   await expect(page.getByLabel('Sign-in email', { exact: true })).toHaveValue('morgan.coach@example.test');
   await expect(page.getByLabel('Sign-in email', { exact: true })).not.toBeEditable();
 
@@ -420,16 +437,134 @@ test('the account page saves a coach profile and keeps the new details after rel
     request.method() === 'PATCH' && new URL(request.url()).pathname === '/api/auth/me',
   );
   await page.getByRole('button', { name: 'Save personal profile', exact: true }).click();
-  expect((await saveRequest).postDataJSON()).toEqual({ name: updatedName, phone: updatedPhone });
+  expect((await saveRequest).postDataJSON()).toEqual({
+    name: updatedName,
+    phone: updatedPhone,
+    username: 'morgan_coach',
+    sports: ['Tennis'],
+  });
 
   await expect(page.getByRole('button', { name: 'Save personal profile', exact: true })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: `Welcome, ${updatedName}.`, exact: true })).toBeVisible();
   await expect(page.locator('section[aria-labelledby="account-profile-heading"]')).toContainText(updatedPhone);
-  expect(updates).toEqual([{ name: updatedName, phone: updatedPhone }]);
+  expect(updates).toEqual([{
+    name: updatedName,
+    phone: updatedPhone,
+    username: 'morgan_coach',
+    sports: ['Tennis'],
+  }]);
 
   await page.reload();
   await expect(page.getByRole('heading', { name: `Welcome, ${updatedName}.`, exact: true })).toBeVisible();
   await expect(page.locator('section[aria-labelledby="account-profile-heading"]')).toContainText(updatedPhone);
+  await expectNoHorizontalOverflow(page);
+});
+
+test('an unaffiliated coach can search public account profiles from the account page', async ({ page }) => {
+  const session: AuthSession = {
+    user: {
+      id: 'account-search-coach',
+      name: 'Morgan Search Coach',
+      username: 'morgan_search',
+      email: 'morgan.search@example.test',
+      accountType: 'COACH',
+      sports: ['Tennis'],
+      phone: '',
+      parentName: '',
+    },
+    membership: null,
+    business: null,
+    memberships: [],
+  };
+  let requestedQuery = '';
+
+  await page.route('**/api/auth/me', route => route.fulfill({ json: session }));
+  await page.route('**/api/rentals', route => route.fulfill({ json: { rentals: [], nextCursor: null } }));
+  await page.route('**/api/calendar/connection', route => route.fulfill({
+    json: { configured: false, eligible: true, provider: null, state: 'DISCONNECTED', connected: false, email: null, calendarName: null, syncEnabled: false, busyCheckEnabled: false, connectedAt: null, lastSyncedAt: null, lastBusyAt: null, busyCacheExpiresAt: null, error: null },
+  }));
+  await page.route('**/api/accounts/search?*', async route => {
+    requestedQuery = new URL(route.request().url()).searchParams.get('q') ?? '';
+    await route.fulfill({
+      json: {
+        accounts: [{ name: 'Avery Player', username: 'avery_player', accountType: 'STUDENT', sports: ['Badminton'] }],
+      },
+    });
+  });
+
+  await page.goto('/account');
+  await expect(page.getByRole('heading', { name: 'No club access yet', exact: true })).toBeVisible();
+  const people = page.locator('section[aria-labelledby="account-people-heading"]');
+  await expect(people.getByRole('heading', { name: 'Find people on Courtly', exact: true })).toBeVisible();
+  await expect(people).toContainText('name, username, or exact email address');
+  await people.getByRole('searchbox', { name: 'Search all Courtly accounts', exact: true }).fill('avery@example.test');
+  await people.getByRole('button', { name: 'Search people', exact: true }).click();
+
+  await expect.poll(() => requestedQuery).toBe('avery@example.test');
+  const result = people.getByRole('listitem');
+  await expect(result).toContainText('Avery Player');
+  await expect(result).toContainText('@avery_player');
+  await expect(result).toContainText('Badminton');
+  await expect(result).not.toContainText('avery@example.test');
+  await expectNoHorizontalOverflow(page);
+});
+
+test('a student can see and update their username from Profile', async ({ page }) => {
+  let session: AuthSession = {
+    user: {
+      id: 'student-profile-identity',
+      name: 'Avery Student',
+      username: 'avery_student',
+      email: 'avery.student@example.test',
+      accountType: 'STUDENT',
+      sports: ['Tennis'],
+      phone: '+65 8123 4567',
+      parentName: '',
+    },
+    membership: null,
+    business: null,
+    memberships: [],
+  };
+  const updates: Array<Record<string, unknown>> = [];
+
+  await page.route('**/api/auth/me', route => route.fulfill({ json: session }));
+  await page.route('**/api/account/profile', async route => {
+    const update = route.request().postDataJSON() as Record<string, unknown>;
+    updates.push(update);
+    session = { ...session, user: { ...session.user, ...update } };
+    await route.fulfill({ json: session });
+  });
+  await page.route('**/api/account/clubs*', route => route.fulfill({ json: { clubs: [], nextCursor: null } }));
+  await page.route('**/api/account/bookings*', route => route.fulfill({ json: { bookings: [] } }));
+  await page.route('**/api/account/notifications', route => route.fulfill({ json: { notifications: [] } }));
+  await page.route('**/api/account/packages', route => route.fulfill({ json: { packages: [] } }));
+  await page.route('**/api/rentals', route => route.fulfill({ json: { rentals: [], nextCursor: null } }));
+  await page.route('**/api/rentals/reservations/mine', route => route.fulfill({ json: { reservations: [] } }));
+  await page.route('**/api/calendar/connection', route => route.fulfill({
+    json: { configured: false, eligible: true, provider: null, state: 'DISCONNECTED', connected: false, email: null, calendarName: null, syncEnabled: false, busyCheckEnabled: false, connectedAt: null, lastSyncedAt: null, lastBusyAt: null, busyCacheExpiresAt: null, error: null },
+  }));
+
+  await page.goto('/manage?tab=profile');
+  await expect(page.getByRole('heading', { name: 'Profile', exact: true })).toBeVisible();
+  await expect(page.getByText('@avery_student', { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const username = page.getByLabel('Username', { exact: true });
+  await expect(username).toHaveValue('avery_student');
+  await username.fill('avery_court');
+  const saveRequest = page.waitForRequest(request =>
+    request.method() === 'PATCH' && new URL(request.url()).pathname === '/api/account/profile',
+  );
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  expect((await saveRequest).postDataJSON()).toEqual({
+    name: 'Avery Student',
+    username: 'avery_court',
+    phone: '+65 8123 4567',
+    parentName: '',
+    sports: ['Tennis'],
+  });
+  await expect(page.getByText('@avery_court', { exact: true })).toBeVisible();
+  expect(updates).toHaveLength(1);
   await expectNoHorizontalOverflow(page);
 });
 
@@ -460,6 +595,10 @@ test('the account page redirects anonymous visitors to sign in and students to s
   await page.route('**/api/account/clubs*', route => route.fulfill({ json: { clubs: [] } }));
   await page.route('**/api/account/bookings*', route => route.fulfill({ json: { bookings: [] } }));
   await page.route('**/api/account/notifications', route => route.fulfill({ json: { notifications: [] } }));
+  await page.route('**/api/account/packages', route => route.fulfill({ json: { packages: [] } }));
+  await page.route(/\/api\/rentals(?:\?.*)?$/, route => route.fulfill({
+    json: { rentals: [], nextCursor: null },
+  }));
 
   await page.goto('/account');
   await expect(page).toHaveURL(url => url.pathname === '/manage');

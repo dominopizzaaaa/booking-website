@@ -113,6 +113,15 @@ export function alertAppearance(
   return appearances[alertKind(alert)];
 }
 
+/** Resolve safeguard evidence only through the notification's explicit link. */
+export function linkedIntegrityFlag<T extends { id: string }>(
+  alert: { integrityFlagId?: string | null } | null,
+  flags: readonly T[],
+): T | null {
+  if (!alert?.integrityFlagId) return null;
+  return flags.find(flag => flag.id === alert.integrityFlagId) ?? null;
+}
+
 /** How many alerts to show before offering the rest behind "Show all". */
 export const alertPageSize = 5;
 

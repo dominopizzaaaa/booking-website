@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addDaysKey, cn, dateKey, initials, money, shortDate, time } from '../src/lib/utils';
+import { addCalendarWeeks, addDaysKey, cn, coversWeeklyOccurrences, dateKey, endOfDateKey, initials, money, shortDate, time } from '../src/lib/utils';
 
 // Money is integer minor units everywhere in Courtly. These assertions exist
 // because a float slipping into this helper is invisible until a receipt is
@@ -60,6 +60,23 @@ describe('date helpers', () => {
   it('handles a leap day', () => {
     expect(addDaysKey('2028-02-28', 1)).toBe('2028-02-29');
     expect(addDaysKey('2028-02-29', 1)).toBe('2028-03-01');
+  });
+
+  it('ends an expiry date in the business timezone', () => {
+    expect(endOfDateKey('2026-03-08', 'America/New_York').toISOString()).toBe('2026-03-09T03:59:59.000Z');
+    expect(endOfDateKey('2026-09-25', 'Asia/Singapore').toISOString()).toBe('2026-09-25T15:59:59.000Z');
+  });
+
+  it('adds recurring weeks in the business timezone without a DST drift', () => {
+    const start = '2026-03-01T15:00:00.000Z'; // 10:00 in New York before spring DST.
+    expect(addCalendarWeeks(start, 2, 'America/New_York').toISOString()).toBe('2026-03-15T14:00:00.000Z');
+  });
+
+  it('requires package expiry to cover the final local-time occurrence', () => {
+    const start = '2026-03-01T15:00:00.000Z';
+    const now = new Date('2026-02-28T00:00:00.000Z').getTime();
+    expect(coversWeeklyOccurrences('2026-03-15T14:00:00.000Z', start, 3, 'America/New_York', now)).toBe(true);
+    expect(coversWeeklyOccurrences('2026-03-15T13:59:59.999Z', start, 3, 'America/New_York', now)).toBe(false);
   });
 });
 

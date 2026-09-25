@@ -56,8 +56,8 @@ export default function Dashboard({ data, onNavigate, onNew, onBooking }: { data
   const weekHours = weekBookings.reduce((sum, b) => sum + (+new Date(b.endAt) - +new Date(b.startAt)) / 3600000, 0);
   const setupSteps = [
     { id: 'locations', label: 'Add an active location', done: bookingReadiness.hasActiveLocation, enabled: true },
-    { id: 'team', label: 'Add an active instructor', done: bookingReadiness.hasActiveInstructor, enabled: bookingReadiness.hasActiveLocation },
-    { id: 'services', label: 'Set up a bookable service', done: bookingReadiness.hasAssignedService, enabled: bookingReadiness.hasActiveLocation && bookingReadiness.hasActiveInstructor },
+    { id: 'team', label: 'Add a coach to your roster', done: bookingReadiness.hasActiveInstructor, enabled: bookingReadiness.hasActiveLocation },
+    { id: 'services', label: 'Set up a bookable class', done: bookingReadiness.hasAssignedService, enabled: bookingReadiness.hasActiveLocation && bookingReadiness.hasActiveInstructor },
     { id: 'availability', label: 'Set matching availability', done: bookingReadiness.hasMatchingAvailability, enabled: bookingReadiness.hasAssignedService },
     { id: 'students', label: 'Connect a student account', done: bookingReadiness.hasLinkedStudent, enabled: bookingReadiness.hasMatchingAvailability },
   ];
@@ -67,9 +67,9 @@ export default function Dashboard({ data, onNavigate, onNew, onBooking }: { data
         : !bookingReadiness.hasMatchingAvailability ? 'availability'
           : 'students';
   const coachOwnerBlockers = [
-    !bookingReadiness.hasActiveInstructor && 'an active coach roster profile',
+    !bookingReadiness.hasActiveInstructor && 'your coach roster profile',
     !bookingReadiness.hasActiveLocation && 'an active location',
-    !bookingReadiness.hasAssignedService && 'a service assigned to you at that location',
+    !bookingReadiness.hasAssignedService && 'a class assigned to you at that location',
     !bookingReadiness.hasLinkedStudent && 'a linked student and first booking',
   ].filter((item): item is string => !!item);
   function requestNewBooking() {
@@ -97,7 +97,7 @@ export default function Dashboard({ data, onNavigate, onNew, onBooking }: { data
 
     {!isClubCoach && !data.business.isDemo && !bookingReadiness.staffBookingReady && <section id="booking-setup-guidance" className="mt-5 rounded-xl border border-[#dce6d2] bg-[#eef4e6] p-4"><div className="flex flex-col justify-between gap-3 md:flex-row md:items-center"><div><div className="flex items-center gap-2"><Sparkles size={16} className="text-[#829665]" /><h2>A few small steps. A whole new rhythm.</h2></div><p className="mt-1 max-w-xl text-[12px] text-[#718363]">Complete the steps in order. The booking page is shareable after step 4; creating a staff booking also needs a linked student.</p></div><ol className="flex flex-wrap gap-2">{setupSteps.map((step, i) => <li key={step.id}><Button variant="outline" size="sm" disabled={!step.enabled} onClick={() => onNavigate(step.id)}>{step.done ? <Check size={12} /> : <span className="text-[#94a280]">{i + 1}.</span>}{step.label}</Button></li>)}</ol></div></section>}
 
-    {isClubCoach && !bookingReadiness.staffBookingReady && <section id="booking-setup-guidance" className="mt-5 rounded-xl border border-[#e8dfc8] bg-[#fbf8ef] p-4"><div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><h2 className="text-sm text-[#6e6246]">New booking setup is incomplete</h2><p className="mt-1 text-[11px] leading-relaxed text-[#8f8265]">{coachOwnerBlockers.length ? `Ask the club to add ${coachOwnerBlockers.join(', ')}.` : 'Set availability for your assigned service location before creating a booking.'}</p></div><Button variant="outline" size="sm" onClick={() => onNavigate(coachOwnerBlockers.length ? 'explore' : 'availability')}>{coachOwnerBlockers.length ? 'View your tools' : 'Set availability'}<ArrowRight size={13} /></Button></div></section>}
+    {isClubCoach && !bookingReadiness.staffBookingReady && <section id="booking-setup-guidance" className="mt-5 rounded-xl border border-[#e8dfc8] bg-[#fbf8ef] p-4"><div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><h2 className="text-sm text-[#6e6246]">New booking setup is incomplete</h2><p className="mt-1 text-[11px] leading-relaxed text-[#8f8265]">{coachOwnerBlockers.length ? `Ask the club to add ${coachOwnerBlockers.join(', ')}.` : 'Set availability for your assigned class location before creating a booking.'}</p></div><Button variant="outline" size="sm" onClick={() => onNavigate(coachOwnerBlockers.length ? 'explore' : 'availability')}>{coachOwnerBlockers.length ? 'View your tools' : 'Set availability'}<ArrowRight size={13} /></Button></div></section>}
 
     <section aria-label={isCoach ? 'Coach snapshot' : 'Business snapshot'} className="mt-5 grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[#e2e7df] bg-[#e2e7df] shadow-[0_1px_2px_rgba(25,52,38,0.02)] md:grid-cols-4">
       <Stat title="Today's sessions" value={String(todays.length).padStart(2, '0')} detail={`${hours % 1 ? hours.toFixed(1) : hours} ${isCoach ? 'teaching' : 'scheduled'} hours`} icon={<CalendarDays size={16} />} />
@@ -143,7 +143,7 @@ export default function Dashboard({ data, onNavigate, onNew, onBooking }: { data
 
         <section className="panel overflow-hidden md:col-span-2 lg:col-span-1" aria-labelledby="venues-heading">
           <div className="flex items-center justify-between px-5 pb-2 pt-4"><div><p className="eyebrow !text-[9px]">TODAY BY VENUE</p><h2 id="venues-heading" className="mt-1 !text-[16px]">Venue load</h2></div><button aria-label={isClubCoach ? 'Manage availability' : 'Manage locations'} className="subtle-link !text-[11px]" onClick={() => onNavigate(isClubCoach ? 'availability' : 'locations')}>{isClubCoach ? 'Availability' : 'Manage'}<ArrowUpRight size={13} /></button></div>
-          <div className="flex gap-2 overflow-x-auto px-5 pb-4 pt-2">{activeLocations.slice(0, 4).map((location, i) => <button key={location.id} className={`min-w-[125px] flex-1 rounded-lg border p-3 text-left transition-colors ${locationFilter === location.id ? 'border-[#9caf8f] bg-[#f0f5eb]' : 'border-[#e7ebe3] bg-[#fafbf8] hover:bg-[#f5f7f2]'}`} onClick={() => { setLocationFilter(location.id); setSelectedDate(today); setWeekOffset(0); }}><span className={`mb-2 flex h-7 w-7 items-center justify-center rounded-md ${i % 3 === 1 ? 'bg-[#eaf0f3] text-[#819eae]' : i % 3 === 2 ? 'bg-[#f3eee1] text-[#ae965c]' : 'bg-[#eaf1e3] text-[#7f956e]'}`}><MapPin size={14} /></span><span className="block truncate text-[11px] font-semibold">{location.name}</span><span className="mt-1 block text-[10px] text-[#59675c]">{todays.filter(b => b.locationId === location.id).length} today</span></button>)}{!activeLocations.length && (isClubCoach ? <div className="w-full rounded-lg border border-dashed border-[#dfe5dc] p-4 text-left text-[11px] text-[#879282]">No active venues are assigned to your services.</div> : <button className="w-full rounded-lg border border-dashed border-[#dfe5dc] p-4 text-left text-[11px] text-[#879282]" onClick={() => onNavigate('locations')}>Add your first venue <ArrowRight size={12} className="ml-1 inline" /></button>)}</div>
+          <div className="flex gap-2 overflow-x-auto px-5 pb-4 pt-2">{activeLocations.slice(0, 4).map((location, i) => <button key={location.id} className={`min-w-[125px] flex-1 rounded-lg border p-3 text-left transition-colors ${locationFilter === location.id ? 'border-[#9caf8f] bg-[#f0f5eb]' : 'border-[#e7ebe3] bg-[#fafbf8] hover:bg-[#f5f7f2]'}`} onClick={() => { setLocationFilter(location.id); setSelectedDate(today); setWeekOffset(0); }}><span className={`mb-2 flex h-7 w-7 items-center justify-center rounded-md ${i % 3 === 1 ? 'bg-[#eaf0f3] text-[#819eae]' : i % 3 === 2 ? 'bg-[#f3eee1] text-[#ae965c]' : 'bg-[#eaf1e3] text-[#7f956e]'}`}><MapPin size={14} /></span><span className="block truncate text-[11px] font-semibold">{location.name}</span><span className="mt-1 block text-[10px] text-[#59675c]">{todays.filter(b => b.locationId === location.id).length} today</span></button>)}{!activeLocations.length && (isClubCoach ? <div className="w-full rounded-lg border border-dashed border-[#dfe5dc] p-4 text-left text-[11px] text-[#879282]">No active venues are assigned to your classes.</div> : <button className="w-full rounded-lg border border-dashed border-[#dfe5dc] p-4 text-left text-[11px] text-[#879282]" onClick={() => onNavigate('locations')}>Add your first venue <ArrowRight size={12} className="ml-1 inline" /></button>)}</div>
         </section>
       </aside>
     </div>
@@ -162,8 +162,8 @@ export function CalendarView({ data, onNew, onBooking, listOnly = false }: { dat
   const isClubCoach = data.user.accountType === 'COACH' && data.business.kind === 'CLUB';
   const bookingBlockers = [
     !bookingReadiness.hasActiveLocation && 'an active location',
-    !bookingReadiness.hasActiveInstructor && 'an active instructor',
-    !bookingReadiness.hasAssignedService && 'a service assigned to that instructor and location',
+    !bookingReadiness.hasActiveInstructor && 'a coach on the roster',
+    !bookingReadiness.hasAssignedService && 'a class assigned to that coach and location',
     bookingReadiness.hasAssignedService && !bookingReadiness.hasMatchingAvailability && 'matching availability',
     !bookingReadiness.hasLinkedStudent && 'a linked student account',
   ].filter((item): item is string => !!item);

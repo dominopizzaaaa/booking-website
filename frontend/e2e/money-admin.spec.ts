@@ -88,14 +88,16 @@ test('a club receipt can be reversed without erasing its ledger trail or mixing 
   const packagePrice = 43_210;
   const expiryDate = futureSingaporeDate();
 
-  await page.goto('/?tab=explore&view=packages');
-  await expect(page.locator('main').getByRole('heading', { name: 'Lesson packages', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Sell package', exact: true }).click();
+  await page.goto('/?tab=explore&view=students');
+  await expect(page.locator('main').getByRole('heading', { name: 'Students', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: `View ${student.name}'s profile`, exact: true }).first().click();
+  const studentProfile = page.getByRole('dialog', { name: student.name, exact: true });
+  await studentProfile.getByRole('button', { name: 'Sell package', exact: true }).click();
 
   const packageDialog = page.getByRole('dialog');
-  await expect(packageDialog.getByRole('heading', { name: 'Sell a lesson package', exact: true })).toBeVisible();
+  await expect(packageDialog.getByRole('heading', { name: 'Sell a class package', exact: true })).toBeVisible();
   await expectNoHorizontalOverflow(page);
-  await packageDialog.getByLabel('Student', { exact: true }).selectOption(student.id);
+  await expect(packageDialog.getByLabel('Student', { exact: true })).toHaveValue(student.id);
   // Field's generated input id is intentionally opaque; its stable form name
   // is the contract the submit handler reads.
   await packageDialog.locator('input[name="name"]').fill(packageName);
@@ -130,13 +132,17 @@ test('a club receipt can be reversed without erasing its ledger trail or mixing 
     paid: false,
   });
   expect(pkg.expiresAt).toBe(new Date(`${expiryDate}T23:59:59+08:00`).toISOString());
-  await expect(page.getByText('Lesson package created', { exact: true })).toBeVisible();
+  await expect(page.getByText('Package created', { exact: true })).toBeVisible();
   await expect(packageDialog).toHaveCount(0);
 
+  await page.goto('/?tab=explore&view=packages');
+  await expect(page.locator('main').getByRole('heading', { name: 'Package offers', exact: true })).toBeVisible();
   let packageCard = page.locator('main article').filter({ hasText: packageName });
   await expect(packageCard).toContainText(student.name);
   await expect(packageCard).toContainText(formatMoney(packagePrice));
-  await expect(packageCard.getByRole('button', { name: 'Record payment', exact: true })).toBeVisible();
+  await expect(packageCard.getByText('Payment due', { exact: true }).first()).toBeVisible();
+  await expect(packageCard.getByText('Paid', { exact: true })).toHaveCount(0);
+  await expect(packageCard.getByRole('button', { name: 'Record payment', exact: true })).toHaveCount(0);
   await expect(packageCard.getByRole('progressbar', { name: `${packageName} used credits` })).toHaveAttribute('aria-valuenow', '0');
 
   await page.goto('/?tab=explore&view=payments');
@@ -243,15 +249,12 @@ test('a club receipt can be reversed without erasing its ledger trail or mixing 
   await expect(receiptRecord).toContainText('Reversed');
   await expect(receiptRecord.getByRole('button', { name: 'Undo', exact: true })).toHaveCount(0);
   await expect(moneyStat(page, 'Collected from students')).toContainText(formatMoney(initialCollected));
-  const outstandingAfterReversal = page.getByRole('tab', { name: `Outstanding (${initialOutstanding + 1})`, exact: true });
-  await expect(outstandingAfterReversal).toBeVisible();
-  await outstandingAfterReversal.click();
-  await expect(financeRecord(page, packageName).getByRole('button', { name: 'Record payment', exact: true })).toBeVisible();
 
   await page.goto('/?tab=explore&view=packages');
   packageCard = page.locator('main article').filter({ hasText: packageName });
+  await expect(packageCard.getByText('Payment due', { exact: true }).first()).toBeVisible();
   await expect(packageCard.getByText('Paid', { exact: true })).toHaveCount(0);
-  await expect(packageCard.getByRole('button', { name: 'Record payment', exact: true })).toBeVisible();
+  await expect(packageCard.getByRole('button', { name: 'Record payment', exact: true })).toHaveCount(0);
   const afterReversal = await responseJson<ManagerWorkspace>(await page.request.get('/api/workspace'));
   expect(afterReversal.packages.find(candidate => candidate.id === pkg.id)?.paid).toBe(false);
   expect(afterReversal.payments.find(candidate => candidate.id === payment.id)).toMatchObject({
@@ -260,6 +263,11 @@ test('a club receipt can be reversed without erasing its ledger trail or mixing 
   expect(afterReversal.payments.find(candidate => candidate.id === payment.id)?.reversedAt).toBeTruthy();
 
   await page.goto('/?tab=explore&view=payments');
+  const outstandingAfterReversal = page.getByRole('tab', { name: `Outstanding (${initialOutstanding + 1})`, exact: true });
+  await expect(outstandingAfterReversal).toBeVisible();
+  await outstandingAfterReversal.click();
+  await expect(financeRecord(page, packageName).getByRole('button', { name: 'Record payment', exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'Payment history', exact: true }).click();
   await expect(moneyStat(page, 'Collected from students')).toContainText(formatMoney(initialCollected));
   await page.getByRole('button', { name: 'Record coach payout', exact: true }).click();
   const payoutDialog = page.getByRole('dialog');

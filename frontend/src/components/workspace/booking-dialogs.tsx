@@ -6,9 +6,48 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/compone
 import { Button } from '@/components/ui/button';
 import { ApiError, createBooking, loadSlots, mutate, proposeWorkspaceReschedule, respondToAssignment, respondToRescheduleRequest, reversePayment } from '@/lib/api';
 import { isManagerWorkspace, type ManagerWorkspace, type Payment, type Slot, type WorkspaceResponse } from '@/lib/types';
-import { dateKey, money, shortDate, time } from '@/lib/utils';
+import { coversWeeklyOccurrences, dateKey, money, shortDate, time } from '@/lib/utils';
 
 type NewBookingDialogProps = { data: WorkspaceResponse; open: boolean; onClose: () => void; refresh: () => Promise<void> };
+type WorkspaceService = WorkspaceResponse['services'][number];
+
+function bookingClassAvailable(
+  candidate: WorkspaceService,
+  isClubCoach: boolean,
+  coachInstructorId: string | null,
+  activeLocationIds: Set<string>,
+  activeInstructorIds: Set<string>,
+) {
+  if (!candidate.active) return false;
+  return candidate.locations.some(mapping => activeLocationIds.has(mapping.locationId) && (
+    isClubCoach ? (
+      candidate.type === 'PRIVATE'
+      && !!coachInstructorId
+      && activeInstructorIds.has(coachInstructorId)
+      && mapping.instructorIds.includes(coachInstructorId)
+    ) : mapping.instructorIds.some(instructorId => activeInstructorIds.has(instructorId))
+  ));
+}
+
+function packageCoversClass(pkg: ManagerWorkspace['packages'][number], serviceId: string) {
+  if (pkg.serviceIds?.length) return pkg.serviceIds.includes(serviceId);
+  // A marketplace package with only rental scopes cannot pay for a class.
+  // Legacy packages have no scope rows and retain their nullable serviceId rule.
+  if (pkg.rentalLocationIds?.length) return false;
+  return !pkg.serviceId || pkg.serviceId === serviceId;
+}
+
+function packageCoversBooking(
+  pkg: ManagerWorkspace['packages'][number],
+  serviceId: string,
+  startAt: string,
+  repeatWeeks: number,
+  timezone: string,
+) {
+  if (!pkg.paid || !packageCoversClass(pkg, serviceId)) return false;
+  if (pkg.totalCredits - pkg.usedCredits < repeatWeeks || !startAt) return false;
+  return coversWeeklyOccurrences(pkg.expiresAt, startAt, repeatWeeks, timezone);
+}
 
 function lessonHasEnded(endAt: string, now: number) {
   const end = new Date(endAt).getTime();
@@ -17,14 +56,18 @@ function lessonHasEnded(endAt: string, now: number) {
 
 export function NewBookingDialog(props: NewBookingDialogProps) {
   // Workspace switching does not require a full browser reload. Remount the
-  // state holder so selections and uncontrolled notes from one business can
-  // never leak into the next business's booking form.
-  return <BusinessBookingDialog key={props.data.business.id} {...props} />;
+  // state holder on both workspace and open-state changes so selections and
+  // uncontrolled notes cannot leak into another business or a later booking.
+  return <BusinessBookingDialog key={`${props.data.business.id}:${props.open ? 'open' : 'closed'}`} {...props} />;
 }
 
 function BusinessBookingDialog({ data, open, onClose, refresh }: NewBookingDialogProps) {
+  const isClubCoach = data.user.accountType === 'COACH' && data.business.kind === 'CLUB';
+  const coachInstructorId = isClubCoach ? data.user.instructorId : null;
   const managerData = isManagerWorkspace(data) ? data : null;
-  const [serviceId, setService] = useState(data.services.find(s => s.active)?.id || '');
+  const activeLocationIds = new Set(data.locations.filter(candidate => candidate.active).map(candidate => candidate.id));
+  const activeInstructorIds = new Set(data.instructors.filter(candidate => candidate.active).map(candidate => candidate.id));
+  const [serviceId, setService] = useState(data.services.find(candidate => bookingClassAvailable(candidate, isClubCoach, coachInstructorId, activeLocationIds, activeInstructorIds))?.id || '');
   const [locationId, setLocation] = useState('');
   const [instructorId, setInstructor] = useState('');
   const [date, setDate] = useState(dateKey());
@@ -36,50 +79,70 @@ function BusinessBookingDialog({ data, open, onClose, refresh }: NewBookingDialo
   const [repeat, setRepeat] = useState(1);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const availableServices = data.services.filter(candidate => bookingClassAvailable(candidate, isClubCoach, coachInstructorId, activeLocationIds, activeInstructorIds));
   const service = data.services.find(s => s.id === serviceId);
-  const mapping = service?.locations.find(l => l.locationId === locationId);
+  const serviceLocations = service?.locations.filter(locationMapping =>
+    activeLocationIds.has(locationMapping.locationId)
+    && (isClubCoach
+      ? !!coachInstructorId && activeInstructorIds.has(coachInstructorId) && locationMapping.instructorIds.includes(coachInstructorId)
+      : locationMapping.instructorIds.some(candidate => activeInstructorIds.has(candidate))),
+  ) || [];
+  const mapping = serviceLocations.find(l => l.locationId === locationId);
   const location = data.locations.find(l => l.id === locationId);
-  useEffect(() => { if (open && !data.services.some(s => s.id === serviceId && s.active)) setService(data.services.find(s => s.active)?.id || ''); }, [open, data.services, serviceId]);
-  useEffect(() => { setLocation(service?.locations[0]?.locationId || ''); }, [serviceId]);
-  useEffect(() => { setInstructor(mapping?.instructorIds[0] || ''); }, [locationId, serviceId]);
+  const bookingInstructorId = coachInstructorId || instructorId;
+  const eligiblePackages = managerData?.packages.filter(pkg =>
+    pkg.studentId === studentId && packageCoversBooking(pkg, serviceId, slot, repeat, data.business.timezone),
+  ) ?? [];
+  const firstLocationId = serviceLocations[0]?.locationId || '';
+  const firstInstructorId = mapping?.instructorIds.find(candidate => activeInstructorIds.has(candidate)) || '';
+  useEffect(() => {
+    if (open && !data.services.some(s => s.id === serviceId && bookingClassAvailable(s, isClubCoach, coachInstructorId, activeLocationIds, activeInstructorIds))) {
+      setService(data.services.find(s => bookingClassAvailable(s, isClubCoach, coachInstructorId, activeLocationIds, activeInstructorIds))?.id || '');
+    }
+  }, [open, data.services, data.locations, data.instructors, serviceId, coachInstructorId, isClubCoach]);
+  useEffect(() => { setLocation(firstLocationId); }, [serviceId, firstLocationId]);
+  useEffect(() => { if (!isClubCoach) setInstructor(firstInstructorId); }, [locationId, serviceId, firstInstructorId, isClubCoach]);
+  useEffect(() => {
+    if (packageId && !eligiblePackages.some(pkg => pkg.id === packageId)) setPackage('');
+  }, [eligiblePackages, packageId]);
   useEffect(() => {
     let active = true;
     setSlot(''); setSlots([]); setError('');
-    if (!open || !serviceId || !locationId || !instructorId || !date) return;
+    if (!open || !serviceId || !locationId || !bookingInstructorId || !date) return;
     setSlotsLoading(true);
-    loadSlots(data.business.slug, { serviceId, locationId, instructorId, date }).then(r => { if (active) setSlots(r.slots); }).catch(e => { if (active) setError(e.message); }).finally(() => { if (active) setSlotsLoading(false); });
+    loadSlots(data.business.slug, { serviceId, locationId, instructorId: bookingInstructorId, date }).then(r => { if (active) setSlots(r.slots); }).catch(e => { if (active) setError(e.message); }).finally(() => { if (active) setSlotsLoading(false); });
     return () => { active = false; };
-  }, [open, serviceId, locationId, instructorId, date, data.business.slug]);
+  }, [open, serviceId, locationId, bookingInstructorId, date, data.business.slug]);
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!slot || !studentId) return;
     setBusy(true); setError('');
     try {
       const form = new FormData(event.currentTarget);
-      await createBooking({ serviceId, locationId, instructorId, startAt: slot, studentId, repeatWeeks: repeat, ...(packageId ? { packageId } : {}), notes: String(form.get('notes') || ''), address: String(form.get('address') || '') });
-      await refresh(); toast.success(repeat > 1 ? `${repeat} weekly lessons booked` : 'Booking added to your schedule'); onClose();
+      await createBooking({ serviceId, locationId, instructorId: bookingInstructorId, startAt: slot, studentId, repeatWeeks: repeat, ...(packageId ? { packageId } : {}), notes: String(form.get('notes') || ''), address: String(form.get('address') || '') });
+      await refresh(); toast.success(repeat > 1 ? `${repeat} weekly classes booked` : 'Booking added to your schedule'); onClose();
     } catch (e) {
       const err = e as ApiError; const detail = err.details as { conflicts?: { date: string; reason: string }[] } | undefined;
       setError(detail?.conflicts?.length ? `${err.message} ${detail.conflicts.map(c => `${c.date}: ${c.reason}`).join('; ')}` : err.message);
     } finally { setBusy(false); }
   }
-  return <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}><DialogContent className="max-w-xl"><DialogTitle className="text-xl font-semibold tracking-tight">Add a booking</DialogTitle><DialogDescription className="mt-2 mb-6 text-xs text-stone-500">A quick booking for the lessons arranged off the court.</DialogDescription><form onSubmit={submit} className="form-stack">
-    <div className="form-grid"><div className="field-wide"><label htmlFor="booking-service">Service</label><select id="booking-service" value={serviceId} onChange={e => setService(e.target.value)} required><option value="" disabled>Choose a service</option>{data.services.filter(s => s.active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></div><div><label htmlFor="booking-location">Location</label><select id="booking-location" value={locationId} onChange={e => setLocation(e.target.value)} required><option value="" disabled>Select location</option>{service?.locations.map(l => <option key={l.locationId} value={l.locationId}>{data.locations.find(x => x.id === l.locationId)?.name}</option>)}</select></div><div><label htmlFor="booking-instructor">Instructor</label><select id="booking-instructor" value={instructorId} onChange={e => setInstructor(e.target.value)} required><option value="" disabled>Select instructor</option>{data.instructors.filter(i => mapping?.instructorIds.includes(i.id)).map(i => <option key={i.id} value={i.id}>{i.name}</option>)}</select></div><div><label htmlFor="booking-date">Date</label><input id="booking-date" type="date" min={dateKey()} value={date} onChange={e => setDate(e.target.value)} required /></div><div><label htmlFor="booking-repeat">Repeat</label><select id="booking-repeat" value={repeat} onChange={e => setRepeat(Number(e.target.value))}><option value={1}>Does not repeat</option><option value={4}>Weekly · 4 lessons</option><option value={8}>Weekly · 8 lessons</option><option value={10}>Weekly · 10 lessons</option></select></div></div>
-    <div><label>Available start times · {mapping?.duration || service?.duration || 60} min</label>{slotsLoading ? <p className="flex items-center gap-2 py-4 text-xs text-stone-500"><Loader2 size={14} className="animate-spin" />Checking all locations and travel time…</p> : <div className="grid grid-cols-4 gap-2">{slots.filter(s => s.available).map(s => <button type="button" key={s.startAt} onClick={() => setSlot(s.startAt)} className={`rounded-lg border px-2 py-2.5 text-[11px] ${slot === s.startAt ? 'border-[#214e3e] bg-[#214e3e] text-white' : 'border-stone-200 hover:bg-stone-50'}`}>{time(s.startAt)}</button>)}{!slots.some(s => s.available) && <p className="col-span-4 rounded-lg bg-stone-50 p-4 text-xs text-stone-500">No available times. Try a different date, instructor, or location.</p>}</div>}</div>
-    <div><label htmlFor="booking-student">Registered student</label><select id="booking-student" value={studentId} onChange={e => { setStudent(e.target.value); setPackage(''); }} required><option value="" disabled>Select a student account</option>{data.students.filter(student => !!student.userId).map(student => <option key={student.id} value={student.id}>{student.name} · {student.email}</option>)}</select><p className="mt-1 text-[10px] leading-relaxed text-stone-400">Bookings can only be created for students already linked to a Courtly student account. Add them from Students first if they are missing.</p></div>
-    {managerData && studentId && managerData.packages.some(p => p.studentId === studentId && p.usedCredits < p.totalCredits) && <div><label htmlFor="booking-package">Lesson package</label><select id="booking-package" value={packageId} onChange={e => setPackage(e.target.value)}><option value="">Pay per session</option>{managerData.packages.filter(p => p.studentId === studentId && p.usedCredits < p.totalCredits && (!p.serviceId || p.serviceId === serviceId)).map(p => <option key={p.id} value={p.id}>{p.name} · {p.totalCredits - p.usedCredits} credits left</option>)}</select></div>}
+  return <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}><DialogContent className="max-w-xl"><DialogTitle className="text-xl font-semibold tracking-tight">Add a booking</DialogTitle><DialogDescription className="mt-2 mb-6 text-xs text-stone-500">Choose the class, venue, student, and time.</DialogDescription><form onSubmit={submit} className="form-stack">
+    <div className="form-grid"><div className="field-wide"><label htmlFor="booking-service">{isClubCoach ? '1-1 session' : 'Class'}</label><select id="booking-service" value={serviceId} onChange={e => { setService(e.target.value); setPackage(''); }} required><option value="" disabled>Choose a class</option>{availableServices.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></div>{isClubCoach && <div className="field-wide grid gap-3 rounded-xl border border-[#e3e8df] bg-[#f7f9f4] p-3 sm:grid-cols-2" role="group" aria-label="1-1 session details"><p className="text-[11px] text-stone-500"><span className="block text-[10px] font-semibold uppercase tracking-wide text-stone-400">Club</span><strong className="mt-1 block font-semibold text-[#344b39]">{data.business.name}</strong></p><p className="text-[11px] text-stone-500"><span className="block text-[10px] font-semibold uppercase tracking-wide text-stone-400">Duration</span><strong className="mt-1 block font-semibold text-[#344b39]">{mapping?.duration || service?.duration || 60} minutes</strong></p></div>}<div><label htmlFor="booking-location">Location</label><select id="booking-location" value={locationId} onChange={e => setLocation(e.target.value)} required><option value="" disabled>Select location</option>{serviceLocations.map(l => <option key={l.locationId} value={l.locationId}>{data.locations.find(x => x.id === l.locationId)?.name}</option>)}</select></div>{!isClubCoach && <div><label htmlFor="booking-instructor">Instructor</label><select id="booking-instructor" value={instructorId} onChange={e => setInstructor(e.target.value)} required><option value="" disabled>Select instructor</option>{data.instructors.filter(i => activeInstructorIds.has(i.id) && mapping?.instructorIds.includes(i.id)).map(i => <option key={i.id} value={i.id}>{i.name}</option>)}</select></div>}<div><label htmlFor="booking-date">Date</label><input id="booking-date" type="date" min={dateKey()} value={date} onChange={e => setDate(e.target.value)} required /></div><div><label htmlFor="booking-repeat">Repeat</label><select id="booking-repeat" value={repeat} onChange={e => setRepeat(Number(e.target.value))}><option value={1}>Does not repeat</option><option value={4}>Weekly · 4 classes</option><option value={8}>Weekly · 8 classes</option><option value={10}>Weekly · 10 classes</option></select></div></div>
+    <div><label>Available start times · {mapping?.duration || service?.duration || 60} min</label>{slotsLoading ? <p className="flex items-center gap-2 py-4 text-xs text-stone-500"><Loader2 size={14} className="animate-spin" />Checking all locations and travel time…</p> : <div className="grid grid-cols-4 gap-2">{slots.filter(s => s.available).map(s => <button type="button" key={s.startAt} onClick={() => setSlot(s.startAt)} className={`rounded-lg border px-2 py-2.5 text-[11px] ${slot === s.startAt ? 'border-[#214e3e] bg-[#214e3e] text-white' : 'border-stone-200 hover:bg-stone-50'}`}>{time(s.startAt)}</button>)}{!slots.some(s => s.available) && <p className="col-span-4 rounded-lg bg-stone-50 p-4 text-xs text-stone-500">No available times. Try a different date, {isClubCoach ? 'class' : 'instructor'}, or location.</p>}</div>}</div>
+    <div><label htmlFor="booking-student">Registered student</label><select id="booking-student" value={studentId} onChange={e => { setStudent(e.target.value); setPackage(''); }} required><option value="" disabled>Select a student account</option>{data.students.filter(student => !!student.userId).map(student => <option key={student.id} value={student.id}>{student.name} · {student.email}</option>)}</select></div>
+    {managerData && eligiblePackages.length > 0 && <div><label htmlFor="booking-package">Package credits</label><select id="booking-package" value={packageId} onChange={e => setPackage(e.target.value)}><option value="">Pay per class</option>{eligiblePackages.map(p => <option key={p.id} value={p.id}>{p.name} · {p.totalCredits - p.usedCredits} credits left</option>)}</select></div>}
     {location?.type === 'HOME' && <div><label htmlFor="booking-address">Student address</label><input id="booking-address" name="address" required placeholder="Full address and unit number" /></div>}
-    <div><label htmlFor="booking-notes">Internal lesson notes (optional)</label><textarea id="booking-notes" name="notes" rows={2} placeholder="Preparation, progress, or private provider notes" /><p className="mt-1 text-[10px] text-stone-400">Visible only to your team, never on the student booking page.</p></div>
-    {location?.requiresApproval && <div className="flex gap-2 rounded-lg bg-amber-50 p-3 text-xs leading-relaxed text-amber-800"><AlertCircle size={17} className="shrink-0" />This lesson will be pending venue confirmation. Scheduling does not reserve an external court or room.</div>}
-    {repeat > 1 && <p className="text-xs text-stone-500">All {repeat} occurrences must be available. If any week conflicts, no lessons or package credits will be booked.</p>}
+    <div><label htmlFor="booking-notes">Internal class notes (optional)</label><textarea id="booking-notes" name="notes" rows={2} placeholder="Preparation, progress, or private provider notes" /><p className="mt-1 text-[10px] text-stone-400">Visible only to your team, never on the student booking page.</p></div>
+    {location?.requiresApproval && <div className="flex gap-2 rounded-lg bg-amber-50 p-3 text-xs leading-relaxed text-amber-800"><AlertCircle size={17} className="shrink-0" />This class will be pending venue confirmation. Scheduling does not reserve an external court or room.</div>}
+    {repeat > 1 && <p className="text-xs text-stone-500">All {repeat} occurrences must be available. If any week conflicts, no classes or package credits will be booked.</p>}
     {error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-xs leading-relaxed text-red-700">{error}</p>}
-    <div className="flex items-center justify-between gap-4 border-t border-stone-100 pt-5"><div>{managerData ? <ManagerBookingPrice data={managerData} serviceId={serviceId} locationId={locationId} packageId={packageId} repeat={repeat} /> : <p className="text-[11px] leading-relaxed text-stone-500">{repeat} lesson{repeat > 1 ? 's' : ''} · payment details stay with the club.</p>}</div><Button type="submit" disabled={busy || !slot || !studentId}>{busy ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}Add booking</Button></div>
+    <div className="flex items-center justify-between gap-4 border-t border-stone-100 pt-5"><div>{managerData ? <ManagerBookingPrice data={managerData} serviceId={serviceId} locationId={locationId} packageId={packageId} repeat={repeat} /> : <p className="text-[11px] leading-relaxed text-stone-500">{repeat} class{repeat > 1 ? 'es' : ''} · payment details stay with the club.</p>}</div><Button type="submit" disabled={busy || !slot || !studentId}>{busy ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}Add booking</Button></div>
   </form></DialogContent></Dialog>;
 }
 
 function ManagerBookingPrice({ data, serviceId, locationId, packageId, repeat }: { data: ManagerWorkspace; serviceId: string; locationId: string; packageId: string; repeat: number }) {
   const service = data.services.find(item => item.id === serviceId);
   const mapping = service?.locations.find(item => item.locationId === locationId);
-  return <><p className="text-lg font-semibold">{packageId ? `${repeat} package credit${repeat > 1 ? 's' : ''}` : money((mapping?.price ?? service?.price ?? 0) * repeat)}</p><p className="mt-1 text-[10px] text-stone-500">{repeat} lesson{repeat > 1 ? 's' : ''} · no payment collected online</p></>;
+  return <p className="text-lg font-semibold">{packageId ? `${repeat} package credit${repeat > 1 ? 's' : ''}` : money((mapping?.price ?? service?.price ?? 0) * repeat)}</p>;
 }
 
 /**
@@ -189,14 +252,14 @@ export function BookingDetail({ bookingId, data, onClose, refresh }: { bookingId
         ? 'Waiting for the student to reply'
         : `The ${requestOwner} proposed a new time`;
   const requestStatusMessage = scheduleClosed
-    ? `${hasEnded ? 'The original lesson has ended' : 'The lesson is closed'}, so this proposal can no longer be accepted. ${requestRaisedByStudent
+    ? `${hasEnded ? 'The original class has ended' : 'The class is closed'}, so this proposal can no longer be accepted. ${requestRaisedByStudent
       ? 'Decline the request to close it.'
       : canWithdrawRequest
         ? 'Withdraw the request to close it.'
         : `Only the ${requestOwner} account that raised it can withdraw the request.`}`
     : !requestRaisedByStudent && !canWithdrawRequest
-      ? `The session keeps its current time until the student replies. Only the ${requestOwner} account that raised it can withdraw the request.`
-      : 'The session keeps its current time until both sides agree.';
+      ? `The class keeps its current time until the student replies. Only the ${requestOwner} account that raised it can withdraw the request.`
+      : 'The class keeps its current time until both sides agree.';
   // Payments for this lesson that still count, plus the reversed ones kept for
   // the audit trail.
   const lessonPayments = managerData
@@ -208,20 +271,20 @@ export function BookingDetail({ bookingId, data, onClose, refresh }: { bookingId
   return <Dialog open={!!bookingId} onOpenChange={v => { if (!v && !busy) onClose(); }}><DialogContent className="max-w-lg [&_.text-stone-400]:!text-[#59675c]"><DialogTitle className="pr-7 text-xl font-semibold">{current.serviceName}</DialogTitle><DialogDescription className="mt-2 mb-5 text-xs text-stone-500">Booking details · {current.id.slice(-8).toUpperCase()}</DialogDescription>
     <div className="flex flex-wrap items-center gap-2">
       <span className={`badge ${current.status.toLowerCase()}`}>{current.status === 'PENDING' ? awaitingCoach ? 'Awaiting coach' : 'Venue pending' : current.status.toLowerCase()}</span>
-      {current.recurringId && <span className="badge"><Repeat2 size={11} />Weekly lesson</span>}
+      {current.recurringId && <span className="badge"><Repeat2 size={11} />Weekly class</span>}
       {managerBooking && <span className="badge">{managerBooking.paymentRoute === 'CLUB' ? 'Paid through the club' : 'Paid to the coach'}</span>}
     </div>
     <div className="my-5 space-y-3 rounded-xl bg-[#f5f7f1] p-4 text-xs"><p className="flex items-center gap-3"><CalendarDays size={15} className="text-stone-400" />{shortDate(current.startAt)}<span className="ml-auto">{time(current.startAt)} – {time(current.endAt)}</span></p><p className="flex items-center gap-3"><MapPin size={15} className="text-stone-400" />{current.locationName}</p><p className="flex items-center gap-3"><UserRound size={15} className="text-stone-400" />{current.instructorName}</p>{current.address && <p className="pl-7">{current.address}</p>}</div>
 
     {awaitingCoach && <div className="mb-5 rounded-lg border border-amber-100 bg-amber-50 p-3 text-xs text-amber-800">
-      <p className="leading-relaxed">{current.createdByRole === 'CLUB' ? 'The club assigned this lesson. The student does not need to accept it, but the coach does before it is confirmed.' : 'This lesson is waiting for the coach to accept it.'}</p>
+      <p className="leading-relaxed">{current.createdByRole === 'CLUB' ? 'The club assigned this class. The student does not need to accept it, but the coach does before it is confirmed.' : 'This class is waiting for the coach to accept it.'}</p>
       {canAnswerAssignment && <div className="mt-3 flex flex-wrap gap-2">
-        <Button size="sm" disabled={busy} onClick={() => { if (allowBeforeLessonEnd()) void run(() => respondToAssignment(current.id, 'accept'), 'Lesson accepted'); }}><Check size={13} />Accept lesson</Button>
-        <Button size="sm" variant="outline" disabled={busy} onClick={() => { if (allowBeforeLessonEnd() && window.confirm('Decline this lesson? The slot is released, any package credit is returned, and the club is asked to reassign it.') && allowBeforeLessonEnd()) void run(() => respondToAssignment(current.id, 'decline'), 'Lesson declined'); }}><X size={13} />Cannot teach this</Button>
+        <Button size="sm" disabled={busy} onClick={() => { if (allowBeforeLessonEnd()) void run(() => respondToAssignment(current.id, 'accept'), 'Class accepted'); }}><Check size={13} />Accept class</Button>
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => { if (allowBeforeLessonEnd() && window.confirm('Decline this class? The slot is released, any package credit is returned, and the club is asked to reassign it.') && allowBeforeLessonEnd()) void run(() => respondToAssignment(current.id, 'decline'), 'Class declined'); }}><X size={13} />Cannot teach this</Button>
       </div>}
     </div>}
 
-    {current.status === 'PENDING' && !awaitingCoach && <div className="mb-5 rounded-lg border border-amber-100 bg-amber-50 p-3 text-xs text-amber-800"><p className="leading-relaxed">{managerData ? 'Please secure the venue separately, then confirm this session. Courtly has not reserved the court.' : 'Venue confirmation is still pending. The club can confirm it once the court or room is secured.'}</p>{managerData && !hasEnded && <Button size="sm" variant="outline" className="mt-3" disabled={busy} onClick={() => { if (allowBeforeLessonEnd()) void action(`/bookings/${current.id}`, { status: 'CONFIRMED' }); }}><Check size={13} />Venue secured · confirm</Button>}</div>}
+    {current.status === 'PENDING' && !awaitingCoach && <div className="mb-5 rounded-lg border border-amber-100 bg-amber-50 p-3 text-xs text-amber-800"><p className="leading-relaxed">{managerData ? 'Please secure the venue separately, then confirm this class. Courtly has not reserved the court.' : 'Venue confirmation is still pending. The club can confirm it once the court or room is secured.'}</p>{managerData && !hasEnded && <Button size="sm" variant="outline" className="mt-3" disabled={busy} onClick={() => { if (allowBeforeLessonEnd()) void action(`/bookings/${current.id}`, { status: 'CONFIRMED' }); }}><Check size={13} />Venue secured · confirm</Button>}</div>}
 
     {openRequest && <div role="region" aria-label="Pending reschedule request" className="mb-5 rounded-lg border border-[#e7dcc1] bg-[#fcf8ee] p-3 text-xs text-[#7a6838]">
       <p className="flex items-center gap-2 font-semibold"><CalendarClock size={14} />{requestHeading}</p>
@@ -245,7 +308,7 @@ export function BookingDetail({ bookingId, data, onClose, refresh }: { bookingId
         <div className="flex items-center justify-between gap-3"><div><p className="text-xs font-semibold">{p.name}</p><p className="mt-1 text-[10px] text-stone-400">{p.email}</p></div>{managerParticipant && <span className={`badge ${!managerParticipant.paid ? 'pending' : ''}`}>{managerParticipant.packageId ? 'Package credit' : managerParticipant.paid ? 'Paid' : `${money(managerParticipant.price)} unpaid`}</span>}</div>
         <div className="mt-3 flex flex-wrap gap-2">
           {canMarkAttendance && <><Button size="sm" variant={p.attendance === 'PRESENT' ? 'default' : 'outline'} disabled={busy} onClick={() => { if (allowAfterLessonEnd()) void action(`/bookings/${current.id}/participants/${p.id}`, { attendance: 'PRESENT' }); }}><Check size={12} />Attended</Button><Button size="sm" variant={p.attendance === 'ABSENT' ? 'destructive' : 'ghost'} disabled={busy} onClick={() => { if (allowAfterLessonEnd()) void action(`/bookings/${current.id}/participants/${p.id}`, { attendance: 'ABSENT' }); }}>No-show</Button></>}
-          {managerParticipant && !managerParticipant.paid && !managerParticipant.packageId && !inactive && <Button size="sm" variant="outline" disabled={busy} onClick={() => action('/payments', { studentId: p.studentId, bookingId: current.id, amount: managerParticipant.price, method: payMethod, note: 'Lesson payment' }, 'POST')}>Record payment</Button>}
+          {managerParticipant && !managerParticipant.paid && !managerParticipant.packageId && !inactive && <Button size="sm" variant="outline" disabled={busy} onClick={() => action('/payments', { studentId: p.studentId, bookingId: current.id, amount: managerParticipant.price, method: payMethod, note: 'Class payment' }, 'POST')}>Record payment</Button>}
           {/* Recording a payment is undoable: the row stays in the ledger,
               marked reversed, and the participant returns to unpaid. */}
           {managerParticipant && payment && !managerParticipant.packageId && <Button size="sm" variant="ghost" disabled={busy} onClick={() => { const reason = window.prompt('Reverse this payment? Say briefly why, for the ledger.', 'Recorded by mistake'); if (reason !== null) void run(() => reversePayment(payment.id, reason), 'Payment reversed'); }}><Undo2 size={12} />Undo payment</Button>}
@@ -255,24 +318,24 @@ export function BookingDetail({ bookingId, data, onClose, refresh }: { bookingId
       </div>;
     })}</div>
 
-    {managerBooking && managerBooking.participants.some(p => !p.paid && !p.packageId) && !inactive && <div className="mt-4"><label htmlFor="detail-payment-method">Payment recording method</label><select id="detail-payment-method" value={payMethod} onChange={e => setPayMethod(e.target.value)}><option value="BANK_TRANSFER">Bank transfer / PayNow</option><option value="CASH">Cash</option><option value="OTHER">Other</option></select>{managerBooking.paymentRoute === 'CLUB' && <p className="mt-1.5 flex items-start gap-1.5 text-[10px] leading-relaxed text-stone-500"><ShieldCheck size={12} className="mt-0.5 shrink-0" />This lesson runs through the club. Record what the student paid the club here, then record the coach&rsquo;s payout under Payments.</p>}</div>}
+    {managerBooking && managerBooking.participants.some(p => !p.paid && !p.packageId) && !inactive && <div className="mt-4"><label htmlFor="detail-payment-method">Payment recording method</label><select id="detail-payment-method" value={payMethod} onChange={e => setPayMethod(e.target.value)}><option value="BANK_TRANSFER">Bank transfer / PayNow</option><option value="CASH">Cash</option><option value="OTHER">Other</option></select>{managerBooking.paymentRoute === 'CLUB' && <p className="mt-1.5 flex items-start gap-1.5 text-[10px] leading-relaxed text-stone-500"><ShieldCheck size={12} className="mt-0.5 shrink-0" />This class runs through the club. Record what the student paid the club here, then record the coach&rsquo;s payout under Payments.</p>}</div>}
 
-    <form className="mt-5" onSubmit={event => { event.preventDefault(); const form = new FormData(event.currentTarget); void action(`/bookings/${current.id}`, { notes: String(form.get('notes') || '') }); }}><label htmlFor="detail-notes">Internal lesson notes</label><textarea key={current.id} id="detail-notes" name="notes" rows={3} maxLength={2000} defaultValue={current.notes} placeholder="Goals, progress, and details for your team" /><p className="mt-1 text-[10px] text-stone-400">Visible only to your team. Student-submitted context is kept with that participant.</p><Button className="mt-2" type="submit" size="sm" variant="outline" disabled={busy}>Save notes</Button></form>
+    <form className="mt-5" onSubmit={event => { event.preventDefault(); const form = new FormData(event.currentTarget); void action(`/bookings/${current.id}`, { notes: String(form.get('notes') || '') }); }}><label htmlFor="detail-notes">Internal class notes</label><textarea key={current.id} id="detail-notes" name="notes" rows={3} maxLength={2000} defaultValue={current.notes} placeholder="Goals, progress, and details for your team" /><p className="mt-1 text-[10px] text-stone-400">Visible only to your team. Student-submitted context is kept with that participant.</p><Button className="mt-2" type="submit" size="sm" variant="outline" disabled={busy}>Save notes</Button></form>
 
     {reschedule && !scheduleClosed && <div className="mt-5 space-y-3 rounded-lg bg-stone-50 p-3">
       <label htmlFor="reschedule-date">Propose a new time</label>
       <input id="reschedule-date" type="date" min={dateKey()} value={date} onChange={e => setDate(e.target.value)} />
-      <select aria-label="New lesson time" value={selectedSlot} onChange={e => setSelectedSlot(e.target.value)}><option value="">Select available time</option>{slots.filter(s => s.available && s.startAt !== current.startAt).map(s => <option key={s.startAt} value={s.startAt}>{time(s.startAt)}</option>)}</select>
+      <select aria-label="New class time" value={selectedSlot} onChange={e => setSelectedSlot(e.target.value)}><option value="">Select available time</option>{slots.filter(s => s.available && s.startAt !== current.startAt).map(s => <option key={s.startAt} value={s.startAt}>{time(s.startAt)}</option>)}</select>
       <div><label htmlFor="reschedule-message">Message to the student <span className="font-normal text-stone-400">(optional)</span></label><input id="reschedule-message" value={proposalMessage} maxLength={500} onChange={e => setProposalMessage(e.target.value)} placeholder="Why the time needs to move" /></div>
-      <p className="text-[10px] leading-relaxed text-stone-500">The student has to accept before the session moves. This affects only the selected occurrence, not the full series.</p>
+      <p className="text-[10px] leading-relaxed text-stone-500">The student has to accept before the session moves. This affects only the selected class, not the full series.</p>
       <Button size="sm" disabled={busy || !selectedSlot} onClick={() => { if (allowBeforeLessonEnd()) void run(async () => { await proposeWorkspaceReschedule(current.id, selectedSlot, proposalMessage); setReschedule(false); }, 'Request sent to the student'); }}>Send request<ArrowRight size={13} /></Button>
     </div>}
 
     {(canMarkCompleted || !scheduleClosed) && <div className="mt-6 flex flex-wrap justify-between gap-2 border-t border-stone-100 pt-4">
       {canMarkCompleted
-        ? <Button size="sm" disabled={busy} onClick={() => { if (allowAfterLessonEnd()) void run(() => mutate(`/bookings/${current.id}`, 'PATCH', { status: 'COMPLETED' }), 'Session marked completed'); }}><Check size={13} />Mark completed</Button>
+        ? <Button size="sm" disabled={busy} onClick={() => { if (allowAfterLessonEnd()) void run(() => mutate(`/bookings/${current.id}`, 'PATCH', { status: 'COMPLETED' }), 'Class marked completed'); }}><Check size={13} />Mark completed</Button>
         : <Button variant="outline" size="sm" disabled={!!openRequest || awaitingCoach} onClick={() => { if (allowBeforeLessonEnd()) setReschedule(v => !v); }}><Clock3 size={13} />{openRequest ? 'Reschedule pending' : 'Propose a new time'}</Button>}
-      {!scheduleClosed && <Button variant="destructive" size="sm" disabled={busy} onClick={() => { if (allowBeforeLessonEnd() && window.confirm('Cancel this lesson for all participants? Package credits will be returned. Other recurring lessons stay unchanged.') && allowBeforeLessonEnd()) void action(`/bookings/${current.id}`, { status: 'CANCELLED' }); }}>Cancel lesson</Button>}
+      {!scheduleClosed && <Button variant="destructive" size="sm" disabled={busy} onClick={() => { if (allowBeforeLessonEnd() && window.confirm('Cancel this class for all participants? Package credits will be returned. Other recurring classes stay unchanged.') && allowBeforeLessonEnd()) void action(`/bookings/${current.id}`, { status: 'CANCELLED' }); }}>Cancel class</Button>}
     </div>}
   </DialogContent></Dialog>;
 }

@@ -19,13 +19,17 @@ import {
   LoaderCircle,
   LogOut,
   MapPin,
+  PackageCheck,
   Pencil,
   Plus,
   RefreshCw,
   Search,
   ShieldCheck,
+  TicketCheck,
   UserRound,
+  UsersRound,
   Video,
+  WalletCards,
   X,
 } from 'lucide-react';
 import {
@@ -40,26 +44,43 @@ import {
 } from 'react';
 import { CourtlyLogo } from '@/components/public-booking';
 import { CalendarConnectionCard } from '@/components/calendar-connection-card';
+import { AccountRentalHistory } from '@/components/account-rental-dialog';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import {
   ApiError,
   acceptAccountReschedule,
   api,
   cancelAccountBooking,
+  checkoutBookingParticipant,
+  checkoutPackageOffer,
+  createRentalReservation,
   declineAccountReschedule,
+  loadAccountPackages,
+  loadAccountPackageOffers,
   loadAccountClubs,
   loadAccountBookings,
   loadAuthSession,
+  loadRental,
+  loadRentals,
+  loadRentalSlots,
   loadSlots,
   logoutAccount,
   requestAccountReschedule,
+  searchAccounts,
 } from '@/lib/api';
 import { alertAppearance, alertPageSize, sortAlerts } from '@/lib/alerts';
 import type {
   AccountBooking,
+  AccountDirectoryUser,
+  AccountPackage,
   AuthSession,
+  PackageOffer,
+  PackageOfferBusiness,
   PublicBookingBusiness,
   PublicLocation,
+  RentalDetail,
+  RentalListing,
+  RentalSlot,
   Slot,
   StudentClubDirectoryEntry,
 } from '@/lib/types';
@@ -70,6 +91,7 @@ type StudentTab = 'home' | 'explore' | 'book' | 'alerts' | 'profile';
 type BookingDialogMode = 'details' | 'cancel' | 'reschedule';
 type BookingFilter = 'all' | 'upcoming' | 'completed' | 'cancelled';
 type ClubRelationshipFilter = 'all' | 'known' | 'discover';
+type ExploreSegment = 'classes' | 'rentals';
 type Conflict = { date: string; reason: string };
 type StudentNotification = {
   id: string;
@@ -120,6 +142,37 @@ function messageOf(error: unknown) {
   return error instanceof Error
     ? error.message
     : 'Something went wrong. Please try again.';
+}
+
+function addCalendarDays(key: string, days: number) {
+  const [year, month, day] = key.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+}
+
+function normalizeSports(value: string) {
+  const seen = new Set<string>();
+  if (!value.trim()) return [];
+  return value.split(',').map((sport) => sport.trim()).filter((sport) => {
+    const key = sport.toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 20);
+}
+
+function profileSportsError(value: string) {
+  if (!value.trim()) return '';
+  const entries = value.split(',').map((sport) => sport.trim());
+  if (entries.some((sport) => !sport)) return 'Enter a sport between each comma, or remove the extra comma.';
+  if (entries.some((sport) => sport.length > 40)) return 'Each sport must use 40 characters or fewer.';
+  if (entries.filter(Boolean).length > 20) return 'Add no more than 20 sports.';
+  return '';
+}
+
+function profileUsernameError(value: string) {
+  return /^[a-z0-9_]{3,30}$/.test(value)
+    ? ''
+    : 'Choose a username with 3–30 lowercase letters, numbers, or underscores.';
 }
 
 function conflictList(error: unknown): Conflict[] {
@@ -415,7 +468,13 @@ function directoryClubs(
   ];
 }
 
-function ExploreClubCard({ club }: { club: ExploreClub }) {
+function ExploreClubCard({
+  club,
+  onViewPackages,
+}: {
+  club: ExploreClub;
+  onViewPackages?: (club: ExploreClub) => void;
+}) {
   const { business, directory, known } = club;
   return (
     <article className={cn(panel, 'overflow-hidden')}>
@@ -447,7 +506,7 @@ function ExploreClubCard({ club }: { club: ExploreClub }) {
         {directory && (
           <dl className="mt-4 grid grid-cols-3 gap-2 rounded-xl bg-[#f6f8f3] p-3 text-center">
             <div>
-              <dt className="text-[9px] uppercase tracking-wide text-[#59675c]">Services</dt>
+              <dt className="text-[9px] uppercase tracking-wide text-[#59675c]">Classes</dt>
               <dd className="mt-1 text-sm font-semibold text-[#456049]">{directory.serviceCount}</dd>
             </div>
             <div>
@@ -492,16 +551,199 @@ function ExploreClubCard({ club }: { club: ExploreClub }) {
           {known && <span className="text-[10px] font-semibold text-[#4f6847]">You have booked here</span>}
         </div>
 
-        <Link
-          href={`/book/${encodeURIComponent(business.slug)}`}
-          className={cn(primaryButton, 'mt-5 w-full')}
-          aria-label={`View ${business.name} booking page`}
-        >
-          View booking page <ArrowRight size={15} />
-        </Link>
+        <div className="mt-5 grid gap-2 sm:grid-cols-2">
+          {onViewPackages && directory && (
+            <button
+              type="button"
+              className={secondaryButton}
+              onClick={() => onViewPackages(club)}
+              aria-label={`View ${business.name} package offers`}
+            >
+              <WalletCards size={15} /> Packages
+            </button>
+          )}
+          <Link
+            href={`/book/${encodeURIComponent(business.slug)}`}
+            className={primaryButton}
+            aria-label={`View ${business.name} booking page`}
+          >
+            View booking page <ArrowRight size={15} />
+          </Link>
+        </div>
       </div>
     </article>
   );
+}
+
+function packageStateLabel(value: AccountPackage['state']) {
+  if (value === 'ACTIVE') return 'Active';
+  if (value === 'EXHAUSTED') return 'Exhausted';
+  if (value === 'EXPIRED') return 'Expired';
+  return 'Payment pending';
+}
+
+function packageStateClass(value: AccountPackage['state']) {
+  if (value === 'ACTIVE') return 'bg-[#e9f0df] text-[#4f6847]';
+  if (value === 'EXPIRED') return 'bg-[#f8e8e3] text-[#8b4d3c]';
+  if (value === 'UNPAID') return 'bg-[#f8eed3] text-[#70582e]';
+  return 'bg-[#e8edf2] text-[#4f687d]';
+}
+
+function packageCoverage(pkg: AccountPackage) {
+  const classes = pkg.services?.map((service) => service.name) ?? pkg.serviceNames ?? [];
+  const rentals = pkg.rentalLocations?.map((location) => location.name) ?? pkg.rentalLocationNames ?? [];
+  return { classes, rentals };
+}
+
+function PackageCard({
+  pkg,
+  onFindRental,
+}: {
+  pkg: AccountPackage;
+  onFindRental: (pkg: AccountPackage) => void;
+}) {
+  const coverage = packageCoverage(pkg);
+  const active = pkg.state === 'ACTIVE';
+  return (
+    <article className={cn(panel, 'p-5')}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-[1.4px] text-[#59675c]">{pkg.business.name}</p>
+          <h3 className="mt-1 text-base font-semibold text-[#2c4737]">{pkg.name}</h3>
+        </div>
+        <span className={cn('rounded-full px-2.5 py-1 text-[10px] font-semibold', packageStateClass(pkg.state))}>
+          {packageStateLabel(pkg.state)}
+        </span>
+      </div>
+      <dl className="mt-4 grid grid-cols-2 gap-3 rounded-xl bg-[#f6f8f3] p-3">
+        <div>
+          <dt className="text-[9px] uppercase tracking-wide text-[#59675c]">Credits left</dt>
+          <dd className="mt-1 text-base font-semibold text-[#34533e]">{pkg.remainingCredits} / {pkg.totalCredits}</dd>
+        </div>
+        <div>
+          <dt className="text-[9px] uppercase tracking-wide text-[#59675c]">Expires</dt>
+          <dd className="mt-1 text-sm font-semibold text-[#456049]">{shortDate(pkg.expiresAt)}</dd>
+        </div>
+      </dl>
+      <div className="mt-4 space-y-2 text-xs leading-relaxed text-[#59675c]">
+        <p><strong className="font-semibold text-[#415244]">Classes:</strong> {coverage.classes.length ? coverage.classes.join(', ') : 'None'}</p>
+        <p><strong className="font-semibold text-[#415244]">Venue rentals:</strong> {coverage.rentals.length ? coverage.rentals.join(', ') : 'None'}</p>
+      </div>
+      {active && (coverage.classes.length > 0 || coverage.rentals.length > 0) && (
+        <div className="mt-5 flex flex-wrap gap-2">
+          {coverage.classes.length > 0 && (
+            <Link
+              href={`/book/${encodeURIComponent(pkg.business.slug)}?packageId=${encodeURIComponent(pkg.id)}`}
+              className={secondaryButton}
+            >
+              Book an eligible class <ArrowRight size={14} />
+            </Link>
+          )}
+          {coverage.rentals.length > 0 && (
+            <button type="button" className={secondaryButton} onClick={() => onFindRental(pkg)}>
+              Find an eligible rental <ArrowRight size={14} />
+            </button>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function RentalCard({
+  rental, onOpen, onViewPackages,
+}: {
+  rental: RentalListing; onOpen: (rental: RentalListing) => void; onViewPackages: (rental: RentalListing) => void;
+}) {
+  return (
+    <article className={cn(panel, 'flex flex-col p-5')}>
+      <div className="flex items-start gap-3">
+        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[#eaf0e2] text-[#4f6847]">
+          <MapPin size={19} />
+        </span>
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-[1.4px] text-[#59675c]">{rental.sport}</p>
+          <h3 className="mt-1 text-base font-semibold text-[#2c4737]">{rental.name}</h3>
+          {'club' in rental && rental.club && <p className="mt-1 text-xs text-[#59675c]">{rental.club.name}</p>}
+        </div>
+      </div>
+      <p className="mt-4 text-xs leading-relaxed text-[#59675c]">{rental.address}</p>
+      {rental.amenities.length > 0 && (
+        <ul aria-label={`${rental.name} amenities`} className="mt-3 flex flex-wrap gap-1.5">
+          {rental.amenities.map((amenity) => <li key={amenity} className="rounded-full bg-[#edf3e7] px-2.5 py-1 text-[10px] font-semibold text-[#496353]">{amenity}</li>)}
+        </ul>
+      )}
+      <div className="mt-auto flex flex-wrap items-end justify-between gap-3 pt-5">
+        <div>
+          <p className="text-[9px] uppercase tracking-wide text-[#59675c]">From</p>
+          <p className="mt-1 text-base font-semibold text-[#34533e]">{money(rental.price, rental.currency)} / hour</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className={secondaryButton} onClick={() => onViewPackages(rental)}>
+            View packages
+          </button>
+          <button type="button" className={primaryButton} onClick={() => onOpen(rental)}>
+            View times <ArrowRight size={15} />
+          </button>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function HomePackageSummary({
+  loading, error, packages, onOpen,
+}: {
+  loading: boolean; error: string; packages: AccountPackage[]; onOpen: () => void;
+}) {
+  return (
+    <section aria-labelledby="home-packages-heading" className={cn(panel, 'mt-7 p-5')}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">Credits across clubs</p>
+          <h2 id="home-packages-heading" className="mt-1 text-lg font-semibold tracking-tight">Active packages</h2>
+        </div>
+        <button type="button" className={cn(secondaryButton, '!min-h-10 !px-3 !text-xs')} onClick={onOpen}>
+          My Packages <ArrowRight size={14} />
+        </button>
+      </div>
+      {loading ? (
+        <p role="status" className="mt-4 flex items-center gap-2 text-xs text-[#59675c]"><LoaderCircle size={14} className="animate-spin" /> Loading packages…</p>
+      ) : error ? (
+        <p role="alert" className="mt-4 text-xs text-[#8b4d3c]">{error}</p>
+      ) : packages.length ? (
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          {packages.slice(0, 2).map((pkg) => (
+            <div key={pkg.id} className="rounded-xl bg-[#f4f7f0] p-4">
+              <p className="text-sm font-semibold text-[#304b39]">{pkg.name}</p>
+              <p className="mt-1 text-xs text-[#59675c]">{pkg.remainingCredits} of {pkg.totalCredits} credits left · {pkg.business.name}</p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-4 text-xs leading-relaxed text-[#59675c]">No active package credits. Browse a club in Explore to see its offers.</p>
+      )}
+    </section>
+  );
+}
+
+function checkoutKey(kind: string, id: string) {
+  const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${kind}-${id}-${random}`;
+}
+
+function activeCheckoutKey(attempts: Map<string, string>, kind: string, id: string, signature: string) {
+  const existing = attempts.get(signature);
+  if (existing) return existing;
+  const key = checkoutKey(kind, id);
+  attempts.set(signature, key);
+  return key;
+}
+
+function forgetDefinitiveCheckoutFailure(attempts: Map<string, string>, signature: string, error: unknown) {
+  if (error instanceof ApiError && error.status < 500) attempts.delete(signature);
 }
 
 function statusClass(state: string) {
@@ -812,6 +1054,9 @@ type BookingDialogProps = {
   performCancel: () => void;
   performRescheduleRequest: () => void;
   respondToRequest: (accept: boolean) => void;
+  payForBooking: () => void;
+  paymentOutcome: 'SUCCEEDED' | 'FAILED';
+  setPaymentOutcome: (value: 'SUCCEEDED' | 'FAILED') => void;
   retrySlots: () => void;
   nowMs: number;
 };
@@ -843,6 +1088,9 @@ function BookingDialog({
   performCancel,
   performRescheduleRequest,
   respondToRequest,
+  payForBooking,
+  paymentOutcome,
+  setPaymentOutcome,
   retrySlots,
   nowMs,
 }: BookingDialogProps) {
@@ -910,10 +1158,12 @@ function BookingDialog({
                 {money(item.participant.price ?? item.booking.price, item.business.currency)}
                 <p className="text-xs text-[#59675c]">
                   {item.participant.paid
-                    ? 'Marked paid'
+                    ? item.paymentRoute === 'CLUB'
+                      ? `Paid to ${item.business.name}`
+                      : 'Paid directly to your coach'
                     : item.paymentRoute === 'CLUB'
-                      ? `Paid to ${item.business.name}, who pay your coach`
-                      : 'Paid directly to your coach'}
+                      ? `Payment is due to ${item.business.name}, who pays your coach`
+                      : 'Payment is due directly to your coach'}
                 </p>
               </Detail>
               <Detail icon={<UserRound size={18} />} label="Booked for">
@@ -1009,6 +1259,34 @@ function BookingDialog({
 
             {actionError && !incoming && !outgoing && (
               <div className="mt-5"><ErrorNotice message={actionError} conflicts={conflicts} /></div>
+            )}
+
+            {!item.participant.paid && !item.participant.packageId && !bookingCancelled(item) && (
+              <section aria-label="Pay for this class" className="mt-5 rounded-xl border border-[#dfe7d8] bg-[#f5f8f1] p-4">
+                <h3 className="flex items-center gap-2 text-sm font-semibold text-[#3d5a41]">
+                  <WalletCards size={16} /> Pay online
+                </h3>
+                <p className="mt-2 text-xs leading-relaxed text-[#59675c]">
+                  Demo checkout only — this simulates a successful Stripe card payment and does not charge a real card.
+                </p>
+                <label htmlFor={`booking-payment-outcome-${item.participant.id}`} className="mt-4 block text-xs font-semibold text-[#465e4c]">
+                  Demo payment result
+                </label>
+                <select
+                  id={`booking-payment-outcome-${item.participant.id}`}
+                  className={cn(field, 'mt-2 w-full bg-white')}
+                  value={paymentOutcome}
+                  disabled={busy}
+                  onChange={(event) => setPaymentOutcome(event.target.value as 'SUCCEEDED' | 'FAILED')}
+                >
+                  <option value="SUCCEEDED">Simulate success</option>
+                  <option value="FAILED">Simulate declined card</option>
+                </select>
+                <button type="button" className={cn(primaryButton, 'mt-4')} disabled={busy} onClick={payForBooking}>
+                  {busy ? <LoaderCircle size={15} className="animate-spin" /> : <ShieldCheck size={15} />}
+                  Pay {money(item.participant.price ?? item.booking.price, item.business.currency)} with simulated Stripe
+                </button>
+              </section>
             )}
 
             {(canCancel || canReschedule) && (
@@ -1220,6 +1498,157 @@ function AlertDialog({
   );
 }
 
+function PackageOffersDialog({
+  club, offers, loading, error, notice, busyId, paymentOutcome, onPaymentOutcome, onBuy, onClose,
+}: {
+  club: { business: PackageOfferBusiness } | null; offers: PackageOffer[]; loading: boolean; error: string; notice: string; busyId: string | null;
+  paymentOutcome: 'SUCCEEDED' | 'FAILED'; onPaymentOutcome: (value: 'SUCCEEDED' | 'FAILED') => void;
+  onBuy: (offer: PackageOffer) => void; onClose: () => void;
+}) {
+  if (!club) return null;
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open && !busyId) onClose(); }}>
+      <DialogContent className="max-w-2xl" onEscapeKeyDown={(event) => { if (busyId) event.preventDefault(); }}>
+        <DialogTitle className="text-xl font-semibold tracking-tight text-[#20382d]">
+          Packages from {club.business.name}
+        </DialogTitle>
+        <DialogDescription className="mt-2 text-xs leading-relaxed text-[#59675c]">
+          Buy credits for eligible classes and venue rentals. Checkout is a Stripe simulation for this release; no real card is charged.
+        </DialogDescription>
+        {notice && <div role="status" className="mt-5 rounded-xl border border-[#d8e4cb] bg-[#edf5e4] p-4 text-sm text-[#4f6847]">{notice}</div>}
+        {error && <div className="mt-5"><ErrorNotice message={error} /></div>}
+        {loading ? (
+          <div role="status" className="flex min-h-32 items-center justify-center gap-2 text-sm text-[#59675c]">
+            <LoaderCircle size={17} className="animate-spin" /> Loading package offers…
+          </div>
+        ) : offers.length === 0 ? (
+          <p className="mt-6 rounded-xl border border-dashed border-[#dfe5dc] p-6 text-center text-sm text-[#59675c]">
+            This club has no package offers right now.
+          </p>
+        ) : (
+          <>
+            <label htmlFor="package-checkout-outcome" className="mt-5 block text-xs font-semibold text-[#465e4c]">Demo payment result</label>
+            <select id="package-checkout-outcome" className={cn(field, 'mt-2 w-full bg-white')} value={paymentOutcome} disabled={!!busyId} onChange={(event) => onPaymentOutcome(event.target.value as 'SUCCEEDED' | 'FAILED')}>
+              <option value="SUCCEEDED">Simulate success</option>
+              <option value="FAILED">Simulate declined card</option>
+            </select>
+            <div className="mt-5 max-h-[55vh] space-y-3 overflow-y-auto pr-1">
+              {offers.map((offer) => (
+                <article key={offer.id} className="rounded-xl border border-[#e4e9df] p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-semibold text-[#304b39]">{offer.name}</h3>
+                      {offer.description && <p className="mt-1 text-xs leading-relaxed text-[#59675c]">{offer.description}</p>}
+                    </div>
+                    <p className="text-base font-semibold text-[#34533e]">{money(offer.price, club.business.currency)}</p>
+                  </div>
+                  <p className="mt-3 text-xs text-[#59675c]">{offer.totalCredits} credits · valid for {offer.validityDays} days</p>
+                  <p className="mt-2 text-[11px] leading-relaxed text-[#59675c]">
+                    Eligible for {[...offer.services.map((service) => service.name), ...offer.rentalLocations.map((location) => location.name)].join(', ')}
+                  </p>
+                  <button type="button" className={cn(primaryButton, 'mt-4 w-full')} disabled={!!busyId} onClick={() => onBuy(offer)}>
+                    {busyId === offer.id ? <LoaderCircle size={15} className="animate-spin" /> : <WalletCards size={15} />}
+                    Buy with simulated Stripe
+                  </button>
+                </article>
+              ))}
+            </div>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RentalDialog({
+  open, rental, loading, error, notice, date, duration, unitId, slots, slotsLoading, selectedSlot, packages, selectedPackageId,
+  paymentOutcome, busy, onClose, onDate, onDuration, onUnit, onSlot, onPackage, onPaymentOutcome, onReserve,
+}: {
+  open: boolean; rental: RentalDetail | null; loading: boolean; error: string; notice: string; date: string; duration: number; unitId: string;
+  slots: RentalSlot[]; slotsLoading: boolean; selectedSlot: RentalSlot | null; packages: AccountPackage[]; selectedPackageId: string;
+  paymentOutcome: 'SUCCEEDED' | 'FAILED'; busy: boolean; onClose: () => void; onDate: (value: string) => void;
+  onDuration: (value: number) => void; onUnit: (value: string) => void; onSlot: (value: RentalSlot | null) => void;
+  onPackage: (value: string) => void; onPaymentOutcome: (value: 'SUCCEEDED' | 'FAILED') => void; onReserve: () => void;
+}) {
+  if (!open) return null;
+  const durations = rental ? Array.from(
+    { length: Math.floor((rental.maxDuration - rental.minDuration) / Math.max(1, rental.durationIncrement || rental.startInterval)) + 1 },
+    (_, index) => rental.minDuration + index * Math.max(1, rental.durationIncrement || rental.startInterval),
+  ) : [];
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open && !busy) onClose(); }}>
+      <DialogContent className="max-w-2xl" onEscapeKeyDown={(event) => { if (busy) event.preventDefault(); }}>
+        <DialogTitle className="text-xl font-semibold tracking-tight text-[#20382d]">{rental?.name ?? 'Venue rental'}</DialogTitle>
+        <DialogDescription className="mt-2 text-xs leading-relaxed text-[#59675c]">
+          {rental ? `${rental.address} · ${rental.sport}` : 'Loading rental details…'}
+        </DialogDescription>
+        {notice && <div role="status" className="mt-5 rounded-xl border border-[#d8e4cb] bg-[#edf5e4] p-4 text-sm text-[#4f6847]">{notice}</div>}
+        {error && !rental && <div className="mt-5"><ErrorNotice message={error} /></div>}
+        {loading ? <LoadingScreen text="Loading venue details…" /> : rental && (
+          <div className="mt-5">
+            <div className="grid gap-4 sm:grid-cols-3">
+              <div>
+                <label htmlFor="rental-date" className="text-xs font-semibold text-[#465e4c]">Date</label>
+                <input id="rental-date" type="date" min={dateKey(new Date(), rental.timezone)} max={addCalendarDays(dateKey(new Date(), rental.timezone), rental.advanceDays)} value={date} onChange={(event) => onDate(event.target.value)} className={cn(field, 'mt-2 w-full')} />
+              </div>
+              <div>
+                <label htmlFor="rental-duration" className="text-xs font-semibold text-[#465e4c]">Duration</label>
+                <select id="rental-duration" value={duration} onChange={(event) => onDuration(Number(event.target.value))} className={cn(field, 'mt-2 w-full bg-white')}>
+                  {durations.map((minutes) => <option key={minutes} value={minutes}>{minutes} minutes</option>)}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="rental-unit" className="text-xs font-semibold text-[#465e4c]">{rental.unitLabel || 'Court'}</label>
+                <select id="rental-unit" value={unitId} onChange={(event) => onUnit(event.target.value)} className={cn(field, 'mt-2 w-full bg-white')}>
+                  {rental.units.filter((unit) => unit.active !== false).map((unit) => <option key={unit.id} value={unit.id}>{unit.name}</option>)}
+                </select>
+              </div>
+            </div>
+            <section aria-labelledby="rental-times-heading" className="mt-5 border-t border-[#edf0e8] pt-5">
+              <h3 id="rental-times-heading" className="text-sm font-semibold text-[#344b3a]">Available start times</h3>
+              {slotsLoading ? (
+                <p role="status" className="mt-4 flex items-center gap-2 text-xs text-[#59675c]"><LoaderCircle size={15} className="animate-spin" /> Checking availability…</p>
+              ) : slots.length ? (
+                <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {slots.map((slot) => <button key={`${slot.unitId}-${slot.startAt}`} type="button" aria-pressed={selectedSlot?.unitId === slot.unitId && selectedSlot.startAt === slot.startAt} onClick={() => onSlot(slot)} className={cn('min-h-12 rounded-xl border px-3 py-2 text-sm font-medium', selectedSlot?.unitId === slot.unitId && selectedSlot.startAt === slot.startAt ? 'border-[#174c3c] bg-[#174c3c] text-white' : 'border-[#dfe5dc] bg-white text-[#49604f]')}>{time(slot.startAt, rental.timezone)}</button>)}
+                </div>
+              ) : <p className="mt-3 rounded-xl border border-dashed border-[#dfe5dc] p-5 text-center text-xs text-[#59675c]">No available times for this date and duration.</p>}
+            </section>
+            {selectedSlot && (
+              <section aria-label="Rental checkout" className="mt-5 rounded-xl border border-[#dfe7d8] bg-[#f5f8f1] p-4">
+                <p className="text-sm font-semibold text-[#304b39]">{selectedSlot.unitName} · {time(selectedSlot.startAt, rental.timezone)} · {selectedSlot.price === 0 ? 'Free' : money(selectedSlot.price, rental.currency)}</p>
+                {selectedSlot.price > 0 && packages.length > 0 && (
+                  <>
+                    <label htmlFor="rental-package" className="mt-4 block text-xs font-semibold text-[#465e4c]">Payment option</label>
+                    <select id="rental-package" value={selectedPackageId} onChange={(event) => onPackage(event.target.value)} className={cn(field, 'mt-2 w-full bg-white')}>
+                      <option value="">Simulated Stripe card</option>
+                      {packages.map((pkg) => <option key={pkg.id} value={pkg.id}>Use {pkg.name} ({pkg.remainingCredits} credits left)</option>)}
+                    </select>
+                  </>
+                )}
+                {selectedSlot.price > 0 && !selectedPackageId && (
+                  <>
+                    <p className="mt-3 text-xs leading-relaxed text-[#59675c]">Demo checkout only — no real card is charged.</p>
+                    <label htmlFor="rental-payment-outcome" className="mt-3 block text-xs font-semibold text-[#465e4c]">Demo payment result</label>
+                    <select id="rental-payment-outcome" value={paymentOutcome} onChange={(event) => onPaymentOutcome(event.target.value as 'SUCCEEDED' | 'FAILED')} className={cn(field, 'mt-2 w-full bg-white')}><option value="SUCCEEDED">Simulate success</option><option value="FAILED">Simulate declined card</option></select>
+                  </>
+                )}
+                {error && <div className="mt-4"><ErrorNotice message={error} /></div>}
+                <button type="button" className={cn(primaryButton, 'mt-4 w-full')} disabled={busy} onClick={onReserve}>
+                  {busy ? <LoaderCircle size={15} className="animate-spin" /> : <TicketCheck size={15} />}
+                  {selectedSlot.price === 0 ? 'Reserve for free' : selectedPackageId ? 'Reserve with package credit' : 'Reserve with simulated Stripe'}
+                </button>
+              </section>
+            )}
+            {error && !selectedSlot && <div className="mt-5"><ErrorNotice message={error} /></div>}
+            {rental.rules && <p className="mt-5 text-xs leading-relaxed text-[#59675c]"><strong className="font-semibold text-[#415244]">Venue rules:</strong> {rental.rules}</p>}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function ClubAvatar({ club, size = 'large' }: { club: { business: PublicBookingBusiness }; size?: 'small' | 'large' }) {
   return (
     <span
@@ -1265,7 +1694,7 @@ function AppHeader({
             aria-current={activeTab === 'profile' ? 'page' : undefined}
             title={`Signed in as ${userName}`}
             onClick={onOpenProfile}
-            className="grid h-10 w-10 place-items-center rounded-full border border-[#dfe6da] bg-[#edf2e7] text-[10px] font-bold text-[#4f6847] transition hover:border-[#b8c8b1] hover:bg-[#e5eddd] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a] focus-visible:ring-offset-2"
+            className="grid h-11 w-11 place-items-center rounded-full border border-[#dfe6da] bg-[#edf2e7] text-[10px] font-bold text-[#4f6847] transition hover:border-[#b8c8b1] hover:bg-[#e5eddd] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a] focus-visible:ring-offset-2"
           >
             {initials(userName)}
           </button>
@@ -1361,6 +1790,45 @@ export function StudentApp({ slug }: { slug?: string }) {
   const [clubSport, setClubSport] = useState('');
   const [clubSlug, setClubSlug] = useState('');
   const [clubRelationship, setClubRelationship] = useState<ClubRelationshipFilter>('all');
+  const [exploreSegment, setExploreSegment] = useState<ExploreSegment>('classes');
+  const [rentals, setRentals] = useState<RentalListing[]>([]);
+  const [rentalsLoading, setRentalsLoading] = useState(false);
+  const [rentalsError, setRentalsError] = useState('');
+  const [rentalSearch, setRentalSearch] = useState('');
+  const [rentalSport, setRentalSport] = useState('');
+  const [openRentalId, setOpenRentalId] = useState<string | null>(null);
+  const [rentalDetail, setRentalDetail] = useState<RentalDetail | null>(null);
+  const [rentalDetailLoading, setRentalDetailLoading] = useState(false);
+  const [rentalDate, setRentalDate] = useState(() => dateKey(new Date()));
+  const [rentalDuration, setRentalDuration] = useState(60);
+  const [rentalUnitId, setRentalUnitId] = useState('');
+  const [rentalSlots, setRentalSlots] = useState<RentalSlot[]>([]);
+  const [rentalSlotsLoading, setRentalSlotsLoading] = useState(false);
+  const [rentalSlotsVersion, setRentalSlotsVersion] = useState(0);
+  const [rentalError, setRentalError] = useState('');
+  const [selectedRentalSlot, setSelectedRentalSlot] = useState<RentalSlot | null>(null);
+  const [selectedRentalPackageId, setSelectedRentalPackageId] = useState('');
+  const [rentalPackageFilterId, setRentalPackageFilterId] = useState('');
+  const [rentalPaymentOutcome, setRentalPaymentOutcome] = useState<'SUCCEEDED' | 'FAILED'>('SUCCEEDED');
+  const [rentalBookingBusy, setRentalBookingBusy] = useState(false);
+  const [rentalNotice, setRentalNotice] = useState('');
+  const [rentalHistoryVersion, setRentalHistoryVersion] = useState(0);
+  const [packages, setPackages] = useState<AccountPackage[]>([]);
+  const [packagesLoading, setPackagesLoading] = useState(false);
+  const [packagesError, setPackagesError] = useState('');
+  const [packagesExpanded, setPackagesExpanded] = useState(false);
+  const [offersClub, setOffersClub] = useState<{ business: PackageOfferBusiness } | null>(null);
+  const [packageOffers, setPackageOffers] = useState<PackageOffer[]>([]);
+  const [offersLoading, setOffersLoading] = useState(false);
+  const [offersError, setOffersError] = useState('');
+  const [offerBusyId, setOfferBusyId] = useState<string | null>(null);
+  const [offerNotice, setOfferNotice] = useState('');
+  const [offerPaymentOutcome, setOfferPaymentOutcome] = useState<'SUCCEEDED' | 'FAILED'>('SUCCEEDED');
+  const [peopleQuery, setPeopleQuery] = useState('');
+  const [people, setPeople] = useState<AccountDirectoryUser[]>([]);
+  const [peopleLoading, setPeopleLoading] = useState(false);
+  const [peopleError, setPeopleError] = useState('');
+  const [peopleSearchedFor, setPeopleSearchedFor] = useState('');
   const [notifications, setNotifications] = useState<StudentNotification[]>([]);
   const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [notificationsFallback, setNotificationsFallback] = useState(false);
@@ -1375,6 +1843,7 @@ export function StudentApp({ slug }: { slug?: string }) {
   const [showAllAlerts, setShowAllAlerts] = useState(false);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
+  const [bookingPaymentOutcome, setBookingPaymentOutcome] = useState<'SUCCEEDED' | 'FAILED'>('SUCCEEDED');
   const [actionError, setActionError] = useState('');
   const [conflicts, setConflicts] = useState<Conflict[]>([]);
   const [rescheduleDate, setRescheduleDate] = useState('');
@@ -1385,7 +1854,8 @@ export function StudentApp({ slug }: { slug?: string }) {
   const [slotsVersion, setSlotsVersion] = useState(0);
   const [selectedClubSlug, setSelectedClubSlug] = useState('');
   const [historyFilter, setHistoryFilter] = useState<BookingFilter>('all');
-  const [profile, setProfile] = useState({ name: '', phone: '', parentName: '' });
+  const [profile, setProfile] = useState({ username: '', name: '', phone: '', parentName: '', sports: [] as string[] });
+  const [profileSportsText, setProfileSportsText] = useState('');
   const [profileBusy, setProfileBusy] = useState(false);
   const [profileError, setProfileError] = useState('');
   const [profileNotice, setProfileNotice] = useState('');
@@ -1396,6 +1866,11 @@ export function StudentApp({ slug }: { slug?: string }) {
   const mainRef = useRef<HTMLElement>(null);
   const previousTabRouteRef = useRef(requestedTab);
   const pendingBookingIdRef = useRef<string | null>(null);
+  const bookingCheckoutKeysRef = useRef(new Map<string, string>());
+  const packageCheckoutKeysRef = useRef(new Map<string, string>());
+  const rentalCheckoutKeysRef = useRef(new Map<string, string>());
+  const offersRequestRef = useRef(0);
+  const packagesRequestRef = useRef(0);
 
   const tabHref = useCallback((tab: StudentTab) => {
     const params = new URLSearchParams();
@@ -1511,6 +1986,46 @@ export function StudentApp({ slug }: { slug?: string }) {
     }
   }, [router]);
 
+  const refreshPackages = useCallback(async () => {
+    const requestId = ++packagesRequestRef.current;
+    setPackagesLoading(true);
+    setPackagesError('');
+    try {
+      const value = await loadAccountPackages();
+      if (packagesRequestRef.current === requestId) setPackages(value.packages);
+    } catch (error) {
+      if (packagesRequestRef.current !== requestId) return;
+      if (error instanceof ApiError && error.status === 401) router.replace(loginHrefRef.current);
+      else setPackagesError(messageOf(error));
+    } finally {
+      if (packagesRequestRef.current === requestId) setPackagesLoading(false);
+    }
+  }, [router]);
+
+  const refreshRentals = useCallback(async () => {
+    setRentalsLoading(true);
+    setRentalsError('');
+    try {
+      const allRentals: RentalListing[] = [];
+      const seenCursors = new Set<string>();
+      let cursor: string | undefined;
+      while (true) {
+        const value = await loadRentals(cursor ? { cursor } : {});
+        allRentals.push(...value.rentals);
+        if (!value.nextCursor) break;
+        if (seenCursors.has(value.nextCursor)) throw new Error('The rental directory returned an invalid page. Please try again.');
+        seenCursors.add(value.nextCursor);
+        cursor = value.nextCursor;
+      }
+      setRentals(allRentals);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) router.replace(loginHrefRef.current);
+      else setRentalsError(messageOf(error));
+    } finally {
+      setRentalsLoading(false);
+    }
+  }, [router]);
+
   const refreshNotifications = useCallback(async () => {
     setNotificationsLoading(true);
     setNotificationError('');
@@ -1539,15 +2054,20 @@ export function StudentApp({ slug }: { slug?: string }) {
   useEffect(() => {
     if (!isStudentSession(session)) return;
     setProfile({
+      username: session!.user.username ?? '',
       name: session!.user.name ?? '',
       phone: session!.user.phone ?? '',
       parentName: session!.user.parentName ?? '',
+      sports: session!.user.sports ?? [],
     });
+    setProfileSportsText((session!.user.sports ?? []).join(', '));
     setBookingsReady(false);
     void refreshBookings();
     void refreshClubDirectory();
     void refreshNotifications();
-  }, [session, refreshBookings, refreshClubDirectory, refreshNotifications]);
+    void refreshPackages();
+    void refreshRentals();
+  }, [session, refreshBookings, refreshClubDirectory, refreshNotifications, refreshPackages, refreshRentals]);
 
   useEffect(() => {
     function updateClock() {
@@ -1586,7 +2106,7 @@ export function StudentApp({ slug }: { slug?: string }) {
   const clubSports = useMemo(() => {
     const labels = new Map<string, string>();
     for (const sport of clubDirectory.flatMap((club) => club.sports)) {
-      const key = sport.trim().toLocaleLowerCase();
+      const key = sport.trim().toLowerCase();
       if (key && !labels.has(key)) labels.set(key, sport.trim());
     }
     return [...labels].map(([key, label]) => ({ key, label }))
@@ -1597,7 +2117,7 @@ export function StudentApp({ slug }: { slug?: string }) {
     if (clubSport && !clubSports.some((sport) => sport.key === clubSport)) setClubSport('');
   }, [clubSlug, clubSport, clubSports, exploreClubs]);
   const filteredExploreClubs = useMemo(() => {
-    const query = clubSearch.trim().toLocaleLowerCase();
+    const query = clubSearch.trim().toLowerCase();
     return exploreClubs.filter((club) => {
       const matchesSearch = !query || [
         club.business.name,
@@ -1605,9 +2125,9 @@ export function StudentApp({ slug }: { slug?: string }) {
         club.business.ownerName,
         club.business.slug,
         ...(club.directory?.sports ?? []),
-      ].some((value) => value.toLocaleLowerCase().includes(query));
+      ].some((value) => value.toLowerCase().includes(query));
       const matchesSport = !clubSport || club.directory?.sports.some(
-        (sport) => sport.trim().toLocaleLowerCase() === clubSport,
+        (sport) => sport.trim().toLowerCase() === clubSport,
       );
       const matchesClub = !clubSlug || club.business.slug === clubSlug;
       const matchesRelationship =
@@ -1619,6 +2139,38 @@ export function StudentApp({ slug }: { slug?: string }) {
   const filteredKnownClubs = filteredExploreClubs.filter((club) => club.known);
   const filteredDiscoveryClubs = filteredExploreClubs.filter((club) => !club.known);
   const exploreLoading = clubDirectoryLoading || !bookingsReady;
+  const rentalSports = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const rental of rentals) {
+      const key = rental.sport.trim().toLowerCase();
+      if (key && !labels.has(key)) labels.set(key, rental.sport.trim());
+    }
+    return [...labels].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label));
+  }, [rentals]);
+  const filteredRentals = useMemo(() => {
+    const query = rentalSearch.trim().toLowerCase();
+    return rentals.filter((rental) => {
+      const matchesQuery = !query || [rental.name, rental.address, rental.sport, ...rental.amenities]
+        .some((value) => value.toLowerCase().includes(query));
+      const matchesPackage = !rentalPackageFilterId || packages.some((pkg) =>
+        pkg.id === rentalPackageFilterId && pkg.rentalLocationIds.includes(rental.locationId));
+      return matchesQuery && (!rentalSport || rental.sport.trim().toLowerCase() === rentalSport) && matchesPackage;
+    });
+  }, [packages, rentalPackageFilterId, rentalSearch, rentalSport, rentals]);
+  const activePackages = useMemo(() => packages.filter((pkg) => pkg.state === 'ACTIVE'), [packages]);
+  const eligibleRentalPackages = useMemo(() => {
+    if (!rentalDetail) return [];
+    const selectedStart = selectedRentalSlot ? new Date(selectedRentalSlot.startAt).getTime() : null;
+    return activePackages.filter((pkg) =>
+      pkg.remainingCredits > 0
+      && pkg.rentalLocationIds.includes(rentalDetail.locationId)
+      && (selectedStart === null || new Date(pkg.expiresAt).getTime() >= selectedStart));
+  }, [activePackages, rentalDetail, selectedRentalSlot]);
+  useEffect(() => {
+    if (selectedRentalPackageId && !eligibleRentalPackages.some((pkg) => pkg.id === selectedRentalPackageId)) {
+      setSelectedRentalPackageId('');
+    }
+  }, [eligibleRentalPackages, selectedRentalPackageId]);
   const current = useMemo(() => bookings.filter((item) => isInProgress(item, nowMs)), [bookings, nowMs]);
   const upcoming = useMemo(() => bookings.filter((item) => isUpcoming(item, nowMs)), [bookings, nowMs]);
   const history = useMemo(
@@ -1651,6 +2203,40 @@ export function StudentApp({ slug }: { slug?: string }) {
   const actionBooking = openBookingId
     ? bookings.find((item) => item.booking.id === openBookingId)
     : undefined;
+
+  useEffect(() => {
+    if (!openRentalId) return;
+    let ignore = false;
+    setRentalDetailLoading(true);
+    setRentalError('');
+    loadRental(openRentalId)
+      .then((value) => {
+        if (ignore) return;
+        setRentalDetail(value);
+        setRentalDuration(value.minDuration);
+        setRentalDate(dateKey(new Date(), value.timezone));
+        setRentalUnitId(value.units.find((unit) => unit.active !== false)?.id ?? '');
+        setSelectedRentalPackageId(rentalPackageFilterId);
+      })
+      .catch((error) => { if (!ignore) setRentalError(messageOf(error)); })
+      .finally(() => { if (!ignore) setRentalDetailLoading(false); });
+    return () => { ignore = true; };
+  }, [openRentalId]);
+
+  useEffect(() => {
+    if (!rentalDetail || !rentalDate || !rentalDuration) return;
+    let ignore = false;
+    setRentalSlotsLoading(true);
+    setRentalError('');
+    setSelectedRentalSlot(null);
+    loadRentalSlots(rentalDetail.id, { date: rentalDate, duration: rentalDuration })
+      .then((value) => {
+        if (!ignore) setRentalSlots(value.slots.filter((slot) => !rentalUnitId || slot.unitId === rentalUnitId));
+      })
+      .catch((error) => { if (!ignore) setRentalError(messageOf(error)); })
+      .finally(() => { if (!ignore) setRentalSlotsLoading(false); });
+    return () => { ignore = true; };
+  }, [rentalDate, rentalDetail, rentalDuration, rentalSlotsVersion, rentalUnitId]);
 
   useEffect(() => {
     if (selectedClubSlug && clubs.some((club) => club.business.slug === selectedClubSlug)) return;
@@ -1836,6 +2422,188 @@ export function StudentApp({ slug }: { slug?: string }) {
     );
   }
 
+  function payForBooking() {
+    if (!actionBooking || actionBusy) return;
+    const participantId = actionBooking.participant.id;
+    const outcome = bookingPaymentOutcome;
+    const signature = JSON.stringify([participantId, outcome]);
+    const idempotencyKey = activeCheckoutKey(bookingCheckoutKeysRef.current, 'booking', participantId, signature);
+    setActionBusy(true);
+    setActionError('');
+    void checkoutBookingParticipant(participantId, {
+      idempotencyKey,
+      simulatedOutcome: outcome,
+    })
+      .then((result) => {
+        bookingCheckoutKeysRef.current.delete(signature);
+        if (result.paymentIntent.status !== 'SUCCEEDED') {
+          setActionError('The simulated Stripe payment was declined. No real card was charged.');
+          return;
+        }
+        setBookings((current) => current.map((item) => item.participant.id === participantId
+          ? {
+              ...item,
+              participant: { ...item.participant, paid: true },
+              booking: {
+                ...item.booking,
+                participants: item.booking.participants.map((participant) =>
+                  participant.id === participantId ? { ...participant, paid: true } : participant),
+              },
+            }
+          : item));
+        setNotice(`Simulated Stripe payment completed. Paid to ${actionBooking.business.name}; no real card was charged.`);
+        void refreshBookings();
+        void refreshNotifications();
+      })
+      .catch((error) => {
+        forgetDefinitiveCheckoutFailure(bookingCheckoutKeysRef.current, signature, error);
+        if (error instanceof ApiError && error.status === 401) router.replace(loginHrefRef.current);
+        else setActionError(messageOf(error));
+      })
+      .finally(() => setActionBusy(false));
+  }
+
+  function openPackageOffers(club: { business: PackageOfferBusiness }) {
+    const requestId = ++offersRequestRef.current;
+    setOffersClub(club);
+    setPackageOffers([]);
+    setOffersError('');
+    setOfferNotice('');
+    setOffersLoading(true);
+    void loadAccountPackageOffers(club.business.slug)
+      .then((value) => {
+        if (offersRequestRef.current === requestId) setPackageOffers(value.offers);
+      })
+      .catch((error) => {
+        if (offersRequestRef.current === requestId) setOffersError(messageOf(error));
+      })
+      .finally(() => {
+        if (offersRequestRef.current === requestId) setOffersLoading(false);
+      });
+  }
+
+  function closePackageOffers() {
+    offersRequestRef.current += 1;
+    setOffersClub(null);
+    setOffersLoading(false);
+  }
+
+  function buyPackage(offer: PackageOffer) {
+    if (offerBusyId) return;
+    const signature = JSON.stringify([offer.id, offerPaymentOutcome]);
+    const idempotencyKey = activeCheckoutKey(packageCheckoutKeysRef.current, 'package', offer.id, signature);
+    setOfferBusyId(offer.id);
+    setOffersError('');
+    setOfferNotice('');
+    void checkoutPackageOffer(offer.id, {
+      idempotencyKey,
+      simulatedOutcome: offerPaymentOutcome,
+    })
+      .then((result) => {
+        packageCheckoutKeysRef.current.delete(signature);
+        if (result.paymentIntent.status !== 'SUCCEEDED' || !result.package) {
+          setOffersError('The simulated Stripe payment was declined. No real card was charged.');
+          return;
+        }
+        setOfferNotice(`${offer.name} is now in My Packages. This was a simulated Stripe payment; no real card was charged.`);
+        void refreshPackages();
+        void refreshNotifications();
+      })
+      .catch((error) => {
+        forgetDefinitiveCheckoutFailure(packageCheckoutKeysRef.current, signature, error);
+        setOffersError(messageOf(error));
+      })
+      .finally(() => setOfferBusyId(null));
+  }
+
+  function findRentalForPackage(pkg: AccountPackage) {
+    setPackagesExpanded(false);
+    setRentalPackageFilterId(pkg.id);
+    setRentalSport('');
+    setRentalSearch('');
+    setExploreSegment('rentals');
+    selectTab('explore');
+  }
+
+  function closeRental() {
+    setOpenRentalId(null);
+    setRentalDetail(null);
+    setRentalSlots([]);
+    setSelectedRentalSlot(null);
+    setSelectedRentalPackageId('');
+    setRentalError('');
+    setRentalNotice('');
+  }
+
+  function reserveRental() {
+    if (!rentalDetail || !selectedRentalSlot || rentalBookingBusy) return;
+    const rentalId = rentalDetail.id;
+    const slot = selectedRentalSlot;
+    const freeRental = slot.price === 0;
+    const packageId = freeRental ? '' : selectedRentalPackageId;
+    const outcome = freeRental || packageId ? 'SUCCEEDED' : rentalPaymentOutcome;
+    const signature = JSON.stringify([rentalId, slot.unitId, slot.startAt, rentalDuration, packageId, outcome]);
+    const idempotencyKey = activeCheckoutKey(rentalCheckoutKeysRef.current, 'rental', rentalId, signature);
+    setRentalBookingBusy(true);
+    setRentalError('');
+    setRentalNotice('');
+    void createRentalReservation(rentalId, {
+      unitId: slot.unitId,
+      startAt: slot.startAt,
+      duration: rentalDuration,
+      idempotencyKey,
+      simulatedOutcome: outcome,
+      ...(packageId ? { packageId } : {}),
+    })
+      .then((result) => {
+        rentalCheckoutKeysRef.current.delete(signature);
+        if (result.paymentIntent.status === 'REFUNDED' || result.reservation?.status === 'CANCELLED') {
+          setRentalError('That earlier reservation was cancelled and refunded. No new reservation was made. Try again to start a new demo checkout.');
+          return;
+        }
+        if (result.paymentIntent.status !== 'SUCCEEDED' || !result.reservation) {
+          setRentalError('The simulated Stripe payment was declined. No real card was charged and the court was not reserved.');
+          return;
+        }
+        setRentalNotice(freeRental
+          ? `${result.reservation.unitName} is reserved for free. No payment or package credit was needed.`
+          : packageId
+          ? `${result.reservation.unitName} is reserved with one package credit.`
+          : `${result.reservation.unitName} is reserved. This was a simulated Stripe payment; no real card was charged.`);
+        setSelectedRentalSlot(null);
+        setRentalSlotsVersion((value) => value + 1);
+        setRentalHistoryVersion((value) => value + 1);
+        void refreshPackages();
+      })
+      .catch((error) => {
+        forgetDefinitiveCheckoutFailure(rentalCheckoutKeysRef.current, signature, error);
+        setRentalError(messageOf(error));
+      })
+      .finally(() => setRentalBookingBusy(false));
+  }
+
+  async function submitPeopleSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const query = peopleQuery.trim();
+    const searchableQuery = query.startsWith('@') ? query.slice(1) : query;
+    if (searchableQuery.length < 3 || peopleLoading) {
+      setPeopleError('Enter at least 3 characters to search people.');
+      return;
+    }
+    setPeopleLoading(true);
+    setPeopleError('');
+    setPeopleSearchedFor('');
+    try {
+      setPeople(await searchAccounts(query));
+      setPeopleSearchedFor(query);
+    } catch (error) {
+      setPeople([]);
+      setPeopleError(messageOf(error));
+    } finally {
+      setPeopleLoading(false);
+    }
+  }
+
 
   async function markAllRead() {
     if (markingRead || notificationsFallback || unread === 0) return;
@@ -1887,28 +2655,33 @@ export function StudentApp({ slug }: { slug?: string }) {
       setProfileError('Please enter your name using at least two characters.');
       return;
     }
+    const username = profile.username.trim().toLowerCase();
+    const usernameError = profileUsernameError(username);
+    if (usernameError) {
+      setProfileError(usernameError);
+      return;
+    }
+    const sportsError = profileSportsError(profileSportsText);
+    if (sportsError) {
+      setProfileError(sportsError);
+      return;
+    }
     setProfileBusy(true);
     setProfileError('');
     setProfileNotice('');
     try {
-      const value = await api<unknown>('/account/profile', {
+      const sports = normalizeSports(profileSportsText);
+      const value = await api<AuthSession>('/account/profile', {
         method: 'PATCH',
         body: JSON.stringify({
           name,
+          username,
           phone: profile.phone.trim(),
           parentName: profile.parentName.trim(),
+          sports,
         }),
       });
-      const record = value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
-      const returnedUser = record?.user && typeof record.user === 'object'
-        ? (record.user as AuthSession['user'])
-        : null;
-      const nextUser = returnedUser ?? {
-        ...session.user,
-        name,
-        phone: profile.phone.trim(),
-        parentName: profile.parentName.trim(),
-      };
+      const nextUser = value.user;
       setSession((current) => (current ? { ...current, user: { ...current.user, ...nextUser } } : current));
       setBookings((current) => current.map((item) => ({
         ...item,
@@ -1923,10 +2696,13 @@ export function StudentApp({ slug }: { slug?: string }) {
         },
       })));
       setProfile({
+        username: nextUser.username ?? username,
         name: nextUser.name,
         phone: nextUser.phone ?? '',
         parentName: nextUser.parentName ?? '',
+        sports: nextUser.sports ?? profile.sports,
       });
+      setProfileSportsText((nextUser.sports ?? sports).join(', '));
       setProfileNotice('Your profile has been updated.');
       setProfileEditorOpen(false);
       void refreshBookings();
@@ -1974,6 +2750,9 @@ export function StudentApp({ slug }: { slug?: string }) {
     performCancel,
     performRescheduleRequest,
     respondToRequest,
+    payForBooking,
+    paymentOutcome: bookingPaymentOutcome,
+    setPaymentOutcome: setBookingPaymentOutcome,
     retrySlots: () => setSlotsVersion((value) => value + 1),
     nowMs,
   };
@@ -2126,6 +2905,13 @@ export function StudentApp({ slug }: { slug?: string }) {
               <SuccessNotice message={notice} noticeRef={successNoticeRef} className="mt-6" />
             )}
 
+            <HomePackageSummary
+              loading={packagesLoading}
+              error={packagesError}
+              packages={activePackages}
+              onOpen={() => { setPackagesExpanded(true); selectTab('profile'); }}
+            />
+
             {bookingsLoading ? (
               <LoadingScreen text="Gathering your sessions…" />
             ) : bookings.length === 0 && !bookingsError ? (
@@ -2270,8 +3056,81 @@ export function StudentApp({ slug }: { slug?: string }) {
             <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#59675c]">Find your court</p>
             <h1 className="mt-1.5 text-[30px] font-medium tracking-[-1px] text-[#20382d] sm:text-[36px]">Explore</h1>
             <p className="mt-2 max-w-xl text-sm leading-relaxed text-[#59675c]">
-              Browse bookable clubs, compare their coaching, and return to the places you already know.
+              Find coaching, reserve a venue, or look up people across Courtly.
             </p>
+            <div role="tablist" aria-label="Explore marketplace" aria-orientation="horizontal" className="mt-6 grid grid-cols-2 gap-2 rounded-2xl bg-[#eaf0e5] p-1.5">
+              {([['classes', 'Classes/clubs'], ['rentals', 'Venue rentals']] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="tab"
+                  id={`student-explore-${value}-tab`}
+                  aria-selected={exploreSegment === value}
+                  aria-controls={`student-${value}-marketplace`}
+                  tabIndex={exploreSegment === value ? 0 : -1}
+                  onClick={() => setExploreSegment(value)}
+                  onKeyDown={(event) => {
+                    const next = event.key === 'Home'
+                      ? 'classes'
+                      : event.key === 'End'
+                        ? 'rentals'
+                        : event.key === 'ArrowRight' || event.key === 'ArrowLeft'
+                          ? value === 'classes' ? 'rentals' : 'classes'
+                          : null;
+                    if (!next) return;
+                    event.preventDefault();
+                    setExploreSegment(next);
+                    document.getElementById(`student-explore-${next}-tab`)?.focus();
+                  }}
+                  className={cn(
+                    'min-h-11 rounded-xl px-3 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a]',
+                    exploreSegment === value ? 'bg-white text-[#174c3c] shadow-sm' : 'text-[#59675c] hover:bg-white/60',
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <section className={cn(panel, 'mt-5 p-4 sm:p-5')} aria-labelledby="student-people-search-title">
+              <div className="flex items-start gap-3">
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#eef3e8] text-[#4f6847]"><UsersRound size={18} /></span>
+                <div>
+                  <h2 id="student-people-search-title" className="text-sm font-semibold text-[#304b39]">Find people</h2>
+                  <p className="mt-1 text-xs leading-relaxed text-[#59675c]">Search players, coaches, and clubs by name, username, or exact email address.</p>
+                </div>
+              </div>
+              <form onSubmit={submitPeopleSearch} className="mt-4 flex flex-col gap-2 sm:flex-row">
+                <label htmlFor="student-people-search" className="sr-only">Search all Courtly accounts</label>
+                <input id="student-people-search" type="search" value={peopleQuery} onChange={(event) => { setPeopleQuery(event.target.value); setPeople([]); setPeopleSearchedFor(''); setPeopleError(''); }} placeholder="Name, @username, or exact email" className={cn(field, 'min-w-0 flex-1')} />
+                <button type="submit" className={primaryButton} disabled={peopleLoading}>
+                  {peopleLoading ? <LoaderCircle size={15} className="animate-spin" /> : <Search size={15} />} Search people
+                </button>
+              </form>
+              {peopleError && <p role="alert" className="mt-3 text-xs text-[#8b4d3c]">{peopleError}</p>}
+              {!peopleLoading && !peopleError && !!peopleSearchedFor && people.length === 0 && (
+                <p role="status" className="mt-3 text-xs text-[#59675c]">No accounts matched “{peopleSearchedFor}”.</p>
+              )}
+              {people.length > 0 && (
+                <ul aria-label="Account search results" className="mt-4 grid gap-2 sm:grid-cols-2">
+                  {people.map((person) => (
+                    <li key={person.username} className="min-w-0 rounded-xl border border-[#e4e9df] bg-[#fafbf8] p-3">
+                      <div className="flex items-start gap-2.5">
+                        <span aria-hidden="true" className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[#e8efe0] text-[11px] font-bold text-[#4f6847]">{initials(person.name)}</span>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-[#304b39]">{person.name}</p>
+                          <p className="truncate text-xs text-[#59675c]">@{person.username} · {person.accountType.toLowerCase()}</p>
+                          {person.sports.length > 0 && <p className="truncate text-[11px] text-[#59675c]">{person.sports.join(', ')}</p>}
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            {exploreSegment === 'classes' ? (
+              <div id="student-classes-marketplace" role="tabpanel" aria-labelledby="student-explore-classes-tab">
             {bookingsReady && linkedSlugIsNew && (
               <div className="mt-6 flex flex-col gap-3 rounded-2xl border border-[#dfe7d8] bg-[#f0f5ea] p-5 sm:flex-row sm:items-center sm:justify-between">
                 <div>
@@ -2452,7 +3311,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                       <span className="text-xs text-[#59675c]">{filteredKnownClubs.length} shown</span>
                     </div>
                     <div className="grid gap-4 sm:grid-cols-2">
-                      {filteredKnownClubs.map((club) => <ExploreClubCard key={club.business.slug} club={club} />)}
+                      {filteredKnownClubs.map((club) => <ExploreClubCard key={club.business.slug} club={club} onViewPackages={openPackageOffers} />)}
                     </div>
                   </section>
                 )}
@@ -2466,9 +3325,50 @@ export function StudentApp({ slug }: { slug?: string }) {
                       <span className="text-xs text-[#59675c]">{filteredDiscoveryClubs.length} shown</span>
                     </div>
                     <div className="grid gap-4 sm:grid-cols-2">
-                      {filteredDiscoveryClubs.map((club) => <ExploreClubCard key={club.business.slug} club={club} />)}
+                      {filteredDiscoveryClubs.map((club) => <ExploreClubCard key={club.business.slug} club={club} onViewPackages={openPackageOffers} />)}
                     </div>
                   </section>
+                )}
+              </div>
+            )}
+              </div>
+            ) : (
+              <div id="student-rentals-marketplace" role="tabpanel" aria-labelledby="student-explore-rentals-tab" className="mt-7">
+                <AccountRentalHistory
+                  refreshToken={rentalHistoryVersion}
+                  onCancelled={() => {
+                    void refreshPackages();
+                    setSelectedRentalSlot(null);
+                    setRentalSlotsVersion((value) => value + 1);
+                  }}
+                />
+                <div className={cn(panel, 'p-4 sm:p-5')}>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <label htmlFor="student-rental-search" className="text-xs font-semibold text-[#465e4c]">Search rentals</label>
+                      <div className="relative mt-2"><Search aria-hidden="true" size={17} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-[#647469]" /><input id="student-rental-search" type="search" value={rentalSearch} onChange={(event) => setRentalSearch(event.target.value)} placeholder="Venue, address, or amenity" className={cn(field, 'w-full !pl-10')} /></div>
+                    </div>
+                    <div>
+                      <label htmlFor="student-rental-sport" className="text-xs font-semibold text-[#465e4c]">Sport</label>
+                      <select id="student-rental-sport" value={rentalSport} onChange={(event) => setRentalSport(event.target.value)} className={cn(field, 'mt-2 w-full bg-white')}>
+                        <option value="">All sports</option>
+                        {rentalSports.map((sport) => <option key={sport.key} value={sport.key}>{sport.label}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  {rentalPackageFilterId && (
+                    <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[#edf5e4] p-3 text-xs text-[#4f6847]">
+                      <span>Showing rentals eligible for {packages.find((pkg) => pkg.id === rentalPackageFilterId)?.name ?? 'your package'}.</span>
+                      <button type="button" className="font-semibold underline underline-offset-2" onClick={() => setRentalPackageFilterId('')}>Clear package filter</button>
+                    </div>
+                  )}
+                </div>
+                <p role="status" aria-live="polite" className="mt-5 text-xs font-medium text-[#59675c]">{rentalsLoading ? 'Loading rentals…' : `${filteredRentals.length} rental${filteredRentals.length === 1 ? '' : 's'} found`}</p>
+                {rentalsError && <div className="mt-5 space-y-3"><ErrorNotice message={rentalsError} /><button type="button" className={secondaryButton} onClick={() => void refreshRentals()}><RefreshCw size={14} /> Try rentals again</button></div>}
+                {rentalsLoading ? <LoadingScreen text="Finding venues…" /> : filteredRentals.length ? (
+                  <div className="mt-6 grid gap-4 sm:grid-cols-2">{filteredRentals.map((rental) => <RentalCard key={rental.id} rental={rental} onViewPackages={(value) => openPackageOffers({ business: { ...value.club, currency: value.currency } })} onOpen={(value) => { setRentalDetail(null); setRentalNotice(''); setRentalError(''); setSelectedRentalPackageId(rentalPackageFilterId); setOpenRentalId(value.id); }} />)}</div>
+                ) : !rentalsError && (
+                  <div className="mt-6"><EmptyState icon={<MapPin size={23} />} title={rentals.length ? 'No rentals match these filters' : 'No venue rentals are available yet'} action={rentals.length ? <button type="button" className={secondaryButton} onClick={() => { setRentalSearch(''); setRentalSport(''); setRentalPackageFilterId(''); }}>Clear rental filters</button> : undefined}>{rentals.length ? 'Try another venue, amenity, or sport.' : 'Come back soon as clubs make courts available.'}</EmptyState></div>
                 )}
               </div>
             )}
@@ -2571,7 +3471,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                   </Link>
                 )}
                 <p className="mt-4 text-center text-[10px] leading-relaxed text-[#59675c]">
-                  Services, coaches, and times are shown on the club’s live booking page.
+                  Classes, coaches, and times are shown on the club’s live booking page.
                 </p>
               </div>
             )}
@@ -2729,10 +3629,13 @@ export function StudentApp({ slug }: { slug?: string }) {
                     setProfileError('');
                     setProfileNotice('');
                     setProfile({
+                      username: session.user.username ?? '',
                       name: session.user.name ?? '',
                       phone: session.user.phone ?? '',
                       parentName: session.user.parentName ?? '',
+                      sports: session.user.sports ?? [],
                     });
+                    setProfileSportsText((session.user.sports ?? []).join(', '));
                     setProfileEditorOpen(true);
                   }}
                 >
@@ -2740,6 +3643,10 @@ export function StudentApp({ slug }: { slug?: string }) {
                 </button>
               </div>
               <dl className="mt-5 grid gap-5 sm:grid-cols-2">
+                <div>
+                  <dt className="text-[10px] font-medium uppercase tracking-wider text-[#59675c]">Username</dt>
+                  <dd className="mt-1.5 break-all text-sm text-[#415244]">@{profile.username || session.user.username}</dd>
+                </div>
                 <div>
                   <dt className="text-[10px] font-medium uppercase tracking-wider text-[#59675c]">Full name</dt>
                   <dd className="mt-1.5 text-sm text-[#415244]">{profile.name || session.user.name}</dd>
@@ -2759,6 +3666,14 @@ export function StudentApp({ slug }: { slug?: string }) {
                   <dt className="text-[10px] font-medium uppercase tracking-wider text-[#59675c]">Parent or guardian</dt>
                   <dd className={cn('mt-1.5 text-sm', profile.parentName ? 'text-[#415244]' : 'text-[#59675c]')}>
                     {profile.parentName || 'Not added'}
+                  </dd>
+                </div>
+                <div className="sm:col-span-2">
+                  <dt className="text-[10px] font-medium uppercase tracking-wider text-[#59675c]">Sports</dt>
+                  <dd className="mt-2 flex flex-wrap gap-1.5">
+                    {profile.sports.length ? profile.sports.map((sport) => (
+                      <span key={sport.toLowerCase()} className="rounded-full bg-[#edf3e7] px-2.5 py-1 text-[10px] font-semibold text-[#496353]">{sport}</span>
+                    )) : <span className="text-sm text-[#59675c]">No sports added</span>}
                   </dd>
                 </div>
               </dl>
@@ -2786,6 +3701,26 @@ export function StudentApp({ slug }: { slug?: string }) {
                 </DialogDescription>
                 <form onSubmit={saveProfile} className="mt-5">
                   <div className="grid gap-5 sm:grid-cols-2">
+                    <div>
+                      <label htmlFor="student-profile-username">Username</label>
+                      <input
+                        id="student-profile-username"
+                        className={field}
+                        value={profile.username}
+                        onChange={(event) => {
+                          setProfile((current) => ({ ...current, username: event.target.value.toLowerCase() }));
+                          setProfileError('');
+                        }}
+                        required
+                        minLength={3}
+                        maxLength={30}
+                        pattern="[a-z0-9_]{3,30}"
+                        autoComplete="username"
+                        aria-describedby="student-profile-username-note"
+                        disabled={profileBusy}
+                      />
+                      <p id="student-profile-username-note" className="mt-1.5 text-[10px] text-[#59675c]">Use 3–30 lowercase letters, numbers, or underscores.</p>
+                    </div>
                     <div>
                       <label htmlFor="student-profile-name">Full name</label>
                       <input
@@ -2849,6 +3784,23 @@ export function StudentApp({ slug }: { slug?: string }) {
                         disabled={profileBusy}
                       />
                     </div>
+                    <div className="sm:col-span-2">
+                      <label htmlFor="student-profile-sports">Sports</label>
+                      <input
+                        id="student-profile-sports"
+                        className={field}
+                        value={profileSportsText}
+                        onChange={(event) => {
+                          setProfileSportsText(event.target.value);
+                          setProfileError('');
+                        }}
+                        maxLength={500}
+                        placeholder="Tennis, badminton"
+                        aria-describedby="student-profile-sports-note"
+                        disabled={profileBusy}
+                      />
+                      <p id="student-profile-sports-note" className="mt-1.5 text-[10px] text-[#59675c]">Separate sports with commas.</p>
+                    </div>
                   </div>
                   {profileError && <div className="mt-5"><ErrorNotice message={profileError} /></div>}
                   <div className="mt-6 flex flex-wrap justify-end gap-3 border-t border-[#edf0e8] pt-5">
@@ -2874,6 +3826,37 @@ export function StudentApp({ slug }: { slug?: string }) {
               returnTo="/manage?tab=profile"
               className="mt-6"
             />
+
+            <section id="student-packages" className="mt-9 scroll-mt-24" aria-labelledby="student-packages-heading">
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">Credits across clubs</p>
+                  <h2 id="student-packages-heading" className="mt-1 text-xl font-semibold tracking-tight">My Packages</h2>
+                </div>
+                <button
+                  type="button"
+                  className={secondaryButton}
+                  aria-expanded={packagesExpanded}
+                  aria-controls="student-package-list"
+                  onClick={() => setPackagesExpanded((value) => !value)}
+                >
+                  <PackageCheck size={15} /> {packagesExpanded ? 'Hide packages' : 'View My Packages'}
+                </button>
+              </div>
+              {packagesExpanded && (
+                <div id="student-package-list" className="mt-5">
+                  {packagesLoading ? (
+                    <LoadingScreen text="Loading your packages…" />
+                  ) : packagesError ? (
+                    <div className="space-y-3"><ErrorNotice message={packagesError} /><button type="button" className={secondaryButton} onClick={() => void refreshPackages()}><RefreshCw size={14} /> Try packages again</button></div>
+                  ) : packages.length ? (
+                    <div className="grid gap-4 sm:grid-cols-2">{packages.map((pkg) => <PackageCard key={pkg.id} pkg={pkg} onFindRental={findRentalForPackage} />)}</div>
+                  ) : (
+                    <EmptyState icon={<PackageCheck size={23} />} title="No packages yet" action={<button type="button" className={primaryButton} onClick={() => selectTab('explore')}>Explore club packages <ArrowRight size={15} /></button>}>Packages you buy from a club will appear here with their remaining credits and eligible activities.</EmptyState>
+                  )}
+                </div>
+              )}
+            </section>
 
             <section className="mt-9" aria-labelledby="profile-booking-history">
               <div>
@@ -2937,6 +3920,43 @@ export function StudentApp({ slug }: { slug?: string }) {
         )}
       </main>
       <BookingDialog item={actionBooking ?? null} {...bookingDialogProps} />
+      <PackageOffersDialog
+        club={offersClub}
+        offers={packageOffers}
+        loading={offersLoading}
+        error={offersError}
+        notice={offerNotice}
+        busyId={offerBusyId}
+        paymentOutcome={offerPaymentOutcome}
+        onPaymentOutcome={setOfferPaymentOutcome}
+        onBuy={buyPackage}
+        onClose={closePackageOffers}
+      />
+      <RentalDialog
+        open={!!openRentalId}
+        rental={rentalDetail}
+        loading={rentalDetailLoading}
+        error={rentalError}
+        notice={rentalNotice}
+        date={rentalDate}
+        duration={rentalDuration}
+        unitId={rentalUnitId}
+        slots={rentalSlots}
+        slotsLoading={rentalSlotsLoading}
+        selectedSlot={selectedRentalSlot}
+        packages={eligibleRentalPackages}
+        selectedPackageId={selectedRentalPackageId}
+        paymentOutcome={rentalPaymentOutcome}
+        busy={rentalBookingBusy}
+        onClose={closeRental}
+        onDate={setRentalDate}
+        onDuration={setRentalDuration}
+        onUnit={setRentalUnitId}
+        onSlot={setSelectedRentalSlot}
+        onPackage={setSelectedRentalPackageId}
+        onPaymentOutcome={setRentalPaymentOutcome}
+        onReserve={reserveRental}
+      />
       <AlertDialog
         alert={openAlert}
         club={clubs.find((club) => club.business.slug === openAlert?.businessSlug)}

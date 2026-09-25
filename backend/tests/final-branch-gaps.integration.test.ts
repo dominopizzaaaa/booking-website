@@ -167,7 +167,7 @@ describe.sequential('Final backend branch coverage', () => {
     })).toBe(0);
   });
 
-  it('uses the business money path for unallocated payments and rejects payouts in a solo practice', async () => {
+  it('uses the club money path for unallocated payments and keeps roster coaches out of the ledger', async () => {
     const clubStudent = await createStudent(fixture, { name: 'Club Unallocated Payer' });
     const clubPayment = await request(app).post('/api/payments').set('Cookie', fixture.cookie).send({
       studentId: clubStudent.id, amount: 2_500, method: 'CASH', note: 'Account credit',
@@ -177,36 +177,20 @@ describe.sequential('Final backend branch coverage', () => {
       packageId: null, instructorId: null, kind: 'STUDENT_TO_CLUB', amount: 2_500,
     });
 
-    const soloSession = await createSession(fixture, fixture.coachUser.id, fixture.coachMembership.id);
-    const practice = await request(app).post('/api/auth/practice')
-      .set('Cookie', soloSession.cookie).send({ name: 'Final Branch Practice' }).expect(201);
-    const soloBusinessId = practice.body.business.id as string;
-    const soloInstructorId = practice.body.membership.instructorId as string;
-    tenants.own(soloBusinessId);
-    const soloAccount = await createAccount(fixture, { name: 'Solo Unallocated Payer' });
-    const soloStudent = await prisma.student.create({
-      data: {
-        businessId: soloBusinessId, userId: soloAccount.id, name: soloAccount.name,
-        email: soloAccount.email, initials: 'SU',
-      },
-    });
-    const soloPayment = await request(app).post('/api/payments').set('Cookie', soloSession.cookie).send({
-      studentId: soloStudent.id, amount: 3_500, method: 'BANK_TRANSFER', note: 'Account credit',
-    }).expect(201);
-    expect(soloPayment.body).toMatchObject({
-      businessId: soloBusinessId, studentId: soloStudent.id, bookingId: null,
-      packageId: null, instructorId: null, kind: 'STUDENT_TO_COACH', amount: 3_500,
-    });
+    const paymentCount = await prisma.payment.count({ where: { businessId: fixture.business.id } });
+    const deniedPayment = await request(app).post('/api/payments')
+      .set('Cookie', fixture.coachCookie).send({
+        studentId: clubStudent.id, amount: 3_500, method: 'BANK_TRANSFER', note: 'Hidden account credit',
+      }).expect(403);
+    expect(deniedPayment.body.error).toBe('Only the club account can do this');
 
-    const payout = await request(app).post('/api/payouts').set('Cookie', soloSession.cookie).send({
-      instructorId: soloInstructorId, amount: 1_500, method: 'CASH', note: 'Impossible payout',
-    }).expect(400);
-    expect(payout.body.error).toBe(
-      'Coach payouts apply to a club or academy. An independent coach is paid directly by their students.',
-    );
-    expect(await prisma.payment.count({
-      where: { businessId: soloBusinessId, kind: 'CLUB_TO_COACH' },
-    })).toBe(0);
+    const deniedPayout = await request(app).post('/api/payouts')
+      .set('Cookie', fixture.coachCookie).send({
+        instructorId: fixture.instructor.id, amount: 1_500, method: 'CASH', note: 'Hidden payout',
+      }).expect(403);
+    expect(deniedPayout.body.error).toBe('Only the club account can do this');
+    expect(await prisma.payment.count({ where: { businessId: fixture.business.id } }))
+      .toBe(paymentCount);
   });
 
   it('refuses demo creation while demo mode is disabled', async () => {

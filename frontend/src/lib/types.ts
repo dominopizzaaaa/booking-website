@@ -1,9 +1,10 @@
 export type Status = 'CONFIRMED' | 'PENDING' | 'CANCELLED' | 'COMPLETED';
 export type AccountType = 'STUDENT' | 'COACH' | 'CLUB';
-/** A club or academy collects lesson money; a solo practice is paid directly. */
+/** New commerce belongs to clubs; SOLO remains only as a historical wire value. */
 export type BusinessKind = 'CLUB' | 'SOLO';
-export type Business = { id: string; name: string; slug: string; ownerName: string; email: string; timezone: string; currency: string; color: string; tagline: string; cancellationHours: number; kind: BusinessKind; isDemo: boolean };
-export type AccountUser = { id: string; name: string; email: string; accountType: AccountType; phone?: string; parentName?: string };
+export type Business = { id: string; name: string; slug: string; ownerName: string; email: string; timezone: string; currency: string; color: string; tagline: string; cancellationHours: number; kind: BusinessKind; isDemo: boolean; legacyReadOnly?: boolean };
+/** username and sports are optional only while old fixtures or servers roll forward. */
+export type AccountUser = { id: string; name: string; username?: string; email: string; accountType: AccountType; sports?: string[]; phone?: string; parentName?: string };
 export type WorkspaceUser = AccountUser & { instructorId: string | null };
 /** A membership is an affiliation; permissions come from the account and business kinds. */
 export type Membership = { id: string; userId: string; businessId: string; instructorId: string | null; active: boolean; createdAt: string; business: Business };
@@ -34,7 +35,12 @@ export type CoachScopedService = Omit<Service, 'price' | 'locations'> & { locati
 export type Availability = { id: string; instructorId: string; locationId: string; dayOfWeek: number; startTime: string; endTime: string };
 export type AvailabilityException = { id: string; instructorId: string; date: string; reason: string };
 export type Student = { id: string; userId: string | null; name: string; email: string; phone: string; initials: string; notes: string; parentName: string; createdAt: string; bookingCount: number; lastBookingAt: string | null };
-export type LessonPackage = { id: string; studentId: string; studentName: string; name: string; serviceId: string | null; totalCredits: number; usedCredits: number; price: number; expiresAt: string; paid: boolean };
+export type LessonPackage = {
+  id: string; studentId: string; studentName: string; name: string; serviceId: string | null;
+  /** Optional only while older workspace payloads roll forward. */
+  serviceIds?: string[]; rentalLocationIds?: string[];
+  totalCredits: number; usedCredits: number; price: number; expiresAt: string; paid: boolean;
+};
 export type Participant = { id: string; studentId: string; name: string; email: string; attendance: 'UNMARKED' | 'PRESENT' | 'ABSENT'; paid: boolean; price: number; packageId: string | null; notes: string; cancelled?: boolean; cancelledAt?: string | null };
 export type CoachScopedParticipant = Omit<Participant, 'paid' | 'price' | 'packageId'>;
 /** "CLUB" runs the money through the club's books; "DIRECT" goes to the coach. */
@@ -61,34 +67,43 @@ export type IntegrityFlag = {
   flaggedSessionAt: string | null; flaggedServiceName: string | null;
 };
 export type PaymentKind = 'STUDENT_TO_CLUB' | 'STUDENT_TO_COACH' | 'CLUB_TO_COACH';
-type PaymentBase = { id: string; bookingId: string | null; packageId: string | null; amount: number; method: 'CASH' | 'BANK_TRANSFER' | 'OTHER'; note: string; paidAt: string; reversedAt: string | null; reversedReason: string };
+type PaymentBase = { id: string; bookingId: string | null; packageId: string | null; amount: number; method: 'CASH' | 'BANK_TRANSFER' | 'SIMULATED_STRIPE' | 'OTHER'; note: string; paidAt: string; reversedAt: string | null; reversedReason: string };
 export type Payment = PaymentBase & (
   | { kind: 'STUDENT_TO_CLUB' | 'STUDENT_TO_COACH'; studentId: string; studentName: string; instructorId: null; instructorName: null }
   | { kind: 'CLUB_TO_COACH'; studentId: null; studentName: null; instructorId: string; instructorName: string }
 );
 /** Shared alert vocabulary; see backend/src/notifications.ts. */
 export type NotificationType = 'BOOKING' | 'PAYMENT' | 'PAYOUT' | 'RESCHEDULE' | 'CANCELLATION' | 'PENDING_ACTION' | 'INTEGRITY' | 'ATTENDANCE' | 'NOTICE';
-export type Notification = { id: string; type: NotificationType; bookingId: string | null; title: string; message: string; read: boolean; actionNeeded: boolean; createdAt: string };
+export type Notification = { id: string; type: NotificationType; bookingId: string | null; integrityFlagId: string | null; title: string; message: string; read: boolean; actionNeeded: boolean; createdAt: string };
 type WorkspaceCollections<TService extends Service | CoachScopedService, TBooking extends Booking | CoachScopedBooking> = { business: Business; user: WorkspaceUser; membership: Membership; memberships: Membership[]; clubAccount: boolean; instructors: WorkspaceInstructor[]; locations: Location[]; services: TService[]; availability: Availability[]; exceptions: AvailabilityException[]; students: Student[]; packages: LessonPackage[]; bookings: TBooking[]; payments: Payment[]; notifications: Notification[]; rescheduleRequests: RescheduleRequest[]; integrityFlags: IntegrityFlag[] };
 export type FullWorkspace = WorkspaceCollections<Service, Booking>;
 export type ClubWorkspace = FullWorkspace & { business: Business & { kind: 'CLUB' }; user: WorkspaceUser & { accountType: 'CLUB' }; clubAccount: true };
+/** Historical wire shape only. Legacy solo practices can still appear during a rolling deploy, but the current UI must not open them. */
 export type SoloWorkspace = FullWorkspace & { business: Business & { kind: 'SOLO' }; user: WorkspaceUser & { accountType: 'COACH' }; clubAccount: false };
-export type ManagerWorkspace = ClubWorkspace | SoloWorkspace;
+export type ManagerWorkspace = ClubWorkspace;
 export type CoachClubWorkspace = Omit<WorkspaceCollections<CoachScopedService, CoachScopedBooking>, 'packages' | 'payments' | 'integrityFlags'> & { business: Business & { kind: 'CLUB' }; user: WorkspaceUser & { accountType: 'COACH' }; clubAccount: false; packages: never[]; payments: never[]; integrityFlags: never[] };
 export type WorkspaceResponse = ManagerWorkspace | CoachClubWorkspace;
+/** Accept this only at the API boundary while an older server may still return a removed SOLO workspace. */
+export type WorkspaceWireResponse = WorkspaceResponse | SoloWorkspace;
 export type WorkspaceBooking = WorkspaceResponse['bookings'][number];
 export type WorkspaceService = WorkspaceResponse['services'][number];
 
-export function isCoachClubWorkspace(workspace: WorkspaceResponse): workspace is CoachClubWorkspace {
+export function isCoachClubWorkspace(workspace: WorkspaceWireResponse): workspace is CoachClubWorkspace {
   return workspace.user.accountType === 'COACH' && workspace.business.kind === 'CLUB';
 }
-export function isManagerWorkspace(workspace: WorkspaceResponse): workspace is ManagerWorkspace {
-  return !isCoachClubWorkspace(workspace);
+export function isWorkspaceResponse(workspace: WorkspaceWireResponse): workspace is WorkspaceResponse {
+  return workspace.business.kind === 'CLUB' && !workspace.business.legacyReadOnly
+    && (workspace.user.accountType === 'CLUB' || workspace.user.accountType === 'COACH');
+}
+export function isManagerWorkspace(workspace: WorkspaceWireResponse): workspace is ManagerWorkspace {
+  return workspace.user.accountType === 'CLUB'
+    && workspace.business.kind === 'CLUB'
+    && !workspace.business.legacyReadOnly;
 }
 export type Slot = { startAt: string; endAt: string; available: boolean; placesRemaining: number; reason?: string };
 export type PublicBusiness = { business: PublicBookingBusiness; instructors: PublicInstructor[]; locations: PublicLocation[]; services: Service[] };
 export type BookingInput = { serviceId: string; instructorId: string; locationId: string; startAt: string; studentId: string; repeatWeeks?: number; packageId?: string; notes?: string; address?: string };
-export type PublicBookingInput = { serviceId: string; instructorId: string; locationId: string; startAt: string; student?: { phone?: string; parentName?: string }; repeatWeeks?: number; notes?: string; address?: string };
+export type PublicBookingInput = { serviceId: string; instructorId: string; locationId: string; startAt: string; student?: { phone?: string; parentName?: string }; repeatWeeks?: number; packageId?: string; notes?: string; address?: string };
 export type BookingResult = { bookings: Booking[]; conflicts?: { date: string; reason: string }[] };
 export type ProviderBookingResult = { bookings: WorkspaceBooking[]; conflicts?: { date: string; reason: string }[] };
 export type AccountBooking = {
@@ -110,3 +125,80 @@ export type StudentClubDirectoryEntry = {
 };
 export type StudentClubDirectoryResult = { clubs: StudentClubDirectoryEntry[] };
 export type StudentClubDirectoryPage = StudentClubDirectoryResult & { nextCursor?: string | null };
+
+export type NamedMarketplaceItem = { id: string; name: string };
+export type PackageOfferBusiness = { name: string; slug: string; currency: string };
+export type PackageOffer = {
+  id: string; businessId: string; name: string; description: string; price: number; totalCredits: number;
+  validityDays: number; active: boolean; createdAt: string; updatedAt: string; business?: PackageOfferBusiness;
+  archivedAt?: string | null;
+  serviceIds: string[]; rentalLocationIds: string[];
+  services: NamedMarketplaceItem[]; rentalLocations: NamedMarketplaceItem[];
+};
+export type PackageOfferInput = {
+  name: string; description?: string; price: number; totalCredits: number; validityDays: number; active?: boolean;
+  serviceIds: string[]; rentalLocationIds: string[];
+};
+export type AccountPackageState = 'ACTIVE' | 'EXHAUSTED' | 'EXPIRED' | 'UNPAID';
+export type AccountPackage = {
+  id: string; businessId: string; offerId: string | null; name: string; totalCredits: number; usedCredits: number;
+  remainingCredits: number; price: number; expiresAt: string; paid: boolean; state: AccountPackageState;
+  business: PackageOfferBusiness & { id?: string }; offer: NamedMarketplaceItem | null; serviceId: string | null;
+  serviceIds: string[]; rentalLocationIds: string[]; services: NamedMarketplaceItem[]; rentalLocations: NamedMarketplaceItem[];
+  serviceNames?: string[]; rentalLocationNames?: string[];
+};
+export type SimulatedPaymentOutcome = 'SUCCEEDED' | 'FAILED';
+export type PaymentIntentStatus = 'REQUIRES_CONFIRMATION' | SimulatedPaymentOutcome | 'CANCELLED' | 'REFUNDED';
+export type CheckoutInput = { idempotencyKey: string; simulatedOutcome: SimulatedPaymentOutcome };
+export type PaymentIntent = {
+  id: string; kind?: 'PACKAGE' | 'BOOKING' | 'RENTAL'; amount: number; currency: string; status: PaymentIntentStatus;
+  provider?: string; providerReference?: string; idempotencyKey?: string; failureCode?: string | null;
+  packageOfferId?: string | null; packageId?: string | null; participantId?: string | null; reservationId?: string | null; createdAt: string; updatedAt?: string;
+  confirmedAt?: string | null; failedAt?: string | null;
+};
+export type CheckoutParticipant = { id: string; bookingId: string; paid: boolean };
+export type CheckoutResult = { paymentIntent: PaymentIntent; package: AccountPackage | null; participant: CheckoutParticipant | null };
+
+export type RentalListing = {
+  id: string; locationId: string; name: string; address: string; sport: string; amenities: string[]; unitLabel: string;
+  price: number; currency: string; timezone: string; club: { name: string; slug: string };
+};
+export type RentalUnit = { id: string; name: string; active: boolean };
+export type RentalOpeningHours = { dayOfWeek: number; startTime: string; endTime: string };
+export type RentalDetail = RentalListing & {
+  enabled: boolean; minDuration: number; maxDuration: number; startInterval: number; durationIncrement: number;
+  noticeHours: number; advanceDays: number; cancellationHours: number; rules: string;
+  units: RentalUnit[]; openingHours: RentalOpeningHours[];
+};
+export type RentalSlot = { unitId: string; unitName: string; startAt: string; endAt: string; price: number };
+export type RentalSlotsResult = { date: string; duration: number; timezone: string; slots: RentalSlot[] };
+export type RentalReservationStatus = 'CONFIRMED' | 'PENDING' | 'CANCELLED';
+export type RentalPaymentStatus = 'UNPAID' | 'PAID' | 'PACKAGE' | 'REFUNDED';
+export type RentalReservation = {
+  id: string; businessName: string; locationId: string; locationName: string; unitId: string; unitName: string;
+  startAt: string; endAt: string; duration: number; price: number; status: RentalReservationStatus;
+  paymentStatus: RentalPaymentStatus; packageId: string | null; creditConsumed: boolean; currency: string; timezone: string;
+  cancellationDeadline: string; cancellable: boolean;
+};
+export type RentalReservationInput = {
+  unitId: string; startAt: string; duration: number; idempotencyKey: string;
+  simulatedOutcome: SimulatedPaymentOutcome; packageId?: string;
+};
+export type RentalReservationResult =
+  | { reservation: RentalReservation; paymentIntent: PaymentIntent & { status: 'SUCCEEDED' | 'REFUNDED' } }
+  | { reservation: null; paymentIntent: PaymentIntent & { status: 'FAILED' } };
+export type RentalConfigValues = {
+  sport: string; rules: string; amenities: string[]; unitLabel: string; price: number;
+  startInterval: number; minDuration: number; durationIncrement: number; maxDuration: number; noticeHours: number;
+  advanceDays: number; cancellationHours: number;
+  units: Array<{ id?: string; name: string; active?: boolean }>; openingHours: RentalOpeningHours[];
+};
+export type RentalConfigInput = RentalConfigValues & { locationId: string };
+export type RentalConfigUpdate = Partial<RentalConfigValues>;
+export type RentalLocationCoreInput = Omit<Location, 'id'>;
+export type RentalLocationSaveInput = {
+  mode: 'CREATE' | 'UPDATE'; location: RentalLocationCoreInput;
+  rental: { enabled: false } | ({ enabled: true } & RentalConfigValues);
+};
+export type RentalLocationSaveResult = { location: Location; rental: RentalDetail; replay: boolean };
+export type AccountDirectoryUser = Pick<AccountUser, 'name' | 'accountType'> & { username: string; sports: string[] };

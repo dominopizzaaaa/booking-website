@@ -1,11 +1,11 @@
 import { Router } from 'express';
-import type { Availability, AvailabilityException, Business, Student, Instructor, LessonPackage, Location, Prisma } from '@prisma/client';
+import type { Availability, AvailabilityException, Business, Student, Instructor, Location, Prisma } from '@prisma/client';
 import { DateTime, IANAZone } from 'luxon';
 import { z } from 'zod';
 import { prisma } from './db.js';
 import { asyncRoute, HttpError, coachScope, coachScoped, requireBusinessManager, requireClubAccount, initials, type AuthRequest } from './http.js';
 import { bookableInstructorWhere } from './scheduling.js';
-import { withoutServiceFinancials } from './serializers.js';
+import { packageInclude, packageJson, withoutServiceFinancials } from './serializers.js';
 
 export const crudRouter = Router();
 type Tx = Prisma.TransactionClient;
@@ -19,7 +19,6 @@ const durationSchema = z.number().int().min(15).max(480);
 const serviceLocationsInclude = { locations: { include: { instructors: true } } } satisfies Prisma.ServiceInclude;
 type ServiceWithLocations = Prisma.ServiceGetPayload<{ include: typeof serviceLocationsInclude }>;
 type StudentWithBookings = Student & { participants: { booking: { startAt: Date } }[] };
-type PackageWithStudent = LessonPackage & { student: { name: string } };
 
 const serviceJson = (service: ServiceWithLocations) => ({
   id: service.id, name: service.name, description: service.description, category: service.category,
@@ -39,9 +38,6 @@ const availabilityJson = (availability: Availability) => ({ id: availability.id,
   locationId: availability.locationId, dayOfWeek: availability.dayOfWeek, startTime: availability.startTime, endTime: availability.endTime });
 const exceptionJson = (exception: AvailabilityException) => ({ id: exception.id, instructorId: exception.instructorId,
   date: exception.date, reason: exception.reason });
-const packageJson = (pkg: PackageWithStudent) => ({ id: pkg.id, studentId: pkg.studentId, studentName: pkg.student.name,
-  name: pkg.name, serviceId: pkg.serviceId, totalCredits: pkg.totalCredits, usedCredits: pkg.usedCredits,
-  price: pkg.price, expiresAt: pkg.expiresAt.toISOString(), paid: pkg.paid });
 const businessJson = (business: Business) => ({ id: business.id, name: business.name, slug: business.slug,
   ownerName: business.ownerName, email: business.email, timezone: business.timezone, currency: business.currency,
   color: business.color, tagline: business.tagline, cancellationHours: business.cancellationHours,
@@ -155,6 +151,14 @@ crudRouter.patch('/services/:id', requireBusinessManager, asyncRoute(async (req,
     for (const instructor of instructorIds.sort((a, b) => a.id.localeCompare(b.id))) await lockInstructor(tx, instructor.id);
     const current = await tx.service.findFirst({ where: { id, businessId } });
     if (!current) throw new HttpError(404, 'Service not found');
+    if (input.active === false && current.active) {
+      const activeOffer = await tx.packageOffer.findFirst({
+        where: { businessId, active: true, services: { some: { serviceId: id } } }, select: { id: true },
+      });
+      if (activeOffer) {
+        throw new HttpError(409, 'Archive package offers that use this class before deactivating it');
+      }
+    }
     if (locations !== undefined) await validateServiceLocations(tx, businessId, locations);
     // Only the catalog changes: Booking and Participant pricing, duration and capacity remain snapshots.
     return tx.service.update({ where: { id, businessId }, data: { ...input,
@@ -176,6 +180,10 @@ crudRouter.delete('/services/:id', requireBusinessManager, asyncRoute(async (req
   const deactivated = await prisma.$transaction(async tx => {
     const service = await tx.service.findFirst({ where: { id, businessId }, include: { _count: { select: { bookings: true, packages: true } } } });
     if (!service) throw new HttpError(404, 'Service not found');
+    const activeOffer = await tx.packageOffer.findFirst({
+      where: { businessId, active: true, services: { some: { serviceId: id } } }, select: { id: true },
+    });
+    if (activeOffer) throw new HttpError(409, 'Archive package offers that use this class before removing it');
     const referenced = service._count.bookings > 0 || service._count.packages > 0;
     if (referenced) await tx.service.update({ where: { id, businessId }, data: { active: false } });
     else await tx.service.delete({ where: { id, businessId } });
@@ -184,9 +192,15 @@ crudRouter.delete('/services/:id', requireBusinessManager, asyncRoute(async (req
   res.json({ ok: true, deactivated });
 }));
 
-const instructorSchema = z.object({ name: nameSchema, email: z.union([emailSchema, z.literal('')]).default(''),
-  specialty: z.string().trim().max(500).default(''), color: colorSchema.default('sage'), active: z.boolean().default(true) }).strict();
 const noticeHoursSchema = z.number().int().min(0).max(720);
+const instructorSchema = z.object({
+  name: nameSchema,
+  email: z.union([emailSchema, z.literal('')]).default(''),
+  specialty: z.string().trim().max(500).default(''),
+  color: colorSchema.default('sage'),
+  active: z.boolean().default(true),
+  rescheduleNoticeHours: noticeHoursSchema.optional(),
+}).strict();
 const instructorUpdateSchema = z.object({
   specialty: z.string().trim().max(500).optional(),
   color: colorSchema.optional(),
@@ -224,6 +238,7 @@ crudRouter.post('/instructors', requireClubAccount, asyncRoute(async (req, res) 
         data: {
           name: user.name, email: user.email, initials: initials(user.name),
           specialty: input.specialty, color: input.color, active: input.active,
+          ...(input.rescheduleNoticeHours !== undefined ? { rescheduleNoticeHours: input.rescheduleNoticeHours } : {}),
         },
       });
       if (restored.count !== 1) {
@@ -305,8 +320,18 @@ crudRouter.patch('/locations/:id', requireBusinessManager, asyncRoute(async (req
   const input = locationSchema.partial().parse(req.body);
   const id = idSchema.parse(req.params.id);
   const businessId = req.auth.business.id;
-  await requireLocation(prisma, businessId, id);
-  const location = await prisma.location.update({ where: { id, businessId }, data: input });
+  const location = await prisma.$transaction(async tx => {
+    const current = await requireLocation(tx, businessId, id);
+    if (input.active === false && current.active) {
+      const activeOffer = await tx.packageOffer.findFirst({
+        where: { businessId, active: true, rentalLocations: { some: { locationId: id } } }, select: { id: true },
+      });
+      if (activeOffer) {
+        throw new HttpError(409, 'Archive package offers that use this rental venue before deactivating it');
+      }
+    }
+    return tx.location.update({ where: { id, businessId }, data: input });
+  });
   res.json(locationJson(location));
 }));
 crudRouter.delete('/locations/:id', requireBusinessManager, asyncRoute(async (req, res) => {
@@ -315,6 +340,10 @@ crudRouter.delete('/locations/:id', requireBusinessManager, asyncRoute(async (re
   const deactivated = await prisma.$transaction(async tx => {
     const location = await tx.location.findFirst({ where: { id, businessId }, include: { _count: { select: { bookings: true, services: true, availability: true } } } });
     if (!location) throw new HttpError(404, 'Location not found');
+    const activeOffer = await tx.packageOffer.findFirst({
+      where: { businessId, active: true, rentalLocations: { some: { locationId: id } } }, select: { id: true },
+    });
+    if (activeOffer) throw new HttpError(409, 'Archive package offers that use this rental venue before removing it');
     const referenced = Object.values(location._count).some(count => count > 0);
     if (referenced) await tx.location.update({ where: { id, businessId }, data: { active: false } });
     else await tx.location.delete({ where: { id, businessId } });
@@ -412,7 +441,9 @@ async function validatePackageReferences(tx: Tx, businessId: string, studentId?:
   }
 }
 crudRouter.get('/packages', requireBusinessManager, asyncRoute(async (req, res) => {
-  const packages = await prisma.lessonPackage.findMany({ where: { businessId: req.auth.business.id }, include: { student: { select: { name: true } } }, orderBy: { expiresAt: 'asc' } });
+  const packages = await prisma.lessonPackage.findMany({
+    where: { businessId: req.auth.business.id }, include: packageInclude, orderBy: { expiresAt: 'asc' },
+  });
   res.json(packages.map(packageJson));
 }));
 crudRouter.post('/packages', requireBusinessManager, asyncRoute(async (req, res) => {
@@ -420,7 +451,7 @@ crudRouter.post('/packages', requireBusinessManager, asyncRoute(async (req, res)
   const businessId = req.auth.business.id;
   const pkg = await prisma.$transaction(async tx => {
     await validatePackageReferences(tx, businessId, input.studentId, input.serviceId);
-    const created = await tx.lessonPackage.create({ data: { ...input, businessId }, include: { student: { select: { name: true } } } });
+    const created = await tx.lessonPackage.create({ data: { ...input, businessId }, include: packageInclude });
     if (input.paid && input.price > 0) {
       await tx.payment.create({ data: { businessId, studentId: input.studentId, packageId: created.id, amount: input.price,
         kind: req.auth.business.kind === 'SOLO' ? 'STUDENT_TO_COACH' : 'STUDENT_TO_CLUB',
@@ -439,6 +470,16 @@ crudRouter.patch('/packages/:id', requireBusinessManager, asyncRoute(async (req,
     await tx.$queryRaw`SELECT id FROM "LessonPackage" WHERE id = ${id} AND "businessId" = ${businessId} FOR UPDATE`;
     const current = await tx.lessonPackage.findFirst({ where: { id, businessId }, include: { _count: { select: { participants: true, payments: true } } } });
     if (!current) throw new HttpError(404, 'Package not found');
+    if (current.offerId && (
+      (input.studentId !== undefined && input.studentId !== current.studentId)
+      || (input.name !== undefined && input.name !== current.name)
+      || (input.serviceId !== undefined && input.serviceId !== current.serviceId)
+      || (input.totalCredits !== undefined && input.totalCredits !== current.totalCredits)
+      || (input.price !== undefined && input.price !== current.price)
+      || (input.expiresAt !== undefined && input.expiresAt.getTime() !== current.expiresAt.getTime())
+    )) {
+      throw new HttpError(409, 'A purchased package keeps the student, name, scope, credits, price, and expiry agreed at checkout');
+    }
     await validatePackageReferences(tx, businessId, input.studentId,
       input.serviceId === current.serviceId ? undefined : input.serviceId);
     if (input.totalCredits !== undefined && input.totalCredits < current.usedCredits) throw new HttpError(400, 'Total credits cannot be lower than credits already used');
@@ -456,7 +497,7 @@ crudRouter.patch('/packages/:id', requireBusinessManager, asyncRoute(async (req,
         booking: { businessId, status: { not: 'CANCELLED' }, startAt: { gt: input.expiresAt } } }, select: { id: true } });
       if (laterBooking) throw new HttpError(409, 'Package expiry cannot precede an existing booked lesson');
     }
-    return tx.lessonPackage.update({ where: { id, businessId }, data: input, include: { student: { select: { name: true } } } });
+    return tx.lessonPackage.update({ where: { id, businessId }, data: input, include: packageInclude });
   });
   res.json(packageJson(pkg));
 }));
@@ -567,8 +608,19 @@ const businessSchema = z.object({ name: nameSchema.optional(), ownerName: nameSc
   cancellationHours: z.number().int().min(0).max(720).optional() }).strict();
 crudRouter.patch('/business', requireBusinessManager, asyncRoute(async (req, res) => {
   const input = businessSchema.parse(req.body);
+  const businessId = req.auth.business.id;
   const business = await prisma.$transaction(async tx => {
-    const updated = await tx.business.update({ where: { id: req.auth.business.id }, data: input });
+    const current = await tx.business.findUniqueOrThrow({ where: { id: businessId }, select: { currency: true } });
+    if (input.currency !== undefined && input.currency !== current.currency) {
+      const completedCheckout = await tx.paymentIntent.findFirst({
+        where: { businessId, status: { in: ['SUCCEEDED', 'REFUNDED'] } },
+        select: { id: true },
+      });
+      if (completedCheckout) {
+        throw new HttpError(409, 'Currency cannot change after a checkout has succeeded or been refunded');
+      }
+    }
+    const updated = await tx.business.update({ where: { id: businessId }, data: input });
     if (req.auth.user.accountType === 'CLUB' && input.name !== undefined) {
       await tx.user.update({ where: { id: req.auth.user.id }, data: { name: input.name } });
     }

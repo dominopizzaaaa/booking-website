@@ -42,7 +42,8 @@ describe.sequential('Platform admin console', () => {
     tenants.ownUser(userId);
     const user = await prisma.user.create({
       data: {
-        id: userId, name: 'Disposable calendar student', email, passwordHash: 'not-used-by-this-test',
+        id: userId, name: 'Disposable calendar student', username: `calendar_${suffix.slice(-12).replace(/-/g, '_')}`,
+        email, passwordHash: 'not-used-by-this-test',
         accountType: 'STUDENT',
       },
     });
@@ -201,7 +202,7 @@ describe.sequential('Platform admin console', () => {
     tenants.ownUser(demoAccountId);
     await prisma.$transaction(async tx => {
       await tx.business.create({ data: { id: demoId, slug: demoId, name: 'Demo co', ownerName: 'Demo', email: `${demoId}@example.test`, isDemo: true } });
-      await tx.user.create({ data: { id: demoAccountId, name: 'Demo co', email: `${demoAccountId}@example.test`, accountType: 'CLUB' } });
+      await tx.user.create({ data: { id: demoAccountId, name: 'Demo co', username: `demo_${demoAccountId.slice(-12).replace(/-/g, '_')}`, email: `${demoAccountId}@example.test`, accountType: 'CLUB' } });
       await tx.membership.create({ data: { userId: demoAccountId, businessId: demoId } });
     });
 
@@ -228,7 +229,7 @@ describe.sequential('Platform admin console', () => {
         },
       });
       await tx.user.create({
-        data: { id: demoAccountId, name: 'Calendar demo', email: `${demoAccountId}@example.test`, accountType: 'CLUB' },
+        data: { id: demoAccountId, name: 'Calendar demo', username: `demo_${demoAccountId.slice(-12).replace(/-/g, '_')}`, email: `${demoAccountId}@example.test`, accountType: 'CLUB' },
       });
       await tx.membership.create({ data: { userId: demoAccountId, businessId: demoId } });
     });

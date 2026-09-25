@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { alertAppearance, alertKind, alertPageSize, sortAlerts } from '../src/lib/alerts';
+import { alertAppearance, alertKind, alertPageSize, linkedIntegrityFlag, sortAlerts } from '../src/lib/alerts';
 
 const backendSource = (file: string) =>
   readFileSync(fileURLToPath(new URL(`../../backend/src/${file}`, import.meta.url)), 'utf8');
@@ -133,6 +133,33 @@ describe('sortAlerts', () => {
 
   it('handles an empty list', () => {
     expect(sortAlerts([])).toEqual([]);
+  });
+});
+
+describe('linkedIntegrityFlag', () => {
+  const flags = [{ id: 'flag-a', detail: 'First pair' }, { id: 'flag-b', detail: 'Second pair' }];
+
+  it('returns only the flag explicitly linked by the alert', () => {
+    expect(linkedIntegrityFlag({ integrityFlagId: 'flag-b' }, flags)).toEqual(flags[1]);
+  });
+
+  it('does not guess for legacy or stale alerts', () => {
+    expect(linkedIntegrityFlag({}, flags)).toBeNull();
+    expect(linkedIntegrityFlag({ integrityFlagId: 'missing' }, flags)).toBeNull();
+  });
+});
+
+describe('integrity alert navigation', () => {
+  it('does not expose integrity as a standalone workspace destination', () => {
+    const shell = readFileSync(fileURLToPath(new URL('../src/components/workspace/shell-views.tsx', import.meta.url)), 'utf8');
+    const views = shell.slice(shell.indexOf('export const exploreViewIds = ['), shell.indexOf('] as const;'));
+    const shortcuts = shell.slice(shell.indexOf('const clubProfileShortcuts'), shell.indexOf('];', shell.indexOf('const clubProfileShortcuts')));
+    const management = readFileSync(fileURLToPath(new URL('../src/components/workspace/management.tsx', import.meta.url)), 'utf8');
+    expect(views).not.toContain("'integrity'");
+    expect(shortcuts).not.toContain("'integrity'");
+    expect(management).not.toContain("case 'integrity'");
+    expect(shell).not.toContain('Open Integrity');
+    expect(shell).not.toContain("onNavigate('integrity')");
   });
 });
 

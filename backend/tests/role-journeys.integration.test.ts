@@ -326,6 +326,6 @@ describe.sequential('A lesson seen from every seat', () => {
       startAt: f.starts.plus({ days: 2 }).toISO(), studentId: theirs.id,
     });
     expect(foreign.status).toBe(403);
-    expect(foreign.body.error).toBe('Coaches can only access their own schedule');
+    expect(foreign.body.error).toBe('Coaches can only create lessons on their own schedule');
   });
 });

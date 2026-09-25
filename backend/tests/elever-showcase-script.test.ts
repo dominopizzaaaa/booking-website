@@ -5,6 +5,10 @@ const provisioner = readFileSync(
   new URL('../prisma/provision-elever-showcase.ts', import.meta.url),
   'utf8',
 );
+const verifier = readFileSync(
+  new URL('../../scripts/verify-elever-showcase.mjs', import.meta.url),
+  'utf8',
+);
 
 describe('Elever showcase provisioner safeguards', () => {
   it('requires an explicit destructive reset confirmation', () => {
@@ -28,29 +32,43 @@ describe('Elever showcase provisioner safeguards', () => {
   });
 
   it('keeps fixture audit timestamps in chronological order', () => {
-    expect(provisioner).toContain("const createdAt = DateTime.min(session.start.minus({ days: 14 }), now.minus({ hours: 3 }))");
-    expect(provisioner).toContain("DateTime.min(session.start.minus({ days: 3 }), now.minus({ hours: 2 }))");
+    expect(provisioner).toContain("const createdAt = DateTime.min(session.start.minus({ days: 14 }), showcaseNow.minus({ hours: 3 }))");
+    expect(provisioner).toContain("DateTime.min(createdAt.plus({ days: 2 }), showcaseNow.minus({ hours: 2 }))");
     expect(provisioner).toContain('p."paidAt" < b."createdAt"');
     expect(provisioner).toContain("address: 'Singapore Badminton Hall, 1 Lorong 23 Geylang, Singapore 388352'");
   });
 
-  it('models the two contractual money routes explicitly', () => {
+  it('models only the active club money route while retaining the historical vocabulary', () => {
     expect(provisioner).toContain("kind: 'CLUB'");
-    expect(provisioner).toContain("kind: 'SOLO'");
     expect(provisioner).toContain("paymentRoute: 'CLUB'");
-    expect(provisioner).toContain("paymentRoute: 'DIRECT'");
-    expect(provisioner).toContain("'STUDENT_TO_CLUB' : 'STUDENT_TO_COACH'");
+    expect(provisioner).not.toContain("kind: 'SOLO'");
+    expect(provisioner).not.toContain("paymentRoute: 'DIRECT'");
+    expect(provisioner).not.toContain("kind: 'STUDENT_TO_COACH'");
     expect(provisioner).toContain("kind: 'CLUB_TO_COACH'");
   });
 
-  it('contains the exact requested Elever people and relationships', () => {
+  it('contains the October 2026 people, classes, packages, rentals, and linked integrity alert', () => {
     for (const name of [
       'Elever Badminton Academy', 'Loh Kean Hean', 'Eng Chin An',
       'James', 'Julian', 'Sean', 'Lauren', 'Aaron', 'Benjamin', 'Carol', 'Dominic',
     ]) expect(provisioner).toContain(name);
-    expect(provisioner).toContain("notes: 'Kean Hean private student.'");
-    expect(provisioner).toContain("notes: 'Chin An private student.'");
-    expect(provisioner).toContain('dominicCompletedBookingId');
-    expect(provisioner).toContain("type: 'BOOKING_CONFIRMED'");
+    expect(provisioner).toContain('Array.from({ length: 12 }');
+    expect(provisioner).toContain("year: 2026, month: 10");
+    expect(provisioner).toContain("name: 'Junior Performance Class'");
+    expect(provisioner).toContain("name: '1:1 Badminton Coaching'");
+    expect(provisioner).toContain("name: 'Elever Play Pass'");
+    expect(provisioner).toContain("name: 'Elever Kallang Courts'");
+    expect(provisioner).toContain("provider: 'SIMULATED_STRIPE'");
+    expect(provisioner).toContain('integrityFlagId: integrityFlag.id');
+  });
+
+  it('makes production verification prove every student and October class date', () => {
+    expect(verifier).toContain('const expectedStudentNames = [');
+    expect(verifier).toContain('...Array.from({ length: 12 }');
+    expect(verifier).toContain('const expectedOctoberDates = Array.from(');
+    expect(verifier).toContain("timeZone: 'Asia/Singapore'");
+    expect(verifier).toContain('groupClasses.length !== 9 || privateClasses.length !== 30');
+    expect(verifier).toContain("booking.serviceName !== 'Junior Performance Class'");
+    expect(verifier).toContain("booking.serviceName !== '1:1 Badminton Coaching'");
   });
 });

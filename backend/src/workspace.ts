@@ -53,10 +53,21 @@ workspaceRouter.get('/workspace', asyncRoute(async (req, res) => {
     prisma.availability.findMany({ where: { businessId: business.id, instructorId } }),
     prisma.availabilityException.findMany({ where: { businessId: business.id, instructorId } }),
     prisma.student.findMany({ where: { businessId: business.id, ...studentScope }, include: { participants: { where: { cancelledAt: null, booking: { status: { not: 'CANCELLED' }, instructorId } }, include: { booking: { select: { startAt: true } } } } }, orderBy: { name: 'asc' } }),
-    coach ? Promise.resolve([]) : prisma.lessonPackage.findMany({ where: { businessId: business.id }, include: { student: true } }),
+    coach ? Promise.resolve([]) : prisma.lessonPackage.findMany({
+      where: { businessId: business.id },
+      include: { student: true, services: true, rentalLocations: true },
+    }),
     prisma.booking.findMany({ where: { businessId: business.id, instructorId }, include: bookingInclude, orderBy: { startAt: 'asc' } }),
     coach ? Promise.resolve([]) : prisma.payment.findMany({ where: { businessId: business.id }, include: { student: true, instructor: { select: { name: true } } }, orderBy: { paidAt: 'desc' } }),
-    prisma.notification.findMany({ where: { businessId: business.id, ...(coach ? { instructorId } : {}) }, orderBy: { createdAt: 'desc' }, take: 100 }),
+    prisma.notification.findMany({
+      where: {
+        businessId: business.id,
+        ...(user.accountType === 'COACH' ? { type: { not: 'INTEGRITY' } } : {}),
+        ...(coach ? { instructorId } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    }),
     prisma.rescheduleRequest.findMany({
       where: { businessId: business.id, ...(coach ? { booking: { instructorId } } : {}) },
       include: { booking: { include: {
@@ -68,8 +79,9 @@ workspaceRouter.get('/workspace', asyncRoute(async (req, res) => {
       orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
       take: 100,
     }),
-    // The safeguard is the club's business to review, not a coach's.
-    coach ? Promise.resolve([]) : prisma.integrityFlag.findMany({
+    // The safeguard belongs only to the institutional club account. A coach
+    // never receives flags, whether they are in a club or their own practice.
+    !isClubAccount(user) ? Promise.resolve([]) : prisma.integrityFlag.findMany({
       where: { businessId: business.id },
       include: integrityFlagInclude,
       orderBy: [{ status: 'asc' }, { lastSeenAt: 'desc' }],

@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { HttpError } from './http.js';
 import { notifyWorkspace } from './notifications.js';
 import { createBookingAccountAlerts } from './account-notifications.js';
-import { evaluateSlot, lockInstructors, schedulingContext } from './scheduling.js';
+import { assertWritableClubBooking, evaluateSlot, lockInstructors, schedulingContext } from './scheduling.js';
 import { bookingInclude, bookingJson } from './serializers.js';
 import { enqueueCalendarSync } from './calendar-sync.js';
 
@@ -151,6 +151,7 @@ export async function createRescheduleRequest(
   if (booking.instructorId !== initial.instructorId) {
     throw new HttpError(409, 'Session changed. Please retry.');
   }
+  assertWritableClubBooking(booking);
   if (['CANCELLED', 'COMPLETED'].includes(booking.status)) {
     throw new HttpError(400, 'Only an active session can be rescheduled');
   }
@@ -261,6 +262,7 @@ export async function acceptRescheduleRequest(
   if (booking.instructorId !== initial.instructorId) {
     throw new HttpError(409, 'Session changed. Please retry.');
   }
+  assertWritableClubBooking(booking);
   if (['CANCELLED', 'COMPLETED'].includes(booking.status)) throw new HttpError(400, 'Only an active session can be rescheduled');
   if (booking.coachAcceptance === 'PENDING') {
     throw new HttpError(400, 'This lesson is still waiting for the coach to accept it. Reschedule it once it is confirmed.');
@@ -343,16 +345,17 @@ export async function declineRescheduleRequest(
   const request = await lockAndLoadRequest(tx, requestId);
   if (request.status !== 'PENDING') throw new HttpError(409, 'This reschedule request has already been answered');
   assertOtherSide(request.requestedByRole, responder.role, 'Withdraw your own request instead of declining it');
+  const booking = await tx.booking.findUniqueOrThrow({
+    where: { id: request.bookingId },
+    include: { business: true, participants: { where: { cancelledAt: null }, include: { student: true } } },
+  });
+  assertWritableClubBooking(booking);
   await tx.rescheduleRequest.update({
     where: { id: request.id },
     data: {
       status: 'DECLINED', respondedAt: new Date(), respondedByUserId: responder.userId,
       responseMessage: responder.message,
     },
-  });
-  const booking = await tx.booking.findUniqueOrThrow({
-    where: { id: request.bookingId },
-    include: { participants: { where: { cancelledAt: null }, include: { student: true } } },
   });
   if (request.requestedByRole === 'STUDENT') {
     await createBookingAccountAlerts(tx, booking.id, 'RESCHEDULE_DECLINED', booking.participants.map(p => p.student.userId));
@@ -377,13 +380,14 @@ export async function withdrawRescheduleRequest(
   if (request.requestedByRole !== requester.role) {
     throw new HttpError(403, 'Only the side that raised a request can withdraw it');
   }
+  const booking = await tx.booking.findUniqueOrThrow({
+    where: { id: request.bookingId },
+    include: { business: true, participants: { where: { cancelledAt: null }, include: { student: true } } },
+  });
+  assertWritableClubBooking(booking);
   await tx.rescheduleRequest.update({
     where: { id: request.id },
     data: { status: 'WITHDRAWN', respondedAt: new Date(), respondedByUserId: requester.userId },
-  });
-  const booking = await tx.booking.findUniqueOrThrow({
-    where: { id: request.bookingId },
-    include: { participants: { where: { cancelledAt: null }, include: { student: true } } },
   });
   if (requester.role === 'STUDENT') {
     await notifyWorkspace(tx, {

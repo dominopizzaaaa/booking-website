@@ -39,6 +39,7 @@ import {
   cancelAccountBooking,
   createPublicBooking,
   loadAccountBookings,
+  loadAccountPackages,
   loadAuthSession,
   loadPublicBusiness,
   loadSlots,
@@ -54,10 +55,11 @@ import type {
   PublicBookingBusiness,
   PublicLocation,
   PublicBusiness,
+  AccountPackage,
   Service,
   Slot,
 } from "@/lib/types";
-import { cn, dateKey, money, shortDate, time } from "@/lib/utils";
+import { cn, coversWeeklyOccurrences, dateKey, money, shortDate, time } from "@/lib/utils";
 
 const button =
   "inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#174c3c] px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[#103d2f] disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none";
@@ -69,7 +71,7 @@ const panel =
   "min-w-0 rounded-2xl border border-[#e5e9e4] bg-white [&_*]:min-w-0 [&_p]:break-words [&_a]:min-h-11";
 const venueMessage = "Venue to be arranged — booking does not reserve a court";
 const steps = [
-  "Lesson",
+  "Class",
   "Coach & place",
   "Date & time",
   "Student account",
@@ -86,6 +88,16 @@ function dayLabel(key: string, options: Intl.DateTimeFormatOptions) {
     ...options,
     timeZone: "UTC",
   }).format(new Date(`${key}T12:00:00Z`));
+}
+function classCountLabel(count: number) {
+  return `${count} class${count === 1 ? "" : "es"}`;
+}
+function packageCreditLabel(count: number) {
+  return `${count} package credit${count === 1 ? "" : "s"}`;
+}
+function packageCoversOccurrences(pkg: AccountPackage, startAt: string, repeatWeeks: number, timezone: string) {
+  if (!startAt || pkg.state !== "ACTIVE" || !pkg.paid || pkg.remainingCredits < repeatWeeks) return false;
+  return coversWeeklyOccurrences(pkg.expiresAt, startAt, repeatWeeks, timezone);
 }
 function messageOf(error: unknown) {
   return error instanceof Error
@@ -180,6 +192,7 @@ function StudentAccountAccess({
   const [mode, setMode] = useState<"login" | "register">("login");
   const [values, setValues] = useState({
     name: "",
+    username: "",
     email: "",
     password: "",
     phone: "",
@@ -211,6 +224,7 @@ function StudentAccountAccess({
           ? await loginStudentAccount({ email, password: values.password })
           : await registerStudentAccount({
               name: values.name.trim(),
+              username: values.username.trim().toLowerCase(),
               email,
               password: values.password,
               ...(values.phone.trim() ? { phone: values.phone.trim() } : {}),
@@ -261,24 +275,41 @@ function StudentAccountAccess({
           <p className="!mt-2 text-xs leading-relaxed text-[#89957f]">
             {mode === "login"
               ? "Sign in to book and keep every session in one secure place."
-              : "Create one account for bookings, changes, and your lesson history."}
+              : "Create one account for bookings, changes, and your booking history."}
           </p>
         </div>
         <div className="grid gap-5 sm:grid-cols-2">
           {mode === "register" && (
-            <div className="sm:col-span-2">
-              <label htmlFor={`${formId}-name`}>Full name</label>
-              <input
-                id={`${formId}-name`}
-                className={field}
-                required
-                minLength={2}
-                maxLength={120}
-                autoComplete="name"
-                value={values.name}
-                onChange={(event) => setValues({ ...values, name: event.target.value })}
-              />
-            </div>
+            <>
+              <div>
+                <label htmlFor={`${formId}-name`}>Full name</label>
+                <input
+                  id={`${formId}-name`}
+                  className={field}
+                  required
+                  minLength={2}
+                  maxLength={120}
+                  autoComplete="name"
+                  value={values.name}
+                  onChange={(event) => setValues({ ...values, name: event.target.value })}
+                />
+              </div>
+              <div>
+                <label htmlFor={`${formId}-username`}>Username</label>
+                <input
+                  id={`${formId}-username`}
+                  className={field}
+                  required
+                  minLength={3}
+                  maxLength={30}
+                  pattern="[a-z0-9_]{3,30}"
+                  autoComplete="username"
+                  placeholder="e.g. sam_player"
+                  value={values.username}
+                  onChange={(event) => setValues({ ...values, username: event.target.value.toLowerCase() })}
+                />
+              </div>
+            </>
           )}
           <div className={mode === "login" ? "sm:col-span-2" : ""}>
             <label htmlFor={`${formId}-email`}>Email address</label>
@@ -383,10 +414,13 @@ export function CourtlyLogo({ light = false }: { light?: boolean }) {
 export function PublicShell({
   business,
   children,
+  homeHref,
 }: {
   business?: PublicBookingBusiness;
   children: ReactNode;
+  homeHref?: string;
 }) {
+  const href = homeHref ?? "/login";
   return (
     <div
       className="min-h-screen overflow-x-clip bg-[#f6f7f4] text-[#1c3029] [&_label.sr-only]:!absolute [&_label.sr-only]:!m-[-1px] [&_label.sr-only]:!h-px [&_label.sr-only]:!w-px [&_label.sr-only]:!overflow-hidden"
@@ -400,14 +434,11 @@ export function PublicShell({
         <div className="!mx-auto flex min-h-16 max-w-6xl items-center justify-between gap-3 px-4 sm:min-h-20 sm:px-8">
           <Link
             className="inline-flex min-h-11 items-center"
-            href={
-              business ? `/book/${encodeURIComponent(business.slug)}` : "/login"
-            }
-            aria-label={
-              business ? `${business.name} booking home` : "Courtly home"
-            }
+            href={href}
+            aria-label="Back to Courtly"
           >
             <CourtlyLogo />
+            <span className="ml-2 hidden text-xs font-semibold text-[#617455] lg:inline">Back to Courtly</span>
           </Link>
           <div className="flex min-w-0 items-center gap-3">
             <span className="hidden text-xs text-[#829082] md:block">
@@ -729,6 +760,9 @@ export function PublicBooking({ slug }: { slug: string }) {
   const [address, setAddress] = useState("");
   const [notes, setNotes] = useState("");
   const [repeatWeeks, setRepeatWeeks] = useState(1);
+  const [requestedPackageId, setRequestedPackageId] = useState("");
+  const [selectedPackage, setSelectedPackage] = useState<AccountPackage | null>(null);
+  const [packageNotice, setPackageNotice] = useState("");
   const [agreed, setAgreed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState("");
@@ -754,6 +788,10 @@ export function PublicBooking({ slug }: { slug: string }) {
     void load();
   }, [load]);
   useEffect(() => {
+    const value = new URLSearchParams(window.location.search).get("packageId")?.trim() ?? "";
+    setRequestedPackageId(value);
+  }, []);
+  useEffect(() => {
     const session = account.session;
     if (!session || !isStudentSession(session)) return;
     setBookingContact({
@@ -761,6 +799,56 @@ export function PublicBooking({ slug }: { slug: string }) {
       parentName: session.user.parentName ?? "",
     });
   }, [account.session]);
+  useEffect(() => {
+    if (!requestedPackageId || !data || account.loading) {
+      setSelectedPackage(null);
+      setPackageNotice("");
+      return;
+    }
+    if (!isStudentSession(account.session)) {
+      setSelectedPackage(null);
+      setPackageNotice(account.session ? "Sign in with a student account to use this package." : "Sign in to verify and use this class package.");
+      return;
+    }
+    let ignore = false;
+    setPackageNotice("Checking your class package…");
+    loadAccountPackages()
+      .then(({ packages }) => {
+        if (ignore) return;
+        const requested = packages.find(item => item.id === requestedPackageId && item.business.slug === data.business.slug) ?? null;
+        const coversSelectedClass = !!serviceId && (
+          requested?.offerId
+            ? requested.serviceIds.includes(serviceId)
+            : !requested?.serviceId || requested.serviceId === serviceId
+        );
+        const value = requested && requested.state === "ACTIVE" && requested.paid && requested.remainingCredits > 0
+          && coversSelectedClass ? requested : null;
+        setSelectedPackage(value);
+        setPackageNotice(value
+          ? value.remainingCredits >= repeatWeeks
+            ? `${value.name} will use ${packageCreditLabel(repeatWeeks)} for this booking.`
+            : `${value.name} has ${packageCreditLabel(value.remainingCredits)} left. This booking needs ${packageCreditLabel(repeatWeeks)}.`
+          : requested && !serviceId
+            ? `Choose a class covered by ${requested.name}.`
+            : "That package is not eligible for this class. The standard price will apply.");
+      })
+      .catch(() => {
+        if (!ignore) {
+          setSelectedPackage(null);
+          setPackageNotice("We could not verify that package. The standard price will apply.");
+        }
+      });
+    return () => { ignore = true; };
+  }, [account.loading, account.session, data, requestedPackageId, repeatWeeks, serviceId]);
+
+  const bookingPath = `/book/${encodeURIComponent(slug)}`;
+  const shellHomeHref = account.loading
+    ? `/login?${new URLSearchParams({ next: bookingPath })}`
+    : account.session?.user.accountType === "STUDENT"
+      ? `/manage?${new URLSearchParams({ slug, tab: "home" })}`
+      : account.session
+        ? "/"
+        : `/login?${new URLSearchParams({ next: bookingPath })}`;
   useEffect(() => {
     if (!serviceId || !locationId || !instructorId || !date) return;
     let ignore = false;
@@ -793,6 +881,37 @@ export function PublicBooking({ slug }: { slug: string }) {
   );
   const price = mapping?.price ?? service?.price ?? 0;
   const duration = mapping?.duration ?? service?.duration ?? 0;
+  const packageCreditsNeeded = repeatWeeks;
+  const packageCreditsAvailable = selectedPackage?.remainingCredits ?? 0;
+  const packageCreditsEnough = !!selectedPackage && !!slot && packageCoversOccurrences(
+    selectedPackage, slot.startAt, packageCreditsNeeded, data?.business.timezone ?? "Asia/Singapore",
+  );
+  const packageExpiresBeforeLastClass = !!selectedPackage && !!slot
+    && packageCreditsAvailable >= packageCreditsNeeded && !packageCreditsEnough;
+  const packageSummaryTitle = selectedPackage
+    ? packageCreditsEnough
+      ? "Package coverage"
+      : "Package credit check"
+    : `Total · ${classCountLabel(repeatWeeks)}`;
+  const packageSummaryValue = selectedPackage
+    ? packageCreditLabel(packageCreditsNeeded)
+    : money(price * repeatWeeks, data?.business.currency);
+  const packageSummaryNote = selectedPackage
+    ? packageCreditsEnough
+      ? `${selectedPackage.name} will use ${packageCreditLabel(packageCreditsNeeded)} for this booking. No new payment is due here.`
+      : packageExpiresBeforeLastClass
+        ? `${selectedPackage.name} expires before the final weekly class.`
+        : `${selectedPackage.name} has ${packageCreditLabel(packageCreditsAvailable)} left. This booking needs ${packageCreditLabel(packageCreditsNeeded)}.`
+    : null;
+  function useStandardPrice() {
+    setRequestedPackageId("");
+    setSelectedPackage(null);
+    setPackageNotice("The standard class price will apply.");
+    setAgreed(false);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("packageId");
+    window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+  }
   const eligibleLocations =
     data?.locations.filter(
       (value) =>
@@ -820,13 +939,17 @@ export function PublicBooking({ slug }: { slug: string }) {
           ? !!slot && !slotsLoading
           : step === 3
             ? isStudentSession(account.session)
-            : true;
+            : !selectedPackage || packageCreditsEnough;
   const continueHint = step === 0 && !serviceId
-    ? "Choose a lesson above to continue."
+    ? "Choose a class above to continue."
     : step === 1 && (!locationId || !instructorId)
       ? "Choose both a place and a coach to continue."
       : step === 2 && !slot
         ? slotsLoading ? "Checking available times…" : "Choose an available time to continue."
+        : step === 4 && selectedPackage && !packageCreditsEnough
+          ? packageExpiresBeforeLastClass
+            ? "This package expires before the final weekly class. Choose fewer weeks or continue without it."
+            : "Choose fewer weekly classes or continue without this package."
         : "";
   const actionLabel =
     step === 3
@@ -840,7 +963,7 @@ export function PublicBooking({ slug }: { slug: string }) {
     step === 0
       ? service
         ? `${service.name} selected`
-        : "Choose a lesson to continue"
+        : "Choose a class to continue"
       : step === 1
         ? location && instructor
           ? `${location.name} · ${instructor.name}`
@@ -850,10 +973,14 @@ export function PublicBooking({ slug }: { slug: string }) {
             ? `${shortDate(slot.startAt, timezone)} · ${time(slot.startAt, timezone)}`
             : "Choose an available time"
           : step === 3
-            ? `${repeatWeeks} session${repeatWeeks > 1 ? "s" : ""} · ${money(price * repeatWeeks, data?.business.currency)}`
+            ? selectedPackage
+              ? `${classCountLabel(repeatWeeks)} · ${packageCreditLabel(packageCreditsNeeded)}`
+              : `${repeatWeeks} session${repeatWeeks > 1 ? "s" : ""} · ${money(price * repeatWeeks, data?.business.currency)}`
             : isPendingVenue(location)
               ? "Venue arranged separately"
-              : `${repeatWeeks} session${repeatWeeks > 1 ? "s" : ""} · ${money(price * repeatWeeks, data?.business.currency)}`;
+              : selectedPackage
+                ? `${classCountLabel(repeatWeeks)} · ${packageCreditLabel(packageCreditsNeeded)}`
+                : `${repeatWeeks} session${repeatWeeks > 1 ? "s" : ""} · ${money(price * repeatWeeks, data?.business.currency)}`;
 
   function goTo(next: number) {
     setStep(next);
@@ -870,6 +997,9 @@ export function PublicBooking({ slug }: { slug: string }) {
     setInstructorId("");
     setSlot(null);
     setAgreed(false);
+    if (selectedPackage && !selectedPackage.serviceIds.includes(value.id) && selectedPackage.serviceId !== value.id) {
+      setSelectedPackage(null);
+    }
     const valid = value.locations.filter(
       (item) =>
         data?.locations.some(
@@ -915,6 +1045,7 @@ export function PublicBooking({ slug }: { slug: string }) {
       !instructor ||
       !slot ||
       !agreed ||
+      (!!selectedPackage && !packageCreditsEnough) ||
       !isStudentSession(account.session) ||
       saving
     )
@@ -933,6 +1064,7 @@ export function PublicBooking({ slug }: { slug: string }) {
           parentName: bookingContact.parentName.trim(),
         },
         repeatWeeks,
+        ...(selectedPackage ? { packageId: selectedPackage.id } : {}),
         notes: notes.trim(),
         address: location.type === "HOME" ? address.trim() : undefined,
       });
@@ -960,7 +1092,7 @@ export function PublicBooking({ slug }: { slug: string }) {
   if (loading)
     return (
       <PublicShell>
-        <Loading text="Finding your next great lesson…" />
+        <Loading text="Finding your next great class…" />
       </PublicShell>
     );
   if (loadError || !data)
@@ -983,7 +1115,7 @@ export function PublicBooking({ slug }: { slug: string }) {
     );
   if (result)
     return (
-      <PublicShell business={data.business}>
+      <PublicShell business={data.business} homeHref={shellHomeHref}>
         <BookingReceipt
           data={data}
           result={result}
@@ -1005,21 +1137,21 @@ export function PublicBooking({ slug }: { slug: string }) {
     );
 
   const titles = [
-    "Good days start with a lesson.",
+    "Good days start with a class.",
     "Your coach. Your kind of place.",
     "Make a little time for your game.",
     "Keep your bookings close.",
     "All set for your next good game?",
   ];
   const subtitles = [
-    "A little practice, a little progress, a whole lot of possibility. Find the right session for you.",
+    "A little practice, a little progress, a whole lot of possibility. Find the right class for you.",
     "Find your match, on and off the court. Choose where and who you’d like to play with.",
     "Pick a day and a time that fits. Availability is checked directly with your coach’s schedule.",
-    "Sign in or create an account here. Your selected lesson and time will stay right where they are.",
+    "Sign in or create an account here. Your selected class and time will stay right where they are.",
     "Take a moment to check the details. We’ll keep the rest simple.",
   ];
   return (
-    <PublicShell business={data.business}>
+    <PublicShell business={data.business} homeHref={shellHomeHref}>
       <main className="!mx-auto max-w-6xl px-4 pb-40 pt-5 sm:px-8 sm:pb-10 sm:pt-10">
         <div className="!mb-5 flex min-w-0 items-center gap-3 sm:!mb-8">
           <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-[#dce4d4] bg-[#eaf0df] text-sm font-semibold text-[#658051]">
@@ -1122,6 +1254,11 @@ export function PublicBooking({ slug }: { slug: string }) {
           <div className="min-w-0">
             {step === 0 && (
               <div className="space-y-3">
+                {packageNotice && (
+                  <div role="status" className={cn("rounded-xl border p-4 text-xs leading-relaxed", selectedPackage ? "border-[#d8e4cb] bg-[#edf5e4] text-[#567440]" : "border-[#eadfca] bg-[#fff9ec] text-[#7c6636]")}>
+                    {packageNotice}
+                  </div>
+                )}
                 {data.services.filter((value) => value.active).length === 0 ? (
                   <div className={cn(panel, "p-10 text-center")}>
                     <CircleDot
@@ -1130,7 +1267,7 @@ export function PublicBooking({ slug }: { slug: string }) {
                     />
                     <h2 className="!text-lg">Good things are on their way</h2>
                     <p className="!mt-2 text-sm leading-relaxed text-[#87927f]">
-                      There aren’t any lessons available to book yet. Please
+                      There aren’t any classes available to book yet. Please
                       check back soon.
                     </p>
                   </div>
@@ -1235,7 +1372,7 @@ export function PublicBooking({ slug }: { slug: string }) {
                           <div className="!mt-4 flex items-end justify-between gap-3 border-t border-[#eef1e9] pt-3.5 sm:!mt-5 sm:pt-4">
                             <span className="text-[10px] leading-snug text-[#8c9783] sm:text-[11px]">
                               {bookable
-                                ? "A little progress, every session"
+                                ? "A little progress, every class"
                                 : "Not currently available"}
                             </span>
                             <span className="shrink-0 text-lg font-semibold tracking-tight text-[#36543b]">
@@ -1249,7 +1386,7 @@ export function PublicBooking({ slug }: { slug: string }) {
                                 data.business.currency,
                               )}
                               <span className="ml-1 text-[10px] font-normal text-[#899581]">
-                                / session
+                                / class
                               </span>
                             </span>
                           </div>
@@ -1328,8 +1465,8 @@ export function PublicBooking({ slug }: { slug: string }) {
                   </div>
                   {eligibleLocations.length === 0 && (
                     <p className="text-sm text-[#83907b]">
-                      No locations are available for this lesson. Please choose
-                      another lesson.
+                      No locations are available for this class. Please choose
+                      another class.
                     </p>
                   )}
                 </section>
@@ -1590,15 +1727,26 @@ export function PublicBooking({ slug }: { slug: string }) {
                       </button>
                     ))}
                   </div>
-                  <div className="!mt-4 flex justify-between text-xs text-[#7e8f71]">
+                  <div className="!mt-4 flex justify-between gap-4 text-xs text-[#7e8f71]">
                     <span>
-                      {repeatWeeks} session{repeatWeeks > 1 ? "s" : ""} ×{" "}
-                      {money(price, data.business.currency)}
+                      {selectedPackage
+                        ? `${packageCreditLabel(packageCreditsNeeded)} from ${selectedPackage.name}`
+                        : `${repeatWeeks} session${repeatWeeks > 1 ? "s" : ""} × ${money(price, data.business.currency)}`}
                     </span>
-                    <span className="font-semibold text-[#3b5f3a]">
-                      {money(price * repeatWeeks, data.business.currency)}
+                    <span className="text-right font-semibold text-[#3b5f3a]">
+                      {selectedPackage
+                        ? packageCreditsEnough
+                          ? "Package applied"
+                          : `${packageCreditLabel(packageCreditsAvailable)} left`
+                        : money(price * repeatWeeks, data.business.currency)}
                     </span>
                   </div>
+                  {packageSummaryNote && (
+                    <div className="!mt-2 flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs leading-relaxed text-[#6c8064]">{packageSummaryNote}</p>
+                      {!packageCreditsEnough && <button type="button" className="text-xs font-semibold text-[#4f7048] underline underline-offset-2" onClick={useStandardPrice}>Use standard price instead</button>}
+                    </div>
+                  )}
                     </section>
                   </form>
                 )}
@@ -1617,14 +1765,14 @@ export function PublicBooking({ slug }: { slug: string }) {
                   <div className="grid gap-6 p-5 sm:grid-cols-2 sm:p-7">
                     <DetailRow
                       icon={<CircleDot size={18} />}
-                      title="Your lesson"
+                      title="Your class"
                     >
                       {service?.name}
                       <p className="text-xs text-[#8b9781]">
                         {duration} minutes ·{" "}
                         {service?.type === "GROUP"
-                          ? "Group session"
-                          : "Private session"}
+                          ? "Group class"
+                          : "Private class"}
                       </p>
                     </DetailRow>
                     <DetailRow
@@ -1717,12 +1865,18 @@ export function PublicBooking({ slug }: { slug: string }) {
                   )}
                   <div className="flex justify-between border-t border-[#edf0e8] px-5 py-5 sm:px-7">
                     <span className="text-sm text-[#7b8a70]">
-                      Total · {repeatWeeks} session{repeatWeeks > 1 ? "s" : ""}
+                      {packageSummaryTitle}
                     </span>
                     <span className="text-xl font-semibold tracking-tight text-[#315633]">
-                      {money(price * repeatWeeks, data.business.currency)}
+                      {packageSummaryValue}
                     </span>
                   </div>
+                  {packageSummaryNote && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#edf0e8] px-5 py-4 text-xs leading-relaxed text-[#6c8064] sm:px-7">
+                      <span>{packageSummaryNote}</span>
+                      {!packageCreditsEnough && <button type="button" className="font-semibold text-[#4f7048] underline underline-offset-2" onClick={useStandardPrice}>Use standard price instead</button>}
+                    </div>
+                  )}
                 </section>
                 <VenueNotice location={location} />
                 <section className={cn(panel, "p-5 sm:p-6")}>
@@ -1798,7 +1952,7 @@ export function PublicBooking({ slug }: { slug: string }) {
                 <button
                   type="button"
                   className={button}
-                  disabled={!agreed || saving}
+                  disabled={!agreed || saving || (!!selectedPackage && !packageCreditsEnough)}
                   onClick={() => void submit()}
                 >
                   {saving ? (
@@ -1841,7 +1995,7 @@ export function PublicBooking({ slug }: { slug: string }) {
                 </h2>
               </div>
               <div className="space-y-5 px-6 py-6">
-                <DetailRow icon={<CircleDot size={17} />} title="Lesson">
+                <DetailRow icon={<CircleDot size={17} />} title="Class">
                   {service?.name || (
                     <span className="text-[#a0aa95]">
                       Choose something you’ll love
@@ -1891,20 +2045,24 @@ export function PublicBooking({ slug }: { slug: string }) {
               <div className="border-t border-[#edf0e8] bg-[#fafbf7] px-6 py-5">
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-[#849077]">
-                    {repeatWeeks > 1
-                      ? `Total for ${repeatWeeks} sessions`
-                      : "Session total"}
+                    {selectedPackage
+                      ? packageSummaryTitle
+                      : repeatWeeks > 1
+                        ? `Total for ${repeatWeeks} sessions`
+                        : "Session total"}
                   </span>
                   <span className="text-2xl font-semibold tracking-tight text-[#385838]">
-                    {service
-                      ? money(price * repeatWeeks, data.business.currency)
-                      : "—"}
+                    {service ? packageSummaryValue : "—"}
                   </span>
                 </div>
                 <p className="!mt-2 text-[10px] leading-relaxed text-[#929d86]">
-                  {service && !mapping
-                    ? "Final price depends on your chosen location."
-                    : "Payment arranged directly with your coach."}
+                  {selectedPackage
+                    ? packageSummaryNote
+                    : service && !mapping
+                      ? "Final price depends on your chosen location."
+                      : data.business.kind === "CLUB"
+                        ? `Payment is payable to ${data.business.name}.`
+                        : "Payment is payable to your coach."}
                 </p>
               </div>
             </div>
@@ -1934,8 +2092,8 @@ export function PublicBooking({ slug }: { slug: string }) {
               </p>
               <p className="shrink-0 text-xs font-semibold text-[#253c31]">
                 {service
-                  ? money(price * repeatWeeks, data.business.currency)
-                  : "Select your lesson"}
+                  ? packageSummaryValue
+                  : "Select your class"}
               </p>
             </div>
             <div className="flex min-w-0 gap-2.5">
@@ -1963,7 +2121,7 @@ export function PublicBooking({ slug }: { slug: string }) {
                 <button
                   type="button"
                   className={cn(button, "!min-h-12 !min-w-0 !flex-1 !px-4")}
-                  disabled={!agreed || saving}
+                  disabled={!agreed || saving || (!!selectedPackage && !packageCreditsEnough)}
                   onClick={() => void submit()}
                 >
                   {saving ? (
@@ -2078,7 +2236,7 @@ function BookingReceipt({
           <VenueNotice location={location} />
           <div className="flex justify-between border-t border-[#edf0e7] pt-5">
             <span className="text-sm text-[#7e8d70]">
-              Total · pay your coach directly
+              Total · payable to {data.business.name}
             </span>
             <span className="text-xl font-semibold text-[#375833]">
               {money(
@@ -2092,8 +2250,9 @@ function BookingReceipt({
             </span>
           </div>
           <p className="text-[11px] leading-relaxed text-[#8d9881]">
-            No payment has been collected by Courtly. Please arrange payment
-            directly with {data.business.name}.
+            No payment was collected while making this booking. You can pay
+            {" "}{data.business.name} from My bookings using the simulated Stripe
+            checkout; no real card will be charged.
           </p>
         </div>
       </div>
@@ -2443,8 +2602,12 @@ export function StudentBookings({ slug }: { slug?: string }) {
               {money(item.participant.price ?? item.booking.price, item.business.currency)}
               <p className="text-xs text-[#89977d]">
                 {item.participant.paid
-                  ? "Marked paid by your coach"
-                  : "Payment arranged with your coach"}
+                  ? item.booking.paymentRoute === "CLUB"
+                    ? `Paid to ${item.business.name}`
+                    : "Paid to your coach"
+                  : item.booking.paymentRoute === "CLUB"
+                    ? `Payment payable to ${item.business.name}`
+                    : "Payment payable to your coach"}
               </p>
             </DetailRow>
             <DetailRow icon={<UserRound size={18} />} title="Booked for">

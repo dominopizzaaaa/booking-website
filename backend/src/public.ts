@@ -9,7 +9,7 @@ import { skipRateLimits } from './config.js';
 import { prisma } from './db.js';
 import { asyncRoute, HttpError } from './http.js';
 import { bookingInclude, bookingJson, publicBookingBusiness, publicInstructor, publicLocation, serviceJson } from './serializers.js';
-import { bookableInstructorWhere, createBookings, evaluateSlot, lockInstructors, publicBookingInput, refundParticipant, rescheduleBooking, schedulingContext } from './scheduling.js';
+import { assertWritableClubBooking, bookableInstructorWhere, createBookings, evaluateSlot, lockInstructors, publicBookingInput, refundParticipant, rescheduleBooking, schedulingContext } from './scheduling.js';
 import { createBookingAccountAlerts } from './account-notifications.js';
 import { notifyWorkspace } from './notifications.js';
 import { enqueueCalendarSync } from './calendar-sync.js';
@@ -31,7 +31,11 @@ const slotLimit = rateLimit({ windowMs: 5 * 60_000, limit: 180, standardHeaders:
 const legacyLookupLimit = rateLimit({ windowMs: 15 * 60_000, limit: 120, standardHeaders: 'draft-8', legacyHeaders: false, skip: skipRateLimits, message: { error: 'Too many management-link requests. Please try again later.' } });
 
 async function businessForSlug(slug: string) {
-  const business = await prisma.business.findUnique({ where: { slug } });
+  // Historical SOLO practices keep their contractual records, but the
+  // marketplace must never reopen them for new bookings.
+  const business = await prisma.business.findFirst({
+    where: { slug, kind: 'CLUB', legacyReadOnly: false },
+  });
   if (!business) throw new HttpError(404, 'Booking page not found');
   return business;
 }
@@ -59,6 +63,7 @@ publicRouter.get('/account/clubs', requireAuth, requireStudent, asyncRoute(async
     where: {
       kind: 'CLUB',
       isDemo: false,
+      legacyReadOnly: false,
       ...(cursor ? { slug: { gt: cursor } } : {}),
       services: { some: bookableServiceWhere },
     },
@@ -213,7 +218,9 @@ async function accountParticipant(participantId: string, userId: string) {
 }
 
 function canManageAccount(p: AccountParticipant) {
-  return !p.cancelledAt
+  return p.booking.paymentRoute === 'CLUB'
+    && p.booking.business.kind === 'CLUB' && !p.booking.business.legacyReadOnly
+    && !p.cancelledAt
     && !['CANCELLED', 'COMPLETED'].includes(p.booking.status)
     && p.booking.startAt.getTime() > Date.now()
     && p.booking.startAt.getTime() - Date.now() >= p.booking.business.cancellationHours * 3600_000;
@@ -224,6 +231,7 @@ function canManageAccount(p: AccountParticipant) {
  * notice, so it has its own window rather than reusing the cancellation one.
  */
 function canRequestReschedule(p: AccountParticipant) {
+  if (p.booking.paymentRoute !== 'CLUB' || p.booking.business.kind !== 'CLUB' || p.booking.business.legacyReadOnly) return false;
   if (p.cancelledAt || !['CONFIRMED', 'PENDING'].includes(p.booking.status)) return false;
   if (p.booking.coachAcceptance === 'PENDING') return false;
   const hours = rescheduleNoticeHours(p.booking.instructor, p.booking.business);
@@ -284,8 +292,9 @@ async function legacyParticipant(rawToken: string) {
   if (!participant) {
     // The private-token migration predates the SHA-256 runtime format and
     // stored md5(token || participant.id). Keep that one-way legacy format
-    // readable so links issued before account-only booking continue to work,
-    // then upgrade a successful match so later requests use the unique index.
+    // readable so links issued before account-only booking continue to work.
+    // Active CLUB rows can be upgraded to the indexed SHA-256 format, while
+    // retained SOLO/read-only rows must preserve their immutable history.
     const migratedMatches = await prisma.$queryRaw<Array<{ id: string; digest: string }>>`
       SELECT participant."id", participant."managementTokenHash" AS digest
       FROM "Participant" AS participant
@@ -298,14 +307,16 @@ async function legacyParticipant(rawToken: string) {
     if (migratedMatches.length > 1) throw new HttpError(404, 'Management link not found');
     const [migrated] = migratedMatches;
     if (migrated) {
-      await prisma.participant.updateMany({
-        where: { id: migrated.id, managementTokenHash: migrated.digest },
-        data: { managementTokenHash: currentDigest },
-      });
       participant = await prisma.participant.findUnique({
         where: { id: migrated.id },
         include: legacyParticipantInclude,
       });
+      if (participant?.booking.business.kind === 'CLUB' && !participant.booking.business.legacyReadOnly) {
+        await prisma.participant.updateMany({
+          where: { id: migrated.id, managementTokenHash: migrated.digest },
+          data: { managementTokenHash: currentDigest },
+        });
+      }
     }
   }
   if (!participant) throw new HttpError(404, 'Management link not found');
@@ -317,13 +328,16 @@ async function legacyParticipant(rawToken: string) {
 }
 
 function canManageLegacy(p: LegacyParticipant) {
-  return !p.cancelledAt
+  return p.booking.paymentRoute === 'CLUB'
+    && p.booking.business.kind === 'CLUB' && !p.booking.business.legacyReadOnly
+    && !p.cancelledAt
     && !['CANCELLED', 'COMPLETED'].includes(p.booking.status)
     && p.booking.startAt.getTime() > Date.now()
     && p.booking.startAt.getTime() - Date.now() >= p.booking.business.cancellationHours * 3600_000;
 }
 
 function canRescheduleLegacy(p: LegacyParticipant) {
+  if (p.booking.paymentRoute !== 'CLUB' || p.booking.business.kind !== 'CLUB' || p.booking.business.legacyReadOnly) return false;
   if (p.cancelledAt || !['CONFIRMED', 'PENDING'].includes(p.booking.status)) return false;
   if (p.booking.coachAcceptance === 'PENDING') return false;
   const hours = rescheduleNoticeHours(p.booking.instructor, p.booking.business);
@@ -374,6 +388,7 @@ publicRouter.post('/manage/:token/cancel', bookingLimit, asyncRoute(async (req, 
       where: { id: initial.id }, include: { student: true, booking: { include: { business: true } } },
     });
     if (participant.booking.instructorId !== initial.booking.instructorId) throw new HttpError(409, 'Session changed. Please refresh and try again');
+    assertWritableClubBooking(participant.booking);
     if (participant.cancelledAt || participant.booking.status === 'CANCELLED') return;
     if (participant.booking.status === 'COMPLETED' || participant.booking.startAt.getTime() <= Date.now()
       || participant.booking.startAt.getTime() - Date.now() < participant.booking.business.cancellationHours * 3600_000) {
@@ -404,6 +419,7 @@ publicRouter.post('/manage/:token/reschedule', bookingLimit, asyncRoute(async (r
       where: { id: initial.id }, include: { booking: { include: { business: true, instructor: true } } },
     });
     if (participant.booking.instructorId !== initial.booking.instructorId) throw new HttpError(409, 'Session changed. Please refresh and try again');
+    assertWritableClubBooking(participant.booking);
     if (participant.cancelledAt || !['CONFIRMED', 'PENDING'].includes(participant.booking.status)
       || participant.booking.startAt.getTime() <= Date.now()) {
       throw new HttpError(400, 'This booking is outside the self-service rescheduling window. Contact your coach.');
@@ -442,6 +458,7 @@ publicRouter.post('/account/bookings/:participantId/cancel', bookingLimit, requi
     });
     if (!participant) throw new HttpError(404, 'Booking not found');
     if (participant.booking.instructorId !== initial.booking.instructorId) throw new HttpError(409, 'Session changed. Please refresh and try again');
+    assertWritableClubBooking(participant.booking);
     if (participant.cancelledAt || participant.booking.status === 'CANCELLED') return;
     if (participant.booking.status === 'COMPLETED' || participant.booking.startAt.getTime() <= Date.now() || participant.booking.startAt.getTime() - Date.now() < participant.booking.business.cancellationHours * 3600_000) {
       throw new HttpError(400, `Cancellation requires ${participant.booking.business.cancellationHours} hours notice. Please contact your coach.`);

@@ -365,7 +365,10 @@ describe.sequential('database financial party and target invariants', () => {
         await tx.$executeRawUnsafe(`INSERT INTO "Payment" ("id","businessId","studentId","bookingId","amount","kind") VALUES ('deferred-receipt','club','student-b','booking-deferred',1000,'STUDENT_TO_CLUB')`);
         await tx.$executeRawUnsafe(`INSERT INTO "Participant" ("id","bookingId","studentId","price") VALUES ('deferred-participant','booking-deferred','student-b',1000)`);
       });
-      expect(await db.payment.findUnique({ where: { id: 'deferred-receipt' } })).not.toBeNull();
+      expect(await db.payment.findUnique({
+        where: { id: 'deferred-receipt' },
+        select: { id: true },
+      })).not.toBeNull();
 
       let insertCompleted = false;
       await expect(db.$transaction(async tx => {
@@ -373,7 +376,10 @@ describe.sequential('database financial party and target invariants', () => {
         insertCompleted = true;
       })).rejects.toThrow('Payment_bookingId_studentId_fkey');
       expect(insertCompleted).toBe(true);
-      expect(await db.payment.findUnique({ where: { id: 'missing-participant' } })).toBeNull();
+      expect(await db.payment.findUnique({
+        where: { id: 'missing-participant' },
+        select: { id: true },
+      })).toBeNull();
 
       await db.$transaction(async tx => {
         await tx.$executeRawUnsafe(`UPDATE "Participant" SET "packageId"='package-a' WHERE "id"='participant-a'`);

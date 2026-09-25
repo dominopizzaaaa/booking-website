@@ -344,7 +344,7 @@ describe.sequential('PostgreSQL booking transactions', () => {
     const pkg = await createPackage(f, owner.id);
     await expect(createBookings(f.business.id, inputFor(f, {
       studentId: student.id, student: undefined, packageId: pkg.id,
-    }))).rejects.toMatchObject({ status: 400, message: 'Package does not belong to this student or service' });
+    }))).rejects.toMatchObject({ status: 400, message: 'Package does not belong to this student or business' });
     expect(await tenantCounts(f.business.id)).toMatchObject({ bookings: 0, participants: 0, students: 2, notifications: 0 });
     expect(await prisma.lessonPackage.findUniqueOrThrow({ where: { id: pkg.id } })).toMatchObject({ usedCredits: 0 });
   });
@@ -355,7 +355,7 @@ describe.sequential('PostgreSQL booking transactions', () => {
     const pkg = await createPackage(f, student.id, { serviceId: differentService.id });
     await expect(createBookings(f.business.id, inputFor(f, {
       studentId: student.id, student: undefined, packageId: pkg.id,
-    }))).rejects.toMatchObject({ status: 400, message: 'Package does not belong to this student or service' });
+    }))).rejects.toMatchObject({ status: 400, message: 'Package does not cover this service' });
     expect(await tenantCounts(f.business.id)).toMatchObject({ bookings: 0, participants: 0, students: 1, notifications: 0 });
     expect(await prisma.lessonPackage.findUniqueOrThrow({ where: { id: pkg.id } })).toMatchObject({ usedCredits: 0 });
   });
@@ -543,7 +543,7 @@ describe.sequential('Global account authentication and workspace memberships', (
   it('requires clients to choose an account type explicitly', async () => {
     const email = randomUUID() + '@example.test';
     const response = await request(app).post('/api/auth/register').send({
-      name: 'Unspecified Account', email, password,
+      name: 'Unspecified Account', username: `unspecified_${randomUUID().slice(0, 8)}`, email, password,
     });
     expect(response.status).toBe(400);
     expect(await prisma.user.findUnique({ where: { email } })).toBeNull();
@@ -553,21 +553,22 @@ describe.sequential('Global account authentication and workspace memberships', (
     const email = randomUUID() + '@example.test';
     await request(app).post('/api/auth/register').send({
       accountType: 'CLUB', businessName: 'Strict Club', businessKind: 'SOLO',
-      name: 'Club Contact', email, password,
+      name: 'Club Contact', username: `strict_${randomUUID().slice(0, 8)}`, email, password,
     }).expect(400);
     expect(await prisma.user.findUnique({ where: { email } })).toBeNull();
   });
 
   it('registers a club identity with a selected affiliation and returns the workspace contract', async () => {
     const email = `${randomUUID()}@example.test`;
+    const username = `club_${randomUUID().slice(0, 8)}`;
     const agent = request.agent(app);
     const response = await agent.post('/api/auth/register').send({
       accountType: 'CLUB', businessName: 'Test New Academy', name: 'New Contact',
-      email: email.toUpperCase(), password,
+      username: username.toUpperCase(), email: email.toUpperCase(), password,
     });
     const registered = await trackRegistration(email);
     expect(response.status).toBe(201);
-    expect(response.body.user).toMatchObject({ name: 'Test New Academy', email, accountType: 'CLUB' });
+    expect(response.body.user).toMatchObject({ name: 'Test New Academy', username, email, accountType: 'CLUB' });
     expect(response.body.user).not.toHaveProperty('passwordHash');
     expect(response.body.membership).toMatchObject({ active: true });
     expect(response.body.memberships).toHaveLength(1);
@@ -590,7 +591,7 @@ describe.sequential('Global account authentication and workspace memberships', (
     // A club account is the club, so sign-up creates no coach for it: the
     // roster starts empty and the club adds real coach accounts to it.
     expect(workspace.body.instructors).toHaveLength(0);
-    await agent.patch('/api/auth/me').send({ name: 'A Person' }).expect(403);
+    await agent.patch('/api/auth/me').send({ name: 'A Person' }).expect(400);
     await agent.post('/api/auth/switch-workspace').send({ membershipId: response.body.membership.id }).expect(403);
     await agent.patch('/api/business').send({ kind: 'SOLO' }).expect(400);
     const renamed = await agent.patch('/api/business').send({ name: 'Renamed Academy' }).expect(200);
@@ -602,9 +603,10 @@ describe.sequential('Global account authentication and workspace memberships', (
   it.each(['COACH', 'STUDENT'] as const)(
     'registers a standalone %s account but denies workspace access without a membership', async accountType => {
       const email = `${accountType.toLowerCase()}-${randomUUID()}@example.test`;
+      const username = `${accountType.toLowerCase()}_${randomUUID().slice(0, 8)}`;
       const agent = request.agent(app);
       const response = await agent.post('/api/auth/register').send({
-        accountType, name: `${accountType} Account`, email, password,
+        accountType, name: `${accountType} Account`, username, email, password,
       }).expect(201);
       await trackRegistration(email);
       expect(response.body).toMatchObject({
