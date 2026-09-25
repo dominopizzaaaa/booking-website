@@ -457,6 +457,7 @@ test('the account page redirects anonymous visitors to sign in and students to s
     memberships: [],
   };
   await page.route('**/api/auth/me', route => route.fulfill({ json: studentSession }));
+  await page.route('**/api/account/clubs*', route => route.fulfill({ json: { clubs: [] } }));
   await page.route('**/api/account/bookings*', route => route.fulfill({ json: { bookings: [] } }));
   await page.route('**/api/account/notifications', route => route.fulfill({ json: { notifications: [] } }));
 

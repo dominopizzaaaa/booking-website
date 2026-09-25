@@ -90,3 +90,13 @@ export type AccountBooking = {
   management?: { cancellationHours: number; rescheduleNoticeHours?: number; reminders?: string; venueReserved?: boolean };
 };
 export type AccountBookingsResult = { bookings: AccountBooking[] };
+export type StudentClubDirectoryEntry = {
+  business: PublicBookingBusiness & { kind: 'CLUB' };
+  sports: string[];
+  serviceCount: number;
+  coachCount: number;
+  locationCount: number;
+  priceFrom: number;
+};
+export type StudentClubDirectoryResult = { clubs: StudentClubDirectoryEntry[] };
+export type StudentClubDirectoryPage = StudentClubDirectoryResult & { nextCursor?: string | null };

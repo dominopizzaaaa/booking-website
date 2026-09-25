@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  ApiError, adminBusinesses, api, cancelAccountBooking, loadAccountBookings,
+  ApiError, adminBusinesses, api, cancelAccountBooking, loadAccountBookings, loadAccountClubs,
   loadSlots, loadWorkspace, respondToRescheduleRequest, reversePayment, searchVenues,
 } from '../src/lib/api';
 import { isCoachClubWorkspace, isManagerWorkspace, type WorkspaceResponse } from '../src/lib/types';
@@ -17,6 +17,21 @@ function respond(body: unknown, init: { status?: number; contentType?: string | 
       ok: (init.status ?? 200) < 400,
       status: init.status ?? 200,
       headers: { get: (name: string) => (name.toLowerCase() === 'content-type' ? contentType : null) },
+      json: async () => body,
+    };
+  }));
+}
+
+function respondSequence(bodies: unknown[]) {
+  let index = 0;
+  calls = [];
+  vi.stubGlobal('fetch', vi.fn(async (url: string, requestInit: RequestInit = {}) => {
+    calls.push({ url, init: requestInit });
+    const body = bodies[index++];
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null) },
       json: async () => body,
     };
   }));
@@ -155,6 +170,71 @@ describe('loadAccountBookings', () => {
     respond({ bookings: [] });
     await loadAccountBookings('marcus-tan-tennis');
     expect(calls[0].url).toBe('/api/account/bookings?businessSlug=marcus-tan-tennis');
+  });
+});
+
+describe('loadAccountClubs', () => {
+  it('accepts the one-page response used during a rolling deployment', async () => {
+    respond({
+      clubs: [{
+        business: { name: 'Centre Court', slug: 'centre-court', kind: 'CLUB' },
+        sports: ['Tennis'],
+        serviceCount: 3,
+        coachCount: 2,
+        locationCount: 1,
+        priceFrom: 4500,
+      }],
+    });
+
+    const result = await loadAccountClubs();
+
+    expect(result.clubs).toHaveLength(1);
+    expect(result.clubs[0]).toMatchObject({
+      business: { slug: 'centre-court', kind: 'CLUB' },
+      sports: ['Tennis'],
+      priceFrom: 4500,
+    });
+    expect(calls[0].url).toBe('/api/account/clubs?limit=50');
+  });
+
+  it('loads every page and returns the complete directory in display order', async () => {
+    respondSequence([
+      {
+        clubs: [{
+          business: { name: 'Zulu Club', slug: 'zulu-club', kind: 'CLUB' },
+          sports: ['Tennis'], serviceCount: 1, coachCount: 1, locationCount: 1, priceFrom: 5000,
+        }],
+        nextCursor: 'zulu club/first',
+      },
+      {
+        clubs: [{
+          business: { name: 'Alpha Club', slug: 'alpha-club', kind: 'CLUB' },
+          sports: ['Badminton'], serviceCount: 1, coachCount: 1, locationCount: 1, priceFrom: 4000,
+        }],
+        nextCursor: null,
+      },
+    ]);
+
+    const result = await loadAccountClubs();
+
+    expect(result.clubs.map((club) => club.business.name)).toEqual(['Alpha Club', 'Zulu Club']);
+    expect(calls.map((call) => call.url)).toEqual([
+      '/api/account/clubs?limit=50',
+      '/api/account/clubs?cursor=zulu+club%2Ffirst&limit=50',
+    ]);
+  });
+
+  it('rejects a repeated page cursor instead of looping forever', async () => {
+    respondSequence([
+      { clubs: [], nextCursor: 'same-cursor' },
+      { clubs: [], nextCursor: 'same-cursor' },
+    ]);
+
+    await expect(loadAccountClubs()).rejects.toMatchObject({
+      message: 'The club directory returned an invalid page. Please try again.',
+      status: 502,
+    });
+    expect(calls).toHaveLength(2);
   });
 });
 
