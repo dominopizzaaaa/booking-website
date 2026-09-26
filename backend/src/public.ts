@@ -13,6 +13,7 @@ import { assertWritableClubBooking, bookableInstructorWhere, createBookings, eva
 import { createBookingAccountAlerts } from './account-notifications.js';
 import { notifyWorkspace } from './notifications.js';
 import { enqueueCalendarSync } from './calendar-sync.js';
+import { noteStudentLeft } from './chat-events.js';
 import {
   acceptRescheduleRequest,
   assertInsideRescheduleWindow,
@@ -399,6 +400,7 @@ publicRouter.post('/manage/:token/cancel', bookingLimit, asyncRoute(async (req, 
     const remaining = await tx.participant.count({ where: { bookingId: participant.bookingId, cancelledAt: null } });
     if (!remaining) await tx.booking.update({ where: { id: participant.bookingId }, data: { status: 'CANCELLED' } });
     await enqueueCalendarSync(tx, participant.bookingId);
+    await noteStudentLeft(tx, participant.bookingId, participant.student);
     await notifyWorkspace(tx, {
       businessId: participant.booking.businessId, instructorId: participant.booking.instructorId,
       bookingId: participant.bookingId, type: 'CANCELLATION', actionNeeded: true,
@@ -454,7 +456,7 @@ publicRouter.post('/account/bookings/:participantId/cancel', bookingLimit, requi
     await lockInstructors(tx, [initial.booking.instructorId]);
     const participant = await tx.participant.findFirst({
       where: { id: initial.id, student: { userId: req.auth.user.id } },
-      include: { booking: { include: { business: true } } },
+      include: { student: true, booking: { include: { business: true } } },
     });
     if (!participant) throw new HttpError(404, 'Booking not found');
     if (participant.booking.instructorId !== initial.booking.instructorId) throw new HttpError(409, 'Session changed. Please refresh and try again');
@@ -468,6 +470,7 @@ publicRouter.post('/account/bookings/:participantId/cancel', bookingLimit, requi
     const remaining = await tx.participant.count({ where: { bookingId: participant.bookingId, cancelledAt: null } });
     if (!remaining) await tx.booking.update({ where: { id: participant.bookingId }, data: { status: 'CANCELLED' } });
     await enqueueCalendarSync(tx, participant.bookingId);
+    await noteStudentLeft(tx, participant.bookingId, participant.student);
     await notifyWorkspace(tx, { businessId: participant.booking.businessId, instructorId: participant.booking.instructorId, bookingId: participant.bookingId, type: 'CANCELLATION', actionNeeded: true, title: 'Student cancelled a booking', message: 'The student cancelled through their account. Any consumed package credit was restored. Cancellation notice queued; no external message sent.' });
     await createBookingAccountAlerts(tx, participant.bookingId, 'STUDENT_CANCELLED', [req.auth.user.id]);
   });

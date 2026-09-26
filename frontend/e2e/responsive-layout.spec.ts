@@ -103,7 +103,7 @@ test.describe('every screen fits the screen it is on', () => {
     await expect(page.getByRole('heading', { name: /Your day, in a good place/ })).toBeVisible({ timeout: 45_000 });
     await checkScreen(page, isPhone);
 
-    for (const tab of ['Explore', 'Alerts', 'Profile'] as const) {
+    for (const tab of ['Explore', 'Chat', 'Profile'] as const) {
       const navigation = isPhone
         ? page.getByRole('navigation', { name: 'Mobile navigation' })
         : page.getByRole('navigation', { name: 'Primary' });
@@ -111,6 +111,10 @@ test.describe('every screen fits the screen it is on', () => {
       await expect(page).toHaveURL(new RegExp(`tab=${tab.toLowerCase()}`));
       await checkScreen(page, isPhone);
     }
+    // Alerts sit behind the bell in the top bar at every width.
+    await page.getByRole('banner').getByRole('button', { name: /^Alerts/ }).click();
+    await expect(page).toHaveURL(/tab=alerts/);
+    await checkScreen(page, isPhone);
 
     expect(errors).toEqual([]);
   });

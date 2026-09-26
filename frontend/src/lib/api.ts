@@ -12,6 +12,10 @@ import {
   type CalendarConnectionStatus,
   type CalendarPreferences,
   type CalendarReturnTo,
+  type ChatProposalAction,
+  type ChatThreadDetail,
+  type ChatThreadList,
+  type ChatMessage,
   type CheckoutInput,
   type CheckoutResult,
   type IntegrityFlag,
@@ -321,8 +325,47 @@ export const resolveIntegrityFlag = (id: string, status: IntegrityFlag['status']
   });
 export const mutate = <T = unknown>(path: string, method: 'POST' | 'PATCH' | 'DELETE', values?: unknown) => api<T>(path, { method, body: values ? JSON.stringify(values) : undefined });
 
+// Session chat belongs to the signed-in account, not a selected workspace,
+// so the same calls serve students, coaches and club accounts.
+const chatListQuery = (params: { q?: string; cursor?: string }) => {
+  const query = new URLSearchParams();
+  if (params.q?.trim()) query.set('q', params.q.trim());
+  if (params.cursor) query.set('cursor', params.cursor);
+  return query.size ? `?${query}` : '';
+};
+const threadQuery = (before?: string) => before ? `?${new URLSearchParams({ before })}` : '';
+export const loadChatThreads = (params: { q?: string; cursor?: string } = {}) =>
+  api<ChatThreadList>(`/chats${chatListQuery(params)}`);
+export const loadChatUnread = () => api<{ unreadThreads: number }>('/chats/unread');
+export const openBookingChat = (bookingId: string) =>
+  api<{ threadId: string }>(`/chats/bookings/${encodeURIComponent(bookingId)}`, { method: 'POST', body: JSON.stringify({}) });
+export const loadChatThread = (threadId: string, before?: string) =>
+  api<ChatThreadDetail>(`/chats/${encodeURIComponent(threadId)}${threadQuery(before)}`);
+export const sendChatMessage = (threadId: string, body: string) =>
+  api<{ message: ChatMessage }>(`/chats/${encodeURIComponent(threadId)}/messages`, { method: 'POST', body: JSON.stringify({ body }) });
+export const markChatRead = (threadId: string) =>
+  api<{ ok: true; unreadThreads: number }>(`/chats/${encodeURIComponent(threadId)}/read`, { method: 'POST', body: JSON.stringify({}) });
+export const proposeChatSession = (threadId: string, startAt: string, message = '') =>
+  api<{ thread: ChatThreadDetail }>(`/chats/${encodeURIComponent(threadId)}/proposals`, {
+    method: 'POST', body: JSON.stringify({ startAt, message }),
+  });
+export const respondToChatProposal = (proposalId: string, action: ChatProposalAction, message = '') =>
+  api<{ thread: ChatThreadDetail; bookingId?: string }>(`/chats/proposals/${encodeURIComponent(proposalId)}/${action}`, {
+    method: 'POST', body: JSON.stringify(action === 'decline' && message ? { message } : {}),
+  });
+export const counterChatProposal = (proposalId: string, startAt: string, message = '') =>
+  api<{ thread: ChatThreadDetail; proposalId: string }>(`/chats/proposals/${encodeURIComponent(proposalId)}/counter`, {
+    method: 'POST', body: JSON.stringify({ startAt, message }),
+  });
+export const adminChatThreads = (params: { q?: string; cursor?: string } = {}) =>
+  api<ChatThreadList>(`/admin/chats${chatListQuery(params)}`);
+export const adminChatThread = (threadId: string, before?: string) =>
+  api<ChatThreadDetail>(`/admin/chats/${encodeURIComponent(threadId)}${threadQuery(before)}`);
+
 export type AdminSession = { configured: boolean; authenticated: boolean };
-export type AdminTotals = { businesses: number; demoBusinesses: number; realBusinesses: number; users: number; memberships: number; students: number; bookings: number; upcomingBookings: number; bookingsLast7Days: number; packages: number; paymentsCount: number; paymentsTotal: number };
+export type AdminTotals = { businesses: number; demoBusinesses: number; realBusinesses: number; users: number; memberships: number; students: number; bookings: number; upcomingBookings: number; bookingsLast7Days: number; packages: number; paymentsCount: number; paymentsTotal: number;
+  /** Optional while an older API without session chat may still answer. */
+  chatThreads?: number; chatMessages?: number };
 export type AdminOverview = { generatedAt: string; totals: AdminTotals };
 export type AdminBusinessCounts = { users: number; students: number; bookings: number; locations: number; services: number; instructors: number };
 export type AdminBusiness = { id: string; name: string; slug: string; ownerName: string; email: string; currency: string; timezone: string; isDemo: boolean; createdAt: string; counts: AdminBusinessCounts };

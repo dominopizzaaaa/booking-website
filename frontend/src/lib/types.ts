@@ -202,3 +202,45 @@ export type RentalLocationSaveInput = {
 };
 export type RentalLocationSaveResult = { location: Location; rental: RentalDetail; replay: boolean };
 export type AccountDirectoryUser = Pick<AccountUser, 'name' | 'accountType'> & { username: string; sports: string[] };
+
+/** Session chat. Membership is derived from the booking on the server. */
+export type ChatRole = 'STUDENT' | 'COACH' | 'CLUB';
+export type ChatViewerRole = ChatRole | 'ADMIN';
+export type ChatMember = { role: ChatRole; name: string; isYou: boolean };
+export type ChatSession = {
+  bookingId: string; serviceId: string; instructorId: string; locationId: string;
+  serviceName: string; type: 'PRIVATE' | 'GROUP'; status: Status; startAt: string; endAt: string;
+  locationName: string; instructorName: string; businessName: string; businessSlug: string; timezone: string;
+};
+export type SessionProposalStatus = 'OPEN' | 'ACCEPTED' | 'DECLINED' | 'COUNTERED' | 'WITHDRAWN' | 'CLOSED' | 'EXPIRED';
+export type SessionProposalResponse = {
+  studentName: string; status: 'ACCEPTED' | 'DECLINED' | 'COUNTERED';
+  forYou: boolean; byYou: boolean; bookingId: string | null; createdAt: string;
+};
+export type SessionProposal = {
+  id: string; status: SessionProposalStatus; startAt: string; endAt: string; timezone: string;
+  serviceName: string; locationName: string; instructorName: string;
+  proposedByRole: 'STUDENT' | 'COACH'; proposedByName: string; proposedByYou: boolean;
+  /** Null when a coach asked a whole group; each student answers for themselves. */
+  forName: string | null; forYou: boolean; isCounter: boolean; message: string; createdAt: string;
+  awaiting: string[]; responses: SessionProposalResponse[];
+  actions: { accept: boolean; decline: boolean; counter: boolean; withdraw: boolean };
+};
+export type ChatMessage = {
+  id: string; kind: 'TEXT' | 'SYSTEM' | 'PROPOSAL'; event: string | null; senderRole: ChatRole | 'SYSTEM';
+  senderName: string; body: string; createdAt: string; mine: boolean; proposalId: string | null;
+  proposal?: SessionProposal | null;
+};
+export type ChatThreadSummary = {
+  id: string; bookingId: string; lastMessageAt: string; session: ChatSession; members: ChatMember[];
+  lastMessage: ChatMessage | null; unreadCount: number;
+  /** Present only in the platform admin listing. */
+  messageCount?: number;
+};
+export type ChatThreadList = { threads: ChatThreadSummary[]; nextCursor: string | null; unreadThreads?: number };
+export type ChatThreadDetail = {
+  id: string; bookingId: string; lastMessageAt: string; session: ChatSession; members: ChatMember[];
+  viewer: { role: ChatViewerRole; canPost: boolean; canPropose: boolean };
+  messages: ChatMessage[]; hasEarlier: boolean;
+};
+export type ChatProposalAction = 'accept' | 'decline' | 'withdraw';

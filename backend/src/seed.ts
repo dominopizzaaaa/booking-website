@@ -2,6 +2,7 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { DateTime } from 'luxon';
+import { chatOpeningLine, chatWhen } from './chat-events.js';
 
 export type SeedBusinessOptions = {
   slug?: string;
@@ -380,6 +381,7 @@ async function populateBusiness(
   await tx.booking.createMany({ data: bookings });
   await tx.participant.createMany({ data: participants });
   await tx.payment.createMany({ data: payments });
+  await seedSessionChats(tx, { businessId, businessName: business.name, clubUserId: clubAccount.id, now, bookings, participants, students, services, instructors, locations });
   const notifications: Prisma.NotificationCreateManyInput[] = [
     { businessId, instructorId: instructors[0].id, title: 'Your week is ready', message: 'Your lessons, students and payments are together in Courtly. All times are shown in Asia/Singapore.', read: true, createdAt: now.minus({ hours: 3 }).toJSDate() },
     { businessId, title: 'Payments are up to date', message: `${payments.length} sample payment records are on the books. Unpaid lessons and unpaid packages remain visible for follow-up.`, read: true, createdAt: now.minus({ hours: 2 }).toJSDate() },
@@ -403,4 +405,96 @@ async function populateBusiness(
   }
   await tx.notification.createMany({ data: notifications });
   return { business, clubAccount, clubMembership };
+}
+
+type SeedChatContext = {
+  businessId: string;
+  businessName: string;
+  clubUserId: string;
+  now: DateTime;
+  bookings: Prisma.BookingCreateManyInput[];
+  participants: Prisma.ParticipantCreateManyInput[];
+  students: Array<{ id: string; userId: string; name: string }>;
+  services: Array<{ id: string; name: string }>;
+  instructors: Array<{ id: string; name: string }>;
+  locations: Array<{ id: string; name: string }>;
+};
+
+/**
+ * Every seeded session has its chat, as a booked session would. The next
+ * private lesson and junior group already hold a conversation, and the lesson
+ * carries an open next-session proposal, so a demo shows the whole flow.
+ */
+async function seedSessionChats(tx: Prisma.TransactionClient, context: SeedChatContext) {
+  const { businessId, now } = context;
+  const name = <T extends { id: string; name: string }>(items: T[], id: string) => items.find(item => item.id === id)!.name;
+  const threads = context.bookings.map(booking => ({
+    id: randomUUID(), businessId, bookingId: booking.id!,
+    createdAt: booking.createdAt as Date, lastMessageAt: booking.createdAt as Date,
+  }));
+  await tx.chatThread.createMany({ data: threads });
+  const messages: Prisma.ChatMessageCreateManyInput[] = threads.map((thread, index) => {
+    const booking = context.bookings[index];
+    return {
+      threadId: thread.id, kind: 'SYSTEM', event: 'OPENED', senderRole: 'SYSTEM', createdAt: thread.createdAt,
+      body: chatOpeningLine({
+        serviceName: name(context.services, booking.serviceId), instructorName: name(context.instructors, booking.instructorId),
+        locationName: name(context.locations, booking.locationId), startAt: booking.startAt as Date, timezone,
+      }),
+    };
+  });
+  const upcoming = (serviceId: string) => context.bookings.find(booking => booking.serviceId === serviceId
+    && booking.status === 'CONFIRMED' && (booking.startAt as Date) > now.plus({ hours: 3 }).toJSDate());
+  const studentsIn = (bookingId: string) => context.participants
+    .filter(participant => participant.bookingId === bookingId)
+    .map(participant => context.students.find(student => student.id === participant.studentId)!);
+  const threadFor = (bookingId: string) => threads.find(thread => thread.bookingId === bookingId)!;
+  const coachAccount = (instructorId: string) => ({ userId: `seed-instructor-${instructorId}`, name: name(context.instructors, instructorId) });
+  const say = (threadId: string, minutesAgo: number, sender: { userId: string; name: string; role: 'STUDENT' | 'COACH' | 'CLUB' }, body: string) => {
+    const createdAt = now.minus({ minutes: minutesAgo }).toJSDate();
+    messages.push({ threadId, kind: 'TEXT', senderUserId: sender.userId, senderRole: sender.role, senderName: sender.name, body, createdAt });
+    return createdAt;
+  };
+
+  const lesson = upcoming(context.services[0].id);
+  const lessonStudent = lesson ? studentsIn(lesson.id!)[0] : undefined;
+  if (lesson && lessonStudent) {
+    const thread = threadFor(lesson.id!);
+    const coach = { ...coachAccount(lesson.instructorId), role: 'COACH' as const };
+    const student = { userId: lessonStudent.userId, name: lessonStudent.name, role: 'STUDENT' as const };
+    const firstName = lessonStudent.name.split(' ')[0];
+    say(thread.id, 150, coach, `Hi ${firstName}! Looking forward to our lesson. We'll keep building that second serve, so bring a spare racket if you have one.`);
+    say(thread.id, 140, student, 'Will do, thanks coach! Could we also spend a few minutes on returns?');
+    say(thread.id, 136, coach, 'Absolutely. Shall we keep the same time next week as well?');
+    const startAt = DateTime.fromJSDate(lesson.startAt as Date).plus({ weeks: 1 });
+    const proposalId = randomUUID();
+    await tx.sessionProposal.create({ data: {
+      id: proposalId, businessId, threadId: thread.id, serviceId: lesson.serviceId, instructorId: lesson.instructorId,
+      locationId: lesson.locationId, address: lesson.address ?? '', startAt: startAt.toJSDate(),
+      endAt: startAt.plus({ minutes: lesson.duration }).toJSDate(), proposedByRole: 'COACH',
+      proposedByUserId: coach.userId, proposedByName: coach.name, targetStudentUserId: student.userId,
+      targetStudentName: student.name, createdAt: now.minus({ minutes: 135 }).toJSDate(),
+    } });
+    messages.push({
+      threadId: thread.id, kind: 'PROPOSAL', senderUserId: coach.userId, senderRole: 'COACH', senderName: coach.name,
+      proposalId, createdAt: now.minus({ minutes: 135 }).toJSDate(),
+      body: `${coach.name} proposed the next session: ${name(context.services, lesson.serviceId)} on ${chatWhen(startAt.toJSDate(), timezone)}.`,
+    });
+    thread.lastMessageAt = now.minus({ minutes: 135 }).toJSDate();
+  }
+
+  const group = upcoming(context.services[1].id);
+  const groupStudents = group ? studentsIn(group.id!) : [];
+  if (group && groupStudents.length) {
+    const thread = threadFor(group.id!);
+    const coach = { ...coachAccount(group.instructorId), role: 'COACH' as const };
+    say(thread.id, 95, coach, 'Hi everyone! Please bring water, a junior racket and non-marking shoes. We will finish with a mini doubles tournament.');
+    say(thread.id, 80, { userId: groupStudents[0].userId, name: groupStudents[0].name, role: 'STUDENT' }, 'Thank you Coach! See you there.');
+    thread.lastMessageAt = say(thread.id, 60, { userId: context.clubUserId, name: context.businessName, role: 'CLUB' }, 'Courts 1 and 2 at Kallang are set aside for the junior group this week.');
+  }
+
+  await tx.chatMessage.createMany({ data: messages });
+  for (const thread of threads.filter(candidate => candidate.lastMessageAt.getTime() !== candidate.createdAt.getTime())) {
+    await tx.chatThread.update({ where: { id: thread.id }, data: { lastMessageAt: thread.lastMessageAt } });
+  }
 }

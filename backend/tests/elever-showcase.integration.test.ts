@@ -43,6 +43,7 @@ function singaporeDate(value: Date) {
 const applicationTables = [
   'AccountNotification', 'CalendarBusyInterval', 'CalendarEventProjection', 'CalendarOAuthAttempt',
   'CalendarRevocationJob', 'CalendarSyncJob', 'CalendarConnection', 'AuthSession', 'Availability',
+  'ChatMessage', 'ChatReadState', 'ChatThread', 'SessionProposal', 'SessionProposalResponse',
   'AvailabilityException', 'Booking', 'Business', 'Instructor', 'IntegrityFlag', 'LessonPackage',
   'LessonPackageLocation', 'LessonPackageService', 'Location', 'Membership', 'Notification', 'PackageOffer',
   'PackageOfferLocation', 'PackageOfferService', 'Participant', 'Payment', 'PaymentIntent', 'RescheduleRequest',
@@ -337,6 +338,8 @@ describe.sequential('Elever showcase provisioner integration', () => {
     expect(Object.fromEntries(applicationTables.map(table => [table, counts[table].count]))).toEqual({
       AccountNotification: 2, CalendarBusyInterval: 0, CalendarEventProjection: 0, CalendarOAuthAttempt: 0,
       CalendarRevocationJob: 0, CalendarSyncJob: 0, CalendarConnection: 0, AuthSession: 0, Availability: 14,
+      // Session chats open when someone first uses them or a reminder is due.
+      ChatMessage: 0, ChatReadState: 0, ChatThread: 0, SessionProposal: 0, SessionProposalResponse: 0,
       AvailabilityException: 0, Booking: 39, Business: 1, Instructor: 2, IntegrityFlag: 1, LessonPackage: 2,
       LessonPackageLocation: 1, LessonPackageService: 3, Location: 2, Membership: 3, Notification: 4,
       PackageOffer: 3, PackageOfferLocation: 2, PackageOfferService: 3, Participant: 138, Payment: 110,

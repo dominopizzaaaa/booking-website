@@ -7,6 +7,7 @@ import { createBookingAccountAlerts } from './account-notifications.js';
 import { assertWritableClubBooking, evaluateSlot, lockInstructors, schedulingContext } from './scheduling.js';
 import { bookingInclude, bookingJson } from './serializers.js';
 import { enqueueCalendarSync } from './calendar-sync.js';
+import { noteSessionMoved } from './chat-events.js';
 
 type Tx = Prisma.TransactionClient;
 
@@ -330,6 +331,7 @@ export async function acceptRescheduleRequest(
     booking.participants.map(p => p.student.userId),
   );
   await enqueueCalendarSync(tx, booking.id);
+  await noteSessionMoved(tx, booking.id);
   return {
     outcome: 'ACCEPTED' as const,
     request: await loadRequest(tx, request.id),

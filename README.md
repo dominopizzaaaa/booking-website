@@ -4,7 +4,7 @@ Courtly is a full-stack booking platform for coaching businesses. This repositor
 
 [![CI](https://github.com/dominopizzaaaa/booking-website/actions/workflows/ci.yml/badge.svg)](https://github.com/dominopizzaaaa/booking-website/actions/workflows/ci.yml)
 
-Courtly includes global student and coach accounts with public usernames and sport profiles, dedicated club accounts, portable coach affiliations, multi-location and coach-aware availability, travel and preparation buffers, private and capacity-limited Classes, atomic recurring bookings, pending venue approval, account-backed student booking and self-service, personal Google Calendar sync, package offers, owned-venue court rentals, simulated Stripe checkout, manual payment records, attendance, student/parent details, coach rosters, and responsive business workspaces. Defaults are SGD and Asia/Singapore.
+Courtly includes global student and coach accounts with public usernames and sport profiles, dedicated club accounts, portable coach affiliations, multi-location and coach-aware availability, travel and preparation buffers, private and capacity-limited Classes, atomic recurring bookings, pending venue approval, account-backed student booking and self-service, session chat with next-session proposals, personal Google Calendar sync, package offers, owned-venue court rentals, simulated Stripe checkout, manual payment records, attendance, student/parent details, coach rosters, and responsive business workspaces. Defaults are SGD and Asia/Singapore.
 
 It also covers how a club and its coaches actually work together: a club assigns a student to a coach and the coach accepts before the class is confirmed; either side proposes a new time and the other agrees before a session moves; classes, package purchases, and venue rentals are paid to the club, which then records what it pays each coach; and a club is told when historical records show that a coach and a student it introduced trained privately outside it.
 
@@ -33,6 +33,17 @@ All new commercial activity belongs to a `CLUB` workspace. Every class booking s
 A recorded payment can be reversed. The record stays in the ledger marked as reversed, and the class or package returns to unpaid, so a correction is visible rather than silent. An eligible rental cancellation restores its package credit exactly once, or marks a paid reservation refunded and reverses the linked student payment.
 
 Because a club invests in introducing its coaches to its students, Courtly flags it to the club when a coach and a student who train together through that club also book privately outside it. Courtly reports; it does not block the booking, and it does not tell the coach or the student. The club records what it found and closes the flag.
+
+## Session chat
+
+Every booked Class has its own chat, whether it is a 1-1 lesson or a group. Its members come from the booking itself: the coach, every student who holds a place, and the club account, because every Class belongs to a club. In both apps Chat takes the tab-bar slot Alerts used to hold; Alerts moved to the bell at the top right, the way a notifications heart sits above a feed.
+
+- **Reminders.** A day before each confirmed session, Courtly posts a reminder into its chat. A session that moves is reminded again for its new time. The reminder worker runs inside the backend process alongside the Calendar worker.
+- **Planning the next session.** In any chat, a coach or a student presses **+**, picks a date and one of the coach's available times, and sends a proposal card. The other side answers with **Accept**, **Decline**, or **Edit**. Edit answers with a new time that travels back the other way, so the person who asked first presses Accept to confirm it. In a group, a coach's proposal goes to every student and each answers for themselves; a student's proposal is answered by the coach. The club reads along and messages, but does not propose or answer.
+- **Calendar.** Accepting books a normal Class for that student under the club, re-checking availability at that moment. It appears in the student's bookings and the club and coach calendars immediately, and — like every confirmed Class — is projected to any connected Google Calendar. A venue that needs approval keeps it pending until the club secures it.
+- **Privacy.** Messages are visible to the session's members and to the platform admin console, and each chat says so. The API never sends account IDs to the browser; it tells each reader which messages and proposals are their own.
+
+Chat updates by polling while the page is visible; there is no push delivery, email, or SMS.
 
 ## Google Calendar
 
@@ -201,7 +212,7 @@ For encryption-key rotation, add the new `keyId:base64` entry to `CALENDAR_TOKEN
   control-file error is different: have the database administrator enable
   `btree_gist`, resolve the failed prerequisite migration, and retry.
 - Set `DEMO_ENABLED=false` when public demo creation is not wanted. Global student, coach, and club account registration and sign-in remain available.
-- Keep at least one backend instance running when Calendar is enabled because its asynchronous worker runs in the API process. A user-visible Calendar delay does not mean the Courtly booking failed; inspect worker/provider state before replaying a booking mutation.
+- Keep at least one backend instance running: the day-before chat reminders and, when Calendar is enabled, the Calendar worker both run in the API process. Several instances are safe; each reminder is a single locked decision. A user-visible Calendar delay does not mean the Courtly booking failed; inspect worker/provider state before replaying a booking mutation.
 - To create an initial known club deliberately, run the Railway service's `npm run seed` command once with strong `SEED_CLUB_PASSWORD`, `SEED_CLUB_EMAIL`, `SEED_BUSINESS_NAME`, and `SEED_BUSINESS_SLUG` variables. The seed is idempotent for an existing slug and is not part of deployment.
 - Check the Railway health endpoint after releases. It returns `503` if PostgreSQL cannot be reached.
 - Treat Railway and Vercel environment changes as production changes. Never copy the generated `DATABASE_URL` into GitHub, Vercel, or committed files; only the backend needs database access.
@@ -212,7 +223,8 @@ Courtly ships a platform admin console at `/admin`, separate from `STUDENT`, `CO
 
 - Set `ADMIN_PASSWORD` in the Railway API service to a long, random secret, then redeploy. Leaving it unset disables `/admin` (the page shows a "not configured" notice and every admin API returns `401`/`503`).
 - Visit `https://YOUR-FRONTEND-DOMAIN/admin`, enter the password, and you get a platform overview (businesses, students, bookings, payments) plus a searchable, filterable list of every workspace.
-- From the console you can permanently delete any business (cascading to all of its students, bookings, packages, and payments) or purge every demo workspace at once. These actions are irreversible.
+- From the console you can permanently delete any business (cascading to all of its students, bookings, packages, payments, and session chats) or purge every demo workspace at once. These actions are irreversible.
+- The **Chats** section lists every session chat on the platform, searchable by club, class, coach, or student, and opens any conversation read-only for safety review. The console cannot post or answer proposals.
 - The admin session is a stateless, HMAC-signed cookie keyed by the password itself, so rotating `ADMIN_PASSWORD` immediately invalidates all existing admin sessions. The page carries `noindex` so it stays out of search results.
 
 ## MVP boundaries
@@ -220,6 +232,6 @@ Courtly ships a platform admin console at `/admin`, separate from `STUDENT`, `CO
 - Class bookings reserve coach time. Separately, a club may publish its own facility inventory through Rentals; a confirmed rental reserves one specific Courtly-managed unit. A third-party or approval-required class venue still stays pending until the club secures it outside Courtly.
 - Venues can be looked up on Google Maps. Set `GOOGLE_MAPS_API_KEY` on the backend for live Places search; without it, pasting a Google Maps link still fills in the venue. The key stays server-side and never reaches the browser.
 - Checkout uses a deterministic simulated Stripe provider for product demonstration and testable payment intent state. No live card network, fund movement, refunds, or business subscription billing is connected.
-- Confirmations and reminders are queued as in-app records. Email, SMS, and automated WhatsApp delivery are not connected.
+- Confirmations and reminders are queued as in-app records, and session reminders are posted into each session's chat. Email, SMS, push notifications, and automated WhatsApp delivery are not connected.
 - Google Calendar is a one-way projection of confirmed Courtly Classes, not a two-way calendar editor. External edits never alter Courtly, and cached free/busy checks deliberately fail open when fresh data is unavailable.
 - Route-based travel calculations and waitlists are intentionally left for later integrations.

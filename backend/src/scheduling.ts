@@ -9,6 +9,7 @@ import { createBookingAccountAlerts } from './account-notifications.js';
 import { notifyWorkspace } from './notifications.js';
 import { flagPrivateSessionsAfterClub } from './integrity.js';
 import { enqueueCalendarSync } from './calendar-sync.js';
+import { ensureChatThread, noteSessionCancelled, noteSessionMoved, noteStudentJoined } from './chat-events.js';
 import { config } from './config.js';
 
 const bookingSelection = {
@@ -417,6 +418,10 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
     if (existing) await tx.participant.update({ where: { id: existing.id }, data: participantData });
     else await tx.participant.create({ data: { bookingId, studentId: student.id, ...participantData } });
     await enqueueCalendarSync(tx, bookingId);
+    // Every session gets its chat as it is booked; joining a group that
+    // already exists is announced in that group's chat instead.
+    if (slot.groupId) await noteStudentJoined(tx, bookingId, { userId: student.userId, name: student.name });
+    else await ensureChatThread(tx, bookingId);
     const booking = await tx.booking.findUniqueOrThrow({ where: { id: bookingId }, include: bookingInclude });
     const json = bookingJson(booking, { includeNotes: !accountBooking });
     booked.push(accountBooking
@@ -478,6 +483,7 @@ export async function cancelBooking(tx: Tx, businessId: string, bookingId: strin
   await notifyWorkspace(tx, { businessId, instructorId: current.instructorId, bookingId, type: 'CANCELLATION', title: 'Session cancelled', message: 'Package credits were restored. Cancellation notification queued; no external message has been sent.' });
   await createBookingAccountAlerts(tx, bookingId, 'PROVIDER_CANCELLED');
   await enqueueCalendarSync(tx, bookingId);
+  await noteSessionCancelled(tx, bookingId);
 }
 
 export async function rescheduleBooking(tx: Tx, businessId: string, bookingId: string, changes: { startAt: string }) {
@@ -513,5 +519,6 @@ export async function rescheduleBooking(tx: Tx, businessId: string, bookingId: s
   await notifyWorkspace(tx, { businessId, instructorId: updated.instructorId, bookingId: updated.id, type: 'RESCHEDULE', title: 'Session rescheduled', message: 'Schedule updated. Change notification and reminder queued in Courtly; external delivery is not configured.' });
   await createBookingAccountAlerts(tx, booking.id, 'RESCHEDULED');
   await enqueueCalendarSync(tx, booking.id);
+  await noteSessionMoved(tx, booking.id);
   return bookingJson(updated);
 }

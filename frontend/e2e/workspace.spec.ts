@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
-type WorkspaceTab = 'Home' | 'Explore' | 'Create' | 'Alerts' | 'Profile';
+type WorkspaceTab = 'Home' | 'Explore' | 'Create' | 'Chat' | 'Profile';
 
 async function visibleWorkspaceNavigation(page: Page): Promise<Locator> {
   const mobileNavigation = page.getByRole('navigation', { name: 'Mobile navigation' });
@@ -12,10 +12,13 @@ async function visibleWorkspaceNavigation(page: Page): Promise<Locator> {
 }
 
 function workspaceTab(navigation: Locator, label: WorkspaceTab) {
-  return label === 'Alerts'
-    ? navigation.getByRole('button', { name: /^Alerts/ })
+  return label === 'Chat'
+    ? navigation.getByRole('button', { name: /^Chat/ })
     : navigation.getByRole('button', { name: label, exact: true });
 }
+
+// Alerts moved out of the tab bar to a bell in the top bar at every width.
+const alertsBell = (page: Page) => page.getByRole('banner').getByRole('button', { name: /^Alerts/ });
 
 async function openWorkspaceTab(page: Page, label: WorkspaceTab) {
   const navigation = await visibleWorkspaceNavigation(page);
@@ -36,7 +39,7 @@ test('demo workspace loads, persists, and adapts to the screen', async ({ page }
   await expect(page.getByText("Today's sessions", { exact: true })).toBeVisible();
   const navigation = await visibleWorkspaceNavigation(page);
   await expect(navigation.getByRole('button')).toHaveCount(5);
-  for (const label of ['Home', 'Explore', 'Create', 'Alerts', 'Profile'] as const) {
+  for (const label of ['Home', 'Explore', 'Create', 'Chat', 'Profile'] as const) {
     await expect(workspaceTab(navigation, label)).toBeVisible();
   }
   await expect(workspaceTab(navigation, 'Home')).toHaveAttribute('aria-current', 'page');
@@ -190,10 +193,15 @@ test('navigation shows every connected management screen', async ({ page }) => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
   }
 
-  await openWorkspaceTab(page, 'Alerts');
+  await openWorkspaceTab(page, 'Chat');
+  await expect(page.locator('main').getByRole('heading', { name: 'Chats', exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/\?tab=chat$/);
+  await expect(workspaceTab(await visibleWorkspaceNavigation(page), 'Chat')).toHaveAttribute('aria-current', 'page');
+
+  await alertsBell(page).click();
   await expect(page.getByRole('heading', { name: 'Alerts', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/\?tab=alerts$/);
-  await expect(workspaceTab(await visibleWorkspaceNavigation(page), 'Alerts')).toHaveAttribute('aria-current', 'page');
+  await expect(alertsBell(page)).toHaveAttribute('aria-current', 'page');
 
   await openWorkspaceTab(page, 'Profile');
   await expect(page.locator('main').getByText('Club account', { exact: true })).toBeVisible();

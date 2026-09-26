@@ -149,12 +149,14 @@ test('student creates an account, books, views history, and cancels', async ({ p
   await expect(page.getByRole('radio', { name: new RegExp(escapeRegExp(workspace.business.name)) })).toBeChecked();
   await expect(studentNavigation.getByRole('button', { name: 'Book', exact: true })).toHaveAttribute('aria-current', 'page');
 
-  const alertsNavigationButton = studentNavigation.getByRole('button', { name: /^Alerts/ });
+  // Alerts live behind the header bell; Chat took their place in the tab bar.
+  await expect(studentNavigation.getByRole('button', { name: /^Chat/ })).toBeVisible();
+  const alertsNavigationButton = page.getByRole('banner').getByRole('button', { name: /^Alerts/ });
   await expect(alertsNavigationButton).toHaveAccessibleName(/^Alerts, \d+ unread alerts?$/);
   await alertsNavigationButton.click();
   await expect(page.getByRole('heading', { name: 'Alerts', exact: true })).toBeVisible();
   await expectStudentManageUrl(page, workspace.business.slug, 'alerts');
-  await expect(studentNavigation.getByRole('button', { name: /^Alerts/ })).toHaveAttribute('aria-current', 'page');
+  await expect(alertsNavigationButton).toHaveAttribute('aria-current', 'page');
   await expect(page.getByText(/Live alerts are temporarily unavailable/)).toHaveCount(0);
   // Each alert is a row that opens its own detail dialog, so its title is the
   // row's accessible name rather than a heading in the list.
@@ -416,8 +418,7 @@ test('student shell guards stale actions and exposes current sessions and action
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.locator('section[aria-labelledby="booking-history"]')).toHaveCount(0);
 
-  const studentNavigation = page.getByRole('navigation', { name: 'Student navigation' });
-  const alertsButton = studentNavigation.getByRole('button', { name: /^Alerts/ });
+  const alertsButton = page.getByRole('banner').getByRole('button', { name: /^Alerts/ });
   await expect(alertsButton).toHaveAccessibleName('Alerts, 1 unread alert');
   await alertsButton.click();
 
@@ -665,7 +666,8 @@ test('self-registered coach is linked to a club by its club account', async ({ p
   for (const label of ['Home', 'Explore', 'Book', 'Profile']) {
     await expect(coachNavigation.getByRole('button', { name: label, exact: true })).toBeVisible();
   }
-  await expect(coachNavigation.getByRole('button', { name: /^Alerts/ })).toBeVisible();
+  await expect(coachNavigation.getByRole('button', { name: /^Chat/ })).toBeVisible();
+  await expect(page.getByRole('banner').getByRole('button', { name: /^Alerts/ })).toBeVisible();
   await expect(coachNavigation.getByRole('button', { name: 'Create', exact: true })).toHaveCount(0);
   await coachNavigation.getByRole('button', { name: 'Book', exact: true }).click();
   const coachBookingDialog = page.getByRole('dialog', { name: 'Add a booking' });
