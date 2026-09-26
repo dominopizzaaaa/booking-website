@@ -5,21 +5,14 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 // one hand. It is a list people act from, so its actions are checked here in
 // the browser rather than only at the API.
 
-async function visibleWorkspaceNavigation(page: Page): Promise<Locator> {
-  const mobile = page.getByRole('navigation', { name: 'Mobile navigation' });
-  if (await mobile.isVisible()) return mobile;
-  const desktop = page.getByRole('navigation', { name: 'Primary' });
-  await expect(desktop).toBeVisible();
-  return desktop;
-}
-
-const alertsTab = (navigation: Locator) => navigation.getByRole('button', { name: /^Alerts/ });
+// Alerts open from the bell in the top bar, which stays in the same place on
+// a desktop and a phone, the way a notifications heart does.
+const alertsBell = (page: Page): Locator => page.getByRole('banner').getByRole('button', { name: /^Alerts/ });
 
 async function openAlerts(page: Page) {
-  const navigation = await visibleWorkspaceNavigation(page);
-  await alertsTab(navigation).click();
+  await alertsBell(page).click();
   await expect(page.getByRole('heading', { name: 'Alerts', exact: true })).toBeVisible();
-  return navigation;
+  await expect(alertsBell(page)).toHaveAttribute('aria-current', 'page');
 }
 
 test.beforeEach(async ({ page }) => {
@@ -65,10 +58,9 @@ test('opening an alert marks it read and offers a way through to its subject', a
   const unread = workspace.notifications.filter(notification => !notification.read);
   test.skip(unread.length === 0, 'This demo workspace has no unread alerts.');
 
-  const navigation = await openAlerts(page);
-  // The badge is a number, so it has to say what the number counts. Both the
-  // sidebar and the mobile tab announce it the same way.
-  await expect(alertsTab(navigation)).toHaveAccessibleName(/^Alerts\s+\d+ unread$/);
+  await openAlerts(page);
+  // The badge is a number, so it has to say what the number counts.
+  await expect(alertsBell(page)).toHaveAccessibleName(/^Alerts, \d+ unread alerts?$/);
 
   const firstUnread = page.locator('.workspace-alert-item[aria-label^="Unread alert"]').first();
   await expect(firstUnread).toHaveAttribute('aria-label', /^Unread alert: .+/);
@@ -89,8 +81,8 @@ test('opening an alert marks it read and offers a way through to its subject', a
   await expect(dialog).toHaveCount(0);
   // The badge follows in place, without a reload. Reading an alert re-sorts
   // the list, so the count is what to assert on rather than any one row.
-  await expect(alertsTab(navigation)).toHaveAccessibleName(
-    unread.length === 1 ? 'Alerts' : new RegExp(`^Alerts\\s+${unread.length - 1} unread$`),
+  await expect(alertsBell(page)).toHaveAccessibleName(
+    unread.length === 1 ? 'Alerts' : new RegExp(`^Alerts, ${unread.length - 1} unread alerts?$`),
   );
 });
 
@@ -101,13 +93,13 @@ test('marking everything read empties the badge and the action itself', async ({
   test.skip(workspace.notifications.every(notification => notification.read),
     'This demo workspace has nothing unread to clear.');
 
-  const navigation = await openAlerts(page);
+  await openAlerts(page);
   const markAll = page.getByRole('button', { name: 'Mark all as read', exact: true });
   await expect(markAll).toBeVisible();
   await markAll.click();
 
   await expect(markAll).toHaveCount(0);
-  await expect(alertsTab(navigation)).toHaveAccessibleName('Alerts');
+  await expect(alertsBell(page)).toHaveAccessibleName('Alerts');
   await expect(page.locator('.workspace-alert-item[aria-label^="Unread alert"]')).toHaveCount(0);
 
   const after = await (await page.request.get('/api/workspace')).json() as {
@@ -119,7 +111,7 @@ test('marking everything read empties the badge and the action itself', async ({
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Alerts', exact: true })).toBeVisible({ timeout: 45_000 });
   await expect(page.getByRole('button', { name: 'Mark all as read', exact: true })).toHaveCount(0);
-  await expect(alertsTab(await visibleWorkspaceNavigation(page))).toHaveAccessibleName('Alerts');
+  await expect(alertsBell(page)).toHaveAccessibleName('Alerts');
 });
 
 test('the alert list stays readable and reachable at this viewport', async ({ page }, testInfo) => {

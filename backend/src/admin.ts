@@ -6,6 +6,7 @@ import { rateLimit } from 'express-rate-limit';
 import { prisma } from './db.js';
 import { config, production, skipRateLimits } from './config.js';
 import { asyncRoute, HttpError } from './http.js';
+import { adminChatListQuery, chatThreadForAdmin, listChatThreadsForAdmin, threadQuery } from './chat.js';
 
 // The platform admin console is separate from provider (business) logins. It is
 // gated by a single ADMIN_PASSWORD set in the host environment (Railway). No
@@ -66,7 +67,7 @@ adminRouter.post('/admin/logout', asyncRoute(async (_req, res) => {
 adminRouter.get('/admin/overview', requireAdmin, asyncRoute(async (_req, res) => {
   const now = new Date();
   const weekAgo = new Date(now.getTime() - 7 * 86400_000);
-  const [businesses, demoBusinesses, users, memberships, students, bookings, upcoming, weekBookings, payments, packages] = await Promise.all([
+  const [businesses, demoBusinesses, users, memberships, students, bookings, upcoming, weekBookings, payments, packages, chatThreads, chatMessages] = await Promise.all([
     prisma.business.count(),
     prisma.business.count({ where: { isDemo: true } }),
     prisma.user.count(),
@@ -84,6 +85,8 @@ adminRouter.get('/admin/overview', requireAdmin, asyncRoute(async (_req, res) =>
       _count: true,
     }),
     prisma.lessonPackage.count(),
+    prisma.chatThread.count(),
+    prisma.chatMessage.count({ where: { kind: { not: 'SYSTEM' } } }),
   ]);
   res.json({
     generatedAt: now.toISOString(),
@@ -92,6 +95,7 @@ adminRouter.get('/admin/overview', requireAdmin, asyncRoute(async (_req, res) =>
       users, memberships, students, bookings, upcomingBookings: upcoming,
       bookingsLast7Days: weekBookings, packages,
       paymentsCount: payments._count, paymentsTotal: payments._sum.amount ?? 0,
+      chatThreads, chatMessages,
     },
   });
 }));
@@ -234,4 +238,16 @@ adminRouter.post('/admin/purge-demos', requireAdmin, asyncRoute(async (_req, res
     return demos.length;
   }, { timeout: 30_000 });
   res.json({ ok: true, deleted });
+}));
+
+// Every session chat is readable here for safety review. The console only
+// reads: it has no account identity to post as and exposes no actions.
+adminRouter.get('/admin/chats', requireAdmin, asyncRoute(async (req, res) => {
+  res.json(await listChatThreadsForAdmin(adminChatListQuery.parse(req.query)));
+}));
+
+adminRouter.get('/admin/chats/:threadId', requireAdmin, asyncRoute(async (req, res) => {
+  const { before } = threadQuery.parse(req.query);
+  const threadId = z.string().trim().min(1).max(200).parse(req.params.threadId);
+  res.json(await chatThreadForAdmin(threadId, { before }));
 }));

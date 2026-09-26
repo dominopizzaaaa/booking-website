@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { AlertTriangle, Building2, CalendarClock, Check, Layers3, LoaderCircle, LockKeyhole, LogOut, RefreshCw, Search, ShieldCheck, Sparkles, Trash2, TrendingUp, Users, Wallet } from 'lucide-react';
+import { AlertTriangle, Building2, CalendarClock, Check, Layers3, LoaderCircle, LockKeyhole, LogOut, MessageCircle, RefreshCw, Search, ShieldCheck, Sparkles, Trash2, TrendingUp, Users, Wallet } from 'lucide-react';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import {
@@ -9,9 +9,11 @@ import {
   ApiError, type AdminBusiness, type AdminOverview,
 } from '@/lib/api';
 import { CourtlyLogo } from '@/components/public-booking';
+import { ChatInbox } from '@/components/chat/chat-inbox';
 import { cn } from '@/lib/utils';
 
 type Filter = 'all' | 'real' | 'demo';
+type Section = 'businesses' | 'chats';
 const relative = (iso: string) => {
   const diff = Date.now() - new Date(iso).getTime();
   const days = Math.floor(diff / 86400_000);
@@ -32,6 +34,8 @@ export function AdminConsole() {
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [businesses, setBusinesses] = useState<AdminBusiness[]>([]);
   const [filter, setFilter] = useState<Filter>('all');
+  const [section, setSection] = useState<Section>('businesses');
+  const [chatThreadId, setChatThreadId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [loadingData, setLoadingData] = useState(false);
   const [confirm, setConfirm] = useState<AdminBusiness | 'demos' | null>(null);
@@ -172,9 +176,35 @@ export function AdminConsole() {
           <StatCard icon={<TrendingUp size={16} />} label="New this week" value={t?.bookingsLast7Days} hint="bookings created" />
           <StatCard icon={<Wallet size={16} />} label="Student payments" value={t?.paymentsCount} hint={t ? `${formatMoney(t.paymentsTotal)} collected` : undefined} />
           <StatCard icon={<Layers3 size={16} />} label="Packages" value={t?.packages} hint="prepaid plans" />
+          <StatCard icon={<MessageCircle size={16} />} label="Session chats" value={t?.chatThreads} hint={t?.chatMessages !== undefined ? `${t.chatMessages.toLocaleString()} messages` : undefined} />
         </section>
 
-        <section className="!mt-8">
+        {/* Safety review reads every session chat; nothing here can post. */}
+        <div role="group" aria-label="Console section" className="!mt-8 inline-grid grid-cols-2 rounded-xl border border-[#dce4d4] bg-white p-1">
+          {(['businesses', 'chats'] as Section[]).map(option => (
+            <button key={option} type="button" aria-pressed={section === option} onClick={() => setSection(option)}
+              className={cn('min-h-11 rounded-lg px-4 text-xs font-semibold capitalize transition', section === option ? 'bg-[#174c3c] text-white' : 'text-[#5b6c53] hover:bg-[#f2f5ec]')}>
+              {option}
+            </button>
+          ))}
+        </div>
+
+        {section === 'chats' && <section className="!mt-5" aria-label="Session chats">
+          <ChatInbox
+            mode="admin"
+            viewerType="ADMIN"
+            threadId={chatThreadId}
+            onThreadChange={setChatThreadId}
+            className="md:h-[calc(100dvh-140px)] md:min-h-[540px]"
+            heading={{
+              eyebrow: 'Platform safety',
+              title: 'Session chats',
+              description: 'Read any conversation between students, coaches and clubs. This view is read-only.',
+            }}
+          />
+        </section>}
+
+        {section === 'businesses' && <section className="!mt-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2">
               <h2 className="!text-[16px] !font-semibold !tracking-[-0.3px]">Businesses</h2>
@@ -264,7 +294,7 @@ export function AdminConsole() {
             )}
           </div>
           {overview && <p className="!mt-3 text-center text-[11px] text-[#59675c]">Last updated {new Date(overview.generatedAt).toLocaleTimeString()} · showing up to 200 most recent businesses</p>}
-        </section>
+        </section>}
       </div>
 
       <Dialog open={confirm !== null} onOpenChange={open => { if (!open && !working) setConfirm(null); }}>

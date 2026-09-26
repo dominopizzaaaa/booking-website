@@ -19,6 +19,7 @@ import {
   LoaderCircle,
   LogOut,
   MapPin,
+  MessageCircle,
   PackageCheck,
   Pencil,
   Plus,
@@ -65,10 +66,14 @@ import {
   loadRentalSlots,
   loadSlots,
   logoutAccount,
+  openBookingChat,
   requestAccountReschedule,
   searchAccounts,
 } from '@/lib/api';
 import { alertAppearance, alertPageSize, sortAlerts } from '@/lib/alerts';
+import { alertsButtonLabel, chatBadge, chatTabLabel } from '@/lib/chat';
+import { ChatInbox } from '@/components/chat/chat-inbox';
+import { useChatUnread } from '@/components/chat/use-chat-unread';
 import type {
   AccountBooking,
   AccountDirectoryUser,
@@ -86,7 +91,7 @@ import type {
 } from '@/lib/types';
 import { cn, dateKey, initials, money, shortDate, time } from '@/lib/utils';
 
-type StudentTab = 'home' | 'explore' | 'book' | 'alerts' | 'profile';
+type StudentTab = 'home' | 'explore' | 'book' | 'chat' | 'alerts' | 'profile';
 /** Which step the booking dialog is showing. */
 type BookingDialogMode = 'details' | 'cancel' | 'reschedule';
 type BookingFilter = 'all' | 'upcoming' | 'completed' | 'cancelled';
@@ -125,14 +130,19 @@ const panel =
 const field =
   '!min-h-12 !rounded-xl !border-[#dfe5df] !px-3.5 !text-base sm:!text-sm';
 
+// Chat sits in the tab bar; Alerts moved to the header bell, the way a
+// notifications heart sits above a feed, but keeps its own ?tab=alerts page.
 const tabs: Array<{ id: StudentTab; label: string; icon: typeof Home }> = [
   { id: 'home', label: 'Home', icon: Home },
   { id: 'explore', label: 'Explore', icon: Compass },
   { id: 'book', label: 'Book', icon: Plus },
-  { id: 'alerts', label: 'Alerts', icon: Bell },
+  { id: 'chat', label: 'Chat', icon: MessageCircle },
   { id: 'profile', label: 'Profile', icon: UserRound },
 ];
-const studentTabIds = new Set<StudentTab>(tabs.map((tab) => tab.id));
+const tabTitles: Record<StudentTab, string> = {
+  home: 'Home', explore: 'Explore', book: 'Book', chat: 'Chat', alerts: 'Alerts', profile: 'Profile',
+};
+const studentTabIds = new Set<StudentTab>([...tabs.map((tab) => tab.id), 'alerts']);
 
 function studentTab(value: string | null): StudentTab {
   return value && studentTabIds.has(value as StudentTab) ? (value as StudentTab) : 'home';
@@ -1059,6 +1069,7 @@ type BookingDialogProps = {
   setPaymentOutcome: (value: 'SUCCEEDED' | 'FAILED') => void;
   retrySlots: () => void;
   nowMs: number;
+  onOpenChat: (bookingId: string) => void;
 };
 
 /**
@@ -1093,6 +1104,7 @@ function BookingDialog({
   setPaymentOutcome,
   retrySlots,
   nowMs,
+  onOpenChat,
 }: BookingDialogProps) {
   if (!item) return null;
   const state = bookingState(item, nowMs);
@@ -1130,6 +1142,16 @@ function BookingDialog({
           >
             Club booking page <ExternalLink size={11} />
           </Link>
+          {item.paymentRoute !== 'DIRECT' && !item.participant.cancelled && !item.participant.cancelledAt && (
+            <button
+              type="button"
+              onClick={() => onOpenChat(item.booking.id)}
+              disabled={busy}
+              className="ml-auto inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-[#dce3da] bg-white px-3 text-xs font-semibold text-[#344d40] transition hover:bg-[#f3f6f1] disabled:opacity-50"
+            >
+              <MessageCircle size={14} aria-hidden="true" /> Message
+            </button>
+          )}
         </div>
 
         {notice && (
@@ -1673,21 +1695,48 @@ function AppHeader({
   activeTab,
   homeHref,
   onOpenProfile,
+  alertsUnread,
+  onOpenAlerts,
+  wide,
 }: {
   userName: string;
   activeTab: StudentTab;
   homeHref: string;
   onOpenProfile: () => void;
+  alertsUnread: number;
+  onOpenAlerts: () => void;
+  wide: boolean;
 }) {
-  const title = tabs.find((tab) => tab.id === activeTab)?.label ?? 'Home';
+  const title = tabTitles[activeTab];
+  const alertsActive = activeTab === 'alerts';
   return (
     <header className="student-header sticky top-0 z-40 border-b border-[#e7ebe4] bg-white/90 backdrop-blur-xl">
-      <div className="mx-auto flex min-h-16 max-w-3xl items-center justify-between gap-4 px-4 sm:min-h-[72px] sm:px-6">
+      <div className={cn('mx-auto flex min-h-16 items-center justify-between gap-4 px-4 sm:min-h-[72px] sm:px-6', wide ? 'max-w-5xl' : 'max-w-3xl')}>
         <Link href={homeHref} aria-label="Courtly student home" className="inline-flex min-h-11 items-center">
           <CourtlyLogo />
         </Link>
         <div className="flex items-center gap-2">
           <span className="hidden text-[11px] font-medium text-[#59675c] sm:inline">{title}</span>
+          <button
+            type="button"
+            aria-label={alertsButtonLabel(alertsUnread)}
+            aria-current={alertsActive ? 'page' : undefined}
+            onClick={onOpenAlerts}
+            className={cn(
+              'relative grid h-11 w-11 place-items-center rounded-full transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a] focus-visible:ring-offset-2',
+              alertsActive ? 'bg-[#e8efe0] text-[#174c3c]' : 'text-[#48604f] hover:bg-[#f0f4ec]',
+            )}
+          >
+            <Bell size={21} strokeWidth={alertsActive ? 2.2 : 1.8} aria-hidden="true" />
+            {alertsUnread > 0 && (
+              <span
+                aria-hidden="true"
+                className="absolute right-0.5 top-0.5 grid h-[18px] min-w-[18px] place-items-center rounded-full border-2 border-white bg-[#b3483a] px-1 text-[10px] font-bold leading-none text-white"
+              >
+                {chatBadge(alertsUnread)}
+              </span>
+            )}
+          </button>
           <button
             type="button"
             aria-label="Open profile"
@@ -1728,11 +1777,7 @@ function BottomNavigation({
               key={tab.id}
               type="button"
               aria-current={active ? 'page' : undefined}
-              aria-label={
-                tab.id === 'alerts' && unread > 0
-                  ? `Alerts, ${unread} unread alert${unread === 1 ? '' : 's'}`
-                  : tab.label
-              }
+              aria-label={tab.id === 'chat' ? chatTabLabel(unread) : tab.label}
               onClick={() => onChange(tab.id)}
               className={cn(
                 'relative flex min-h-[62px] min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 text-[11px] font-medium transition sm:text-xs',
@@ -1752,12 +1797,12 @@ function BottomNavigation({
               ) : (
                 <span className="relative grid h-7 w-8 place-items-center">
                   <Icon size={21} fill={active && tab.id === 'home' ? 'currentColor' : 'none'} strokeWidth={active ? 2.2 : 1.7} />
-                  {tab.id === 'alerts' && unread > 0 && (
+                  {tab.id === 'chat' && unread > 0 && (
                     <span
                       aria-hidden="true"
-                      className="absolute right-0 top-0 grid h-4 min-w-4 place-items-center rounded-full border-2 border-white bg-[#8b4d3c] px-0.5 text-[8px] leading-none text-white"
+                      className="absolute right-0 top-0 grid h-4 min-w-4 place-items-center rounded-full border-2 border-white bg-[#b3483a] px-0.5 text-[8px] leading-none text-white"
                     >
-                      {unread > 9 ? '9+' : unread}
+                      {chatBadge(unread)}
                     </span>
                   )}
                 </span>
@@ -1776,6 +1821,7 @@ export function StudentApp({ slug }: { slug?: string }) {
   const searchParams = useSearchParams();
   const requestedTab = searchParams.get('tab');
   const activeTab = studentTab(requestedTab);
+  const chatThreadId = activeTab === 'chat' ? searchParams.get('thread') : null;
   const [session, setSession] = useState<AuthSession | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState('');
@@ -1871,11 +1917,21 @@ export function StudentApp({ slug }: { slug?: string }) {
   const rentalCheckoutKeysRef = useRef(new Map<string, string>());
   const offersRequestRef = useRef(0);
   const packagesRequestRef = useRef(0);
+  const chatOpenedFromListRef = useRef(false);
+  const { unreadThreads: chatUnread, setUnreadThreads: setChatUnread } = useChatUnread(isStudentSession(session));
 
   const tabHref = useCallback((tab: StudentTab) => {
     const params = new URLSearchParams();
     if (slug) params.set('slug', slug);
     params.set('tab', tab);
+    return `/manage?${params.toString()}`;
+  }, [slug]);
+
+  const chatHref = useCallback((threadId: string | null) => {
+    const params = new URLSearchParams();
+    if (slug) params.set('slug', slug);
+    params.set('tab', 'chat');
+    if (threadId) params.set('thread', threadId);
     return `/manage?${params.toString()}`;
   }, [slug]);
 
@@ -2301,6 +2357,36 @@ export function StudentApp({ slug }: { slug?: string }) {
   }
 
   const openBookingRow = (item: AccountBooking) => openBooking(item.booking.id);
+
+  // Each opened conversation is a history entry, so Back returns to the list,
+  // and the on-screen back arrow pops that entry rather than stacking another.
+  function selectChatThread(threadId: string | null) {
+    if (!threadId && chatOpenedFromListRef.current) {
+      chatOpenedFromListRef.current = false;
+      router.back();
+      return;
+    }
+    chatOpenedFromListRef.current = !!threadId && activeTab === 'chat' && !chatThreadId;
+    router.push(chatHref(threadId), { scroll: false });
+  }
+
+  async function openChatForBooking(bookingId: string) {
+    try {
+      const { threadId } = await openBookingChat(bookingId);
+      setOpenBookingId(null);
+      setDialogMode('details');
+      selectChatThread(threadId);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) router.replace(loginHrefRef.current);
+      else setActionError(messageOf(error));
+    }
+  }
+
+  // A proposal accepted in chat books a session this list has not seen yet.
+  async function openBookingFromChat(bookingId: string) {
+    if (!bookings.some((item) => item.booking.id === bookingId)) await refreshBookings();
+    openBooking(bookingId);
+  }
 
   function openBooking(bookingId: string) {
     setNowMs(Date.now());
@@ -2755,6 +2841,7 @@ export function StudentApp({ slug }: { slug?: string }) {
     setPaymentOutcome: setBookingPaymentOutcome,
     retrySlots: () => setSlotsVersion((value) => value + 1),
     nowMs,
+    onOpenChat: (bookingId: string) => void openChatForBooking(bookingId),
   };
 
   if (authLoading) {
@@ -2845,11 +2932,17 @@ export function StudentApp({ slug }: { slug?: string }) {
         activeTab={activeTab}
         homeHref={tabHref('home')}
         onOpenProfile={() => selectTab('profile')}
+        alertsUnread={unread}
+        onOpenAlerts={() => selectTab('alerts')}
+        wide={activeTab === 'chat'}
       />
       <main
         ref={mainRef}
         tabIndex={-1}
-        className="student-content mx-auto w-full max-w-3xl px-4 py-7 outline-none sm:px-6 sm:py-10"
+        className={cn(
+          'student-content mx-auto w-full px-4 py-7 outline-none sm:px-6 sm:py-10',
+          activeTab === 'chat' ? 'max-w-5xl' : 'max-w-3xl',
+        )}
       >
         <p role="status" className="sr-only">{bookingNavigationStatus}</p>
         {bookingsError && (
@@ -3478,6 +3571,26 @@ export function StudentApp({ slug }: { slug?: string }) {
           </section>
         )}
 
+        {activeTab === 'chat' && (
+          <section id="student-chat-panel" aria-label="Chat" className="student-tab-panel student-tab-chat">
+            <ChatInbox
+              mode="participant"
+              viewerType="STUDENT"
+              threadId={chatThreadId}
+              onThreadChange={selectChatThread}
+              onUnreadChange={setChatUnread}
+              onOpenBooking={(bookingId) => void openBookingFromChat(bookingId)}
+              onBookingsChanged={() => { void refreshBookings(); void refreshNotifications(); }}
+              className="sm:h-[calc(100dvh-260px)] sm:min-h-[460px]"
+              heading={{
+                eyebrow: 'Your sessions',
+                title: 'Chats',
+                description: 'Talk with your coach and club about each session, and use + to plan the next one.',
+              }}
+            />
+          </section>
+        )}
+
         {activeTab === 'alerts' && (
           <section id="student-alerts-panel" aria-label="Alerts" className="student-tab-panel student-tab-alerts">
             <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
@@ -3963,7 +4076,7 @@ export function StudentApp({ slug }: { slug?: string }) {
         onClose={() => setOpenAlertId(null)}
         onOpenBooking={openAlertBooking}
       />
-      <BottomNavigation activeTab={activeTab} onChange={selectTab} unread={unread} />
+      <BottomNavigation activeTab={activeTab} onChange={selectTab} unread={chatUnread} />
     </div>
   );
 }

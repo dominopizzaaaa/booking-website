@@ -12,6 +12,7 @@ import {
   Compass,
   House,
   Loader2,
+  MessageCircle,
   Plus,
   Search,
   UserRound,
@@ -21,9 +22,12 @@ import { formatInTimeZone } from 'date-fns-tz';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
-import { api, ApiError, loadWorkspace, mutate, searchAccounts } from '@/lib/api';
+import { api, ApiError, loadWorkspace, mutate, openBookingChat, searchAccounts } from '@/lib/api';
+import { alertsButtonLabel, chatBadge, chatTabLabel } from '@/lib/chat';
 import type { AccountDirectoryUser, AccountType, AuthSession, BusinessKind, Membership, WorkspaceResponse } from '@/lib/types';
-import { initials, shortDate } from '@/lib/utils';
+import { cn, initials, shortDate } from '@/lib/utils';
+import { ChatInbox } from '@/components/chat/chat-inbox';
+import { useChatUnread } from '@/components/chat/use-chat-unread';
 import Dashboard, { CalendarView } from './dashboard';
 import { ManagementView } from './management';
 import { NewBookingDialog, BookingDetail } from './booking-dialogs';
@@ -37,11 +41,14 @@ import {
   ProfileView,
 } from './shell-views';
 
-type PrimaryTab = 'home' | 'explore' | 'alerts' | 'profile';
+// Alerts is not a tab: like a notifications heart, it lives in the top bar
+// while Chat takes its place in the primary navigation.
+type PrimaryTab = 'home' | 'explore' | 'chat' | 'alerts' | 'profile';
 
 const viewTitles: Record<string, string> = {
   overview: 'Home',
   explore: 'Explore',
+  chat: 'Chat',
   alerts: 'Alerts',
   profile: 'Profile',
   calendar: 'Calendar',
@@ -59,6 +66,7 @@ const viewTitles: Record<string, string> = {
 
 function primaryTabForView(view: string): PrimaryTab {
   if (view === 'overview') return 'home';
+  if (view === 'chat') return 'chat';
   if (view === 'alerts') return 'alerts';
   if (view === 'profile' || view === 'settings') return 'profile';
   return 'explore';
@@ -70,6 +78,7 @@ function routeView(accountType: AccountType, businessKind: BusinessKind) {
   const tab = parameters.get('tab');
   const nestedView = parameters.get('view');
   if (tab === 'alerts') return 'alerts';
+  if (tab === 'chat') return 'chat';
   if (tab === 'profile') return nestedView === 'settings' && !isClubCoach ? 'settings' : 'profile';
   if (tab === 'explore') return nestedView && canAccessExploreView({ accountType, businessKind }, nestedView) ? nestedView : 'explore';
   if (!tab && nestedView) {
@@ -79,15 +88,28 @@ function routeView(accountType: AccountType, businessKind: BusinessKind) {
   return 'overview';
 }
 
-function updateRoute(view: string, businessId: string, replace = false) {
+function routeThread(view: string) {
+  return view === 'chat' ? new URLSearchParams(window.location.search).get('thread') : null;
+}
+
+function updateRoute(view: string, businessId: string, replace = false, threadId: string | null = null) {
   const url = new URL(window.location.href);
   if (url.pathname !== '/') return;
   url.searchParams.delete('tab');
   url.searchParams.delete('view');
+  url.searchParams.delete('thread');
   const tab = primaryTabForView(view);
   url.searchParams.set('tab', tab);
   if (isExploreView(view) || view === 'settings') url.searchParams.set('view', view);
-  window.history[replace ? 'replaceState' : 'pushState']({ ...(window.history.state || {}), tab, view, workspaceBusinessId: businessId }, '', url);
+  if (view === 'chat' && threadId) url.searchParams.set('thread', threadId);
+  const previous = window.history.state || {};
+  // A conversation opened from the chat list sits directly above it, so the
+  // on-screen back arrow can pop history instead of stacking another list.
+  const chatListBelow = view === 'chat' && !!threadId
+    && (replace ? !!previous.chatListBelow : previous.view === 'chat' && !previous.threadId);
+  window.history[replace ? 'replaceState' : 'pushState']({
+    ...previous, tab, view, threadId, chatListBelow, workspaceBusinessId: businessId,
+  }, '', url);
 }
 
 export default function WorkspaceApp() {
@@ -95,6 +117,7 @@ export default function WorkspaceApp() {
   const [data, setData] = useState<WorkspaceResponse | null>(null);
   const [error, setError] = useState('');
   const [view, setView] = useState('overview');
+  const [chatThreadId, setChatThreadId] = useState<string | null>(null);
   const [bookingOpen, setBookingOpen] = useState(false);
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -112,6 +135,7 @@ export default function WorkspaceApp() {
   const initialized = useRef(false);
   const routedBusinessId = useRef<string | null>(null);
   const mainRef = useRef<HTMLElement>(null);
+  const { unreadThreads: chatUnread, setUnreadThreads: setChatUnread } = useChatUnread(!!data);
 
   const refresh = useCallback(async () => {
     const workspace = await loadWorkspace();
@@ -153,8 +177,10 @@ export default function WorkspaceApp() {
     const next = typeof historyBusinessId === 'string' && historyBusinessId !== data.business.id
       ? 'overview'
       : routeView(data.user.accountType, data.business.kind);
+    const thread = routeThread(next);
     setView(next);
-    updateRoute(next, data.business.id, true);
+    setChatThreadId(thread);
+    updateRoute(next, data.business.id, true, thread);
   }, [data]);
 
   useEffect(() => {
@@ -174,6 +200,8 @@ export default function WorkspaceApp() {
       const next = typeof historyBusinessId === 'string' && historyBusinessId !== data.business.id
         ? 'overview'
         : routeView(data.user.accountType, data.business.kind);
+      const thread = routeThread(next);
+      setChatThreadId(thread);
       if (next !== view) {
         setView(next);
         setMainFocusRequest(request => request + 1);
@@ -181,7 +209,7 @@ export default function WorkspaceApp() {
       // Next's App Router also restores its URL state during popstate. Let that
       // listener finish before replacing a stale workspace entry, otherwise it
       // can restore the old query string after this handler has corrected it.
-      window.requestAnimationFrame(() => updateRoute(next, data.business.id, true));
+      window.requestAnimationFrame(() => updateRoute(next, data.business.id, true, thread));
       window.scrollTo({ top: 0 });
     };
     window.addEventListener('popstate', handleHistory);
@@ -267,12 +295,55 @@ export default function WorkspaceApp() {
         ? 'explore'
         : nextView;
     setCreateOpen(false);
-    if (safeView !== view) {
+    if (safeView !== view || (safeView === 'chat' && chatThreadId)) {
       setView(safeView);
+      // The Chat tab always opens on the list, the way a messaging app does.
+      setChatThreadId(null);
       updateRoute(safeView, data.business.id);
       setMainFocusRequest(request => request + 1);
     }
     window.scrollTo({ top: 0 });
+  }
+
+  function selectChatThread(threadId: string | null) {
+    if (!data) return;
+    if (!threadId && window.history.state?.chatListBelow) {
+      window.history.back();
+      return;
+    }
+    setView('chat');
+    setChatThreadId(threadId);
+    // Each opened conversation is a history entry, so Back returns to the
+    // list on a phone just as the on-screen back arrow does.
+    updateRoute('chat', data.business.id, false, threadId);
+  }
+
+  // A proposal accepted in chat books a session this workspace has not
+  // loaded yet, so look again before saying it belongs elsewhere.
+  async function openBookingFromChat(bookingId: string) {
+    let workspace = data;
+    if (!workspace?.bookings.some(booking => booking.id === bookingId)) {
+      try {
+        workspace = await loadWorkspace();
+        setData(workspace);
+      } catch (cause) {
+        toast.error((cause as Error).message);
+        return;
+      }
+    }
+    if (workspace.bookings.some(booking => booking.id === bookingId)) setSelectedBookingId(bookingId);
+    else toast.message('That session belongs to another club workspace. Switch workspace to open it.');
+  }
+
+  async function openChatForBooking(bookingId: string) {
+    try {
+      const { threadId } = await openBookingChat(bookingId);
+      setSelectedBookingId(null);
+      selectChatThread(threadId);
+      window.scrollTo({ top: 0 });
+    } catch (cause) {
+      toast.error((cause as Error).message);
+    }
   }
 
   async function switchWorkspace(membership: Membership) {
@@ -362,7 +433,7 @@ export default function WorkspaceApp() {
   const primaryNavigation = [
     { id: 'home' as const, label: 'Home', icon: House, action: () => navigate('overview') },
     { id: 'explore' as const, label: 'Explore', icon: Compass, action: () => navigate('explore') },
-    { id: 'alerts' as const, label: 'Alerts', icon: Bell, action: () => navigate('alerts') },
+    { id: 'chat' as const, label: 'Chat', icon: MessageCircle, action: () => navigate('chat') },
     { id: 'profile' as const, label: 'Profile', icon: UserRound, action: () => navigate('profile') },
   ];
 
@@ -377,7 +448,7 @@ export default function WorkspaceApp() {
       <nav className="workspace-primary-nav workspace-primary-nav-desktop mt-5 flex-1" aria-label="Primary">
         {primaryNavigation.slice(0, 2).map(item => <button key={item.id} type="button" className={`nav-link workspace-primary-tab workspace-primary-tab-${item.id} ${primaryTab === item.id ? 'active' : ''}`} aria-current={primaryTab === item.id ? 'page' : undefined} onClick={item.action}><item.icon size={18} strokeWidth={1.65} /><span>{item.label}</span></button>)}
         <button type="button" className="nav-link workspace-primary-tab workspace-primary-tab-create" aria-haspopup="dialog" aria-expanded={isCoach ? bookingOpen : createOpen} onClick={() => isCoach ? setBookingOpen(true) : setCreateOpen(true)}><Plus size={19} strokeWidth={1.8} /><span>{isCoach ? 'Book' : 'Create'}</span></button>
-        {primaryNavigation.slice(2).map(item => <button key={item.id} type="button" className={`nav-link workspace-primary-tab workspace-primary-tab-${item.id} ${primaryTab === item.id ? 'active' : ''}`} aria-current={primaryTab === item.id ? 'page' : undefined} onClick={item.action}><item.icon size={18} strokeWidth={1.65} /><span>{item.label}</span>{item.id === 'alerts' && unread > 0 && <span className="nav-count workspace-tab-badge">{unread}<span className="sr-only"> unread</span></span>}</button>)}
+        {primaryNavigation.slice(2).map(item => <button key={item.id} type="button" className={`nav-link workspace-primary-tab workspace-primary-tab-${item.id} ${primaryTab === item.id ? 'active' : ''}`} aria-current={primaryTab === item.id ? 'page' : undefined} aria-label={item.id === 'chat' ? chatTabLabel(chatUnread) : undefined} onClick={item.action}><item.icon size={18} strokeWidth={1.65} /><span>{item.label}</span>{item.id === 'chat' && chatUnread > 0 && <span className="nav-count workspace-tab-badge !bg-[#b3483a] !text-white" aria-hidden="true">{chatBadge(chatUnread)}</span>}</button>)}
       </nav>
       <div className="sidebar-bottom">
         <div className="plan-card"><p className="text-[10px] font-semibold text-[#4f6847]">{data.business.isDemo ? 'A space to try things out' : 'Your workspace, your rhythm'}</p><p className="mt-2 text-[10px] leading-[1.65] text-[#59675c]">{data.business.isDemo ? 'Explore a real, private demo. Your changes stay here.' : 'Home, tools, updates, and your profile—all close by.'}</p></div>
@@ -385,7 +456,7 @@ export default function WorkspaceApp() {
     </aside>
 
     <div className="main-shell">
-      <header className="topbar"><div className="topbar-context flex min-w-0 items-center gap-2"><button className="topbar-action mobile-menu" onClick={() => navigate('explore')} aria-label="Explore"><Compass size={20} /></button><span className="truncate text-[12px] font-semibold">{title}</span><span className="desktop-only ml-1 text-[#d4d9cb]">/</span><span className="desktop-only text-[11px] text-[#59675c]">{primaryTab === 'home' ? 'A little clarity for your day' : primaryTab === 'explore' ? 'Everything your business needs' : primaryTab === 'alerts' ? `${unread} unread update${unread === 1 ? '' : 's'}` : 'Account and workspace'}</span></div><div className="topbar-actions flex items-center gap-2"><span className="desktop-only mr-3 text-[10px] text-[#59675c]">{formatInTimeZone(new Date(), data.business.timezone, 'EEEE, d MMM yyyy')}</span><div className="desktop-only mr-3 h-4 w-px bg-[#e9ece2]" /><button aria-label="Search workspace" className="topbar-action text-[#8a967b]" onClick={() => setSearchOpen(true)}><Search size={18} strokeWidth={1.7} /></button><button aria-label="Notifications" className="topbar-action desktop-only relative text-[#8a967b]" onClick={() => navigate('alerts')}><Bell size={18} strokeWidth={1.7} />{unread > 0 && <span className="absolute right-2.5 top-2 h-1.5 w-1.5 rounded-full border border-white bg-[#b3a16c]" />}</button><button aria-label="Profile" onClick={() => navigate('profile')} className="topbar-action desktop-only"><span className="tiny-avatar !h-7 !w-7 !bg-[#e8dccc] !text-[#6f5738]">{initials(data.user.name)}</span></button></div></header>
+      <header className="topbar"><div className="topbar-context flex min-w-0 items-center gap-2"><button className="topbar-action mobile-menu" onClick={() => navigate('explore')} aria-label="Explore"><Compass size={20} /></button><span className="truncate text-[12px] font-semibold">{title}</span><span className="desktop-only ml-1 text-[#d4d9cb]">/</span><span className="desktop-only text-[11px] text-[#59675c]">{primaryTab === 'home' ? 'A little clarity for your day' : primaryTab === 'explore' ? 'Everything your business needs' : primaryTab === 'alerts' ? `${unread} unread update${unread === 1 ? '' : 's'}` : primaryTab === 'chat' ? 'Conversations for every session' : 'Account and workspace'}</span></div><div className="topbar-actions flex items-center gap-2"><span className="desktop-only mr-3 text-[10px] text-[#59675c]">{formatInTimeZone(new Date(), data.business.timezone, 'EEEE, d MMM yyyy')}</span><div className="desktop-only mr-3 h-4 w-px bg-[#e9ece2]" /><button aria-label="Search workspace" className="topbar-action text-[#8a967b]" onClick={() => setSearchOpen(true)}><Search size={18} strokeWidth={1.7} /></button><button type="button" aria-label={alertsButtonLabel(unread)} aria-current={view === 'alerts' ? 'page' : undefined} className={cn('topbar-action topbar-alerts relative text-[#59675c]', view === 'alerts' && 'active')} onClick={() => navigate('alerts')}><Bell size={19} strokeWidth={view === 'alerts' ? 2.2 : 1.7} aria-hidden="true" />{unread > 0 && <span className="topbar-badge" aria-hidden="true">{chatBadge(unread)}</span>}</button><button aria-label="Profile" onClick={() => navigate('profile')} className="topbar-action desktop-only"><span className="tiny-avatar !h-7 !w-7 !bg-[#e8dccc] !text-[#6f5738]">{initials(data.user.name)}</span></button></div></header>
       <main ref={mainRef} tabIndex={-1} aria-label={`${title} workspace view`} className={`content view-${view} ${view === 'calendar' || view === 'bookings' ? 'max-sm:[&>.section-heading>button]:hidden' : ''}`}>
         {isExploreView(view) && (
           <nav aria-label="Explore navigation" className="mb-4">
@@ -398,6 +469,24 @@ export default function WorkspaceApp() {
         {view === 'overview' ? <Dashboard key={data.business.id} data={data} onNavigate={navigate} onNew={() => setBookingOpen(true)} onBooking={setSelectedBookingId} />
           : view === 'explore' ? <RentalExplore data={data} onNavigate={navigate} />
           : view === 'alerts' ? <AlertsView data={data} refresh={refresh} onOpenBooking={openBookingById} onNavigate={navigate} />
+          : view === 'chat' ? <ChatInbox
+            key={data.business.id}
+            mode="participant"
+            viewerType={data.user.accountType}
+            threadId={chatThreadId}
+            onThreadChange={selectChatThread}
+            onUnreadChange={setChatUnread}
+            onOpenBooking={bookingId => void openBookingFromChat(bookingId)}
+            onBookingsChanged={() => void refresh().catch(() => undefined)}
+            className="md:h-[calc(100dvh-160px)] md:min-h-[520px]"
+            heading={{
+              eyebrow: data.user.accountType === 'CLUB' ? 'Club conversations' : 'Your sessions',
+              title: 'Chats',
+              description: data.user.accountType === 'CLUB'
+                ? `Every session ${data.business.name} runs has a chat with its coach and students.`
+                : 'Message your students and the club, and use + to plan the next session.',
+            }}
+          />
           : view === 'profile' ? <ProfileView data={data} onEditProfile={() => setProfileEditorOpen(true)} onSwitchWorkspace={() => setWorkspaceOpen(true)} onBusinessSettings={() => navigate('settings')} onHelp={() => setHelpOpen(true)} onSignOut={() => void signOut()} onNavigate={navigate} />
           : view === 'calendar' || view === 'bookings' ? <CalendarView key={`${data.business.id}:${view}`} data={data} onNew={() => setBookingOpen(true)} onBooking={setSelectedBookingId} listOnly={view === 'bookings'} />
           : <ManagementView key={`${data.business.id}:${view}`} view={view} data={data} refresh={refresh} />}
@@ -408,13 +497,13 @@ export default function WorkspaceApp() {
       <button type="button" className={`workspace-primary-tab workspace-primary-tab-home ${primaryTab === 'home' ? 'active' : ''}`} aria-current={primaryTab === 'home' ? 'page' : undefined} onClick={() => navigate('overview')}><House size={20} strokeWidth={1.7} /><span>Home</span></button>
       <button type="button" className={`workspace-primary-tab workspace-primary-tab-explore ${primaryTab === 'explore' ? 'active' : ''}`} aria-current={primaryTab === 'explore' ? 'page' : undefined} onClick={() => navigate('explore')}><Compass size={20} strokeWidth={1.7} /><span>Explore</span></button>
       <button type="button" className="mobile-bottom-new workspace-primary-tab workspace-primary-tab-create" aria-label={isCoach ? 'Book' : 'Create'} aria-haspopup="dialog" aria-expanded={isCoach ? bookingOpen : createOpen} onClick={() => isCoach ? setBookingOpen(true) : setCreateOpen(true)}><span className="mobile-bottom-new-icon"><Plus size={23} strokeWidth={2} /></span><span>{isCoach ? 'Book' : 'Create'}</span></button>
-      <button type="button" className={`workspace-primary-tab workspace-primary-tab-alerts relative ${primaryTab === 'alerts' ? 'active' : ''}`} aria-current={primaryTab === 'alerts' ? 'page' : undefined} onClick={() => navigate('alerts')}><Bell size={20} strokeWidth={1.7} /><span>Alerts</span>{unread > 0 && <span className="workspace-tab-badge absolute right-[27%] top-2 h-1.5 w-1.5 rounded-full bg-[#a18f58]"><span className="sr-only">{unread} unread</span></span>}</button>
+      <button type="button" className={`workspace-primary-tab workspace-primary-tab-chat relative ${primaryTab === 'chat' ? 'active' : ''}`} aria-current={primaryTab === 'chat' ? 'page' : undefined} aria-label={chatTabLabel(chatUnread)} onClick={() => navigate('chat')}><MessageCircle size={20} strokeWidth={1.7} aria-hidden="true" /><span>Chat</span>{chatUnread > 0 && <span className="workspace-tab-badge absolute right-[24%] top-1.5 grid h-4 min-w-4 place-items-center rounded-full border-2 border-white bg-[#b3483a] px-0.5 text-[8px] font-bold leading-none text-white" aria-hidden="true">{chatBadge(chatUnread)}</span>}</button>
       <button type="button" className={`workspace-primary-tab workspace-primary-tab-profile ${primaryTab === 'profile' ? 'active' : ''}`} aria-current={primaryTab === 'profile' ? 'page' : undefined} onClick={() => navigate('profile')}><UserRound size={20} strokeWidth={1.7} /><span>Profile</span></button>
     </nav>
 
     {!isCoach && <CreateDialog open={createOpen} onOpenChange={setCreateOpen} data={data} onNewBooking={() => setBookingOpen(true)} onNavigate={navigate} />}
     <NewBookingDialog data={data} open={bookingOpen} onClose={() => setBookingOpen(false)} refresh={refresh} />
-    <BookingDetail bookingId={selectedBookingId} data={data} onClose={() => setSelectedBookingId(null)} refresh={refresh} />
+    <BookingDetail bookingId={selectedBookingId} data={data} onClose={() => setSelectedBookingId(null)} refresh={refresh} onOpenChat={bookingId => void openChatForBooking(bookingId)} />
     <PersonalProfileDialog open={profileEditorOpen} onOpenChange={setProfileEditorOpen} user={data.user} refresh={refresh} />
 
     <Dialog open={searchOpen} onOpenChange={setSearchOpen}><DialogContent><DialogTitle className="text-lg font-semibold">Search workspace</DialogTitle><DialogDescription className="mt-2 text-xs text-stone-400">Search Courtly people by name, username, or exact email, alongside local students and bookings.</DialogDescription><div className="relative mt-5"><Search className="absolute left-3 top-3 text-stone-400" size={17} /><input aria-label="Search people, students, and bookings" autoFocus value={search} onChange={event => setSearch(event.target.value)} placeholder="Name, username, exact email, or booking…" className="!pl-10" /></div><div className="mt-4 max-h-80 space-y-1 overflow-y-auto" aria-live="polite" aria-busy={accountSearchLoading}>{accountResults.map(account => <div key={account.username} className="flex w-full items-center gap-3 rounded-lg p-3 text-left"><UserRound size={16} className="shrink-0 text-stone-400" /><span className="min-w-0 flex-1 text-xs"><span className="block truncate">{account.name}</span><span className="mt-1 block truncate text-[10px] text-stone-400">@{account.username}{account.sports.length ? ` · ${account.sports.join(', ')}` : ''}</span></span><span className="text-[9px] font-semibold uppercase tracking-wide text-stone-400">{account.accountType.toLowerCase()}</span></div>)}{searchResults.map(student => <button key={student.id} className="flex w-full items-center gap-3 rounded-lg p-3 text-left hover:bg-stone-50" onClick={() => { navigate('students'); setSearchOpen(false); }}><Users size={16} className="text-stone-400" /><span className="text-xs">{student.name}<span className="mt-1 block text-[10px] text-stone-400">Local student · {student.email}</span></span></button>)}{bookingResults.map(booking => <button key={booking.id} className="flex w-full items-center gap-3 rounded-lg p-3 text-left hover:bg-stone-50" onClick={() => { setSelectedBookingId(booking.id); setSearchOpen(false); }}><CalendarDays size={16} className="text-stone-400" /><span className="text-xs">{booking.serviceName}<span className="mt-1 block text-[10px] text-stone-400">{booking.locationName} · {shortDate(booking.startAt)}</span></span></button>)}{accountSearchLoading && <p className="flex items-center justify-center gap-2 py-3 text-xs text-stone-400"><Loader2 size={14} className="animate-spin" />Searching people…</p>}{accountSearchError && <p role="alert" className="rounded-lg bg-red-50 p-3 text-xs text-red-700">{accountSearchError}</p>}{search && !accountSearchLoading && !accountResults.length && !bookingResults.length && !searchResults.length && <p className="py-7 text-center text-xs text-stone-400">No matches just yet. Try another search.</p>}{!search && <p className="py-5 text-center text-xs text-stone-400">Tip: press Ctrl/Command+K to search from anywhere.</p>}</div></DialogContent></Dialog>

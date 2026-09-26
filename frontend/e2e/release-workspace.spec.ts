@@ -419,7 +419,7 @@ test('coach navigation opens a private-only booking form and books as the curren
   await page.goto('/');
   await expect(page.getByRole('main')).toBeVisible();
 
-  const expectedCoachTabs = ['Home', 'Explore', 'Book', 'Alerts', 'Profile'];
+  const expectedCoachTabs = ['Home', 'Explore', 'Book', 'Chat', 'Profile'];
   const desktopNavigation = page.locator('nav[aria-label="Primary"]');
   const mobileNavigation = page.locator('nav[aria-label="Mobile navigation"]');
   for (const navigation of [desktopNavigation, mobileNavigation]) {
@@ -684,9 +684,12 @@ test('club booking offers only packages whose immutable scopes cover the selecte
   }));
 
   await page.goto('/');
-  const navigation = await page.getByRole('navigation', { name: 'Mobile navigation' }).isVisible()
-    ? page.getByRole('navigation', { name: 'Mobile navigation' })
-    : page.getByRole('navigation', { name: 'Primary' });
+  // Wait for whichever navigation this viewport shows; checking visibility
+  // before the workspace has loaded would pick the hidden desktop sidebar.
+  const navigation = page.locator(
+    'nav[aria-label="Mobile navigation"]:visible, nav[aria-label="Primary"]:visible',
+  );
+  await expect(navigation).toBeVisible();
   await navigation.getByRole('button', { name: 'Create', exact: true }).click();
   await page.getByRole('dialog', { name: 'Create' }).getByRole('button', { name: /New booking/ }).click();
 

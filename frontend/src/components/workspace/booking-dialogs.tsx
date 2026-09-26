@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { CalendarDays, Check, Clock3, MapPin, Repeat2, ArrowRight, Loader2, ExternalLink, UserRound, AlertCircle, Undo2, X, CalendarClock, ShieldCheck } from 'lucide-react';
+import { CalendarDays, Check, Clock3, MapPin, Repeat2, ArrowRight, Loader2, ExternalLink, UserRound, AlertCircle, Undo2, X, CalendarClock, ShieldCheck, MessageCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -153,7 +153,7 @@ function ManagerBookingPrice({ data, serviceId, locationId, packageId, repeat }:
  * than applied. And a recorded payment can be taken back, because recording
  * one is a human action and humans mistype.
  */
-export function BookingDetail({ bookingId, data, onClose, refresh }: { bookingId: string | null; data: WorkspaceResponse; onClose: () => void; refresh: () => Promise<void> }) {
+export function BookingDetail({ bookingId, data, onClose, refresh, onOpenChat }: { bookingId: string | null; data: WorkspaceResponse; onClose: () => void; refresh: () => Promise<void>; onOpenChat?: (bookingId: string) => void }) {
   const managerData = isManagerWorkspace(data) ? data : null;
   const [busy, setBusy] = useState(false);
   const [reschedule, setReschedule] = useState(false);
@@ -273,6 +273,7 @@ export function BookingDetail({ bookingId, data, onClose, refresh }: { bookingId
       <span className={`badge ${current.status.toLowerCase()}`}>{current.status === 'PENDING' ? awaitingCoach ? 'Awaiting coach' : 'Venue pending' : current.status.toLowerCase()}</span>
       {current.recurringId && <span className="badge"><Repeat2 size={11} />Weekly class</span>}
       {managerBooking && <span className="badge">{managerBooking.paymentRoute === 'CLUB' ? 'Paid through the club' : 'Paid to the coach'}</span>}
+      {onOpenChat && current.paymentRoute === 'CLUB' && <Button size="sm" variant="outline" className="ml-auto" onClick={() => onOpenChat(current.id)}><MessageCircle size={13} aria-hidden="true" />Message</Button>}
     </div>
     <div className="my-5 space-y-3 rounded-xl bg-[#f5f7f1] p-4 text-xs"><p className="flex items-center gap-3"><CalendarDays size={15} className="text-stone-400" />{shortDate(current.startAt)}<span className="ml-auto">{time(current.startAt)} – {time(current.endAt)}</span></p><p className="flex items-center gap-3"><MapPin size={15} className="text-stone-400" />{current.locationName}</p><p className="flex items-center gap-3"><UserRound size={15} className="text-stone-400" />{current.instructorName}</p>{current.address && <p className="pl-7">{current.address}</p>}</div>
 

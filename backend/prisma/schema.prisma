@@ -47,6 +47,8 @@ model Business {
   venueReservations    VenueReservation[]
   packageOffers        PackageOffer[]
   paymentIntents       PaymentIntent[]
+  chatThreads          ChatThread[]
+  sessionProposals     SessionProposal[]
 
   @@index([kind, isDemo, slug])
 }
@@ -137,6 +139,7 @@ model Instructor {
   bookings              Booking[]
   payouts               Payment[]
   integrityFlags        IntegrityFlag[]
+  sessionProposals      SessionProposal[]
 
   // Supports the database-level composite FK that keeps a membership's
   // optional instructor inside the same business.
@@ -188,6 +191,7 @@ model Location {
   reservations            VenueReservation[]
   packageOfferLocations   PackageOfferLocation[]
   lessonPackageLocations  LessonPackageLocation[]
+  sessionProposals        SessionProposal[]
 
   // Composite target for tenant-bound scheduling relations.
   @@unique([id, businessId])
@@ -267,27 +271,28 @@ model VenueReservation {
 }
 
 model Service {
-  id            String                 @id @default(cuid())
+  id               String                 @id @default(cuid())
   /// Tenant ownership is immutable after creation at the database boundary.
-  businessId    String
-  business      Business               @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  name          String
-  description   String                 @default("")
-  category      String                 @default("Tennis")
-  type          String                 @default("PRIVATE")
-  duration      Int                    @default(60)
+  businessId       String
+  business         Business               @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name             String
+  description      String                 @default("")
+  category         String                 @default("Tennis")
+  type             String                 @default("PRIVATE")
+  duration         Int                    @default(60)
   /// Integer minor units (cents), never a floating-point currency amount.
-  price         Int                    @default(8000)
-  capacity      Int                    @default(1)
-  bufferMinutes Int                    @default(0)
-  noticeHours   Int                    @default(2)
-  color         String                 @default("sage")
-  active        Boolean                @default(true)
-  locations     ServiceLocation[]
-  bookings      Booking[]
-  packages      LessonPackage[]
-  packageOffers PackageOfferService[]
-  packageScopes LessonPackageService[]
+  price            Int                    @default(8000)
+  capacity         Int                    @default(1)
+  bufferMinutes    Int                    @default(0)
+  noticeHours      Int                    @default(2)
+  color            String                 @default("sage")
+  active           Boolean                @default(true)
+  locations        ServiceLocation[]
+  bookings         Booking[]
+  packages         LessonPackage[]
+  packageOffers    PackageOfferService[]
+  packageScopes    LessonPackageService[]
+  sessionProposals SessionProposal[]
 
   // Composite target for a booking's tenant-bound service relation.
   @@unique([id, businessId])
@@ -536,6 +541,8 @@ model Booking {
   integrityFlags       IntegrityFlag[]
   calendarProjections  CalendarEventProjection[]
   calendarSyncJob      CalendarSyncJob?
+  chatThread           ChatThread?
+  proposalResponses    SessionProposalResponse[]
 
   // Supports the database-level composite FK that keeps a payment's optional
   // booking inside the same business.
@@ -901,4 +908,142 @@ model IntegrityFlag {
 
   @@unique([businessId, coachUserId, studentUserId, type])
   @@index([businessId, status])
+}
+
+// Session chat. Every booked Class has one conversation whose members are
+// derived from the booking itself — its active students, its coach, and the
+// club account — so an enrollment or roster change can never leave a stale
+// member list behind. Platform admins read every thread; nobody else can.
+model ChatThread {
+  id              String            @id @default(cuid())
+  /// Tenant ownership is immutable after creation at the database boundary.
+  businessId      String
+  business        Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  bookingId       String            @unique
+  booking         Booking           @relation(fields: [bookingId, businessId], references: [id, businessId], onDelete: Cascade, onUpdate: NoAction)
+  lastMessageAt   DateTime          @default(now())
+  /// The session start the day-before reminder was posted for. A reschedule
+  /// moves the booking's startAt, so a moved session is reminded again.
+  reminderStartAt DateTime?
+  createdAt       DateTime          @default(now())
+  messages        ChatMessage[]
+  readStates      ChatReadState[]
+  proposals       SessionProposal[]
+
+  @@unique([id, businessId])
+  @@unique([bookingId, businessId])
+  @@index([businessId, lastMessageAt])
+  @@index([lastMessageAt])
+}
+
+/// One line in a session chat. TEXT rows are written by people, SYSTEM rows
+/// describe a lifecycle event (reminders, confirmations) and PROPOSAL rows
+/// carry a next-session proposal card.
+model ChatMessage {
+  id           String           @id @default(cuid())
+  threadId     String
+  thread       ChatThread       @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  /// "TEXT", "SYSTEM" or "PROPOSAL".
+  kind         String           @default("TEXT")
+  /// The lifecycle event behind a SYSTEM row, such as "OPENED" or "REMINDER".
+  event        String           @default("")
+  /// The person who wrote the message or whose action produced the event.
+  /// SQL adds a SET NULL foreign key to User; the name is snapshotted so
+  /// history still reads correctly after an account is renamed or removed.
+  senderUserId String?
+  /// "STUDENT", "COACH", "CLUB" or "SYSTEM".
+  senderRole   String
+  senderName   String           @default("")
+  body         String
+  proposalId   String?
+  proposal     SessionProposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+  createdAt    DateTime         @default(now())
+
+  @@index([threadId, createdAt])
+  @@index([proposalId])
+}
+
+/// How far one person has read one thread. Unread counts are derived from
+/// this rather than stored, so they cannot drift from the messages.
+model ChatReadState {
+  threadId   String
+  thread     ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  /// SQL adds a cascading foreign key to User.
+  userId     String
+  lastReadAt DateTime   @default(now())
+
+  @@id([threadId, userId])
+  @@index([userId])
+}
+
+/// A next session proposed from a chat. Nothing is booked until the other
+/// side accepts; an edit closes this proposal and sends a new one back the
+/// other way, so the person who asked first confirms the final time.
+model SessionProposal {
+  id                  String                    @id @default(cuid())
+  businessId          String
+  business            Business                  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  threadId            String
+  thread              ChatThread                @relation(fields: [threadId, businessId], references: [id, businessId], onDelete: Cascade, onUpdate: NoAction)
+  /// The Class, coach and venue are copied from the chat's session and pinned
+  /// to this business with composite foreign keys.
+  serviceId           String
+  service             Service                   @relation(fields: [serviceId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  instructorId        String
+  instructor          Instructor                @relation(fields: [instructorId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  locationId          String
+  location            Location                  @relation(fields: [locationId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  address             String                    @default("")
+  startAt             DateTime
+  endAt               DateTime
+  /// "STUDENT" or "COACH". A club account can read proposals but never
+  /// raises or answers one.
+  proposedByRole      String
+  /// SQL adds a SET NULL foreign key to User.
+  proposedByUserId    String?
+  proposedByName      String
+  /// The one student this proposal books. Null only for a coach's proposal
+  /// to a whole group, where each student answers for themselves. SQL adds a
+  /// cascading foreign key to User.
+  targetStudentUserId String?
+  targetStudentName   String                    @default("")
+  counterOfId         String?
+  counterOf           SessionProposal?          @relation("SessionProposalCounter", fields: [counterOfId], references: [id], onDelete: SetNull)
+  counters            SessionProposal[]         @relation("SessionProposalCounter")
+  message             String                    @default("")
+  /// "OPEN", "ACCEPTED", "DECLINED", "COUNTERED", "WITHDRAWN" or, for a
+  /// group proposal every student has answered, "CLOSED".
+  status              String                    @default("OPEN")
+  closedAt            DateTime?
+  createdAt           DateTime                  @default(now())
+  responses           SessionProposalResponse[]
+  messages            ChatMessage[]
+
+  @@index([threadId, status])
+  @@index([businessId])
+  @@index([counterOfId])
+}
+
+/// One student's answer to a proposal. The unique pair makes a double
+/// acceptance impossible even if two requests race past the proposal lock.
+model SessionProposalResponse {
+  id              String          @id @default(cuid())
+  proposalId      String
+  proposal        SessionProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  /// The student the answer books or declines. SQL adds a cascading
+  /// foreign key to User.
+  studentUserId   String
+  studentName     String
+  /// Who pressed the button: the student, or the coach answering a
+  /// student's own proposal. SQL adds a SET NULL foreign key to User.
+  responderUserId String?
+  /// "ACCEPTED", "DECLINED" or "COUNTERED".
+  status          String
+  /// The Class booked by an acceptance.
+  bookingId       String?
+  booking         Booking?        @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  createdAt       DateTime        @default(now())
+
+  @@unique([proposalId, studentUserId])
+  @@index([bookingId])
 }

@@ -183,7 +183,7 @@ test('student can search accounts, buy an offer, and see package eligibility', a
 
   const navigation = page.getByRole('navigation', { name: 'Student navigation' });
   await expect(navigation.getByRole('button')).toHaveCount(5);
-  for (const tab of ['Home', 'Explore', 'Book', 'Alerts', 'Profile']) {
+  for (const tab of ['Home', 'Explore', 'Book', 'Chat', 'Profile']) {
     await expect(navigation.getByRole('button', { name: tab, exact: true })).toBeVisible();
   }
   await expect(page.getByRole('tab', { name: 'Classes/clubs' })).toHaveAttribute('aria-selected', 'true');

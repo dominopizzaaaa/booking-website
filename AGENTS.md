@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 3.0.9** · Last updated 2026-09-25
+**Version 3.1.0** · Last updated 2026-09-26
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -69,6 +69,8 @@ backend/           Express + Prisma API (TypeScript, ESM)
     serializers.ts authState, bookingJson, membershipJson, isClubAccount
     scheduling.ts  Slot evaluation, conflict/travel rules, booking creation
     reschedule.ts  Two-sided reschedule requests
+    chat.ts        Session chat API, next-session proposals, reminder worker
+    chat-events.ts Thread creation and lifecycle system lines (no scheduling imports)
     integrity.ts   Club safeguard: detection + review routes
     notifications.ts  Typed workspace alerts (notifyWorkspace)
     account-notifications.ts  Student profile, alerts, and /api/account/*
@@ -95,9 +97,11 @@ frontend/          Next.js App Router (TypeScript, Tailwind)
     types.ts       Shared API contract types — change with the backend
     api.ts         Every API call lives here, typed
     alerts.ts      Alert icon/tone vocabulary shared by both apps
+    chat.ts        Chat list/thread wording and grouping helpers
     utils.ts       cn, money, dates, initials()
   src/components/
     calendar-connection-card.tsx  Shared student/coach personal integration UI
+    chat/                   Session chat inbox, proposal dialog, unread hook
     student-app.tsx         The student app (/manage) — five-tab shell
     workspace/              The provider workspace (/)
     public-booking.tsx      Public booking page for /book/[slug]
@@ -127,6 +131,7 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
 | Change provider UI | `frontend/src/components/workspace/` |
 | Change slot / conflict rules | `backend/src/scheduling.ts` |
 | Change alert icons or ordering | `frontend/src/lib/alerts.ts` |
+| Change session chat, proposals or reminders | `backend/src/chat.ts`, `chat-events.ts`, then `frontend/src/components/chat/` |
 | Add an env var | `backend/src/config.ts` + `backend/.env.example` + README |
 
 ---
@@ -329,6 +334,48 @@ an authenticated global account but no selected workspace; the mutating routes
 still use strict bodies. OAuth return targets are restricted to `/account`,
 `/?tab=profile`, and `/manage?tab=profile`.
 
+### Session chat belongs to the booking
+
+Every Class booking has at most one `ChatThread`, opened when the booking is
+created (a student joining an existing group is announced instead) or lazily
+through `POST /api/chats/bookings/:bookingId` for bookings that predate chat.
+Membership is never stored: `chatRoleIn()` in `chat.ts` derives it from the
+booking — students with an active participant row, the instructor's account
+while its affiliation is active, and the business's `CLUB` account. Use that
+rule (and its query twin, `accessibleThreadsWhere()`/`accessibleThreadsSql()`)
+rather than re-deriving access. A thread that the reader cannot join answers
+404, never 403. Chat exists only for `paymentRoute: 'CLUB'` bookings of an
+active club; the database rejects any other thread.
+
+The API is account-level (`/api/chats`, behind `requireAuth` only), like
+Calendar: a portable coach sees every session they teach across clubs. It never
+serializes account IDs; `mine`, `isYou`, `forYou`, `proposedByYou` and the
+per-proposal `actions` are computed on the server. `/api/admin/chats` exposes
+every thread read-only to the platform console.
+
+System lines are written only through `chat-events.ts`. Opening lines are
+silent; reminders do not badge the `CLUB` account; a line produced by a
+person's action records them as `senderUserId` so it is not unread for them.
+Lifecycle notices (cancelled, moved, left) annotate only an existing thread.
+
+A `SessionProposal` is a next session, not a reschedule. A student proposes for
+themselves and the coach answers; a coach proposes to the one student of a
+private session, or to a whole group, where every student answers once
+(`SessionProposalResponse` is unique per proposal and student). Edit records
+a `COUNTERED` answer, which closes a one-student proposal, and creates a
+targeted counter-proposal in the other direction; a group proposal closes as
+`CLOSED` once every student has answered. Accepting books the concerned student through
+`createBookingsInTransaction(..., { studentUserId })` — both sides agreed, so
+no coach acceptance is needed and the booking follows the club money path and
+Calendar projection like any other. Decisions take the proposal advisory lock
+before the instructor lock; keep that order.
+
+The reminder worker (`startChatReminderWorker`) posts one `REMINDER` per
+thread per start time within 24 hours of a confirmed or venue-pending session,
+locking the thread row so several API processes cannot double-post. Tests
+must pass `businessIds` to `sendDueSessionReminders()` so a sweep never writes
+into another tenant's data in a shared database.
+
 ### Payments and intents are auditable, never deleted
 
 `DELETE /api/payments/:id` sets `reversedAt` and recomputes `participant.paid` /
@@ -388,6 +435,11 @@ wording and then to a neutral bell, so old untyped rows still render. Both apps
 sort unread-first, cap the list at `alertPageSize`, shade unread rows, and open
 a detail dialog that links through to the subject.
 
+Alerts are not a tab. Both apps reach them from the bell at the top right of
+the header, at every width, and keep the `?tab=alerts` route; Chat occupies the
+primary-navigation slot Alerts used to hold. Chat activity is deliberately not
+duplicated into either alert store.
+
 ---
 
 ## 7. Conventions that reviewers enforce
@@ -417,6 +469,12 @@ a detail dialog that links through to the subject.
   second. Anything a person does with a rendered page belongs in
   `frontend/e2e`, where it runs at all three viewports. Do not reach for a
   browser to test a function, and do not assert layout or focus from Vitest.
+- Margin utilities on `p`, `h1`, `h2` and `h3` need the `!` modifier
+  (`!mt-2`): the unlayered reset in `globals.css` outranks Tailwind's layered
+  utilities, so a plain `mt-2` on those elements computes to zero.
+- A new application table must be added to the Elever provisioner's
+  `TRUNCATE` list and its integration test, or the fixture reset fails on the
+  new foreign key.
 - The two alert stores share one vocabulary. A new alert type added in
   `notifications.ts` or `account-notifications.ts` needs a matching entry in
   `frontend/src/lib/alerts.ts`; `frontend/tests/alerts.test.ts` reads both
@@ -568,6 +626,18 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 3.1.0 — 2026-09-26
+
+Added session chat. Every Class has one conversation derived from its booking:
+the coach, every student holding a place and the club account, with the
+platform admin console reading all threads read-only. A day-before reminder is
+posted into each confirmed session's chat, again after a move. Coaches and
+students propose the next session from the chat's + button; the other side
+accepts, declines or edits, an edit sends the new time back for the first
+proposer to accept, and acceptance books a normal club Class that appears on
+every calendar. Chat replaced Alerts in both apps' primary navigation, and
+Alerts moved to a header bell at every width.
 
 ### 3.0.9 — 2026-09-25
 
