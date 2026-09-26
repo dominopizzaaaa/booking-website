@@ -118,7 +118,7 @@ function BusinessBookingDialog({ data, open, onClose, refresh }: NewBookingDialo
     setBusy(true); setError('');
     try {
       const form = new FormData(event.currentTarget);
-      await createBooking({ serviceId, locationId, instructorId: bookingInstructorId, startAt: slot, studentId, repeatWeeks: repeat, ...(packageId ? { packageId } : {}), notes: String(form.get('notes') || ''), address: String(form.get('address') || '') });
+      await createBooking({ serviceId, locationId, ...(isClubCoach ? {} : { instructorId: bookingInstructorId }), startAt: slot, studentId, repeatWeeks: repeat, ...(packageId ? { packageId } : {}), notes: String(form.get('notes') || ''), address: String(form.get('address') || '') });
       await refresh(); toast.success(repeat > 1 ? `${repeat} weekly classes booked` : 'Booking added to your schedule'); onClose();
     } catch (e) {
       const err = e as ApiError; const detail = err.details as { conflicts?: { date: string; reason: string }[] } | undefined;

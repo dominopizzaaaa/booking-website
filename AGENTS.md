@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 3.1.0** · Last updated 2026-09-26
+**Version 3.1.1** · Last updated 2026-09-26
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -626,6 +626,14 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 3.1.1 — 2026-09-26
+
+Made coach-created 1:1 bookings omit `instructorId` from the browser request;
+the API continues to derive the instructor solely from the authenticated club
+affiliation. Added regression coverage for public booking-page home navigation,
+readable type floors, group-package redemption, and repeatable Elever fixture
+provisioning.
 
 ### 3.1.0 — 2026-09-26
 

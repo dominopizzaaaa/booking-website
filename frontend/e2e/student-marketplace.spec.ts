@@ -277,8 +277,9 @@ test('a free student rental hides card and package controls and needs no refund'
   await expect(dialog.getByLabel('Payment option')).toHaveCount(0);
   await expect(dialog.getByLabel('Demo payment result')).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Reserve for free', exact: true }).click();
-  await expect(dialog.getByRole('status')).toContainText('reserved for free');
-  await expect(dialog.getByRole('status')).toContainText('No payment or package credit was needed');
+  const confirmation = dialog.getByRole('status').filter({ hasText: 'reserved for free' });
+  await expect(confirmation).toContainText('reserved for free');
+  await expect(confirmation).toContainText('No payment or package credit was needed');
   await expect(dialog).not.toContainText('no real card was charged');
 });
 

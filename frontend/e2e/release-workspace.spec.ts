@@ -466,8 +466,7 @@ test('coach navigation opens a private-only booking form and books as the curren
     notes: '',
     address: '',
   });
-  if ('instructorId' in body) expect(body.instructorId).toBe(instructor.id);
-  else expect(body).not.toHaveProperty('instructorId');
+  expect(body).not.toHaveProperty('instructorId');
 });
 
 test('club catalog calls lessons Classes and submits only roster-owned coach details', async ({ page }) => {
