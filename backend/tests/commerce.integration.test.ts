@@ -4,7 +4,7 @@ import request from 'supertest';
 import { app } from '../src/app.js';
 import { createBookings } from '../src/scheduling.js';
 import {
-  createAccount, createPackage, createSession, createStudent, inputFor, prisma, TestTenants, verifyTestDatabase, type Fixture,
+  createAccount, createPackage, createSession, createStudent, inputFor, prisma, publicInputFor, TestTenants, verifyTestDatabase, type Fixture,
 } from './fixtures.js';
 
 beforeAll(verifyTestDatabase, 15_000);
@@ -321,6 +321,55 @@ describe.sequential('Package offers and simulated checkout', () => {
       locationId: otherLocation.id, startAt: club.starts.plus({ days: 2 }).toISO()!,
     }));
     expect(await prisma.lessonPackage.findUniqueOrThrow({ where: { id: legacy.id } })).toMatchObject({ usedCredits: 1, paid: false });
+  });
+
+  it('spends one purchased group-service credit when the student joins through the public booking path', async () => {
+    await prisma.service.update({ where: { id: club.service.id }, data: { type: 'GROUP', capacity: 4 } });
+    const otherGroup = await prisma.service.create({ data: {
+      businessId: club.business.id, name: 'Other group clinic', type: 'GROUP', capacity: 4, noticeHours: 0,
+      locations: { create: {
+        locationId: club.location.id, price: 6000, duration: 60,
+        instructors: { create: { instructorId: club.instructor.id } },
+      } },
+    } });
+    const offer = await createOffer().then(response => response.body);
+    const seat = await studentSeat();
+    const checkout = await request(app).post(`/api/account/package-offers/${offer.id}/checkout`)
+      .set('Cookie', seat.cookie).send({
+        idempotencyKey: `group-package-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED',
+      }).expect(201);
+    const packageId = checkout.body.package.id as string;
+
+    const wrongScope = await request(app).post(`/api/public/${club.business.slug}/bookings`)
+      .set('Cookie', seat.cookie).send(publicInputFor(club, {
+        serviceId: otherGroup.id, packageId, startAt: club.starts.plus({ days: 1 }).toISO()!,
+      })).expect(400);
+    expect(wrongScope.body.error).toBe('Package does not cover this service');
+    expect(await prisma.lessonPackage.findUniqueOrThrow({ where: { id: packageId } }))
+      .toMatchObject({ usedCredits: 0 });
+
+    const starter = await createAccount(club, { name: 'Group Starter' });
+    const starterSession = await createSession(club, starter.id);
+    const created = await request(app).post(`/api/public/${club.business.slug}/bookings`)
+      .set('Cookie', starterSession.cookie).send(publicInputFor(club)).expect(201);
+    const joined = await request(app).post(`/api/public/${club.business.slug}/bookings`)
+      .set('Cookie', seat.cookie).send(publicInputFor(club, { packageId })).expect(201);
+
+    expect(joined.body.bookings[0]).toMatchObject({
+      id: created.body.bookings[0].id, type: 'GROUP', paymentRoute: 'CLUB',
+      participants: [{ studentId: seat.student.id, packageId, paid: true }],
+    });
+    expect(await prisma.booking.findUniqueOrThrow({
+      where: { id: created.body.bookings[0].id }, include: { participants: true },
+    })).toMatchObject({
+      paymentRoute: 'CLUB',
+      participants: expect.arrayContaining([
+        expect.objectContaining({ studentId: seat.student.id, packageId, creditConsumed: true, paid: true }),
+      ]),
+    });
+    expect(await prisma.lessonPackage.findUniqueOrThrow({ where: { id: packageId } }))
+      .toMatchObject({ usedCredits: 1 });
+    expect(await prisma.participant.count({ where: { packageId, creditConsumed: true } })).toBe(1);
   });
 
   it('checks booking ownership, charges the remaining amount, replays safely, and derives club payment kind', async () => {

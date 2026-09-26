@@ -102,7 +102,7 @@ export function isManagerWorkspace(workspace: WorkspaceWireResponse): workspace 
 }
 export type Slot = { startAt: string; endAt: string; available: boolean; placesRemaining: number; reason?: string };
 export type PublicBusiness = { business: PublicBookingBusiness; instructors: PublicInstructor[]; locations: PublicLocation[]; services: Service[] };
-export type BookingInput = { serviceId: string; instructorId: string; locationId: string; startAt: string; studentId: string; repeatWeeks?: number; packageId?: string; notes?: string; address?: string };
+export type BookingInput = { serviceId: string; instructorId?: string; locationId: string; startAt: string; studentId: string; repeatWeeks?: number; packageId?: string; notes?: string; address?: string };
 export type PublicBookingInput = { serviceId: string; instructorId: string; locationId: string; startAt: string; student?: { phone?: string; parentName?: string }; repeatWeeks?: number; packageId?: string; notes?: string; address?: string };
 export type BookingResult = { bookings: Booking[]; conflicts?: { date: string; reason: string }[] };
 export type ProviderBookingResult = { bookings: WorkspaceBooking[]; conflicts?: { date: string; reason: string }[] };

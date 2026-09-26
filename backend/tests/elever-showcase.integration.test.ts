@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, type Prisma } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import '../src/config.js';
 
@@ -52,6 +52,24 @@ const applicationTables = [
 const snapshotTables = [...applicationTables, '_prisma_migrations'] as const;
 type ProvisionResult = SpawnSyncReturns<string>;
 type Snapshot = Record<(typeof snapshotTables)[number], { count: number; digest: string }>;
+type MigrationHistoryRow = {
+  id: string; migrationName: string; checksum: string; startedAt: string; finishedAt: string | null;
+  rolledBackAt: string | null; appliedStepsCount: number;
+};
+const expectedApplicationCounts: Record<(typeof applicationTables)[number], number> = {
+  AccountNotification: 2, CalendarBusyInterval: 0, CalendarEventProjection: 0, CalendarOAuthAttempt: 0,
+  CalendarRevocationJob: 0, CalendarSyncJob: 0, CalendarConnection: 0, AuthSession: 0, Availability: 14,
+  ChatMessage: 0, ChatReadState: 0, ChatThread: 0, SessionProposal: 0, SessionProposalResponse: 0,
+  AvailabilityException: 0, Booking: 39, Business: 1, Instructor: 2, IntegrityFlag: 1, LessonPackage: 2,
+  LessonPackageLocation: 1, LessonPackageService: 3, Location: 2, Membership: 3, Notification: 4,
+  PackageOffer: 3, PackageOfferLocation: 2, PackageOfferService: 3, Participant: 138, Payment: 110,
+  PaymentIntent: 8, RescheduleRequest: 0, Service: 2, ServiceInstructor: 4, ServiceLocation: 2,
+  Student: 20, User: 23, VenueOpeningHour: 7, VenueReservation: 4, VenueUnit: 4,
+};
+const showcaseBookingQuery = {
+  include: { instructor: true, service: true, participants: { include: { student: true } } },
+  orderBy: { startAt: 'asc' },
+} satisfies Prisma.BookingFindManyArgs;
 
 function isolatedUrl(schema: string) {
   const url = new URL(databaseUrl);
@@ -94,6 +112,55 @@ async function snapshot(db: PrismaClient): Promise<Snapshot> {
   }
   return result;
 }
+async function showcaseProvisioningState(db: PrismaClient) {
+  const [counts, bookings, businesses, memberships, serviceLocations, migrationHistory] = await Promise.all([
+    snapshot(db),
+    db.booking.findMany(showcaseBookingQuery),
+    db.business.findMany({ select: { id: true }, orderBy: { id: 'asc' } }),
+    db.membership.findMany({ select: { id: true }, orderBy: { id: 'asc' } }),
+    db.serviceLocation.findMany({ select: { id: true }, orderBy: { id: 'asc' } }),
+    db.$queryRaw<MigrationHistoryRow[]>`
+      SELECT id, migration_name AS "migrationName", checksum, started_at::text AS "startedAt",
+        finished_at::text AS "finishedAt", rolled_back_at::text AS "rolledBackAt",
+        applied_steps_count AS "appliedStepsCount"
+      FROM "_prisma_migrations" ORDER BY started_at, id
+    `,
+  ]);
+  const groupClasses = bookings.filter(booking => booking.type === 'GROUP');
+  const privateClasses = bookings.filter(booking => booking.type === 'PRIVATE');
+  const participants = bookings.flatMap(booking => booking.participants);
+  return {
+    bookings,
+    counts,
+    migrationHistory,
+    semantic: {
+      applicationCounts: Object.fromEntries(applicationTables.map(table => [table, counts[table].count])),
+      dateCoverage: [...new Set(bookings.map(booking => singaporeDate(booking.startAt)))].sort(),
+      classSplit: { group: groupClasses.length, private: privateClasses.length },
+      participants: {
+        total: participants.length,
+        paid: participants.filter(participant => participant.paid).length,
+        group: groupClasses.flatMap(booking => booking.participants).length,
+        private: privateClasses.flatMap(booking => booking.participants).length,
+        bySession: bookings.map(booking => ({
+          startAt: booking.startAt.toISOString(), type: booking.type, service: booking.service.name,
+          instructor: booking.instructor.name, status: booking.status, coachAcceptance: booking.coachAcceptance,
+          capacity: booking.capacity, price: booking.price,
+          students: booking.participants
+            .map(participant => ({ name: participant.student.name, paid: participant.paid }))
+            .sort((left, right) => left.name.localeCompare(right.name)),
+        })),
+      },
+    },
+    replacementIds: {
+      businesses: businesses.map(item => item.id),
+      sessions: bookings.map(item => item.id).sort(),
+      participants: participants.map(item => item.id).sort(),
+      memberships: memberships.map(item => item.id),
+      serviceLocations: serviceLocations.map(item => item.id),
+    },
+  };
+}
 
 describe.sequential('Elever showcase provisioner integration', () => {
   let admin: PrismaClient | undefined;
@@ -101,6 +168,7 @@ describe.sequential('Elever showcase provisioner integration', () => {
   let schema = '';
   let url = '';
   let fingerprint = '';
+  let firstProvisioningState: Awaited<ReturnType<typeof showcaseProvisioningState>> | undefined;
 
   beforeAll(async () => {
     const parsed = new URL(databaseUrl);
@@ -202,9 +270,9 @@ describe.sequential('Elever showcase provisioner integration', () => {
     expect(rental.venueUnits.map(unit => unit.name).sort()).toEqual(['Court 1', 'Court 2', 'Court 3', 'Court 4']);
     expect(rental.openingHours).toHaveLength(7);
 
-    const bookings = await database.booking.findMany({
-      include: { instructor: true, service: true, participants: { include: { student: true } } }, orderBy: { startAt: 'asc' },
-    });
+    const provisioningState = await showcaseProvisioningState(database);
+    firstProvisioningState = provisioningState;
+    const bookings = provisioningState.bookings;
     expect(bookings).toHaveLength(39);
     expect(bookings.every(booking => booking.businessId === club.id && booking.paymentRoute === 'CLUB'
       && booking.createdByRole === 'CLUB' && booking.startAt >= new Date('2026-09-30T16:00:00.000Z')
@@ -330,22 +398,43 @@ describe.sequential('Elever showcase provisioner integration', () => {
       type: 'INTEGRITY', title: 'Private session needs your review', actionNeeded: true, instructorId: null,
     });
 
-    const counts = await snapshot(database);
+    const counts = provisioningState.counts;
     expect(counts._prisma_migrations.count).toBe(expectedMigrationCount);
     expect(await database.$queryRawUnsafe<Array<{ failed: number; rolledBack: number }>>(
       `SELECT COUNT(*) FILTER (WHERE finished_at IS NULL AND rolled_back_at IS NULL)::int AS failed, COUNT(*) FILTER (WHERE rolled_back_at IS NOT NULL)::int AS "rolledBack" FROM "_prisma_migrations"`,
     )).toEqual([{ failed: 0, rolledBack: 0 }]);
-    expect(Object.fromEntries(applicationTables.map(table => [table, counts[table].count]))).toEqual({
-      AccountNotification: 2, CalendarBusyInterval: 0, CalendarEventProjection: 0, CalendarOAuthAttempt: 0,
-      CalendarRevocationJob: 0, CalendarSyncJob: 0, CalendarConnection: 0, AuthSession: 0, Availability: 14,
-      // Session chats open when someone first uses them or a reminder is due.
-      ChatMessage: 0, ChatReadState: 0, ChatThread: 0, SessionProposal: 0, SessionProposalResponse: 0,
-      AvailabilityException: 0, Booking: 39, Business: 1, Instructor: 2, IntegrityFlag: 1, LessonPackage: 2,
-      LessonPackageLocation: 1, LessonPackageService: 3, Location: 2, Membership: 3, Notification: 4,
-      PackageOffer: 3, PackageOfferLocation: 2, PackageOfferService: 3, Participant: 138, Payment: 110,
-      PaymentIntent: 8, RescheduleRequest: 0, Service: 2, ServiceInstructor: 4, ServiceLocation: 2,
-      Student: 20, User: 23, VenueOpeningHour: 7, VenueReservation: 4, VenueUnit: 4,
-    });
+    expect(provisioningState.migrationHistory.every(migration =>
+      migration.finishedAt !== null && migration.rolledBackAt === null
+    )).toBe(true);
+    expect(provisioningState.semantic.applicationCounts).toEqual(expectedApplicationCounts);
+  }, 180_000);
+
+  it('successfully replaces a prior fixture with the same row counts and October class schedule', async () => {
+    const database = db!;
+    if (!firstProvisioningState) throw new Error('The initial Elever fixture state was not captured');
+
+    const result = runProvisioner(url, fingerprint);
+    if (result.status !== 0) throw new Error(commandFailure('Elever reprovisioner', result));
+    expect(result.stdout).toContain('"ok": true');
+
+    const replacementState = await showcaseProvisioningState(database);
+    expect(replacementState.semantic).toEqual(firstProvisioningState.semantic);
+    expect(replacementState.semantic.applicationCounts).toEqual(expectedApplicationCounts);
+    expect(replacementState.semantic.dateCoverage).toEqual(expectedOctoberDates);
+    expect(replacementState.semantic.classSplit).toEqual({ group: 9, private: 30 });
+    expect({
+      total: replacementState.semantic.participants.total,
+      paid: replacementState.semantic.participants.paid,
+      group: replacementState.semantic.participants.group,
+      private: replacementState.semantic.participants.private,
+    }).toEqual({ total: 138, paid: 103, group: 108, private: 30 });
+    expect(replacementState.migrationHistory).toEqual(firstProvisioningState.migrationHistory);
+    expect(replacementState.migrationHistory).toHaveLength(expectedMigrationCount);
+
+    for (const key of Object.keys(firstProvisioningState.replacementIds) as Array<keyof typeof firstProvisioningState.replacementIds>) {
+      const priorIds = new Set(firstProvisioningState.replacementIds[key]);
+      expect(replacementState.replacementIds[key].some(id => priorIds.has(id)), `${key} should be replaced`).toBe(false);
+    }
   }, 180_000);
 
   it('rolls the reset back when an unexpected foreign-key table prevents non-CASCADE truncation', async () => {
