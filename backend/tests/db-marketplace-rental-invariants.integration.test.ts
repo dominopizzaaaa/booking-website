@@ -178,7 +178,7 @@ describe.sequential('marketplace and rental database invariants', () => {
       .toEqual([{ paymentRoute: 'CLUB' }]);
   });
 
-  it('preserves historical DIRECT bookings while changing the database default', async () => {
+  it('preserves historical DIRECT bookings and retires SOLO businesses while changing the database default', async () => {
     const migrationSchema = await createSchema();
     const url = isolatedUrl(migrationSchema);
     const migrationDb = new PrismaClient({ datasourceUrl: url });
@@ -186,16 +186,20 @@ describe.sequential('marketplace and rental database invariants', () => {
       for (const file of migrationFiles.slice(0, -1)) applyMigration(url, file);
       executeSql(url, `
         BEGIN;
-        INSERT INTO "Business" ("id","name","slug","ownerName","email","kind")
-          VALUES ('legacy-club','Legacy Club','legacy-direct-club','Legacy Club','legacy-club@example.test','CLUB');
+        INSERT INTO "Business" ("id","name","slug","ownerName","email","kind") VALUES
+          ('legacy-club','Legacy Club','legacy-direct-club','Legacy Club','legacy-club@example.test','CLUB'),
+          ('legacy-solo','Legacy Solo','legacy-solo-practice','Legacy Coach','legacy-solo@example.test','SOLO');
         INSERT INTO "User" ("id","name","email","passwordHash","accountType") VALUES
           ('legacy-club-user','Legacy Club','legacy-club-user@example.test','hash','CLUB'),
-          ('legacy-coach-user','Legacy Coach','legacy-coach@example.test','hash','COACH');
-        INSERT INTO "Instructor" ("id","businessId","name","initials")
-          VALUES ('legacy-coach','legacy-club','Legacy Coach','LC');
+          ('legacy-coach-user','Legacy Coach','legacy-coach@example.test','hash','COACH'),
+          ('legacy-solo-user','Legacy Solo Coach','legacy-solo-user@example.test','hash','COACH');
+        INSERT INTO "Instructor" ("id","businessId","name","initials") VALUES
+          ('legacy-coach','legacy-club','Legacy Coach','LC'),
+          ('legacy-solo-coach','legacy-solo','Legacy Solo Coach','LS');
         INSERT INTO "Membership" ("id","userId","businessId","instructorId") VALUES
           ('legacy-club-membership','legacy-club-user','legacy-club',NULL),
-          ('legacy-coach-membership','legacy-coach-user','legacy-club','legacy-coach');
+          ('legacy-coach-membership','legacy-coach-user','legacy-club','legacy-coach'),
+          ('legacy-solo-membership','legacy-solo-user','legacy-solo','legacy-solo-coach');
         INSERT INTO "Location" ("id","businessId","name")
           VALUES ('legacy-court','legacy-club','Legacy Court');
         INSERT INTO "Service" ("id","businessId","name")
@@ -214,6 +218,9 @@ describe.sequential('marketplace and rental database invariants', () => {
         SELECT column_default FROM information_schema.columns
         WHERE table_schema=current_schema() AND table_name='Booking' AND column_name='paymentRoute'
       `)).toEqual([{ column_default: "'CLUB'::text" }]);
+      expect(await migrationDb.$queryRawUnsafe(`
+        SELECT "legacyReadOnly" FROM "Business" WHERE id='legacy-solo'
+      `)).toEqual([{ legacyReadOnly: true }]);
     } finally {
       await migrationDb.$disconnect();
       await dropSchema(migrationSchema);

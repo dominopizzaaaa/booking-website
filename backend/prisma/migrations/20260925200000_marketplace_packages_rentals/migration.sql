@@ -126,6 +126,13 @@ CREATE UNIQUE INDEX "User_username_key" ON "User"("username");
 ALTER TABLE "Business"
   ADD COLUMN "legacyReadOnly" BOOLEAN NOT NULL DEFAULT false;
 UPDATE "Business" SET "legacyReadOnly" = true WHERE "kind" = 'SOLO';
+
+-- Business has deferred account-shape triggers from the account-invariant
+-- migration. Flush the backfill through them before altering Business again;
+-- PostgreSQL rejects ALTER TABLE while those trigger events are pending.
+SET CONSTRAINTS ALL IMMEDIATE;
+SET CONSTRAINTS ALL DEFERRED;
+
 ALTER TABLE "Business" ADD CONSTRAINT "Business_solo_legacy_read_only_check"
   CHECK ("kind" <> 'SOLO' OR "legacyReadOnly");
 
