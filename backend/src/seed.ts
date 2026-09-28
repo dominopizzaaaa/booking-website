@@ -381,7 +381,7 @@ async function populateBusiness(
   await tx.booking.createMany({ data: bookings });
   await tx.participant.createMany({ data: participants });
   await tx.payment.createMany({ data: payments });
-  await seedSessionChats(tx, { businessId, businessName: business.name, clubUserId: clubAccount.id, now, bookings, participants, students, services, instructors, locations });
+  await seedSessionChats(tx, { businessId, businessName: business.name, businessCurrency: business.currency, clubUserId: clubAccount.id, now, bookings, participants, students, services, instructors, locations });
   const notifications: Prisma.NotificationCreateManyInput[] = [
     { businessId, instructorId: instructors[0].id, title: 'Your week is ready', message: 'Your lessons, students and payments are together in Courtly. All times are shown in Asia/Singapore.', read: true, createdAt: now.minus({ hours: 3 }).toJSDate() },
     { businessId, title: 'Payments are up to date', message: `${payments.length} sample payment records are on the books. Unpaid lessons and unpaid packages remain visible for follow-up.`, read: true, createdAt: now.minus({ hours: 2 }).toJSDate() },
@@ -410,6 +410,7 @@ async function populateBusiness(
 type SeedChatContext = {
   businessId: string;
   businessName: string;
+  businessCurrency: string;
   clubUserId: string;
   now: DateTime;
   bookings: Prisma.BookingCreateManyInput[];
@@ -471,6 +472,7 @@ async function seedSessionChats(tx: Prisma.TransactionClient, context: SeedChatC
     await tx.sessionProposal.create({ data: {
       id: proposalId, businessId, threadId: thread.id, serviceId: lesson.serviceId, instructorId: lesson.instructorId,
       locationId: lesson.locationId, address: lesson.address ?? '', startAt: startAt.toJSDate(),
+      price: lesson.price, currency: context.businessCurrency,
       endAt: startAt.plus({ minutes: lesson.duration }).toJSDate(), proposedByRole: 'COACH',
       proposedByUserId: coach.userId, proposedByName: coach.name, targetStudentUserId: student.userId,
       targetStudentName: student.name, createdAt: now.minus({ minutes: 135 }).toJSDate(),

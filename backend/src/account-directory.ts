@@ -69,6 +69,7 @@ accountDirectoryRouter.get('/accounts/search', requireAuth, accountDirectoryLimi
   const usernameQuery = q.startsWith('@') ? q.slice(1) : q;
   const accounts = await prisma.user.findMany({
     where: {
+      id: { not: req.auth!.user.id },
       passwordHash: { not: null },
       OR: [
         { name: { contains: q, mode: 'insensitive' } },

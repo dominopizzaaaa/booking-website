@@ -53,7 +53,7 @@ app.get('/api/health', async (_req, res) => {
       accountProfile: true, rescheduleRequests: true, coachAcceptance: true,
       paymentReversal: true, integrityFlags: true,
       simulatedStripe: true, packageMarketplace: true, venueRentals: true, accountDirectory: true,
-      sessionChat: true,
+      sessionChat: true, accountChat: true,
       venueSearch: config.googleMapsApiKey ? 'google-places' : 'maps-link',
       googleCalendar: config.googleCalendar.enabled ? 'configured' : 'disabled',
     },
@@ -72,8 +72,8 @@ app.use('/api', commerceRouter);
 app.use('/api', requireAuth, rentalsRouter);
 // Calendar grants belong to the global person, not a selected workspace.
 app.use('/api/calendar', requireAuth, calendarRouter);
-// Session chat is account-level too: a coach reads every session they teach
-// across clubs, and each thread applies its own membership rule.
+// Chat is account-level: people keep direct conversations and session chats
+// across clubs, while each thread applies its own membership rule.
 app.use('/api/chats', requireAuth, chatRouter);
 app.use('/api/account', requireAuth, requireStudent, accountRouter);
 // Account-only public booking management installs its own authentication

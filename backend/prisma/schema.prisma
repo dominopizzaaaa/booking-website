@@ -77,6 +77,8 @@ model User {
   calendarOAuthAttempts CalendarOAuthAttempt[]
   venueReservations     VenueReservation[]
   paymentIntents        PaymentIntent[]
+  chatThreadMemberships ChatThreadMember[]     @relation("ChatThreadMemberUser")
+  chatMembersAdded      ChatThreadMember[]     @relation("ChatThreadMemberAddedBy")
   createdAt             DateTime               @default(now())
 }
 
@@ -85,19 +87,20 @@ model User {
 /// historical only. What the account may do here comes from User.accountType,
 /// so no role is stored: a coach is a coach everywhere, and a club runs itself.
 model Membership {
-  id           String        @id @default(cuid())
-  userId       String
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  businessId   String
-  business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  id                String             @id @default(cuid())
+  userId            String
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  businessId        String
+  business          Business           @relation(fields: [businessId], references: [id], onDelete: Cascade)
   /// The club's roster entry for this coach. A club account never teaches, so
   /// it never has one. Historical SOLO rows may retain their original coach.
   /// SQL also pins it to businessId with a non-cascading composite foreign key.
-  instructorId String?       @unique
-  instructor   Instructor?   @relation(fields: [instructorId], references: [id], onDelete: SetNull)
-  active       Boolean       @default(true)
-  createdAt    DateTime      @default(now())
-  sessions     AuthSession[]
+  instructorId      String?            @unique
+  instructor        Instructor?        @relation(fields: [instructorId], references: [id], onDelete: SetNull)
+  active            Boolean            @default(true)
+  createdAt         DateTime           @default(now())
+  sessions          AuthSession[]
+  chatThreadMembers ChatThreadMember[]
 
   @@unique([userId, businessId])
   @@index([businessId])
@@ -910,30 +913,57 @@ model IntegrityFlag {
   @@index([businessId, status])
 }
 
-// Session chat. Every booked Class has one conversation whose members are
-// derived from the booking itself — its active students, its coach, and the
-// club account — so an enrollment or roster change can never leave a stale
-// member list behind. Platform admins read every thread; nobody else can.
+// SESSION membership remains derived from the booking. ACCOUNT conversations
+// persist their direct participants and any club-assigned coach explicitly.
 model ChatThread {
-  id              String            @id @default(cuid())
-  /// Tenant ownership is immutable after creation at the database boundary.
-  businessId      String
-  business        Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  bookingId       String            @unique
-  booking         Booking           @relation(fields: [bookingId, businessId], references: [id, businessId], onDelete: Cascade, onUpdate: NoAction)
-  lastMessageAt   DateTime          @default(now())
+  id              String             @id @default(cuid())
+  /// "SESSION" is booking-derived; "ACCOUNT" is a direct account conversation.
+  kind            String             @default("SESSION")
+  /// Null for global ACCOUNT conversations. Thread identity is immutable.
+  businessId      String?
+  business        Business?          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  bookingId       String?            @unique
+  booking         Booking?           @relation(fields: [bookingId, businessId], references: [id, businessId], onDelete: Cascade, onUpdate: NoAction)
+  /// Canonical sorted pair of base account IDs for an ACCOUNT conversation.
+  directKey       String?            @unique
+  lastMessageAt   DateTime           @default(now())
   /// The session start the day-before reminder was posted for. A reschedule
   /// moves the booking's startAt, so a moved session is reminded again.
   reminderStartAt DateTime?
-  createdAt       DateTime          @default(now())
+  createdAt       DateTime           @default(now())
   messages        ChatMessage[]
   readStates      ChatReadState[]
+  members         ChatThreadMember[]
   proposals       SessionProposal[]
 
   @@unique([id, businessId])
   @@unique([bookingId, businessId])
   @@index([businessId, lastMessageAt])
   @@index([lastMessageAt])
+}
+
+/// Persisted membership belongs only to ACCOUNT conversations. INITIATOR and
+/// TARGET are the immutable direct pair; a club may temporarily assign one
+/// rostered coach through CLUB_ASSIGNED. SQL owns the cross-row invariants and
+/// the partial uniqueness rule for the active assignment.
+model ChatThreadMember {
+  threadId      String
+  thread        ChatThread  @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User        @relation("ChatThreadMemberUser", fields: [userId], references: [id], onDelete: Cascade)
+  /// "INITIATOR", "TARGET", or "CLUB_ASSIGNED".
+  source        String
+  membershipId  String?
+  membership    Membership? @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  joinedAt      DateTime    @default(now())
+  removedAt     DateTime?
+  addedByUserId String?
+  addedBy       User?       @relation("ChatThreadMemberAddedBy", fields: [addedByUserId], references: [id], onDelete: SetNull)
+
+  @@id([threadId, userId])
+  @@index([userId, removedAt])
+  @@index([membershipId])
+  @@index([addedByUserId])
 }
 
 /// One line in a session chat. TEXT rows are written by people, SYSTEM rows
@@ -984,9 +1014,9 @@ model SessionProposal {
   businessId          String
   business            Business                  @relation(fields: [businessId], references: [id], onDelete: Cascade)
   threadId            String
-  thread              ChatThread                @relation(fields: [threadId, businessId], references: [id, businessId], onDelete: Cascade, onUpdate: NoAction)
-  /// The Class, coach and venue are copied from the chat's session and pinned
-  /// to this business with composite foreign keys.
+  thread              ChatThread                @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  /// The selected Class, coach and venue are pinned to this business with
+  /// composite foreign keys.
   serviceId           String
   service             Service                   @relation(fields: [serviceId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   instructorId        String
@@ -994,6 +1024,9 @@ model SessionProposal {
   locationId          String
   location            Location                  @relation(fields: [locationId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   address             String                    @default("")
+  /// Agreed integer minor-unit price and currency at proposal creation.
+  price               Int
+  currency            String
   startAt             DateTime
   endAt               DateTime
   /// "STUDENT" or "COACH". A club account can read proposals but never

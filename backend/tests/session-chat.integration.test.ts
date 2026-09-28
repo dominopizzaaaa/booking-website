@@ -104,6 +104,71 @@ describe.sequential('Session chat', () => {
     expect(extra.status).toBe(400);
   });
 
+  it('rejects oversized thread and proposal path identifiers before querying chat state', async () => {
+    const tooLong = 'x'.repeat(201);
+    await request(app).get(`/api/chats/${tooLong}`).set('Cookie', coachCookie()).expect(400);
+    await request(app).post(`/api/chats/bookings/${tooLong}`).set('Cookie', coachCookie()).send({}).expect(400);
+    await request(app).post(`/api/chats/${tooLong}/messages`).set('Cookie', coachCookie())
+      .send({ body: 'No query should run for this identifier.' }).expect(400);
+    await request(app).post(`/api/chats/${tooLong}/coach`).set('Cookie', clubCookie())
+      .send({ membershipId: f.coachMembership.id }).expect(400);
+    await request(app).delete(`/api/chats/${tooLong}/coach`).set('Cookie', clubCookie()).send({}).expect(400);
+    await request(app).post(`/api/chats/${tooLong}/read`).set('Cookie', coachCookie()).send({}).expect(400);
+    await request(app).post(`/api/chats/${tooLong}/proposals`).set('Cookie', coachCookie())
+      .send({ startAt: f.starts.plus({ weeks: 1 }).toISO() }).expect(400);
+    for (const action of ['accept', 'decline', 'counter', 'withdraw']) {
+      await request(app).post(`/api/chats/proposals/${tooLong}/${action}`).set('Cookie', coachCookie()).send({}).expect(400);
+    }
+  });
+
+  it('revokes every coach session-chat surface when the instructor is inactive', async () => {
+    const studentAccount = await student('Inactive Coach Student');
+    const bookingId = await bookFor(studentAccount);
+    const thread = await threadFor(bookingId);
+
+    await request(app).post(`/api/chats/${thread.id}/messages`).set('Cookie', studentAccount.cookie)
+      .send({ body: 'This should be unread for the active coach.' }).expect(201);
+    expect((await request(app).get('/api/chats/unread').set('Cookie', coachCookie()).expect(200)).body.unreadThreads).toBe(1);
+
+    const proposed = await request(app).post(`/api/chats/${thread.id}/proposals`).set('Cookie', studentAccount.cookie)
+      .send({ startAt: f.starts.plus({ weeks: 1 }).toISO() }).expect(201);
+    const proposalId = proposed.body.thread.messages.at(-1).proposal.id as string;
+
+    await prisma.instructor.update({ where: { id: f.instructor.id }, data: { active: false } });
+
+    const coachList = await request(app).get('/api/chats').set('Cookie', coachCookie()).expect(200);
+    expect(coachList.body.threads.map((item: { id: string }) => item.id)).not.toContain(thread.id);
+    expect(coachList.body.unreadThreads).toBe(0);
+    expect((await request(app).get('/api/chats/unread').set('Cookie', coachCookie()).expect(200)).body.unreadThreads).toBe(0);
+    await request(app).get(`/api/chats/${thread.id}`).set('Cookie', coachCookie()).expect(404);
+    await request(app).post(`/api/chats/bookings/${bookingId}`).set('Cookie', coachCookie()).send({}).expect(404);
+    await request(app).post(`/api/chats/${thread.id}/messages`).set('Cookie', coachCookie())
+      .send({ body: 'A former coach cannot post.' }).expect(404);
+    await request(app).post(`/api/chats/${thread.id}/read`).set('Cookie', coachCookie()).send({}).expect(404);
+    await request(app).post(`/api/chats/${thread.id}/proposals`).set('Cookie', coachCookie())
+      .send({ startAt: f.starts.plus({ weeks: 2 }).toISO() }).expect(404);
+    for (const action of ['accept', 'decline', 'withdraw']) {
+      await request(app).post(`/api/chats/proposals/${proposalId}/${action}`).set('Cookie', coachCookie()).send({}).expect(404);
+    }
+    await request(app).post(`/api/chats/proposals/${proposalId}/counter`).set('Cookie', coachCookie())
+      .send({ startAt: f.starts.plus({ weeks: 2 }).toISO() }).expect(404);
+
+    const studentView = await request(app).get(`/api/chats/${thread.id}`).set('Cookie', studentAccount.cookie).expect(200);
+    expect(studentView.body.members).toContainEqual(expect.objectContaining({
+      role: 'COACH', name: f.instructor.name, username: '', isYou: false, assigned: true,
+    }));
+    await request(app).get(`/api/chats/${thread.id}`).set('Cookie', clubCookie()).expect(200);
+
+    await prisma.instructor.update({ where: { id: f.instructor.id }, data: { active: true } });
+    await prisma.membership.update({ where: { id: f.coachMembership.id }, data: { active: false } });
+    await request(app).get(`/api/chats/${thread.id}`).set('Cookie', coachCookie()).expect(404);
+    expect((await request(app).get('/api/chats').set('Cookie', coachCookie()).expect(200)).body.threads
+      .map((item: { id: string }) => item.id)).not.toContain(thread.id);
+    expect((await request(app).get('/api/chats/unread').set('Cookie', coachCookie()).expect(200)).body.unreadThreads).toBe(0);
+    await request(app).post(`/api/chats/${thread.id}/messages`).set('Cookie', coachCookie())
+      .send({ body: 'An inactive affiliation cannot post either.' }).expect(404);
+  });
+
   it('books the next session when the student accepts the coach’s proposal', async () => {
     const amelia = await student('Amelia Accepts');
     const sourceId = await bookFor(amelia);
@@ -120,10 +185,15 @@ describe.sequential('Session chat', () => {
       message: 'Same time next week?', awaiting: ['Amelia Accepts'],
       actions: { accept: false, decline: false, counter: false, withdraw: true },
     });
+    expect(card.proposal).not.toHaveProperty('price');
+    expect(card.proposal).not.toHaveProperty('currency');
 
     const studentView = await request(app).get(`/api/chats/${thread.id}`).set('Cookie', amelia.cookie);
     const proposal = studentView.body.messages.at(-1).proposal;
-    expect(proposal).toMatchObject({ forYou: true, actions: { accept: true, decline: true, counter: true, withdraw: false } });
+    expect(proposal).toMatchObject({
+      price: f.service.price, currency: f.business.currency, forYou: true,
+      actions: { accept: true, decline: true, counter: true, withdraw: false },
+    });
     // The club reads along but neither proposes nor answers.
     const clubView = await request(app).get(`/api/chats/${thread.id}`).set('Cookie', clubCookie());
     expect(clubView.body.viewer).toMatchObject({ role: 'CLUB', canPost: true, canPropose: false });
@@ -156,6 +226,59 @@ describe.sequential('Session chat', () => {
     });
     const again = await request(app).post(`/api/chats/proposals/${proposal.id}/accept`).set('Cookie', amelia.cookie).send({});
     expect(again.status).toBe(409);
+  });
+
+  it('does not accept a proposal after its snapshotted class price changes', async () => {
+    const studentAccount = await student('Price Snapshot Student');
+    const thread = await threadFor(await bookFor(studentAccount));
+    const proposed = await request(app).post(`/api/chats/${thread.id}/proposals`).set('Cookie', coachCookie())
+      .send({ startAt: f.starts.plus({ weeks: 1 }).toISO() }).expect(201);
+    const proposal = proposed.body.thread.messages.at(-1).proposal;
+    expect(proposal).not.toHaveProperty('price');
+    expect(proposal).not.toHaveProperty('currency');
+
+    await prisma.serviceLocation.update({
+      where: { serviceId_locationId: { serviceId: f.service.id, locationId: f.location.id } },
+      data: { price: 9_500 },
+    });
+    const accepted = await request(app).post(`/api/chats/proposals/${proposal.id}/accept`)
+      .set('Cookie', studentAccount.cookie).send({}).expect(409);
+    expect(accepted.body.error).toMatch(/price changed/i);
+    expect(await prisma.sessionProposal.findUniqueOrThrow({ where: { id: proposal.id } })).toMatchObject({
+      status: 'OPEN', price: f.service.price, currency: f.business.currency,
+    });
+    expect(await prisma.booking.count({ where: { businessId: f.business.id } })).toBe(1);
+    expect(await prisma.sessionProposalResponse.count({ where: { proposalId: proposal.id } })).toBe(0);
+  });
+
+  it('waits for an in-flight class price change before accepting a proposal', async () => {
+    const studentAccount = await student('Concurrent Price Student');
+    const thread = await threadFor(await bookFor(studentAccount));
+    const proposed = await request(app).post(`/api/chats/${thread.id}/proposals`).set('Cookie', coachCookie())
+      .send({ startAt: f.starts.plus({ weeks: 1 }).toISO() }).expect(201);
+    const proposal = proposed.body.thread.messages.at(-1).proposal;
+    let acceptance: Promise<request.Response> | undefined;
+    let acceptanceSettled = false;
+
+    await prisma.$transaction(async tx => {
+      await tx.serviceLocation.update({
+        where: { serviceId_locationId: { serviceId: f.service.id, locationId: f.location.id } },
+        data: { price: 9_750 },
+      });
+      acceptance = Promise.resolve(request(app).post(`/api/chats/proposals/${proposal.id}/accept`)
+        .set('Cookie', studentAccount.cookie).send({}))
+        .finally(() => { acceptanceSettled = true; });
+      // The acceptance transaction must be waiting on the commercial row,
+      // rather than reading the pre-update price and creating a stale booking.
+      await new Promise(resolve => setTimeout(resolve, 100));
+      expect(acceptanceSettled).toBe(false);
+    });
+
+    const accepted = await acceptance!;
+    expect(accepted.status).toBe(409);
+    expect(accepted.body.error).toMatch(/price changed/i);
+    expect(await prisma.booking.count({ where: { businessId: f.business.id } })).toBe(1);
+    expect(await prisma.sessionProposalResponse.count({ where: { proposalId: proposal.id } })).toBe(0);
   });
 
   it('sends an edited time back so the person who asked first confirms it', async () => {

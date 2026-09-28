@@ -240,14 +240,15 @@ adminRouter.post('/admin/purge-demos', requireAdmin, asyncRoute(async (_req, res
   res.json({ ok: true, deleted });
 }));
 
-// Every session chat is readable here for safety review. The console only
+// Every conversation is readable here for safety review when the generalized
+// contract is requested. Legacy clients continue receiving SESSION rows. The console only
 // reads: it has no account identity to post as and exposes no actions.
 adminRouter.get('/admin/chats', requireAdmin, asyncRoute(async (req, res) => {
   res.json(await listChatThreadsForAdmin(adminChatListQuery.parse(req.query)));
 }));
 
 adminRouter.get('/admin/chats/:threadId', requireAdmin, asyncRoute(async (req, res) => {
-  const { before } = threadQuery.parse(req.query);
+  const { before, contract } = threadQuery.parse(req.query);
   const threadId = z.string().trim().min(1).max(200).parse(req.params.threadId);
-  res.json(await chatThreadForAdmin(threadId, { before }));
+  res.json(await chatThreadForAdmin(threadId, { before, includeAccountChats: contract === 'accounts' }));
 }));

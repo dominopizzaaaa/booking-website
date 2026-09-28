@@ -13,11 +13,13 @@ import {
   Loader2,
   LockKeyhole,
   MessageCircle,
+  MessageCirclePlus,
   Pencil,
   Plus,
   RefreshCw,
   Search,
   SendHorizontal,
+  Settings2,
   Undo2,
   UserRoundCheck,
   UserRoundMinus,
@@ -27,6 +29,7 @@ import {
 import { formatInTimeZone } from 'date-fns-tz';
 import { toast } from 'sonner';
 import {
+  ApiError,
   adminChatThread,
   adminChatThreads,
   counterChatProposal,
@@ -43,6 +46,10 @@ import {
   chatMemberSummary,
   chatPreview,
   chatSessionLine,
+  chatThreadAvatar,
+  chatThreadSubtitle,
+  chatThreadTimezone,
+  chatThreadTitle,
   endsChatRun,
   groupChatDays,
   proposalResponseLabel,
@@ -53,12 +60,15 @@ import {
 import type {
   AccountType,
   ChatMessage,
+  ChatProposalSchedulingChoice,
   ChatProposalAction,
   ChatThreadDetail,
   ChatThreadSummary,
   SessionProposal,
 } from '@/lib/types';
-import { cn, initials, time } from '@/lib/utils';
+import { cn, initials, money, time } from '@/lib/utils';
+import { ManageConversationCoachDialog } from './manage-conversation-coach-dialog';
+import { NewConversationDialog } from './new-conversation-dialog';
 import { ProposeSessionDialog } from './propose-session-dialog';
 
 type ChatMode = 'participant' | 'admin';
@@ -67,9 +77,14 @@ export type ChatInboxProps = {
   mode: ChatMode;
   /** Who is reading; decides small copy such as whether to name the club. */
   viewerType: AccountType | 'ADMIN';
+  /** Optional during rolling deploys where older auth payloads lack usernames. */
+  viewerUsername?: string;
   threadId: string | null;
   onThreadChange: (threadId: string | null) => void;
-  onUnreadChange?: (unreadThreads: number) => void;
+  /** Sequence an unread-producing request before it starts. */
+  beginUnreadRequest?: () => (unreadThreads: number) => void;
+  /** Commit a completed mark-read result over any older in-flight poll. */
+  commitUnreadNow?: (unreadThreads: number) => void;
   onOpenBooking?: (bookingId: string) => void;
   /** A session was booked, moved or cancelled from inside a chat. */
   onBookingsChanged?: () => void;
@@ -88,6 +103,10 @@ const roleLabel = { COACH: 'Coach', STUDENT: 'Student', CLUB: 'Club' } as const;
 
 function messageOf(error: unknown) {
   return error instanceof Error ? error.message : 'Something went wrong. Please try again.';
+}
+
+function accessWasRevoked(error: unknown) {
+  return error instanceof ApiError && (error.status === 403 || error.status === 404);
 }
 
 /** Whether the inbox has room to show the list beside the conversation. */
@@ -129,10 +148,9 @@ function useVisiblePolling(callback: () => void, intervalMs: number, enabled = t
   }, [intervalMs, enabled]);
 }
 
-function ThreadAvatar({ summary, size = 'md' }: { summary: Pick<ChatThreadSummary, 'session' | 'members'>; size?: 'md' | 'lg' }) {
-  const other = summary.members.find(member => !member.isYou && member.role !== 'CLUB'
-    && (summary.members.some(candidate => candidate.isYou && candidate.role === 'STUDENT') ? member.role === 'COACH' : member.role === 'STUDENT'));
-  const group = summary.session.type === 'GROUP';
+function ThreadAvatar({ summary, size = 'md' }: { summary: ChatThreadSummary | ChatThreadDetail; size?: 'md' | 'lg' }) {
+  const avatar = chatThreadAvatar(summary);
+  const group = avatar.kind === 'group';
   return <span
     aria-hidden="true"
     className={cn(
@@ -141,13 +159,22 @@ function ThreadAvatar({ summary, size = 'md' }: { summary: Pick<ChatThreadSummar
       group ? 'bg-[#e6eedd] text-[#4f6847]' : 'bg-[#e8dccc] text-[#6f5738]',
     )}
   >
-    {group ? <UsersRound size={19} strokeWidth={1.7} /> : initials(other?.name ?? summary.session.serviceName)}
+    {group ? <UsersRound size={19} strokeWidth={1.7} /> : initials(avatar.label)}
   </span>;
+}
+
+function accountMemberSummary(members: ChatThreadSummary['members']) {
+  return members.map(member => {
+    if (member.isYou) return `You (${roleLabel[member.role]})`;
+    if (member.role === 'COACH') return `Coach ${member.name}${member.assigned ? ' (assigned)' : ''}`;
+    return `${member.name} (${roleLabel[member.role]})`;
+  }).join(' · ');
 }
 
 function ChatList({
   threads, selectedId, onSelect, search, onSearch, state, error, onRetry, hasMore, loadingMore, onLoadMore,
-  viewerType, heading, nowMs,
+  viewerType, heading, nowMs, onNewConversation, onThreadButtonRef,
+  headingRef,
 }: {
   threads: ChatThreadSummary[];
   selectedId: string | null;
@@ -163,22 +190,32 @@ function ChatList({
   viewerType: ChatInboxProps['viewerType'];
   heading: NonNullable<ChatInboxProps['heading']>;
   nowMs: number;
+  onNewConversation?: () => void;
+  onThreadButtonRef: (threadId: string, element: HTMLButtonElement | null) => void;
+  headingRef: React.RefObject<HTMLHeadingElement | null>;
 }) {
   const searchId = useId();
   return <div className="chat-list-pane flex min-h-0 min-w-0 flex-col">
     <header className="chat-list-header">
       <p className="eyebrow">{heading.eyebrow}</p>
-      <h1 className="!mt-1.5 text-[26px] font-semibold tracking-[-0.8px] text-[#263a30] sm:text-[29px]">{heading.title}</h1>
+      <h1 ref={headingRef} tabIndex={-1} className="!mt-1.5 text-[26px] font-semibold tracking-[-0.8px] text-[#263a30] outline-none sm:text-[29px]">{heading.title}</h1>
       <p className="!mt-1.5 text-xs leading-relaxed text-[#59675c]">{heading.description}</p>
+      {onNewConversation && <button
+        type="button"
+        onClick={onNewConversation}
+        className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#214e3e] px-4 text-xs font-semibold text-white transition hover:bg-[#173b2e]"
+      >
+        <MessageCirclePlus size={16} aria-hidden="true" />New conversation
+      </button>}
       <div className="relative mt-4">
-        <label htmlFor={searchId} className="sr-only">Search chats</label>
+        <label htmlFor={searchId} className="sr-only">Filter conversations</label>
         <Search size={16} aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-[#59675c]" />
         <input
           id={searchId}
           type="search"
           value={search}
           onChange={event => onSearch(event.target.value)}
-          placeholder={viewerType === 'ADMIN' ? 'Search club, class, coach or student' : 'Search class, coach or student'}
+          placeholder={viewerType === 'ADMIN' ? 'Filter by club, class or person' : 'Filter your conversations'}
           className="!rounded-xl !pl-10"
           autoComplete="off"
         />
@@ -192,18 +229,29 @@ function ChatList({
         </div>
           : !threads.length ? <div className="px-6 py-12 text-center">
             <span className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-[#edf2e7] text-[#5f7a51]"><MessageCircle size={21} aria-hidden="true" /></span>
-            <h2 className="!mt-4 text-sm font-semibold text-[#294735]">{search.trim() ? 'No chats match that search' : 'No chats yet'}</h2>
+            <h2 className="!mt-4 text-sm font-semibold text-[#294735]">{search.trim() ? 'No conversations match that filter' : 'No conversations yet'}</h2>
             <p className="!mx-auto !mt-2 max-w-xs text-xs leading-relaxed text-[#59675c]">
-              {search.trim() ? 'Try a class, coach or student name.' : 'Every booked session gets its own chat with the coach, the students and the club.'}
+              {search.trim() ? 'Try a class, club or person name.' : onNewConversation ? 'Start a conversation with a student, coach or club.' : 'Conversations appear here when people start messaging.'}
             </p>
+            {!search.trim() && onNewConversation && <button type="button" onClick={onNewConversation}
+              className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-[#cbd7c5] bg-white px-4 text-xs font-semibold text-[#214e3e] hover:bg-[#f5f8f2]">
+              <MessageCirclePlus size={15} aria-hidden="true" />New conversation
+            </button>}
           </div>
             : <ul aria-label="Chats" className="divide-y divide-[#eef1ea]">
               {threads.map(thread => {
                 const selected = thread.id === selectedId;
                 const unread = thread.unreadCount > 0;
                 const showClub = viewerType !== 'CLUB';
+                const directMembers = thread.members.filter(member => !member.assigned);
+                const title = viewerType === 'ADMIN' && thread.kind === 'ACCOUNT'
+                  ? directMembers.map(member => member.name).join(' & ') || chatThreadTitle(thread)
+                  : chatThreadTitle(thread);
+                const subtitle = chatThreadSubtitle(thread, showClub);
+                const timezone = chatThreadTimezone(thread);
                 return <li key={thread.id}>
                   <button
+                    ref={element => onThreadButtonRef(thread.id, element)}
                     type="button"
                     onClick={() => onSelect(thread.id)}
                     aria-current={selected ? 'true' : undefined}
@@ -215,12 +263,11 @@ function ChatList({
                     <ThreadAvatar summary={thread} />
                     <span className="min-w-0 flex-1">
                       <span className="flex items-baseline gap-2">
-                        <span className={cn('truncate text-sm text-[#263a30]', unread ? 'font-bold' : 'font-semibold')}>{thread.session.serviceName}</span>
-                        <span className="ml-auto shrink-0 text-[11px] text-[#59675c]">{chatListTime(thread.lastMessageAt, thread.session.timezone, nowMs)}</span>
+                        <span className={cn('truncate text-sm text-[#263a30]', unread ? 'font-bold' : 'font-semibold')}>{title}</span>
+                        <span className="ml-auto shrink-0 text-[11px] text-[#59675c]">{chatListTime(thread.lastMessageAt, timezone, nowMs)}</span>
                       </span>
                       <span className="mt-0.5 block truncate text-[11px] text-[#59675c]">
-                        {chatSessionLine(thread.session)}{showClub ? ` · ${thread.session.businessName}` : ''}
-                        {thread.session.status === 'CANCELLED' ? ' · Cancelled' : ''}
+                        {subtitle}
                       </span>
                       <span className={cn('mt-0.5 block truncate text-xs', unread ? 'font-semibold text-[#263a30]' : 'text-[#59675c]')}>
                         {chatPreview(thread.lastMessage)}
@@ -318,6 +365,7 @@ function ProposalMessage({ message, proposal, busy, onAct, onCounter, onOpenBook
           <span className="block text-sm font-medium text-[#33443b]">{time(proposal.startAt, zone)} – {time(proposal.endAt, zone)}</span>
         </h3>
         <p className="!mt-2 text-xs leading-relaxed text-[#59675c]">{proposal.serviceName} · {proposal.locationName} · {proposal.instructorName}</p>
+        {typeof proposal.price === 'number' && Number.isFinite(proposal.price) && proposal.currency && <p className="!mt-1 text-xs font-semibold text-[#3f5f35]">{proposal.price === 0 ? 'Free' : money(proposal.price, proposal.currency)}</p>}
         <p className="!mt-1 text-xs text-[#59675c]">From {proposal.proposedByYou ? 'you' : proposal.proposedByName} · for {audience}</p>
         {proposal.message && <p className="!mt-3 border-l-2 border-[#d9e3d2] pl-3 text-xs italic leading-relaxed text-[#4d5e51]">“{proposal.message}”</p>}
         <p className={cn(
@@ -359,12 +407,16 @@ function ProposalMessage({ message, proposal, busy, onAct, onCounter, onOpenBook
   </li>;
 }
 
-function ChatThreadPane({ threadId, mode, fullscreen, onBack, onUnreadChange, onActivity, onOpenBooking, onBookingsChanged }: {
+function ChatThreadPane({ threadId, mode, fullscreen, singlePane, onBack, beginUnreadRequest, commitUnreadNow, onRead, onRevoked, onActivity, onOpenBooking, onBookingsChanged }: {
   threadId: string;
   mode: ChatMode;
   fullscreen: boolean;
+  singlePane: boolean;
   onBack?: () => void;
-  onUnreadChange?: (unreadThreads: number) => void;
+  beginUnreadRequest?: () => (unreadThreads: number) => void;
+  commitUnreadNow?: (unreadThreads: number) => void;
+  onRead: (threadId: string) => void;
+  onRevoked: (threadId: string) => void;
   onActivity: (detail?: ChatThreadDetail) => void;
   onOpenBooking?: (bookingId: string) => void;
   onBookingsChanged?: () => void;
@@ -379,23 +431,76 @@ function ChatThreadPane({ threadId, mode, fullscreen, onBack, onUnreadChange, on
   const [sending, setSending] = useState(false);
   const [busyProposalId, setBusyProposalId] = useState<string | null>(null);
   const [dialog, setDialog] = useState<null | { counterTo: SessionProposal | null }>(null);
+  const [coachDialogOpen, setCoachDialogOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const stickToBottom = useRef(true);
   const lastReadMessage = useRef<string | null>(null);
   const seenMessages = useRef<Set<string> | null>(null);
+  const lifecycle = useRef(0);
+  const contentGeneration = useRef(0);
+  const latestLoad = useRef(0);
+  const latestEarlier = useRef(0);
+  const latestMutation = useRef(0);
+  const mutationInFlight = useRef(false);
   const composerId = useId();
   const headingId = useId();
+
+  function invalidateContentRequests() {
+    contentGeneration.current += 1;
+    latestLoad.current += 1;
+    latestEarlier.current += 1;
+    setLoadingEarlier(false);
+    return lifecycle.current;
+  }
+
+  function beginMutation() {
+    if (mutationInFlight.current) return null;
+    mutationInFlight.current = true;
+    return { lifecycle: invalidateContentRequests(), mutation: ++latestMutation.current };
+  }
+
+  function mutationIsCurrent(operation: { lifecycle: number; mutation: number }) {
+    return operation.lifecycle === lifecycle.current && operation.mutation === latestMutation.current;
+  }
+
+  const revokeAccess = useCallback((cause: unknown) => {
+    if (mode !== 'participant' || !accessWasRevoked(cause)) return false;
+    contentGeneration.current += 1;
+    latestLoad.current += 1;
+    latestEarlier.current += 1;
+    setLoadingEarlier(false);
+    setDetail(null);
+    setEarlier([]);
+    setEarlierHasMore(null);
+    setDraft('');
+    setDialog(null);
+    setCoachDialogOpen(false);
+    setSending(false);
+    setBusyProposalId(null);
+    lastReadMessage.current = null;
+    seenMessages.current = null;
+    onRevoked(threadId);
+    return true;
+  }, [mode, onRevoked, threadId]);
 
   const markRead = useCallback((latestId: string | null) => {
     if (mode !== 'participant' || !latestId || latestId === lastReadMessage.current) return;
     if (document.visibilityState !== 'visible') return;
     lastReadMessage.current = latestId;
-    markChatRead(threadId).then(result => onUnreadChange?.(result.unreadThreads)).catch(() => {
-      lastReadMessage.current = null;
+    const activeLifecycle = lifecycle.current;
+    const commitUnread = beginUnreadRequest?.();
+    markChatRead(threadId).then(result => {
+      if (commitUnreadNow) commitUnreadNow(result.unreadThreads);
+      else commitUnread?.(result.unreadThreads);
+      if (activeLifecycle === lifecycle.current) onRead(threadId);
+    }).catch(cause => {
+      if (activeLifecycle !== lifecycle.current) return;
+      if (revokeAccess(cause)) return;
+      if (lastReadMessage.current === latestId) lastReadMessage.current = null;
     });
-  }, [mode, threadId, onUnreadChange]);
+  }, [beginUnreadRequest, commitUnreadNow, mode, onRead, revokeAccess, threadId]);
 
   const apply = useCallback((next: ChatThreadDetail) => {
     // A booking made, moved or cancelled while the chat was open (by anyone)
@@ -411,17 +516,29 @@ function ChatThreadPane({ threadId, mode, fullscreen, onBack, onUnreadChange, on
   }, [markRead, onBookingsChanged]);
 
   const load = useCallback(async (quiet = false) => {
+    const activeLifecycle = lifecycle.current;
+    const generation = contentGeneration.current;
+    const request = ++latestLoad.current;
     try {
-      apply(mode === 'admin' ? await adminChatThread(threadId) : await loadChatThread(threadId));
+      const next = mode === 'admin' ? await adminChatThread(threadId) : await loadChatThread(threadId);
+      if (activeLifecycle !== lifecycle.current || generation !== contentGeneration.current || request !== latestLoad.current) return;
+      apply(next);
     } catch (cause) {
+      if (activeLifecycle !== lifecycle.current || generation !== contentGeneration.current || request !== latestLoad.current) return;
+      if (revokeAccess(cause)) return;
       if (!quiet) {
         setState('error');
         setError(messageOf(cause));
       }
     }
-  }, [apply, mode, threadId]);
+  }, [apply, mode, revokeAccess, threadId]);
 
   useEffect(() => {
+    lifecycle.current += 1;
+    contentGeneration.current += 1;
+    latestLoad.current += 1;
+    latestEarlier.current += 1;
+    mutationInFlight.current = false;
     setDetail(null);
     setEarlier([]);
     setEarlierHasMore(null);
@@ -431,6 +548,12 @@ function ChatThreadPane({ threadId, mode, fullscreen, onBack, onUnreadChange, on
     lastReadMessage.current = null;
     seenMessages.current = null;
     void load();
+    return () => {
+      lifecycle.current += 1;
+      contentGeneration.current += 1;
+      latestLoad.current += 1;
+      latestEarlier.current += 1;
+    };
   // Reset only when a different conversation opens, not when callbacks
   // from the host are recreated.
   }, [threadId]);
@@ -445,11 +568,11 @@ function ChatThreadPane({ threadId, mode, fullscreen, onBack, onUnreadChange, on
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [load]);
 
-  // Move focus into the conversation when it opens full screen, so keyboard
-  // and screen-reader users land on the chat they chose.
+  // Move focus into any single-pane conversation, including the 768–879px
+  // range where the list is replaced even though the phone chrome stays.
   useEffect(() => {
-    if (fullscreen && state === 'ready') headingRef.current?.focus({ preventScroll: true });
-  }, [fullscreen, state]);
+    if (singlePane && state === 'ready') headingRef.current?.focus({ preventScroll: true });
+  }, [singlePane, state, threadId]);
 
   const messages = useMemo(() => {
     if (!detail) return [];
@@ -472,20 +595,27 @@ function ChatThreadPane({ threadId, mode, fullscreen, onBack, onUnreadChange, on
     const first = messages[0];
     if (!first || loadingEarlier) return;
     setLoadingEarlier(true);
+    const activeLifecycle = lifecycle.current;
+    const generation = contentGeneration.current;
+    const request = ++latestEarlier.current;
     const element = scrollRef.current;
     const previousHeight = element?.scrollHeight ?? 0;
     try {
       const page = mode === 'admin' ? await adminChatThread(threadId, first.id) : await loadChatThread(threadId, first.id);
+      if (activeLifecycle !== lifecycle.current || generation !== contentGeneration.current || request !== latestEarlier.current) return;
       stickToBottom.current = false;
       setEarlier(current => [...page.messages, ...current]);
       setEarlierHasMore(page.hasEarlier);
       window.requestAnimationFrame(() => {
-        if (element) element.scrollTop = element.scrollHeight - previousHeight;
+        if (activeLifecycle === lifecycle.current && generation === contentGeneration.current && element) {
+          element.scrollTop = element.scrollHeight - previousHeight;
+        }
       });
     } catch (cause) {
-      toast.error(messageOf(cause));
+      if (activeLifecycle === lifecycle.current && generation === contentGeneration.current && request === latestEarlier.current
+        && !revokeAccess(cause)) toast.error(messageOf(cause));
     } finally {
-      setLoadingEarlier(false);
+      if (activeLifecycle === lifecycle.current && request === latestEarlier.current) setLoadingEarlier(false);
     }
   }
 
@@ -493,19 +623,32 @@ function ChatThreadPane({ threadId, mode, fullscreen, onBack, onUnreadChange, on
     event?.preventDefault();
     const body = draft.trim();
     if (!body || sending) return;
+    const operation = beginMutation();
+    if (!operation) return;
     setSending(true);
     try {
       await sendChatMessage(threadId, body);
+      if (!mutationIsCurrent(operation)) return;
+      invalidateContentRequests();
       setDraft('');
       if (composerRef.current) composerRef.current.style.height = '';
       stickToBottom.current = true;
-      await load(true);
       onActivity();
+      await load(true);
     } catch (cause) {
-      toast.error(messageOf(cause));
+      if (mutationIsCurrent(operation)) {
+        if (!revokeAccess(cause)) {
+          invalidateContentRequests();
+          toast.error(messageOf(cause));
+          void load(true);
+        }
+      }
     } finally {
-      setSending(false);
-      composerRef.current?.focus();
+      if (operation.lifecycle === lifecycle.current) {
+        mutationInFlight.current = false;
+        setSending(false);
+        composerRef.current?.focus();
+      }
     }
   }
 
@@ -526,30 +669,61 @@ function ChatThreadPane({ threadId, mode, fullscreen, onBack, onUnreadChange, on
 
   async function act(proposal: SessionProposal, action: ChatProposalAction) {
     if (busyProposalId) return;
+    const operation = beginMutation();
+    if (!operation) return;
     setBusyProposalId(proposal.id);
     try {
       const result = await respondToChatProposal(proposal.id, action);
+      if (!mutationIsCurrent(operation)) return;
+      invalidateContentRequests();
       stickToBottom.current = true;
       apply(result.thread);
       onActivity(result.thread);
-      toast.success(action === 'accept' ? 'Session booked. It’s on the calendar.' : action === 'decline' ? 'Proposal declined' : 'Proposal withdrawn');
+      if (action === 'accept') toast('Proposal accepted');
+      else toast.success(action === 'decline' ? 'Proposal declined' : 'Proposal withdrawn');
     } catch (cause) {
-      toast.error(messageOf(cause));
-      void load(true);
+      if (mutationIsCurrent(operation)) {
+        if (!revokeAccess(cause)) {
+          invalidateContentRequests();
+          toast.error(messageOf(cause));
+          void load(true);
+        }
+      }
     } finally {
-      setBusyProposalId(null);
+      if (operation.lifecycle === lifecycle.current) {
+        mutationInFlight.current = false;
+        setBusyProposalId(null);
+      }
     }
   }
 
-  async function submitProposal(startAt: string, message: string) {
+  async function submitProposal(startAt: string, message: string, scheduling?: ChatProposalSchedulingChoice) {
     const counterTo = dialog?.counterTo ?? null;
-    const result = counterTo
-      ? await counterChatProposal(counterTo.id, startAt, message)
-      : await proposeChatSession(threadId, startAt, message);
-    stickToBottom.current = true;
-    apply(result.thread);
-    onActivity(result.thread);
-    toast.success(counterTo ? 'New time sent' : 'Proposal sent');
+    const operation = beginMutation();
+    if (!operation) throw new Error('Another chat update is still in progress. Please wait.');
+    try {
+      const result = counterTo
+        ? await counterChatProposal(counterTo.id, startAt, message, scheduling)
+        : await proposeChatSession(threadId, startAt, message, scheduling);
+      if (!mutationIsCurrent(operation)) return;
+      invalidateContentRequests();
+      stickToBottom.current = true;
+      apply(result.thread);
+      onActivity(result.thread);
+      toast.success(counterTo ? 'New time sent' : 'Proposal sent');
+    } catch (cause) {
+      if (mutationIsCurrent(operation)) {
+        if (!revokeAccess(cause)) {
+          invalidateContentRequests();
+          void load(true);
+        } else {
+          return;
+        }
+      }
+      throw cause;
+    } finally {
+      if (operation.lifecycle === lifecycle.current) mutationInFlight.current = false;
+    }
   }
 
   if (state === 'loading' || !detail) {
@@ -566,11 +740,18 @@ function ChatThreadPane({ threadId, mode, fullscreen, onBack, onUnreadChange, on
     </div>;
   }
 
-  const { session } = detail;
-  const zone = session.timezone;
+  const session = detail.kind === 'SESSION' ? detail.session : null;
+  const conversation = detail.kind === 'ACCOUNT' ? detail.conversation : null;
+  const zone = chatThreadTimezone(detail);
+  const directMembers = detail.members.filter(member => !member.assigned);
+  const title = mode === 'admin' && conversation
+    ? directMembers.map(member => member.name).join(' & ') || chatThreadTitle(detail)
+    : chatThreadTitle(detail);
+  const baseSubtitle = session ? `${chatSessionLine(session)} · ${session.locationName}` : chatThreadSubtitle(detail, true);
+  const subtitle = conversation ? `${baseSubtitle}${baseSubtitle ? ' · ' : ''}${zone}` : baseSubtitle;
   const days = groupChatDays(messages, zone);
   const canLoadEarlier = earlierHasMore ?? detail.hasEarlier;
-  const statusBadge = session.status === 'CANCELLED' ? 'Cancelled' : session.status === 'COMPLETED' ? 'Completed' : session.status === 'PENDING' ? 'Pending' : null;
+  const statusBadge = session?.status === 'CANCELLED' ? 'Cancelled' : session?.status === 'COMPLETED' ? 'Completed' : session?.status === 'PENDING' ? 'Pending' : null;
 
   return <div className={cn('chat-thread-pane', fullscreen && 'chat-thread-fullscreen')}>
     <header className="chat-thread-header flex items-center gap-2.5 border-b border-[#e6eae3] bg-white/95 px-3 py-2.5 backdrop-blur sm:px-4">
@@ -580,13 +761,18 @@ function ChatThreadPane({ threadId, mode, fullscreen, onBack, onUnreadChange, on
       <ThreadAvatar summary={detail} size="lg" />
       <div className="min-w-0 flex-1">
         <h2 id={headingId} ref={headingRef} tabIndex={-1} className="flex items-center gap-2 truncate text-sm font-semibold text-[#263a30] outline-none">
-          <span className="truncate">{session.serviceName}</span>
+          <span className="truncate">{title}</span>
           {statusBadge && <span className="badge shrink-0 !py-0.5">{statusBadge}</span>}
         </h2>
-        <p className="truncate text-[11px] text-[#59675c]">{chatSessionLine(session)} · {session.locationName}</p>
-        <p className="truncate text-[11px] text-[#59675c]">{chatMemberSummary(detail.members)}</p>
+        <p className="truncate text-[11px] text-[#59675c]">{subtitle}</p>
+        <p className="truncate text-[11px] text-[#59675c]">{conversation ? accountMemberSummary(detail.members) : chatMemberSummary(detail.members)}</p>
       </div>
-      {onOpenBooking && mode === 'participant' && <button type="button" onClick={() => onOpenBooking(session.bookingId)}
+      {conversation && mode === 'participant' && detail.viewer.canAssignCoach && <button type="button" onClick={() => setCoachDialogOpen(true)}
+        aria-label="Manage conversation coach" title="Manage conversation coach"
+        className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl border border-[#dfe5df] px-3 text-xs font-semibold text-[#33443b] transition hover:bg-[#f2f5f1]">
+        <Settings2 size={14} aria-hidden="true" /><span className="max-[480px]:sr-only">Coach</span>
+      </button>}
+      {session && onOpenBooking && mode === 'participant' && <button type="button" onClick={() => onOpenBooking(session.bookingId)}
         className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl border border-[#dfe5df] px-3 text-xs font-semibold text-[#33443b] transition hover:bg-[#f2f5f1]">
         <CalendarClock size={14} aria-hidden="true" /><span className="max-[420px]:sr-only">Session</span>
       </button>}
@@ -595,7 +781,9 @@ function ChatThreadPane({ threadId, mode, fullscreen, onBack, onUnreadChange, on
     <div ref={scrollRef} onScroll={trackScroll} className="chat-messages min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-4 sm:px-4">
       <p className="!mx-auto !mb-6 max-w-md text-balance text-center text-[11px] leading-relaxed text-[#59675c]">
         <LockKeyhole size={12} className="mr-1 inline-block align-[-1px]" aria-hidden="true" />
-        Visible to the coach, the students and the club in this session, and to Courtly’s platform admins for safety.
+        {session
+          ? 'Visible to the coach, the students and the club in this session, and to Courtly’s platform admins for safety.'
+          : `Visible to the people in this conversation${conversation?.assignedCoach ? `, including ${conversation.assignedCoach.name}` : ''}, and to Courtly’s platform admins for safety.`}
       </p>
       {canLoadEarlier && <div className="mb-4 flex justify-center">
         <button type="button" onClick={() => void loadEarlier()} disabled={loadingEarlier} className="inline-flex min-h-11 items-center gap-2 rounded-full border border-[#dfe5df] bg-white px-4 text-xs font-semibold text-[#33443b] hover:bg-[#f2f5f1] disabled:opacity-60">
@@ -624,7 +812,7 @@ function ChatThreadPane({ threadId, mode, fullscreen, onBack, onUnreadChange, on
     </div>
 
     {detail.viewer.canPost ? <form onSubmit={event => void send(event)} className="chat-composer flex items-end gap-2 border-t border-[#e6eae3] bg-white px-2.5 pt-2.5 sm:px-3">
-      {detail.viewer.canPropose && <button type="button" onClick={() => setDialog({ counterTo: null })} aria-label="Propose the next session" title="Propose the next session"
+      {detail.viewer.canPropose && <button type="button" disabled={sending || !!busyProposalId} onClick={() => setDialog({ counterTo: null })} aria-label={session ? 'Propose the next session' : 'Propose a session'} title={session ? 'Propose the next session' : 'Propose a session'}
         className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[#e8efe0] text-[#214e3e] transition hover:bg-[#dce8d1]">
         <Plus size={21} strokeWidth={2.2} aria-hidden="true" />
       </button>}
@@ -635,6 +823,7 @@ function ChatThreadPane({ threadId, mode, fullscreen, onBack, onUnreadChange, on
         rows={1}
         value={draft}
         maxLength={2000}
+        disabled={!!busyProposalId}
         onChange={event => { setDraft(event.target.value); resizeComposer(event.target); }}
         onKeyDown={composerKeyDown}
         placeholder="Message…"
@@ -653,16 +842,29 @@ function ChatThreadPane({ threadId, mode, fullscreen, onBack, onUnreadChange, on
       open
       onOpenChange={open => { if (!open) setDialog(null); }}
       session={session}
+      conversation={detail.conversation}
       counterTo={dialog.counterTo}
       onSubmit={submitProposal}
+    />}
+    {conversation && coachDialogOpen && <ManageConversationCoachDialog
+      open
+      onOpenChange={setCoachDialogOpen}
+      threadId={threadId}
+      conversation={conversation}
+      onUpdated={thread => {
+        invalidateContentRequests();
+        apply(thread);
+        onActivity(thread);
+        toast.success(thread.conversation?.assignedCoach ? 'Conversation coach updated' : 'Coach removed from conversation');
+      }}
     />}
   </div>;
 }
 
 const defaultHeading = {
-  eyebrow: 'Session chats',
+  eyebrow: 'Conversations',
   title: 'Chats',
-  description: 'One conversation for every session, with your coach, the students and the club.',
+  description: 'Message students, coaches and clubs, or keep planning inside a session conversation.',
 };
 
 /**
@@ -671,7 +873,7 @@ const defaultHeading = {
  * screen with its own back button and composer.
  */
 export function ChatInbox({
-  mode, viewerType, threadId, onThreadChange, onUnreadChange, onOpenBooking, onBookingsChanged, className,
+  mode, viewerType, viewerUsername, threadId, onThreadChange, beginUnreadRequest, commitUnreadNow, onOpenBooking, onBookingsChanged, className,
   heading = defaultHeading,
 }: ChatInboxProps) {
   const rootRef = useRef<HTMLElement>(null);
@@ -683,24 +885,33 @@ export function ChatInbox({
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [error, setError] = useState('');
   const [loadingMore, setLoadingMore] = useState(false);
+  const [newConversationOpen, setNewConversationOpen] = useState(false);
+  const [accountChatAvailable, setAccountChatAvailable] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const requestRef = useRef(0);
+  const threadButtons = useRef(new Map<string, HTMLButtonElement>());
+  const listHeadingRef = useRef<HTMLHeadingElement>(null);
+  const openedFromRow = useRef<string | null>(null);
+  const previousThreadId = useRef(threadId);
 
   const loadList = useCallback(async (query: string, quiet = false) => {
     const request = ++requestRef.current;
+    const commitUnread = beginUnreadRequest?.();
+    setLoadingMore(false);
     if (!quiet) setState(current => (current === 'ready' ? current : 'loading'));
     try {
       const result = mode === 'admin' ? await adminChatThreads({ q: query }) : await loadChatThreads({ q: query });
       if (request !== requestRef.current) return;
       setNowMs(Date.now());
-      setThreads(current => {
-        // Keep older pages the reader already opened below the fresh first page.
-        const fresh = new Set(result.threads.map(thread => thread.id));
-        return quiet ? [...result.threads, ...current.filter(thread => !fresh.has(thread.id))] : result.threads;
-      });
-      if (!quiet) setNextCursor(result.nextCursor);
+      // A first-page refresh is also the server's current authorization set.
+      // Replace the rows and cursor together: keeping older pages would retain
+      // revoked previews, while keeping their cursor would skip that page when
+      // the reader asks to load it again.
+      setThreads(result.threads);
+      setAccountChatAvailable(result.accountChatAvailable);
+      setNextCursor(result.nextCursor);
       setState('ready');
-      if (typeof result.unreadThreads === 'number') onUnreadChange?.(result.unreadThreads);
+      if (typeof result.unreadThreads === 'number') commitUnread?.(result.unreadThreads);
     } catch (cause) {
       if (request !== requestRef.current) return;
       if (!quiet) {
@@ -708,7 +919,15 @@ export function ChatInbox({
         setState('error');
       }
     }
-  }, [mode, onUnreadChange]);
+  }, [beginUnreadRequest, mode]);
+
+  const changeSearch = useCallback((value: string) => {
+    // Invalidate first-page polling and pagination immediately; waiting for
+    // the debounce would let an old query append into the new result set.
+    requestRef.current += 1;
+    setLoadingMore(false);
+    setSearch(value);
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => { void loadList(search); }, search ? 250 : 0);
@@ -719,23 +938,30 @@ export function ChatInbox({
 
   async function loadMore() {
     if (!nextCursor || loadingMore) return;
+    const request = ++requestRef.current;
+    const query = search;
+    const cursor = nextCursor;
+    const commitUnread = beginUnreadRequest?.();
     setLoadingMore(true);
     try {
       const result = mode === 'admin'
-        ? await adminChatThreads({ q: search, cursor: nextCursor })
-        : await loadChatThreads({ q: search, cursor: nextCursor });
+        ? await adminChatThreads({ q: query, cursor })
+        : await loadChatThreads({ q: query, cursor });
+      if (request !== requestRef.current) return;
       setThreads(current => [...current, ...result.threads.filter(thread => !current.some(existing => existing.id === thread.id))]);
       setNextCursor(result.nextCursor);
+      if (typeof result.unreadThreads === 'number') commitUnread?.(result.unreadThreads);
     } catch (cause) {
-      toast.error(messageOf(cause));
+      if (request === requestRef.current) toast.error(messageOf(cause));
     } finally {
-      setLoadingMore(false);
+      if (request === requestRef.current) setLoadingMore(false);
     }
   }
 
   // Reading a thread clears its row straight away instead of waiting for the
   // next list poll, and a new message moves the thread to the top.
   const handleActivity = useCallback((detail?: ChatThreadDetail) => {
+    requestRef.current += 1;
     if (detail) {
       setThreads(current => current.map(thread => thread.id === detail.id
         ? { ...thread, unreadCount: 0, lastMessageAt: detail.lastMessageAt, lastMessage: detail.messages.at(-1) ?? thread.lastMessage }
@@ -744,10 +970,27 @@ export function ChatInbox({
     void loadList(search, true);
   }, [loadList, search]);
 
-  const handleUnread = useCallback((count: number) => {
-    onUnreadChange?.(count);
-    setThreads(current => current.map(thread => thread.id === threadId ? { ...thread, unreadCount: 0 } : thread));
-  }, [onUnreadChange, threadId]);
+  const handleRead = useCallback((readThreadId: string) => {
+    requestRef.current += 1;
+    setThreads(current => current.map(thread => thread.id === readThreadId ? { ...thread, unreadCount: 0 } : thread));
+  }, []);
+
+  const handleRevoked = useCallback((revokedThreadId: string) => {
+    requestRef.current += 1;
+    setThreads(current => current.filter(thread => thread.id !== revokedThreadId));
+    if (threadId === revokedThreadId) onThreadChange(null);
+    void loadList(search, true);
+  }, [loadList, onThreadChange, search, threadId]);
+
+  const selectThread = useCallback((selectedThreadId: string) => {
+    openedFromRow.current = selectedThreadId;
+    onThreadChange(selectedThreadId);
+  }, [onThreadChange]);
+
+  const setThreadButtonRef = useCallback((id: string, element: HTMLButtonElement | null) => {
+    if (element) threadButtons.current.set(id, element);
+    else threadButtons.current.delete(id);
+  }, []);
 
   const fullscreen = phone && !!threadId;
   useEffect(() => {
@@ -761,13 +1004,23 @@ export function ChatInbox({
   const showList = split || !threadId;
   const showThread = split || !!threadId;
 
+  useLayoutEffect(() => {
+    const previous = previousThreadId.current;
+    previousThreadId.current = threadId;
+    if (previous && !threadId) {
+      const targetId = openedFromRow.current ?? previous;
+      (threadButtons.current.get(targetId) ?? listHeadingRef.current)?.focus({ preventScroll: true });
+      openedFromRow.current = null;
+    }
+  }, [split, threadId, showList]);
+
   return <section ref={rootRef} aria-label={heading.title} className={cn('chat-inbox', split ? 'chat-inbox-split' : 'chat-inbox-single', className)}>
     {showList && <ChatList
       threads={threads}
       selectedId={threadId}
-      onSelect={onThreadChange}
+      onSelect={selectThread}
       search={search}
-      onSearch={setSearch}
+      onSearch={changeSearch}
       state={state}
       error={error}
       onRetry={() => void loadList(search)}
@@ -777,6 +1030,9 @@ export function ChatInbox({
       viewerType={viewerType}
       heading={heading}
       nowMs={nowMs}
+      onNewConversation={mode === 'participant' && accountChatAvailable ? () => setNewConversationOpen(true) : undefined}
+      onThreadButtonRef={setThreadButtonRef}
+      headingRef={listHeadingRef}
     />}
     {showThread && (threadId
       ? <ChatThreadPane
@@ -784,8 +1040,12 @@ export function ChatInbox({
         threadId={threadId}
         mode={mode}
         fullscreen={fullscreen}
+        singlePane={!split}
         onBack={split ? undefined : () => onThreadChange(null)}
-        onUnreadChange={handleUnread}
+        beginUnreadRequest={beginUnreadRequest}
+        commitUnreadNow={commitUnreadNow}
+        onRead={handleRead}
+        onRevoked={handleRevoked}
         onActivity={handleActivity}
         onOpenBooking={onOpenBooking}
         onBookingsChanged={onBookingsChanged}
@@ -796,8 +1056,24 @@ export function ChatInbox({
         <p className="!mt-2 max-w-xs text-xs leading-relaxed text-[#59675c]">
           {mode === 'admin'
             ? 'Choose a conversation to read it. The admin view is read-only.'
-            : 'Message your session, and use + in a chat to propose your next session.'}
+            : 'Choose a conversation, or start one with a student, coach or club.'}
         </p>
+        {mode === 'participant' && accountChatAvailable && <button type="button" onClick={() => setNewConversationOpen(true)}
+          className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-[#cbd7c5] bg-white px-4 text-xs font-semibold text-[#214e3e] hover:bg-[#f5f8f2]">
+          <MessageCirclePlus size={15} aria-hidden="true" />New conversation
+        </button>}
       </div>)}
+    {mode === 'participant' && accountChatAvailable && <NewConversationDialog
+      open={newConversationOpen}
+      onOpenChange={setNewConversationOpen}
+      viewerUsername={viewerUsername}
+      onCreated={createdThreadId => {
+        openedFromRow.current = createdThreadId;
+        requestRef.current += 1;
+        setSearch('');
+        onThreadChange(createdThreadId);
+        void loadList('', true);
+      }}
+    />}
   </section>;
 }

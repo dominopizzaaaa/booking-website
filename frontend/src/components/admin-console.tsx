@@ -176,10 +176,10 @@ export function AdminConsole() {
           <StatCard icon={<TrendingUp size={16} />} label="New this week" value={t?.bookingsLast7Days} hint="bookings created" />
           <StatCard icon={<Wallet size={16} />} label="Student payments" value={t?.paymentsCount} hint={t ? `${formatMoney(t.paymentsTotal)} collected` : undefined} />
           <StatCard icon={<Layers3 size={16} />} label="Packages" value={t?.packages} hint="prepaid plans" />
-          <StatCard icon={<MessageCircle size={16} />} label="Session chats" value={t?.chatThreads} hint={t?.chatMessages !== undefined ? `${t.chatMessages.toLocaleString()} messages` : undefined} />
+          <StatCard icon={<MessageCircle size={16} />} label="Conversations" value={t?.chatThreads} hint={t?.chatMessages !== undefined ? `${t.chatMessages.toLocaleString()} messages` : undefined} />
         </section>
 
-        {/* Safety review reads every session chat; nothing here can post. */}
+        {/* Safety review reads every conversation; nothing here can post. */}
         <div role="group" aria-label="Console section" className="!mt-8 inline-grid grid-cols-2 rounded-xl border border-[#dce4d4] bg-white p-1">
           {(['businesses', 'chats'] as Section[]).map(option => (
             <button key={option} type="button" aria-pressed={section === option} onClick={() => setSection(option)}
@@ -189,7 +189,7 @@ export function AdminConsole() {
           ))}
         </div>
 
-        {section === 'chats' && <section className="!mt-5" aria-label="Session chats">
+        {section === 'chats' && <section className="!mt-5" aria-label="Conversations">
           <ChatInbox
             mode="admin"
             viewerType="ADMIN"
@@ -198,7 +198,7 @@ export function AdminConsole() {
             className="md:h-[calc(100dvh-140px)] md:min-h-[540px]"
             heading={{
               eyebrow: 'Platform safety',
-              title: 'Session chats',
+              title: 'Conversations',
               description: 'Read any conversation between students, coaches and clubs. This view is read-only.',
             }}
           />

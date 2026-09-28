@@ -135,7 +135,7 @@ export default function WorkspaceApp() {
   const initialized = useRef(false);
   const routedBusinessId = useRef<string | null>(null);
   const mainRef = useRef<HTMLElement>(null);
-  const { unreadThreads: chatUnread, setUnreadThreads: setChatUnread } = useChatUnread(!!data);
+  const { unreadThreads: chatUnread, beginUnreadRequest, commitUnreadNow } = useChatUnread(!!data);
 
   const refresh = useCallback(async () => {
     const workspace = await loadWorkspace();
@@ -473,18 +473,20 @@ export default function WorkspaceApp() {
             key={data.business.id}
             mode="participant"
             viewerType={data.user.accountType}
+            viewerUsername={data.user.username}
             threadId={chatThreadId}
             onThreadChange={selectChatThread}
-            onUnreadChange={setChatUnread}
+            beginUnreadRequest={beginUnreadRequest}
+            commitUnreadNow={commitUnreadNow}
             onOpenBooking={bookingId => void openBookingFromChat(bookingId)}
             onBookingsChanged={() => void refresh().catch(() => undefined)}
             className="md:h-[calc(100dvh-160px)] md:min-h-[520px]"
             heading={{
-              eyebrow: data.user.accountType === 'CLUB' ? 'Club conversations' : 'Your sessions',
+              eyebrow: data.user.accountType === 'CLUB' ? 'Club conversations' : 'Your conversations',
               title: 'Chats',
               description: data.user.accountType === 'CLUB'
-                ? `Every session ${data.business.name} runs has a chat with its coach and students.`
-                : 'Message your students and the club, and use + to plan the next session.',
+                ? `Message students and coaches as ${data.business.name}, or continue a session conversation.`
+                : 'Message students and clubs, or use + in a schedulable conversation to propose a session.',
             }}
           />
           : view === 'profile' ? <ProfileView data={data} onEditProfile={() => setProfileEditorOpen(true)} onSwitchWorkspace={() => setWorkspaceOpen(true)} onBusinessSettings={() => navigate('settings')} onHelp={() => setHelpOpen(true)} onSignOut={() => void signOut()} onNavigate={navigate} />

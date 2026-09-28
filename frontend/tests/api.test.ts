@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  ApiError, adminBusinesses, api, beginGoogleCalendarConnection, cancelAccountBooking, disconnectGoogleCalendar,
-  loadAccountBookings, loadAccountClubs, loadCalendarConnection, loadSlots, loadWorkspace,
-  normalizeCalendarConnection, respondToRescheduleRequest, reversePayment, searchVenues,
+  ApiError, adminBusinesses, api, assignChatCoach, beginGoogleCalendarConnection, cancelAccountBooking,
+  counterChatProposal, createAccountChat, disconnectGoogleCalendar,
+  loadAccountBookings, loadAccountClubs, loadCalendarConnection, loadChatThread, loadChatThreads, loadSlots, loadWorkspace,
+  normalizeCalendarConnection, proposeChatSession, removeChatCoach, respondToRescheduleRequest, reversePayment, searchVenues,
   syncGoogleCalendar, updateCalendarConnection,
 } from '../src/lib/api';
 import { isCoachClubWorkspace, isManagerWorkspace, type WorkspaceResponse, type WorkspaceWireResponse } from '../src/lib/types';
@@ -35,6 +36,21 @@ function respondSequence(bodies: unknown[]) {
       status: 200,
       headers: { get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null) },
       json: async () => body,
+    };
+  }));
+}
+
+function respondResults(results: Array<{ body: unknown; status?: number }>) {
+  let index = 0;
+  calls = [];
+  vi.stubGlobal('fetch', vi.fn(async (url: string, requestInit: RequestInit = {}) => {
+    calls.push({ url, init: requestInit });
+    const result = results[index++];
+    return {
+      ok: (result.status ?? 200) < 400,
+      status: result.status ?? 200,
+      headers: { get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null) },
+      json: async () => result.body,
     };
   }));
 }
@@ -313,6 +329,193 @@ describe('calendar connection', () => {
 
     respond({ ok: true });
     expect(await disconnectGoogleCalendar()).toBeNull();
+  });
+});
+
+describe('generalized chat requests', () => {
+  const session = {
+    bookingId: 'booking-1', serviceId: 'service-1', instructorId: 'instructor-1', locationId: 'location-1',
+    serviceName: 'Private Tennis', type: 'PRIVATE', status: 'CONFIRMED',
+    startAt: '2026-10-21T02:00:00.000Z', endAt: '2026-10-21T03:00:00.000Z',
+    locationName: 'Kallang', instructorName: 'Marcus Tan', businessName: 'Kallang Racket Club',
+    businessSlug: 'kallang-racket-club', timezone: 'Asia/Singapore',
+  };
+  const legacyProposal = {
+    id: 'proposal-1', status: 'OPEN', startAt: '2026-10-28T02:00:00.000Z', endAt: '2026-10-28T03:00:00.000Z',
+    timezone: 'Asia/Singapore', serviceName: 'Private Tennis', locationName: 'Kallang', instructorName: 'Marcus Tan',
+    proposedByRole: 'COACH', proposedByName: 'Marcus Tan', proposedByYou: false, forName: 'Amelia Wong', forYou: true,
+    isCounter: false, message: 'Same time next week?', createdAt: '2026-10-14T01:00:00.000Z',
+    awaiting: ['Amelia Wong'], responses: [],
+    actions: { accept: true, decline: true, counter: true, withdraw: false },
+  };
+  const proposalMessage = {
+    id: 'message-1', kind: 'PROPOSAL', event: null, senderRole: 'COACH', senderName: 'Marcus Tan',
+    body: 'Marcus Tan proposed the next session.', createdAt: '2026-10-14T01:00:00.000Z', mine: false,
+    proposalId: 'proposal-1', proposal: legacyProposal,
+  };
+  const legacyMembers = [
+    { role: 'COACH', name: 'Marcus Tan', isYou: false },
+    { role: 'STUDENT', name: 'Amelia Wong', isYou: true },
+    { role: 'CLUB', name: 'Kallang Racket Club', isYou: false },
+  ];
+  const accountDetail = {
+    id: 'account-thread', kind: 'ACCOUNT', bookingId: null, session: null, lastMessageAt: '2026-10-14T01:00:00.000Z',
+    members: [
+      { role: 'STUDENT', name: 'Amelia Wong', username: 'amelia', isYou: true, assigned: false },
+      { role: 'COACH', name: 'Marcus Tan', username: 'marcus_tan', isYou: false, assigned: false },
+    ],
+    conversation: {
+      title: 'Marcus Tan', subtitle: 'Coach', timezone: 'Asia/Singapore', business: null, assignedCoach: null,
+      schedulingOptions: [],
+    },
+    viewer: { role: 'STUDENT', canPost: true, canPropose: true, canAssignCoach: false },
+    messages: [], hasEarlier: false,
+  };
+
+  it('normalises the pre-generalization SESSION list shape at the API boundary', async () => {
+    respond({
+      threads: [{
+        id: 'thread-1', bookingId: 'booking-1', lastMessageAt: proposalMessage.createdAt, session,
+        members: legacyMembers, lastMessage: proposalMessage, unreadCount: 1,
+      }],
+      nextCursor: null, unreadThreads: 1,
+    });
+
+    const result = await loadChatThreads();
+    const thread = result.threads[0];
+    expect(calls[0].url).toBe('/api/chats?contract=accounts');
+    expect(thread).toMatchObject({
+      kind: 'SESSION', bookingId: 'booking-1',
+      members: [
+        { role: 'COACH', username: '', assigned: false },
+        { role: 'STUDENT', username: '', assigned: false },
+        { role: 'CLUB', username: '', assigned: false },
+      ],
+      conversation: {
+        title: 'Private Tennis', subtitle: 'Marcus Tan · Kallang Racket Club', timezone: 'Asia/Singapore',
+        business: { name: 'Kallang Racket Club', slug: 'kallang-racket-club' },
+      },
+    });
+    if (thread.kind !== 'SESSION') throw new Error('Expected a session thread');
+    expect(thread.conversation.schedulingOptions[0]).toMatchObject({
+      businessSlug: 'kallang-racket-club', serviceId: 'service-1', instructorId: 'instructor-1', locationId: 'location-1',
+    });
+    expect(thread.lastMessage?.proposal).toMatchObject({
+      businessSlug: 'kallang-racket-club', serviceId: 'service-1', instructorId: 'instructor-1', locationId: 'location-1',
+    });
+    expect(thread.lastMessage?.proposal).not.toHaveProperty('price');
+    expect(thread.lastMessage?.proposal).not.toHaveProperty('currency');
+    expect(result.accountChatAvailable).toBe(false);
+  });
+
+  it('falls back to the SESSION-only list when an older API rejects the account contract', async () => {
+    respondResults([
+      { body: { error: 'Invalid query' }, status: 400 },
+      { body: { threads: [], nextCursor: null, unreadThreads: 0 } },
+    ]);
+    const result = await loadChatThreads({ q: 'amelia' });
+    expect(calls.map(call => call.url)).toEqual([
+      '/api/chats?q=amelia&contract=accounts',
+      '/api/chats?q=amelia',
+    ]);
+    expect(result).toMatchObject({ threads: [], accountChatAvailable: false });
+  });
+
+  it('normalises the pre-generalization SESSION detail shape at the API boundary', async () => {
+    respond({
+      id: 'thread-1', bookingId: 'booking-1', lastMessageAt: proposalMessage.createdAt, session,
+      members: legacyMembers, viewer: { role: 'STUDENT', canPost: true, canPropose: true },
+      messages: [proposalMessage], hasEarlier: false,
+    });
+
+    const detail = await loadChatThread('thread/1');
+    expect(calls[0].url).toBe('/api/chats/thread%2F1?contract=accounts');
+    expect(detail).toMatchObject({
+      kind: 'SESSION', bookingId: 'booking-1',
+      viewer: { role: 'STUDENT', canPost: true, canPropose: true, canAssignCoach: false },
+      members: [
+        { role: 'COACH', username: '', assigned: false },
+        { role: 'STUDENT', username: '', assigned: false },
+        { role: 'CLUB', username: '', assigned: false },
+      ],
+      conversation: { title: 'Private Tennis', timezone: 'Asia/Singapore' },
+    });
+    expect(detail.messages[0].proposal).toMatchObject({
+      businessSlug: 'kallang-racket-club', serviceId: 'service-1', instructorId: 'instructor-1', locationId: 'location-1',
+    });
+    expect(detail.messages[0].proposal).not.toHaveProperty('price');
+    expect(detail.messages[0].proposal).not.toHaveProperty('currency');
+  });
+
+  it('opens an account conversation by username', async () => {
+    respond({ threadId: 'thread-1' });
+    await expect(createAccountChat('marcus_tan')).resolves.toEqual({ threadId: 'thread-1' });
+    expect(calls[0]).toMatchObject({
+      url: '/api/chats/accounts',
+      init: { method: 'POST', body: JSON.stringify({ username: 'marcus_tan' }) },
+    });
+  });
+
+  it('keeps intentionally redacted prices optional in an ACCOUNT detail', async () => {
+    const pricedProposal = { ...proposalMessage.proposal, price: 9_500, currency: 'SGD' };
+    const { price: _price, currency: _currency, ...redactedProposal } = pricedProposal;
+    respond({
+      ...accountDetail,
+      messages: [{ ...proposalMessage, proposal: redactedProposal }],
+    });
+    const detail = await loadChatThread('account-thread');
+    expect(detail.kind).toBe('ACCOUNT');
+    expect(detail.messages[0].proposal).not.toHaveProperty('price');
+    expect(detail.messages[0].proposal).not.toHaveProperty('currency');
+  });
+
+  it('assigns and removes a roster coach with escaped thread identifiers', async () => {
+    respond({ thread: accountDetail });
+    await assignChatCoach('thread/1', 'membership-1');
+    expect(calls[0]).toMatchObject({
+      url: '/api/chats/thread%2F1/coach',
+      init: { method: 'POST', body: JSON.stringify({ membershipId: 'membership-1' }) },
+    });
+
+    respond({ thread: accountDetail });
+    await removeChatCoach('thread/1');
+    expect(calls[0]).toMatchObject({
+      url: '/api/chats/thread%2F1/coach',
+      init: { method: 'DELETE', body: '{}' },
+    });
+  });
+
+  it('adds an optional scheduling choice to account proposals and counters', async () => {
+    const scheduling = { businessSlug: 'kallang-club', serviceId: 'service-1', locationId: 'location-1' };
+    respond({ thread: accountDetail });
+    await proposeChatSession('thread-1', '2026-10-21T02:00:00.000Z', 'Same time next week?', scheduling);
+    expect(calls[0]).toMatchObject({
+      url: '/api/chats/thread-1/proposals',
+      init: { method: 'POST', body: JSON.stringify({
+        startAt: '2026-10-21T02:00:00.000Z', message: 'Same time next week?', ...scheduling,
+      }) },
+    });
+
+    respond({ thread: accountDetail, proposalId: 'counter-1' });
+    await counterChatProposal('proposal/1', '2026-10-22T02:00:00.000Z', '', scheduling);
+    expect(calls[0]).toMatchObject({
+      url: '/api/chats/proposals/proposal%2F1/counter',
+      init: { method: 'POST', body: JSON.stringify({
+        startAt: '2026-10-22T02:00:00.000Z', message: '', ...scheduling,
+      }) },
+    });
+  });
+
+  it('preserves the existing session proposal and counter bodies when no choice is needed', async () => {
+    respond({ thread: accountDetail });
+    await proposeChatSession('thread-1', '2026-10-21T02:00:00.000Z', 'Same time next week?');
+    expect(calls[0].init.body).toBe(JSON.stringify({
+      startAt: '2026-10-21T02:00:00.000Z', message: 'Same time next week?',
+    }));
+
+    respond({ thread: accountDetail, proposalId: 'counter-1' });
+    await counterChatProposal('proposal-1', '2026-10-22T02:00:00.000Z');
+    expect(calls[0].init.body).toBe(JSON.stringify({ startAt: '2026-10-22T02:00:00.000Z', message: '' }));
   });
 });
 
