@@ -18,6 +18,8 @@ export const chatSystemEvents = [
   'PROPOSAL_ACCEPTED',
   'PROPOSAL_DECLINED',
   'PROPOSAL_WITHDRAWN',
+  'COACH_ASSIGNED',
+  'COACH_REMOVED',
 ] as const;
 
 export type ChatSystemEvent = (typeof chatSystemEvents)[number];
@@ -88,7 +90,7 @@ export async function ensureChatThread(tx: Tx, bookingId: string) {
   return thread.id;
 }
 
-type SystemLine = {
+export type SystemLine = {
   event: Exclude<ChatSystemEvent, 'OPENED'>;
   body: string;
   /** Whose action produced the line; they are not shown it as unread. */
@@ -101,11 +103,8 @@ type SystemLine = {
   openThread?: boolean;
 };
 
-export async function postChatSystemLine(tx: Tx, bookingId: string, line: SystemLine) {
-  const threadId = line.openThread
-    ? await ensureChatThread(tx, bookingId)
-    : (await tx.chatThread.findUnique({ where: { bookingId }, select: { id: true } }))?.id ?? null;
-  if (!threadId) return null;
+/** Write a lifecycle line when the caller already knows the conversation. */
+export async function postThreadSystemLine(tx: Tx, threadId: string, line: SystemLine) {
   const createdAt = new Date();
   const message = await tx.chatMessage.create({
     data: {
@@ -116,6 +115,14 @@ export async function postChatSystemLine(tx: Tx, bookingId: string, line: System
   });
   await tx.chatThread.updateMany({ where: { id: threadId, lastMessageAt: { lt: createdAt } }, data: { lastMessageAt: createdAt } });
   return message;
+}
+
+export async function postChatSystemLine(tx: Tx, bookingId: string, line: SystemLine) {
+  const threadId = line.openThread
+    ? await ensureChatThread(tx, bookingId)
+    : (await tx.chatThread.findUnique({ where: { bookingId }, select: { id: true } }))?.id ?? null;
+  if (!threadId) return null;
+  return postThreadSystemLine(tx, threadId, line);
 }
 
 /** Everything a booking lifecycle writer needs to annotate its chat. */

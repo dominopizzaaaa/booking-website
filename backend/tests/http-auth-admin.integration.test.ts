@@ -48,6 +48,7 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
         venueRentals: true,
         accountDirectory: true,
         sessionChat: true,
+        accountChat: true,
         venueSearch: 'maps-link',
         googleCalendar: 'disabled',
       },

@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   alertsButtonLabel, chatBadge, chatListTime, chatMemberSummary, chatPreview, chatSessionLine, chatTabLabel,
-  endsChatRun, groupChatDays, listNames, nextSessionDate, proposalResponseLabel, proposalStatusLine, startsChatRun,
+  chatThreadAvatar, chatThreadSubtitle, chatThreadTimezone, chatThreadTitle, endsChatRun, groupChatDays, listNames,
+  nextSessionDate, proposalResponseLabel, proposalStatusLine, startsChatRun,
 } from '../src/lib/chat';
-import type { ChatMessage, SessionProposal } from '../src/lib/types';
+import type { ChatMessage, ChatThreadSummary, SessionProposal } from '../src/lib/types';
 
 const zone = 'Asia/Singapore';
 // 2026-10-14 10:00 in Singapore.
@@ -16,6 +17,8 @@ const message = (overrides: Partial<ChatMessage> = {}): ChatMessage => ({
 
 const proposal = (overrides: Partial<SessionProposal> = {}): SessionProposal => ({
   id: 'proposal', status: 'OPEN', startAt: '2026-10-21T02:00:00.000Z', endAt: '2026-10-21T03:00:00.000Z', timezone: zone,
+  price: 6500, currency: 'SGD',
+  businessSlug: 'kallang-racket-club', serviceId: 'service', instructorId: 'instructor', locationId: 'location',
   serviceName: 'Private Tennis', locationName: 'Kallang', instructorName: 'Marcus Tan',
   proposedByRole: 'COACH', proposedByName: 'Marcus Tan', proposedByYou: false, forName: 'Amelia Wong', forYou: true,
   isCounter: false, message: '', createdAt: '2026-10-14T01:00:00.000Z', awaiting: ['Amelia Wong'], responses: [],
@@ -76,17 +79,69 @@ describe('session and member lines', () => {
 
   it('names a private student but counts a group', () => {
     expect(chatMemberSummary([
-      { role: 'COACH', name: 'Marcus Tan', isYou: false },
-      { role: 'STUDENT', name: 'Amelia Wong', isYou: true },
-      { role: 'CLUB', name: 'Kallang Racket Club', isYou: false },
+      { role: 'COACH', name: 'Marcus Tan', username: 'marcus', isYou: false, assigned: true },
+      { role: 'STUDENT', name: 'Amelia Wong', username: 'amelia', isYou: true, assigned: false },
+      { role: 'CLUB', name: 'Kallang Racket Club', username: 'kallang', isYou: false, assigned: false },
     ])).toBe('Coach Marcus Tan · Amelia Wong · Kallang Racket Club');
     expect(chatMemberSummary([
-      { role: 'COACH', name: 'Sarah Lim', isYou: false },
-      { role: 'STUDENT', name: 'Ethan', isYou: false },
-      { role: 'STUDENT', name: 'Chloe', isYou: false },
-      { role: 'CLUB', name: 'Club', isYou: false },
+      { role: 'COACH', name: 'Sarah Lim', username: 'sarah', isYou: false, assigned: true },
+      { role: 'STUDENT', name: 'Ethan', username: 'ethan', isYou: false, assigned: false },
+      { role: 'STUDENT', name: 'Chloe', username: 'chloe', isYou: false, assigned: false },
+      { role: 'CLUB', name: 'Club', username: 'club', isYou: false, assigned: false },
     ])).toBe('Coach Sarah Lim · 2 students · Club');
     expect(listNames(['A', 'B', 'C', 'D'])).toBe('A, B and 2 more');
+  });
+});
+
+describe('generalized thread presentation', () => {
+  const members = [
+    { role: 'STUDENT' as const, name: 'Amelia Wong', username: 'amelia', isYou: true, assigned: false },
+    { role: 'CLUB' as const, name: 'Kallang Club Account', username: 'kallang', isYou: false, assigned: false },
+    { role: 'COACH' as const, name: 'Marcus Tan', username: 'marcus', isYou: false, assigned: true },
+  ];
+  const accountThread = {
+    id: 'thread', kind: 'ACCOUNT' as const, bookingId: null, session: null, lastMessageAt: '2026-10-14T01:00:00.000Z',
+    members, lastMessage: null, unreadCount: 0,
+    conversation: {
+      title: 'Kallang Racket Club', subtitle: 'Club · Coach Marcus Tan', timezone: zone,
+      business: { name: 'Kallang Racket Club', slug: 'kallang-racket-club' }, assignedCoach: members[2],
+      schedulingOptions: [],
+    },
+  } satisfies ChatThreadSummary;
+
+  it('uses server-authored account conversation context without a session', () => {
+    expect(chatThreadTitle(accountThread)).toBe('Kallang Racket Club');
+    expect(chatThreadSubtitle(accountThread)).toBe('Club · Coach Marcus Tan');
+    expect(chatThreadTimezone(accountThread)).toBe(zone);
+    expect(chatThreadAvatar(accountThread)).toEqual({ kind: 'initials', label: 'Kallang Racket Club' });
+  });
+
+  it('falls back to initiating participants and excludes an assigned coach', () => {
+    const thread = {
+      ...accountThread,
+      conversation: { ...accountThread.conversation, title: '  ', subtitle: '' },
+    };
+    expect(chatThreadTitle(thread)).toBe('Kallang Club Account');
+    expect(chatThreadSubtitle(thread)).toBe('Coach Marcus Tan · Amelia Wong · Kallang Club Account');
+  });
+
+  it('preserves the existing session title, context and group avatar decision', () => {
+    const thread = {
+      ...accountThread,
+      kind: 'SESSION' as const,
+      bookingId: 'booking',
+      session: {
+        bookingId: 'booking', serviceId: 'service', instructorId: 'instructor', locationId: 'location',
+        serviceName: 'Group Tennis', type: 'GROUP' as const, status: 'CANCELLED' as const,
+        startAt: '2026-10-21T02:00:00.000Z', endAt: '2026-10-21T03:00:00.000Z', locationName: 'Kallang',
+        instructorName: 'Marcus Tan', businessName: 'Kallang Racket Club', businessSlug: 'kallang-racket-club', timezone: zone,
+      },
+    } satisfies ChatThreadSummary;
+    expect(chatThreadTitle(thread)).toBe('Group Tennis');
+    expect(chatThreadSubtitle(thread)).toBe('Wed, 21 Oct · 10:00 AM · Kallang Racket Club · Cancelled');
+    expect(chatThreadSubtitle(thread, false)).toBe('Wed, 21 Oct · 10:00 AM · Cancelled');
+    expect(chatThreadTimezone(thread)).toBe(zone);
+    expect(chatThreadAvatar(thread)).toEqual({ kind: 'group', label: 'Group Tennis' });
   });
 });
 

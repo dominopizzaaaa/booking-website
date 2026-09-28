@@ -1,6 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type APIResponse, type Locator, type Page } from '@playwright/test';
 import type { AccountBookingsResult, ManagerWorkspace } from '../src/lib/types';
+import { money } from '../src/lib/utils';
 
 const password = 'TestingOnly!2026';
 
@@ -127,12 +128,14 @@ test('a coach and student agree the next session in chat and it lands on the cal
   await expect(page.getByRole('banner').getByRole('button', { name: /^Alerts/ })).toBeVisible();
   await studentNavigation.getByRole('button', { name: /^Chat, 1 unread chat$/ }).click();
   log = await openThread(page, serviceName);
+  await expect(firstCard).toContainText(money(9_000, club.business.currency));
   await expect(firstCard).toContainText('Your answer is needed');
   await expect(firstCard).toContainText('“Same time next week?”');
   await expectNoWcagViolations(page);
   await firstCard.getByRole('button', { name: 'Edit' }).click();
   dialog = page.getByRole('dialog', { name: 'Suggest a different time' });
   await expect(dialog.getByLabel('Date')).toHaveValue(nextDate);
+  await expect(dialog).toContainText(`Session price: ${money(9_000, club.business.currency)}`);
   await expect(dialog.getByRole('button', { name: '10:00 AM', exact: true })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: '11:00 AM', exact: true })).toBeVisible();
   await expectNoWcagViolations(page);
@@ -142,6 +145,7 @@ test('a coach and student agree the next session in chat and it lands on the cal
   await expect(firstCard).toContainText('You suggested another time');
   const counterCard = proposalCard(page, /11:00 AM – 12:00 PM/);
   await expect(counterCard).toContainText('New time suggested');
+  await expect(counterCard).toContainText(money(9_000, club.business.currency));
   await expect(counterCard).toContainText(`Waiting for ${coachName}`);
   await page.screenshot({ path: `.data/screenshots/session-chat-student-${testInfo.project.name}.png`, fullPage: true });
 
@@ -151,6 +155,9 @@ test('a coach and student agree the next session in chat and it lands on the cal
   log = await openThread(page, serviceName);
   await expect(counterCard).toContainText('Your answer is needed');
   await counterCard.getByRole('button', { name: 'Accept' }).click();
+  const acceptedToast = page.locator('[data-sonner-toast]').filter({ hasText: 'Proposal accepted' });
+  await expect(acceptedToast).toBeVisible();
+  expect(await acceptedToast.getAttribute('data-type')).toBeNull();
   await expect(log.getByText(new RegExp(`${studentName} is booked for ${serviceName}.*added to the calendar`))).toBeVisible();
   await expect(counterCard).toContainText(`${studentName} is booked`);
   await expectNoHorizontalOverflow(page);
@@ -162,7 +169,7 @@ test('a coach and student agree the next session in chat and it lands on the cal
   expect(next?.booking).toMatchObject({ status: 'CONFIRMED', serviceName, coachAcceptance: 'NOT_REQUIRED' });
 });
 
-test('the club opens a session chat from its booking detail and messages everyone in it', async ({ page }) => {
+test('the club opens a session chat from its booking detail and messages everyone in it', async ({ page }, testInfo) => {
   test.setTimeout(90_000);
   await responseJson(await page.request.post('/api/auth/demo', { data: {} }));
   const club = await responseJson<ManagerWorkspace>(await page.request.get('/api/workspace'));
@@ -194,25 +201,29 @@ test('the club opens a session chat from its booking detail and messages everyon
 
   // A conversation opened from the list is its own history entry, so Back
   // returns to the list on every layout.
+  // Exercise the non-phone single-pane breakpoint in the desktop project too.
+  if (testInfo.project.name === 'desktop-1440') await page.setViewportSize({ width: 800, height: 900 });
   await page.goto('/?tab=chat');
   const thread = page.getByRole('list', { name: 'Chats' }).getByRole('button', { name: new RegExp(message) });
   await thread.click();
   await expect(page).toHaveURL(url => url.searchParams.has('thread'));
   await expect(page.getByRole('log').getByText(message)).toBeVisible();
+  const threadHeading = page.locator('.chat-thread-header').getByRole('heading', { name: booking!.serviceName, exact: true });
+  await expect(threadHeading).toBeFocused();
   await page.goBack();
   await expect(page).toHaveURL(url => url.searchParams.get('tab') === 'chat' && !url.searchParams.has('thread'));
-  await expect(thread).toBeVisible();
+  await expect(thread).toBeFocused();
 
   // Where the conversation replaces the list, its back arrow pops that entry
   // rather than stacking another list, so Back never reopens the thread.
   await thread.click();
   await expect(page.getByRole('log').getByText(message)).toBeVisible();
+  await expect(threadHeading).toBeFocused();
   const openedLength = await page.evaluate(() => window.history.length);
   const backArrow = page.getByRole('button', { name: 'Back to chats' });
-  if (await backArrow.isVisible()) {
-    await backArrow.click();
-    await expect(page).toHaveURL(url => url.searchParams.get('tab') === 'chat' && !url.searchParams.has('thread'));
-    await expect(thread).toBeVisible();
-    expect(await page.evaluate(() => window.history.length)).toBe(openedLength);
-  }
+  await expect(backArrow).toBeVisible();
+  await backArrow.click();
+  await expect(page).toHaveURL(url => url.searchParams.get('tab') === 'chat' && !url.searchParams.has('thread'));
+  await expect(thread).toBeFocused();
+  expect(await page.evaluate(() => window.history.length)).toBe(openedLength);
 });

@@ -232,6 +232,12 @@ describe.sequential('Marketplace account identities', () => {
       expect(Object.keys(account).sort()).toEqual(['accountType', 'name', 'sports', 'username']);
     }
 
+    const self = await request(app).get('/api/accounts/search')
+      .query({ q: club.user.username }).set('Cookie', club.cookie).expect(200);
+    expect(self.body).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ username: club.user.username }),
+    ]));
+
     const partialEmail = await request(app).get('/api/accounts/search')
       .query({ q: emailMarker }).set('Cookie', club.cookie).expect(200);
     expect(partialEmail.body).not.toEqual(expect.arrayContaining([

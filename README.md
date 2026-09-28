@@ -4,7 +4,7 @@ Courtly is a full-stack booking platform for coaching businesses. This repositor
 
 [![CI](https://github.com/dominopizzaaaa/booking-website/actions/workflows/ci.yml/badge.svg)](https://github.com/dominopizzaaaa/booking-website/actions/workflows/ci.yml)
 
-Courtly includes global student and coach accounts with public usernames and sport profiles, dedicated club accounts, portable coach affiliations, multi-location and coach-aware availability, travel and preparation buffers, private and capacity-limited Classes, atomic recurring bookings, pending venue approval, account-backed student booking and self-service, session chat with next-session proposals, personal Google Calendar sync, package offers, owned-venue court rentals, simulated Stripe checkout, manual payment records, attendance, student/parent details, coach rosters, and responsive business workspaces. Defaults are SGD and Asia/Singapore.
+Courtly includes global student and coach accounts with public usernames and sport profiles, dedicated club accounts, portable coach affiliations, multi-location and coach-aware availability, travel and preparation buffers, private and capacity-limited Classes, atomic recurring bookings, pending venue approval, account-backed student booking and self-service, direct account conversations and booking-bound session chat with scheduling proposals, personal Google Calendar sync, package offers, owned-venue court rentals, simulated Stripe checkout, manual payment records, attendance, student/parent details, coach rosters, and responsive business workspaces. Defaults are SGD and Asia/Singapore.
 
 It also covers how a club and its coaches actually work together: a club assigns a student to a coach and the coach accepts before the class is confirmed; either side proposes a new time and the other agrees before a session moves; classes, package purchases, and venue rentals are paid to the club, which then records what it pays each coach; and a club is told when historical records show that a coach and a student it introduced trained privately outside it.
 
@@ -34,14 +34,17 @@ A recorded payment can be reversed. The record stays in the ledger marked as rev
 
 Because a club invests in introducing its coaches to its students, Courtly flags it to the club when a coach and a student who train together through that club also book privately outside it. Courtly reports; it does not block the booking, and it does not tell the coach or the student. The club records what it found and closes the flag.
 
-## Session chat
+## Account conversations and session chat
 
-Every booked Class has its own chat, whether it is a 1-1 lesson or a group. Its members come from the booking itself: the coach, every student who holds a place, and the club account, because every Class belongs to a club. In both apps Chat takes the tab-bar slot Alerts used to hold; Alerts moved to the bell at the top right, the way a notifications heart sits above a feed.
+Chat combines direct account conversations with the conversation attached to every booked Class. Signed-in students, coaches, and clubs can start a conversation with another registered account by searching its public name or username, or by entering its exact email. This uses the same bounded, authenticated account search as roster discovery: partial email addresses are never exposed, results contain only public profile fields, and opening the same pair again returns their existing conversation. In both apps Chat takes the tab-bar slot Alerts used to hold; Alerts live under the bell at the top right.
 
-- **Reminders.** A day before each confirmed session, Courtly posts a reminder into its chat. A session that moves is reminded again for its new time. The reminder worker runs inside the backend process alongside the Calendar worker.
-- **Planning the next session.** In any chat, a coach or a student presses **+**, picks a date and one of the coach's available times, and sends a proposal card. The other side answers with **Accept**, **Decline**, or **Edit**. Edit answers with a new time that travels back the other way, so the person who asked first presses Accept to confirm it. In a group, a coach's proposal goes to every student and each answers for themselves; a student's proposal is answered by the coach. The club reads along and messages, but does not propose or answer.
-- **Calendar.** Accepting books a normal Class for that student under the club, re-checking availability at that moment. It appears in the student's bookings and the club and coach calendars immediately, and — like every confirmed Class — is projected to any connected Google Calendar. A venue that needs approval keeps it pending until the club secures it.
-- **Privacy.** Messages are visible to the session's members and to the platform admin console, and each chat says so. The API never sends account IDs to the browser; it tells each reader which messages and proposals are their own.
+- **Club handoff.** In a conversation between a student and a club, only that club can add, replace, or remove one active coach from its roster. Courtly confirms that the coach will see the full existing history before granting access. Removing the coach — or deactivating their roster affiliation — ends that access without deleting the conversation.
+- **Planning from an account conversation.** A student and coach can press **+** and choose a private Class, venue, date, and available time from any active club where that coach is currently bookable. In a student–club conversation, only the student and its assigned active roster coach can propose, and every option stays inside that club. Other account pairings remain messaging-only.
+- **Session conversations stay separate.** Every booked Class still has its own chat, whether it is a 1-1 lesson or a group. Its members come from the booking itself: the coach, every student who holds a place, and the club account. Accepting a proposal in an account conversation creates a normal club booking and that booking's separate session chat; it does not turn the original account conversation into the session thread.
+- **Proposals.** A student proposes for themselves and the coach answers with **Accept**, **Decline**, or **Edit**. Edit sends a different time back for the first proposer to accept. In a group session chat, a coach's proposal goes to every student and each answers for themselves. The club reads along and messages, but does not propose or answer.
+- **Reminders.** A day before each confirmed session, Courtly posts a reminder into its session chat. A session that moves is reminded again for its new time. The reminder worker runs inside the backend process alongside the Calendar worker.
+- **Booking and Calendar.** Acceptance re-checks live availability, then books an ordinary `CLUB`-route Class for the student. It appears in the student's bookings and the club and coach calendars immediately and, like every confirmed Class, is projected to connected Google Calendars. A venue that needs approval keeps it pending until the club secures it.
+- **Privacy.** Messages are visible only to the conversation's active participants and to the platform admin console. An assigned coach can read earlier messages; each chat discloses who can see it. The API does not send internal account IDs to the browser and computes which messages, members, and proposal actions belong to the reader.
 
 Chat updates by polling while the page is visible; there is no push delivery, email, or SMS.
 
@@ -163,7 +166,7 @@ Deploy the backend to Railway first, then point the Vercel frontend at the Railw
    Do not set `PORT`; Railway injects it.
    `APP_ORIGIN` is added after Vercel assigns the frontend URL. It can remain unset for this initial health-only deployment because no browser will use the API yet.
 6. Deploy once. The checked-in Railway config installs dependencies (including the build and migration tools) and builds the TypeScript API. Before each release starts, `npm run db:migrate` applies committed Prisma migrations; the service then starts with `npm start`. A failed migration prevents the new release from starting.
-7. Generate a public domain in **Settings → Networking** and copy the resulting HTTPS origin, such as `https://courtly-api-production.up.railway.app`. Verify `https://YOUR-RAILWAY-DOMAIN/api/health` returns JSON with `"ok": true`.
+7. Generate a public domain in **Settings → Networking** and copy the resulting HTTPS origin, such as `https://courtly-api-production.up.railway.app`. Verify `https://YOUR-RAILWAY-DOMAIN/api/health` returns JSON with `"ok": true` and `"capabilities": { "accountChat": true }`. The capability confirms the generalized chat API, rather than merely an older healthy release, is live.
 
 `APP_ORIGIN` is still required for the backend's explicit browser-origin checks. The browser itself talks only to the Vercel origin: Next.js proxies `/api/*` server-side to Railway, so the secure `__Host-courtly_session` cookie remains a same-origin frontend cookie rather than a third-party cross-site cookie.
 
@@ -175,7 +178,14 @@ Deploy the backend to Railway first, then point the Vercel frontend at the Railw
 4. Deploy the project and note its canonical production URL.
 5. Return to the Railway API variables, add `APP_ORIGIN` with that exact Vercel origin (for example `https://courtly.example.com`, with no trailing slash), and redeploy the API. If a custom frontend domain is added later, update `APP_ORIGIN` to the domain users actually visit. For more than one allowed origin, use a comma-separated list.
 6. Redeploy Vercel whenever `BACKEND_URL` changes because Next.js resolves the rewrite configuration during the build.
-7. Open the Vercel application, register or sign in with a student account, and complete a booking. Confirm that it appears in the student's self-service history. In browser developer tools, `/api/*` requests should target the Vercel hostname, not the Railway hostname.
+7. Open `https://YOUR-VERCEL-DOMAIN/api/health` and confirm it reports `"capabilities": { "accountChat": true }`, matching the direct Railway response. If it does not, rebuild Vercel with the intended `BACKEND_URL`; the rewrite target is fixed at build time. Then register or sign in with a student account and complete a booking. Confirm that it appears in the student's self-service history. In browser developer tools, `/api/*` requests should target the Vercel hostname, not the Railway hostname.
+
+Finish the Railway rollout before deploying the matching Vercel build. The
+generalized chat migration and backend are a coordinated release: Railway's
+pre-deploy migration must complete before the new process starts, and old API
+instances must drain before account conversations are used. This also ensures
+no ACCOUNT conversation exists while an old API still assumes every thread has
+a booking.
 
 Preview deployments have a different origin on every build. If previews need authenticated mutations, add the desired preview origins to Railway's `APP_ORIGIN`; otherwise keep previews connected only for read-only checks or omit the Preview `BACKEND_URL`.
 
@@ -223,8 +233,8 @@ Courtly ships a platform admin console at `/admin`, separate from `STUDENT`, `CO
 
 - Set `ADMIN_PASSWORD` in the Railway API service to a long, random secret, then redeploy. Leaving it unset disables `/admin` (the page shows a "not configured" notice and every admin API returns `401`/`503`).
 - Visit `https://YOUR-FRONTEND-DOMAIN/admin`, enter the password, and you get a platform overview (businesses, students, bookings, payments) plus a searchable, filterable list of every workspace.
-- From the console you can permanently delete any business (cascading to all of its students, bookings, packages, payments, and session chats) or purge every demo workspace at once. These actions are irreversible.
-- The **Chats** section lists every session chat on the platform, searchable by club, class, coach, or student, and opens any conversation read-only for safety review. The console cannot post or answer proposals.
+- From the console you can permanently delete any business (cascading to all of its students, bookings, packages, payments, session chats, and club-scoped account conversations) or purge every demo workspace at once. These actions are irreversible.
+- The **Chats** section lists every account conversation and session chat on the platform, searchable by account, club, class, coach, or student, and opens any conversation read-only for safety review. The console cannot post, manage assigned coaches, or answer proposals.
 - The admin session is a stateless, HMAC-signed cookie keyed by the password itself, so rotating `ADMIN_PASSWORD` immediately invalidates all existing admin sessions. The page carries `noindex` so it stays out of search results.
 
 ## MVP boundaries

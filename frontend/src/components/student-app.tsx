@@ -1918,7 +1918,7 @@ export function StudentApp({ slug }: { slug?: string }) {
   const offersRequestRef = useRef(0);
   const packagesRequestRef = useRef(0);
   const chatOpenedFromListRef = useRef(false);
-  const { unreadThreads: chatUnread, setUnreadThreads: setChatUnread } = useChatUnread(isStudentSession(session));
+  const { unreadThreads: chatUnread, beginUnreadRequest, commitUnreadNow } = useChatUnread(isStudentSession(session));
 
   const tabHref = useCallback((tab: StudentTab) => {
     const params = new URLSearchParams();
@@ -3576,16 +3576,18 @@ export function StudentApp({ slug }: { slug?: string }) {
             <ChatInbox
               mode="participant"
               viewerType="STUDENT"
+              viewerUsername={session.user.username}
               threadId={chatThreadId}
               onThreadChange={selectChatThread}
-              onUnreadChange={setChatUnread}
+              beginUnreadRequest={beginUnreadRequest}
+              commitUnreadNow={commitUnreadNow}
               onOpenBooking={(bookingId) => void openBookingFromChat(bookingId)}
               onBookingsChanged={() => { void refreshBookings(); void refreshNotifications(); }}
               className="sm:h-[calc(100dvh-260px)] sm:min-h-[460px]"
               heading={{
-                eyebrow: 'Your sessions',
+                eyebrow: 'Your conversations',
                 title: 'Chats',
-                description: 'Talk with your coach and club about each session, and use + to plan the next one.',
+                description: 'Message coaches and clubs, or use + in a schedulable conversation to propose a session.',
               }}
             />
           </section>

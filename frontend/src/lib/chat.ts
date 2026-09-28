@@ -1,5 +1,12 @@
 import { formatInTimeZone } from 'date-fns-tz';
-import type { ChatMember, ChatMessage, ChatSession, SessionProposal, SessionProposalResponse } from './types';
+import type {
+  ChatMember,
+  ChatMessage,
+  ChatSession,
+  ChatThreadContext,
+  SessionProposal,
+  SessionProposalResponse,
+} from './types';
 import { addDaysKey, dateKey } from './utils';
 
 const minute = 60_000;
@@ -49,6 +56,45 @@ export function chatMemberSummary(members: ChatMember[]) {
   const club = members.find(member => member.role === 'CLUB');
   const studentPart = students.length === 1 ? students[0].name : students.length ? `${students.length} students` : null;
   return [coach ? `Coach ${coach.name}` : null, studentPart, club?.name ?? null].filter(Boolean).join(' · ');
+}
+
+type ChatThreadDisplay = ChatThreadContext & { members: ChatMember[] };
+
+/** The stable heading for either a booked session or an account conversation. */
+export function chatThreadTitle(thread: ChatThreadDisplay) {
+  if (thread.kind === 'SESSION') return thread.session.serviceName;
+  const title = thread.conversation.title.trim();
+  if (title) return title;
+  const names = thread.members.filter(member => !member.isYou && !member.assigned).map(member => member.name);
+  return names.length ? listNames(names) : 'Conversation';
+}
+
+/** The compact context line shown under a thread title in the inbox. */
+export function chatThreadSubtitle(thread: ChatThreadDisplay, showBusiness = true) {
+  if (thread.kind === 'ACCOUNT') {
+    return thread.conversation.subtitle.trim() || chatMemberSummary(thread.members);
+  }
+  return [
+    chatSessionLine(thread.session),
+    showBusiness ? thread.session.businessName : null,
+    thread.session.status === 'CANCELLED' ? 'Cancelled' : null,
+  ].filter(Boolean).join(' · ');
+}
+
+export function chatThreadTimezone(thread: ChatThreadDisplay) {
+  return thread.kind === 'SESSION' ? thread.session.timezone : thread.conversation.timezone;
+}
+
+/** Avatar content stays a group glyph for group sessions and initials otherwise. */
+export function chatThreadAvatar(thread: ChatThreadDisplay): { kind: 'group' | 'initials'; label: string } {
+  if (thread.kind === 'SESSION' && thread.session.type === 'GROUP') {
+    return { kind: 'group', label: thread.session.serviceName };
+  }
+  if (thread.kind === 'ACCOUNT') return { kind: 'initials', label: chatThreadTitle(thread) };
+  const viewerIsStudent = thread.members.some(member => member.isYou && member.role === 'STUDENT');
+  const other = thread.members.find(member => !member.isYou && member.role !== 'CLUB'
+    && (viewerIsStudent ? member.role === 'COACH' : member.role === 'STUDENT'));
+  return { kind: 'initials', label: other?.name ?? thread.session.serviceName };
 }
 
 /** Name the first two people and count the rest. */

@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 3.1.2** · Last updated 2026-09-28
+**Version 3.2.0** · Last updated 2026-09-28
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -69,7 +69,7 @@ backend/           Express + Prisma API (TypeScript, ESM)
     serializers.ts authState, bookingJson, membershipJson, isClubAccount
     scheduling.ts  Slot evaluation, conflict/travel rules, booking creation
     reschedule.ts  Two-sided reschedule requests
-    chat.ts        Session chat API, next-session proposals, reminder worker
+    chat.ts        Account + session chat, scheduling proposals, reminder worker
     chat-events.ts Thread creation and lifecycle system lines (no scheduling imports)
     integrity.ts   Club safeguard: detection + review routes
     notifications.ts  Typed workspace alerts (notifyWorkspace)
@@ -82,7 +82,7 @@ backend/           Express + Prisma API (TypeScript, ESM)
     calendar-crypto.ts  OAuth-token encryption and key rotation
     google-calendar.ts  Narrow Google Calendar HTTP client
     calendar-sync.ts  Async event projection and free/busy refresh worker
-    account-directory.ts  Authenticated public account search
+    account-directory.ts  Privacy-safe authenticated account search
     commerce.ts    Package offers, My Packages, simulated checkout
     rentals.ts     Rental discovery, inventory, slots, and reservations
     workspace.ts   The single GET /api/workspace payload
@@ -101,7 +101,7 @@ frontend/          Next.js App Router (TypeScript, Tailwind)
     utils.ts       cn, money, dates, initials()
   src/components/
     calendar-connection-card.tsx  Shared student/coach personal integration UI
-    chat/                   Session chat inbox, proposal dialog, unread hook
+    chat/                   Account/session inbox, discovery, assignment, proposals
     student-app.tsx         The student app (/manage) — five-tab shell
     workspace/              The provider workspace (/)
     public-booking.tsx      Public booking page for /book/[slug]
@@ -124,14 +124,14 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
 | Change what the workspace shows | `backend/src/workspace.ts` **and** `frontend/src/lib/types.ts` |
 | Change student booking UI | `frontend/src/components/student-app.tsx` |
 | Change student club discovery | `backend/src/public.ts`, then `frontend/src/components/student-app.tsx` |
-| Change public account search | `backend/src/account-directory.ts`, then the account/roster UI |
+| Change account discovery | `backend/src/account-directory.ts`, then the account/roster/chat discovery UI |
 | Change package offers or checkout | `backend/src/commerce.ts`, then `frontend/src/lib/types.ts` |
 | Change rentals | `backend/src/rentals.ts`, then the student and workspace rental views |
 | Change Google Calendar OAuth/sync | `backend/src/calendar.ts`, `calendar-sync.ts`, `google-calendar.ts`, then `frontend/src/components/calendar-connection-card.tsx` |
 | Change provider UI | `frontend/src/components/workspace/` |
 | Change slot / conflict rules | `backend/src/scheduling.ts` |
 | Change alert icons or ordering | `frontend/src/lib/alerts.ts` |
-| Change session chat, proposals or reminders | `backend/src/chat.ts`, `chat-events.ts`, then `frontend/src/components/chat/` |
+| Change account/session chat, proposals or reminders | `backend/src/chat.ts`, `chat-events.ts`, then `frontend/src/components/chat/` |
 | Add an env var | `backend/src/config.ts` + `backend/.env.example` + README |
 
 ---
@@ -149,7 +149,9 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
   substring matching; email matches are exact and case-insensitive. Responses
   contain only `name`, `username`, `accountType`, and `sports`, and are capped
   at 20 accounts. Queries require at least three effective characters and each
-  authenticated account receives 60 searches per five-minute window.
+  authenticated account receives 60 searches per five-minute window. Starting
+  an account conversation reuses this search; do not add a broader chat-only
+  directory or expose internal account IDs.
 - **`Business` ≠ account.** A `CLUB` account has one business; a `COACH`
   account can be affiliated with several. `Membership` stores that link, not
   a role. `Student` is a *business-specific* record linked to a global `User`.
@@ -334,47 +336,89 @@ an authenticated global account but no selected workspace; the mutating routes
 still use strict bodies. OAuth return targets are restricted to `/account`,
 `/?tab=profile`, and `/manage?tab=profile`.
 
-### Session chat belongs to the booking
+### Account conversations and session chat
 
-Every Class booking has at most one `ChatThread`, opened when the booking is
-created (a student joining an existing group is announced instead) or lazily
-through `POST /api/chats/bookings/:bookingId` for bookings that predate chat.
-Membership is never stored: `chatRoleIn()` in `chat.ts` derives it from the
-booking — students with an active participant row, the instructor's account
-while its affiliation is active, and the business's `CLUB` account. Use that
-rule (and its query twin, `accessibleThreadsWhere()`/`accessibleThreadsSql()`)
-rather than re-deriving access. A thread that the reader cannot join answers
-404, never 403. Chat exists only for `paymentRoute: 'CLUB'` bookings of an
-active club; the database rejects any other thread.
+`ChatThread.kind` separates two contracts that share one inbox, message model,
+unread state and proposal UI. A `SESSION` thread belongs to one Class booking;
+an `ACCOUNT` thread is the one reusable direct conversation for a canonical
+pair of registered accounts. Starting one with `POST /api/chats/accounts` takes
+a public username selected through the existing authenticated account search
+and returns the existing thread for that pair when one already exists. Its
+direct participants are persisted in `ChatThreadMember`; session membership
+must never be copied there.
+
+Every Class booking still has at most one `SESSION` thread, opened when the
+booking is created (a student joining an existing group is announced instead)
+or lazily through `POST /api/chats/bookings/:bookingId` for bookings that
+predate chat. `chatRoleIn()` derives access from the booking — students with an
+active participant row, the instructor's account while both the instructor
+and its affiliation are active, and the business's `CLUB` account. Chat exists only for
+`paymentRoute: 'CLUB'` bookings of an active club; the database rejects any
+other session thread.
+
+An `ACCOUNT` thread derives access from its active persisted members. The two
+direct participants are stable. For a student–club conversation, the club may
+add, replace, or remove exactly one `CLUB_ASSIGNED` coach from its own active
+roster. Assignment is a deliberate grant to the entire existing transcript,
+so the UI confirms that disclosure; removal, roster deactivation, or instructor
+deactivation ends the coach's access without erasing history. Only that club
+account may manage the assignment, and no other account pairing gains an
+assignable third member.
+
+Account-chat scheduling is available only when the active members form an
+eligible student–coach combination. A direct student–coach pair may choose
+among eligible combinations of an active private Class and active venue at
+every active, writable club where that coach is bookable. A student–club pair
+may schedule only through its assigned active roster coach and only inside
+that club. Every other account pairing is messaging-only. The server authors
+the eligible options, derives the instructor, and validates the chosen
+club/service/location tuple and live slot again; never trust a client-supplied
+scheduling graph.
+
+A `SessionProposal` is a new session, not a reschedule. In either thread kind,
+a student may propose for themselves and the coach answers; a coach may propose
+to that student and the student answers. In a booking-derived group thread, a
+coach proposal instead goes to the whole group and every student answers once
+(`SessionProposalResponse` is unique per proposal and student). Edit records a
+`COUNTERED` answer, which closes a one-student proposal and creates a targeted
+counter-proposal in the other direction; a group proposal closes as `CLOSED`
+once every student has answered. Accepting books the concerned student through
+`createBookingsInTransaction(..., { studentUserId })` — both sides agreed, so
+no coach acceptance is needed. It is an ordinary `CLUB`-route booking subject
+to the normal Calendar projection rules and has its own separate `SESSION`
+chat; the original account conversation remains an account conversation.
+Each proposal snapshots the venue-specific integer price and business currency
+as immutable contractual terms. Students see those terms before sending and
+on the proposal card; coaches never receive club prices. Acceptance rechecks
+the live price and currency and returns 409 when either changed, so the parties
+must send a new proposal instead of silently booking different terms.
+Decisions take the proposal advisory lock before the instructor lock; keep
+that order.
 
 The API is account-level (`/api/chats`, behind `requireAuth` only), like
-Calendar: a portable coach sees every session they teach across clubs. It never
-serializes account IDs; `mine`, `isYou`, `forYou`, `proposedByYou` and the
-per-proposal `actions` are computed on the server. `/api/admin/chats` exposes
-every thread read-only to the platform console.
+Calendar: a portable account sees every direct conversation they belong to and
+every session chat they may join across clubs. A thread that the reader cannot
+join answers 404, never 403. The API never serializes account IDs; `mine`,
+`isYou`, `forYou`, `proposedByYou` and the per-proposal `actions` are computed
+on the server. `/api/admin/chats` exposes every account and session thread
+read-only to the platform console.
+Generalized list, unread, detail, and mark-read requests send
+`contract=accounts`. Without that marker the API deliberately returns only
+SESSION conversations, so a cached pre-account-chat frontend cannot receive an
+ACCOUNT payload it does not understand; a new frontend falls back to that
+SESSION-only contract while an older backend is still serving a deployment.
 
 System lines are written only through `chat-events.ts`. Opening lines are
 silent; reminders do not badge the `CLUB` account; a line produced by a
 person's action records them as `senderUserId` so it is not unread for them.
-Lifecycle notices (cancelled, moved, left) annotate only an existing thread.
-
-A `SessionProposal` is a next session, not a reschedule. A student proposes for
-themselves and the coach answers; a coach proposes to the one student of a
-private session, or to a whole group, where every student answers once
-(`SessionProposalResponse` is unique per proposal and student). Edit records
-a `COUNTERED` answer, which closes a one-student proposal, and creates a
-targeted counter-proposal in the other direction; a group proposal closes as
-`CLOSED` once every student has answered. Accepting books the concerned student through
-`createBookingsInTransaction(..., { studentUserId })` — both sides agreed, so
-no coach acceptance is needed and the booking follows the club money path and
-Calendar projection like any other. Decisions take the proposal advisory lock
-before the instructor lock; keep that order.
+Lifecycle notices (cancelled, moved, left) annotate only an existing session
+thread; coach assignment and removal annotate their account conversation.
 
 The reminder worker (`startChatReminderWorker`) posts one `REMINDER` per
-thread per start time within 24 hours of a confirmed or venue-pending session,
-locking the thread row so several API processes cannot double-post. Tests
-must pass `businessIds` to `sendDueSessionReminders()` so a sweep never writes
-into another tenant's data in a shared database.
+session thread per start time within 24 hours of a confirmed or venue-pending
+session, locking the thread row so several API processes cannot double-post.
+Tests must pass `businessIds` to `sendDueSessionReminders()` so a sweep never
+writes into another tenant's data in a shared database.
 
 ### Payments and intents are auditable, never deleted
 
@@ -626,6 +670,18 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 3.2.0 — 2026-09-28
+
+Generalized Chat beyond booking-bound session threads. Authenticated accounts
+can discover another public profile through the existing privacy-safe account
+search and open one reusable direct conversation. A club may give one active
+roster coach access to its conversation with a student. Student–coach pairs
+can propose a private Class through any active club where that coach is
+bookable; a student–club pair uses its assigned coach and that club only, while
+other pairings remain messaging-only. Acceptance creates a normal club booking
+and its separate session chat, preserving all existing session chat, group
+proposal, reminder, Calendar, and payment-route behavior.
 
 ### 3.1.2 — 2026-09-28
 

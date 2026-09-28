@@ -203,14 +203,28 @@ export type RentalLocationSaveInput = {
 export type RentalLocationSaveResult = { location: Location; rental: RentalDetail; replay: boolean };
 export type AccountDirectoryUser = Pick<AccountUser, 'name' | 'accountType'> & { username: string; sports: string[] };
 
-/** Session chat. Membership is derived from the booking on the server. */
+/** Chat access is derived from a booking or the account conversation on the server. */
 export type ChatRole = 'STUDENT' | 'COACH' | 'CLUB';
 export type ChatViewerRole = ChatRole | 'ADMIN';
-export type ChatMember = { role: ChatRole; name: string; isYou: boolean };
+export type ChatMember = { role: ChatRole; name: string; username: string; isYou: boolean; assigned: boolean };
 export type ChatSession = {
   bookingId: string; serviceId: string; instructorId: string; locationId: string;
   serviceName: string; type: 'PRIVATE' | 'GROUP'; status: Status; startAt: string; endAt: string;
   locationName: string; instructorName: string; businessName: string; businessSlug: string; timezone: string;
+};
+export type ChatThreadKind = 'SESSION' | 'ACCOUNT';
+export type ChatBusinessSummary = { name: string; slug: string };
+export type ChatAssignableCoach = { membershipId: string; name: string; username: string; sports: string[] };
+export type ChatSchedulingOption = {
+  businessName: string; businessSlug: string; timezone: string; instructorId: string; instructorName: string;
+  serviceId: string; serviceName: string; locationId: string; locationName: string;
+  /** Student-facing catalogue terms; omitted from coach payloads. */
+  price?: number; currency?: string;
+};
+export type ChatProposalSchedulingChoice = Pick<ChatSchedulingOption, 'businessSlug' | 'serviceId' | 'locationId'>;
+export type ChatConversation = {
+  title: string; subtitle: string; timezone: string; business: ChatBusinessSummary | null;
+  assignedCoach: ChatMember | null; assignableCoaches?: ChatAssignableCoach[]; schedulingOptions: ChatSchedulingOption[];
 };
 export type SessionProposalStatus = 'OPEN' | 'ACCEPTED' | 'DECLINED' | 'COUNTERED' | 'WITHDRAWN' | 'CLOSED' | 'EXPIRED';
 export type SessionProposalResponse = {
@@ -219,6 +233,9 @@ export type SessionProposalResponse = {
 };
 export type SessionProposal = {
   id: string; status: SessionProposalStatus; startAt: string; endAt: string; timezone: string;
+  /** Contractual terms are visible to students/clubs/admins and redacted for coaches. */
+  price?: number; currency?: string;
+  businessSlug: string; serviceId: string; instructorId: string; locationId: string;
   serviceName: string; locationName: string; instructorName: string;
   proposedByRole: 'STUDENT' | 'COACH'; proposedByName: string; proposedByYou: boolean;
   /** Null when a coach asked a whole group; each student answers for themselves. */
@@ -231,16 +248,24 @@ export type ChatMessage = {
   senderName: string; body: string; createdAt: string; mine: boolean; proposalId: string | null;
   proposal?: SessionProposal | null;
 };
-export type ChatThreadSummary = {
-  id: string; bookingId: string; lastMessageAt: string; session: ChatSession; members: ChatMember[];
+export type ChatThreadContext =
+  | { kind: 'SESSION'; bookingId: string; session: ChatSession; conversation: ChatConversation }
+  | { kind: 'ACCOUNT'; bookingId: null; session: null; conversation: ChatConversation };
+type ChatThreadBase = {
+  id: string; lastMessageAt: string; members: ChatMember[];
+};
+export type ChatThreadSummary = ChatThreadBase & ChatThreadContext & {
   lastMessage: ChatMessage | null; unreadCount: number;
   /** Present only in the platform admin listing. */
   messageCount?: number;
 };
-export type ChatThreadList = { threads: ChatThreadSummary[]; nextCursor: string | null; unreadThreads?: number };
-export type ChatThreadDetail = {
-  id: string; bookingId: string; lastMessageAt: string; session: ChatSession; members: ChatMember[];
-  viewer: { role: ChatViewerRole; canPost: boolean; canPropose: boolean };
+export type ChatThreadList = {
+  threads: ChatThreadSummary[]; nextCursor: string | null; unreadThreads?: number;
+  /** False only while a pre-account-chat API is serving the new frontend. */
+  accountChatAvailable: boolean;
+};
+export type ChatThreadDetail = ChatThreadBase & ChatThreadContext & {
+  viewer: { role: ChatViewerRole; canPost: boolean; canPropose: boolean; canAssignCoach: boolean };
   messages: ChatMessage[]; hasEarlier: boolean;
 };
 export type ChatProposalAction = 'accept' | 'decline' | 'withdraw';

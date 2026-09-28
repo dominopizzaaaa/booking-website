@@ -13,6 +13,7 @@ import {
   type CalendarPreferences,
   type CalendarReturnTo,
   type ChatProposalAction,
+  type ChatProposalSchedulingChoice,
   type ChatThreadDetail,
   type ChatThreadList,
   type ChatMessage,
@@ -45,6 +46,12 @@ import {
   type WorkspaceResponse,
   type WorkspaceWireResponse,
 } from './types';
+import {
+  normalizeChatThreadDetail,
+  normalizeChatThreadList,
+  type ChatThreadDetailWire,
+  type ChatThreadListWire,
+} from './chat-wire';
 
 export class ApiError extends Error {
   constructor(message: string, public status: number, public details?: unknown) { super(message); }
@@ -325,42 +332,125 @@ export const resolveIntegrityFlag = (id: string, status: IntegrityFlag['status']
   });
 export const mutate = <T = unknown>(path: string, method: 'POST' | 'PATCH' | 'DELETE', values?: unknown) => api<T>(path, { method, body: values ? JSON.stringify(values) : undefined });
 
-// Session chat belongs to the signed-in account, not a selected workspace,
-// so the same calls serve students, coaches and club accounts.
+// Chat belongs to the signed-in account, not a selected workspace, so the
+// same calls serve booking threads and account conversations across clubs.
 const chatListQuery = (params: { q?: string; cursor?: string }) => {
   const query = new URLSearchParams();
   if (params.q?.trim()) query.set('q', params.q.trim());
   if (params.cursor) query.set('cursor', params.cursor);
   return query.size ? `?${query}` : '';
 };
-const threadQuery = (before?: string) => before ? `?${new URLSearchParams({ before })}` : '';
-export const loadChatThreads = (params: { q?: string; cursor?: string } = {}) =>
-  api<ChatThreadList>(`/chats${chatListQuery(params)}`);
-export const loadChatUnread = () => api<{ unreadThreads: number }>('/chats/unread');
+const threadQuery = (before?: string, accountContract = false) => {
+  const query = new URLSearchParams();
+  if (before) query.set('before', before);
+  if (accountContract) query.set('contract', 'accounts');
+  return query.size ? `?${query}` : '';
+};
+export async function loadChatThreads(params: { q?: string; cursor?: string } = {}): Promise<ChatThreadList> {
+  const query = new URLSearchParams(chatListQuery(params).slice(1));
+  query.set('contract', 'accounts');
+  try {
+    return normalizeChatThreadList(await api<ChatThreadListWire>(`/chats?${query}`));
+  } catch (error) {
+    if (!(error instanceof ApiError) || ![400, 404].includes(error.status)) throw error;
+    // A pre-account-chat API rejects the version marker. Keep SESSION chat
+    // usable and leave discovery hidden until the matching API is live.
+    return normalizeChatThreadList(await api<ChatThreadListWire>(`/chats${chatListQuery(params)}`));
+  }
+}
+export async function loadChatUnread() {
+  try {
+    return await api<{ unreadThreads: number }>('/chats/unread?contract=accounts');
+  } catch (error) {
+    if (!(error instanceof ApiError) || ![400, 404].includes(error.status)) throw error;
+    return api<{ unreadThreads: number }>('/chats/unread');
+  }
+}
 export const openBookingChat = (bookingId: string) =>
   api<{ threadId: string }>(`/chats/bookings/${encodeURIComponent(bookingId)}`, { method: 'POST', body: JSON.stringify({}) });
-export const loadChatThread = (threadId: string, before?: string) =>
-  api<ChatThreadDetail>(`/chats/${encodeURIComponent(threadId)}${threadQuery(before)}`);
+export const createAccountChat = (username: string) =>
+  api<{ threadId: string }>('/chats/accounts', { method: 'POST', body: JSON.stringify({ username }) });
+export async function loadChatThread(threadId: string, before?: string): Promise<ChatThreadDetail> {
+  try {
+    return normalizeChatThreadDetail(await api<ChatThreadDetailWire>(
+      `/chats/${encodeURIComponent(threadId)}${threadQuery(before, true)}`,
+    ));
+  } catch (error) {
+    if (!(error instanceof ApiError) || ![400, 404].includes(error.status)) throw error;
+    return normalizeChatThreadDetail(await api<ChatThreadDetailWire>(
+      `/chats/${encodeURIComponent(threadId)}${threadQuery(before)}`,
+    ));
+  }
+}
 export const sendChatMessage = (threadId: string, body: string) =>
   api<{ message: ChatMessage }>(`/chats/${encodeURIComponent(threadId)}/messages`, { method: 'POST', body: JSON.stringify({ body }) });
-export const markChatRead = (threadId: string) =>
-  api<{ ok: true; unreadThreads: number }>(`/chats/${encodeURIComponent(threadId)}/read`, { method: 'POST', body: JSON.stringify({}) });
-export const proposeChatSession = (threadId: string, startAt: string, message = '') =>
-  api<{ thread: ChatThreadDetail }>(`/chats/${encodeURIComponent(threadId)}/proposals`, {
-    method: 'POST', body: JSON.stringify({ startAt, message }),
+export async function markChatRead(threadId: string) {
+  const options = { method: 'POST', body: JSON.stringify({}) };
+  try {
+    return await api<{ ok: true; unreadThreads: number }>(
+      `/chats/${encodeURIComponent(threadId)}/read?contract=accounts`, options,
+    );
+  } catch (error) {
+    if (!(error instanceof ApiError) || ![400, 404].includes(error.status)) throw error;
+    return api<{ ok: true; unreadThreads: number }>(`/chats/${encodeURIComponent(threadId)}/read`, options);
+  }
+}
+export async function assignChatCoach(threadId: string, membershipId: string): Promise<{ thread: ChatThreadDetail }> {
+  const result = await api<{ thread: ChatThreadDetailWire }>(`/chats/${encodeURIComponent(threadId)}/coach`, {
+    method: 'POST', body: JSON.stringify({ membershipId }),
   });
-export const respondToChatProposal = (proposalId: string, action: ChatProposalAction, message = '') =>
-  api<{ thread: ChatThreadDetail; bookingId?: string }>(`/chats/proposals/${encodeURIComponent(proposalId)}/${action}`, {
+  return { thread: normalizeChatThreadDetail(result.thread) };
+}
+export async function removeChatCoach(threadId: string): Promise<{ thread: ChatThreadDetail }> {
+  const result = await api<{ thread: ChatThreadDetailWire }>(`/chats/${encodeURIComponent(threadId)}/coach`, {
+    method: 'DELETE', body: JSON.stringify({}),
+  });
+  return { thread: normalizeChatThreadDetail(result.thread) };
+}
+export async function proposeChatSession(
+  threadId: string, startAt: string, message = '', scheduling?: ChatProposalSchedulingChoice,
+): Promise<{ thread: ChatThreadDetail }> {
+  const result = await api<{ thread: ChatThreadDetailWire }>(`/chats/${encodeURIComponent(threadId)}/proposals`, {
+    method: 'POST', body: JSON.stringify({ startAt, message, ...(scheduling ?? {}) }),
+  });
+  return { thread: normalizeChatThreadDetail(result.thread) };
+}
+export async function respondToChatProposal(proposalId: string, action: ChatProposalAction, message = ''): Promise<{ thread: ChatThreadDetail; bookingId?: string }> {
+  const result = await api<{ thread: ChatThreadDetailWire; bookingId?: string }>(`/chats/proposals/${encodeURIComponent(proposalId)}/${action}`, {
     method: 'POST', body: JSON.stringify(action === 'decline' && message ? { message } : {}),
   });
-export const counterChatProposal = (proposalId: string, startAt: string, message = '') =>
-  api<{ thread: ChatThreadDetail; proposalId: string }>(`/chats/proposals/${encodeURIComponent(proposalId)}/counter`, {
-    method: 'POST', body: JSON.stringify({ startAt, message }),
+  return { ...result, thread: normalizeChatThreadDetail(result.thread) };
+}
+export async function counterChatProposal(
+  proposalId: string, startAt: string, message = '', scheduling?: ChatProposalSchedulingChoice,
+): Promise<{ thread: ChatThreadDetail; proposalId: string }> {
+  const result = await api<{ thread: ChatThreadDetailWire; proposalId: string }>(`/chats/proposals/${encodeURIComponent(proposalId)}/counter`, {
+    method: 'POST', body: JSON.stringify({ startAt, message, ...(scheduling ?? {}) }),
   });
-export const adminChatThreads = (params: { q?: string; cursor?: string } = {}) =>
-  api<ChatThreadList>(`/admin/chats${chatListQuery(params)}`);
-export const adminChatThread = (threadId: string, before?: string) =>
-  api<ChatThreadDetail>(`/admin/chats/${encodeURIComponent(threadId)}${threadQuery(before)}`);
+  return { ...result, thread: normalizeChatThreadDetail(result.thread) };
+}
+export async function adminChatThreads(params: { q?: string; cursor?: string } = {}): Promise<ChatThreadList> {
+  const query = new URLSearchParams(chatListQuery(params).slice(1));
+  query.set('contract', 'accounts');
+  try {
+    return normalizeChatThreadList(await api<ChatThreadListWire>(`/admin/chats?${query}`));
+  } catch (error) {
+    if (!(error instanceof ApiError) || ![400, 404].includes(error.status)) throw error;
+    return normalizeChatThreadList(await api<ChatThreadListWire>(`/admin/chats${chatListQuery(params)}`));
+  }
+}
+export async function adminChatThread(threadId: string, before?: string): Promise<ChatThreadDetail> {
+  try {
+    return normalizeChatThreadDetail(await api<ChatThreadDetailWire>(
+      `/admin/chats/${encodeURIComponent(threadId)}${threadQuery(before, true)}`,
+    ));
+  } catch (error) {
+    if (!(error instanceof ApiError) || ![400, 404].includes(error.status)) throw error;
+    return normalizeChatThreadDetail(await api<ChatThreadDetailWire>(
+      `/admin/chats/${encodeURIComponent(threadId)}${threadQuery(before)}`,
+    ));
+  }
+}
 
 export type AdminSession = { configured: boolean; authenticated: boolean };
 export type AdminTotals = { businesses: number; demoBusinesses: number; realBusinesses: number; users: number; memberships: number; students: number; bookings: number; upcomingBookings: number; bookingsLast7Days: number; packages: number; paymentsCount: number; paymentsTotal: number;

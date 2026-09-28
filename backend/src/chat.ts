@@ -7,10 +7,10 @@ import { prisma } from './db.js';
 import { skipRateLimits } from './config.js';
 import { asyncRoute, HttpError, type AccountRequest, type AccountType } from './http.js';
 import {
-  bookingInput, createBookingsInTransaction, evaluateSlot, lockInstructors, schedulingContext, type Tx,
+  bookingInput, bookableInstructorWhere, createBookingsInTransaction, evaluateSlot, lockInstructors, schedulingContext, type Tx,
 } from './scheduling.js';
 import {
-  chatEligible, chatWhen, ensureChatThread, postChatSystemLine, silentChatEventsFor, type ChatRole,
+  chatEligible, chatWhen, ensureChatThread, postChatSystemLine, postThreadSystemLine, silentChatEventsFor, type ChatRole,
 } from './chat-events.js';
 
 /**
@@ -40,22 +40,56 @@ export function chatViewerFor(auth: AccountRequest['auth']): ChatViewer {
 }
 
 const sessionInclude = {
-  business: { select: { id: true, name: true, slug: true, timezone: true, kind: true, legacyReadOnly: true } },
+  business: {
+    select: {
+      id: true, name: true, slug: true, timezone: true, currency: true, kind: true, legacyReadOnly: true,
+      memberships: {
+        where: { active: true, instructorId: null, user: { accountType: 'CLUB' } },
+        select: { user: { select: { id: true, name: true, username: true } } },
+        take: 1,
+      },
+    },
+  },
   service: { select: { id: true, name: true } },
   location: { select: { id: true, name: true } },
-  instructor: { select: { id: true, name: true, membership: { select: { userId: true, active: true } } } },
+  instructor: {
+    select: {
+      id: true, name: true, active: true,
+      membership: { select: { userId: true, active: true, user: { select: { name: true, username: true } } } },
+    },
+  },
   participants: {
     where: { cancelledAt: null },
-    select: { student: { select: { userId: true, name: true } } },
+    select: { student: { select: { userId: true, name: true, user: { select: { name: true, username: true } } } } },
     orderBy: { id: 'asc' },
   },
 } satisfies Prisma.BookingInclude;
 
 type ChatBooking = Prisma.BookingGetPayload<{ include: typeof sessionInclude }>;
-type Student = { userId: string; name: string };
+type Student = { userId: string; name: string; username?: string };
+
+const threadInclude = {
+  booking: { include: sessionInclude },
+  business: { select: { id: true, name: true, slug: true, timezone: true, currency: true, kind: true, legacyReadOnly: true } },
+  members: {
+    orderBy: [{ joinedAt: 'asc' as const }, { userId: 'asc' as const }],
+    include: {
+      user: { select: { id: true, name: true, username: true, accountType: true, sports: true } },
+      membership: {
+        select: {
+          id: true, userId: true, businessId: true, active: true, instructorId: true,
+          instructor: { select: { id: true, name: true, active: true } },
+        },
+      },
+    },
+  },
+} satisfies Prisma.ChatThreadInclude;
+
+type LoadedThread = Prisma.ChatThreadGetPayload<{ include: typeof threadInclude }>;
 
 const proposalInclude = {
   responses: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
+  business: { select: { name: true, slug: true, timezone: true } },
   service: { select: { name: true } },
   location: { select: { name: true } },
   instructor: { select: { name: true } },
@@ -67,7 +101,26 @@ const messagePageSize = 100;
 
 /** Students with a registered account who still hold a place in the session. */
 const activeStudents = (booking: ChatBooking): Student[] => booking.participants.flatMap(participant =>
-  participant.student.userId ? [{ userId: participant.student.userId, name: participant.student.name }] : []);
+  participant.student.userId ? [{
+    userId: participant.student.userId,
+    name: participant.student.user?.name ?? participant.student.name,
+    username: participant.student.user?.username,
+  }] : []);
+
+function activeAccountMembers(thread: LoadedThread) {
+  return thread.members.filter(member => {
+    if (member.removedAt) return false;
+    if (member.source !== 'CLUB_ASSIGNED') return true;
+    return !!thread.businessId && member.membership?.userId === member.userId
+      && member.membership.businessId === thread.businessId && member.membership.active
+      && !!member.membership.instructorId && !!member.membership.instructor?.active;
+  });
+}
+
+function accountRoleIn(viewer: ChatViewer, thread: LoadedThread): ChatRole | null {
+  const member = activeAccountMembers(thread).find(candidate => candidate.userId === viewer.userId);
+  return member ? viewer.accountType : null;
+}
 
 /**
  * The single membership rule. A student is in the chat while they hold a
@@ -81,41 +134,39 @@ export function chatRoleIn(viewer: ChatViewer, booking: ChatBooking): ChatRole |
   }
   if (viewer.accountType === 'COACH') {
     const affiliation = booking.instructor.membership;
-    return affiliation?.active && affiliation.userId === viewer.userId ? 'COACH' : null;
+    return booking.instructor.active && affiliation?.active && affiliation.userId === viewer.userId ? 'COACH' : null;
   }
   if (viewer.accountType === 'CLUB') return viewer.clubBusinessIds.includes(booking.businessId) ? 'CLUB' : null;
   return null;
 }
 
 /** The same rule as chatRoleIn, as a query over threads. */
-function accessibleThreadsWhere(viewer: ChatViewer): Prisma.ChatThreadWhereInput {
-  const activeClub = { business: { kind: 'CLUB', legacyReadOnly: false } };
-  if (viewer.accountType === 'STUDENT') {
-    return { ...activeClub, booking: { paymentRoute: 'CLUB', participants: { some: { cancelledAt: null, student: { userId: viewer.userId } } } } };
-  }
-  if (viewer.accountType === 'COACH') {
-    return { ...activeClub, booking: { paymentRoute: 'CLUB', instructor: { membership: { is: { userId: viewer.userId, active: true } } } } };
-  }
-  return { ...activeClub, businessId: { in: viewer.clubBusinessIds }, booking: { paymentRoute: 'CLUB' } };
-}
-
-function accessibleThreadsSql(viewer: ChatViewer) {
-  if (viewer.accountType === 'STUDENT') {
-    return Prisma.sql`EXISTS (
-      SELECT 1 FROM "Participant" AS participant
-      JOIN "Student" AS student ON student."id" = participant."studentId"
-      WHERE participant."bookingId" = booking."id" AND participant."cancelledAt" IS NULL
-        AND student."userId" = ${viewer.userId})`;
-  }
-  if (viewer.accountType === 'COACH') {
-    return Prisma.sql`EXISTS (
-      SELECT 1 FROM "Membership" AS membership
-      WHERE membership."instructorId" = booking."instructorId"
-        AND membership."userId" = ${viewer.userId} AND membership."active")`;
-  }
-  return viewer.clubBusinessIds.length
-    ? Prisma.sql`thread."businessId" IN (${Prisma.join(viewer.clubBusinessIds)})`
-    : Prisma.sql`FALSE`;
+function accessibleThreadsWhere(viewer: ChatViewer, includeAccountChats = true): Prisma.ChatThreadWhereInput {
+  const activeClub = { business: { is: { kind: 'CLUB', legacyReadOnly: false } } };
+  const session = viewer.accountType === 'STUDENT'
+    ? { kind: 'SESSION', ...activeClub, booking: { is: { paymentRoute: 'CLUB', participants: { some: { cancelledAt: null, student: { userId: viewer.userId } } } } } }
+    : viewer.accountType === 'COACH'
+      ? { kind: 'SESSION', ...activeClub, booking: { is: {
+        paymentRoute: 'CLUB',
+        instructor: { is: { active: true, membership: { is: { userId: viewer.userId, active: true } } } },
+      } } }
+      : { kind: 'SESSION', ...activeClub, businessId: { in: viewer.clubBusinessIds }, booking: { is: { paymentRoute: 'CLUB' } } };
+  const account = {
+    kind: 'ACCOUNT',
+    members: {
+      some: {
+        userId: viewer.userId, removedAt: null,
+        OR: [
+          { source: { not: 'CLUB_ASSIGNED' } },
+          {
+            source: 'CLUB_ASSIGNED',
+            membership: { is: { userId: viewer.userId, active: true, instructorId: { not: null }, instructor: { is: { active: true } } } },
+          },
+        ],
+      },
+    },
+  };
+  return includeAccountChats ? { OR: [session, account] } : session;
 }
 
 /**
@@ -130,15 +181,60 @@ function unreadMessageSql(viewer: ChatViewer) {
     AND NOT (message."kind" = 'SYSTEM' AND message."event" IN (${Prisma.join(silent)}))`;
 }
 
-export async function unreadThreadCount(viewer: ChatViewer, db: Tx | typeof prisma = prisma) {
+function accessibleThreadsSql(viewer: ChatViewer, includeAccountChats = true) {
+  const sessionAccess = viewer.accountType === 'STUDENT'
+    ? Prisma.sql`EXISTS (
+        SELECT 1 FROM "Participant" AS participant
+        JOIN "Student" AS student ON student."id" = participant."studentId"
+        WHERE participant."bookingId" = booking."id" AND participant."cancelledAt" IS NULL
+          AND student."userId" = ${viewer.userId})`
+    : viewer.accountType === 'COACH'
+      ? Prisma.sql`EXISTS (
+          SELECT 1
+          FROM "Membership" AS membership
+          JOIN "Instructor" AS instructor ON instructor."id" = membership."instructorId"
+          WHERE membership."instructorId" = booking."instructorId"
+            AND membership."userId" = ${viewer.userId} AND membership."active"
+            AND instructor."active")`
+      : viewer.clubBusinessIds.length
+        ? Prisma.sql`thread."businessId" IN (${Prisma.join(viewer.clubBusinessIds)})`
+        : Prisma.sql`FALSE`;
+  const accountAccess = includeAccountChats ? Prisma.sql`
+    OR
+    (thread."kind" = 'ACCOUNT' AND EXISTS (
+      SELECT 1
+      FROM "ChatThreadMember" AS member
+      LEFT JOIN "Membership" AS membership ON membership."id" = member."membershipId"
+      LEFT JOIN "Instructor" AS instructor ON instructor."id" = membership."instructorId"
+      WHERE member."threadId" = thread."id"
+        AND member."userId" = ${viewer.userId} AND member."removedAt" IS NULL
+        AND (member."source" <> 'CLUB_ASSIGNED' OR (
+          membership."userId" = member."userId"
+          AND membership."businessId" = thread."businessId"
+          AND membership."active" AND membership."instructorId" IS NOT NULL
+          AND instructor."active"
+        ))
+    ))` : Prisma.empty;
+  return Prisma.sql`(
+    (thread."kind" = 'SESSION'
+      AND booking."paymentRoute" = 'CLUB'
+      AND business."kind" = 'CLUB' AND business."legacyReadOnly" = false
+      AND ${sessionAccess})
+    ${accountAccess}
+  )`;
+}
+
+export async function unreadThreadCount(
+  viewer: ChatViewer, db: Tx | typeof prisma = prisma, includeAccountChats = true,
+) {
   const [row] = await db.$queryRaw<Array<{ count: number }>>(Prisma.sql`
     SELECT count(*)::int AS count
     FROM "ChatThread" AS thread
-    JOIN "Booking" AS booking ON booking."id" = thread."bookingId"
-    JOIN "Business" AS business ON business."id" = thread."businessId"
-    LEFT JOIN "ChatReadState" AS readState ON readState."threadId" = thread."id" AND readState."userId" = ${viewer.userId}
-    WHERE booking."paymentRoute" = 'CLUB' AND business."kind" = 'CLUB' AND business."legacyReadOnly" = false
-      AND ${accessibleThreadsSql(viewer)}
+    LEFT JOIN "Booking" AS booking ON booking."id" = thread."bookingId"
+    LEFT JOIN "Business" AS business ON business."id" = thread."businessId"
+    LEFT JOIN "ChatReadState" AS readState
+      ON readState."threadId" = thread."id" AND readState."userId" = ${viewer.userId}
+    WHERE ${accessibleThreadsSql(viewer, includeAccountChats)}
       AND EXISTS (
         SELECT 1 FROM "ChatMessage" AS message
         WHERE message."threadId" = thread."id" AND ${unreadMessageSql(viewer)}
@@ -147,9 +243,9 @@ export async function unreadThreadCount(viewer: ChatViewer, db: Tx | typeof pris
   return row?.count ?? 0;
 }
 
-async function unreadCounts(viewer: ChatViewer, threadIds: string[]) {
+async function unreadCounts(viewer: ChatViewer, threadIds: string[], db: Tx | typeof prisma = prisma) {
   if (!threadIds.length) return new Map<string, number>();
-  const rows = await prisma.$queryRaw<Array<{ threadId: string; unread: number }>>(Prisma.sql`
+  const rows = await db.$queryRaw<Array<{ threadId: string; unread: number }>>(Prisma.sql`
     SELECT message."threadId" AS "threadId", count(*)::int AS unread
     FROM "ChatMessage" AS message
     LEFT JOIN "ChatReadState" AS readState ON readState."threadId" = message."threadId" AND readState."userId" = ${viewer.userId}
@@ -181,12 +277,33 @@ function sessionJson(booking: ChatBooking) {
 // Members are shown by name and role only. Account IDs never leave the
 // server: whether a message or proposal is the reader's own is computed here.
 function membersJson(booking: ChatBooking, viewerId: string | null) {
-  const coach = booking.instructor.membership?.active ? booking.instructor.membership.userId : null;
+  const coachMembership = booking.instructor.active && booking.instructor.membership?.active
+    ? booking.instructor.membership : null;
+  const club = booking.business.memberships[0]?.user;
   return [
-    { role: 'COACH' as const, name: booking.instructor.name, isYou: !!viewerId && coach === viewerId },
-    ...activeStudents(booking).map(student => ({ role: 'STUDENT' as const, name: student.name, isYou: student.userId === viewerId })),
-    { role: 'CLUB' as const, name: booking.business.name, isYou: false },
+    {
+      role: 'COACH' as const, name: booking.instructor.name, username: coachMembership?.user.username ?? '',
+      isYou: !!viewerId && coachMembership?.userId === viewerId, assigned: true,
+    },
+    ...activeStudents(booking).map(student => ({
+      role: 'STUDENT' as const, name: student.name, username: student.username ?? '',
+      isYou: student.userId === viewerId, assigned: false,
+    })),
+    {
+      role: 'CLUB' as const, name: booking.business.name, username: club?.username ?? '',
+      isYou: !!viewerId && club?.id === viewerId, assigned: false,
+    },
   ];
+}
+
+function accountMembersJson(thread: LoadedThread, viewerId: string | null) {
+  return activeAccountMembers(thread).map(member => ({
+    role: member.user.accountType as ChatRole,
+    name: member.user.name,
+    username: member.user.username,
+    isYou: !!viewerId && member.userId === viewerId,
+    assigned: member.source === 'CLUB_ASSIGNED',
+  }));
 }
 
 function messageJson(message: ChatMessage, viewerId: string | null) {
@@ -219,7 +336,7 @@ function responderFor(proposal: FullProposal, viewer: ChatViewer, role: ChatRole
 
 function proposalJson(
   proposal: FullProposal,
-  context: { viewer: ChatViewer | null; role: ChatRole | 'ADMIN'; students: Student[]; timezone: string; now: Date },
+  context: { viewer: ChatViewer | null; role: ChatRole | 'ADMIN'; students: Student[]; validContext: boolean; now: Date },
 ) {
   const { viewer, role, students, now } = context;
   const expired = proposal.status === 'OPEN' && proposal.startAt <= now;
@@ -229,15 +346,25 @@ function proposalJson(
     : proposal.proposedByRole === 'STUDENT' ? [proposal.instructor.name]
       : proposal.targetStudentUserId ? (answered.has(proposal.targetStudentUserId) ? [] : [proposal.targetStudentName])
         : students.filter(student => !answered.has(student.userId)).map(student => student.name);
-  const canRespond = open && !!viewer && role !== 'ADMIN' && !!responderFor(proposal, viewer, role, students);
+  const canRespond = open && context.validContext && !!viewer && role !== 'ADMIN'
+    && !!responderFor(proposal, viewer, role, students);
   const viewerId = viewer?.userId ?? null;
   const seesBookings = role === 'COACH' || role === 'CLUB' || role === 'ADMIN';
+  // A coach may agree to the time but never receives the club's student
+  // price. Students see the contractual amount they will pay; clubs and the
+  // platform console retain their existing financial visibility.
+  const seesPrice = role !== 'COACH';
   return {
     id: proposal.id,
     status: expired ? 'EXPIRED' as const : proposal.status as 'OPEN' | 'ACCEPTED' | 'DECLINED' | 'COUNTERED' | 'WITHDRAWN' | 'CLOSED',
     startAt: proposal.startAt.toISOString(),
     endAt: proposal.endAt.toISOString(),
-    timezone: context.timezone,
+    timezone: proposal.business.timezone,
+    ...(seesPrice ? { price: proposal.price, currency: proposal.currency } : {}),
+    businessSlug: proposal.business.slug,
+    serviceId: proposal.serviceId,
+    instructorId: proposal.instructorId,
+    locationId: proposal.locationId,
     serviceName: proposal.service.name,
     locationName: proposal.location.name,
     instructorName: proposal.instructor.name,
@@ -268,8 +395,6 @@ function proposalJson(
   };
 }
 
-type ThreadWithBooking = Prisma.ChatThreadGetPayload<{ include: { booking: { include: typeof sessionInclude } } }>;
-
 /** The name a person carries inside this session's chat. */
 function displayNameIn(role: ChatRole, viewer: ChatViewer, booking: ChatBooking) {
   if (role === 'COACH') return booking.instructor.name;
@@ -277,20 +402,165 @@ function displayNameIn(role: ChatRole, viewer: ChatViewer, booking: ChatBooking)
   return activeStudents(booking).find(student => student.userId === viewer.userId)?.name ?? viewer.name;
 }
 
+function displayNameForThread(thread: LoadedThread, role: ChatRole, viewer: ChatViewer) {
+  return thread.kind === 'SESSION' && thread.booking
+    ? displayNameIn(role, viewer, thread.booking)
+    : activeAccountMembers(thread).find(member => member.userId === viewer.userId)?.user.name ?? viewer.name;
+}
+
+function accountStudents(thread: LoadedThread): Student[] {
+  return activeAccountMembers(thread)
+    .filter(member => member.user.accountType === 'STUDENT')
+    .map(member => ({ userId: member.userId, name: member.user.name, username: member.user.username }));
+}
+
+function assignedCoachMember(thread: LoadedThread) {
+  return activeAccountMembers(thread).find(member => member.source === 'CLUB_ASSIGNED') ?? null;
+}
+
+type SchedulingOption = {
+  businessId: string; businessName: string; businessSlug: string; timezone: string;
+  price: number; currency: string;
+  instructorId: string; instructorName: string; serviceId: string; serviceName: string;
+  locationId: string; locationName: string; address?: string;
+};
+
+async function schedulingOptionsFor(
+  thread: LoadedThread,
+  db: Tx | typeof prisma = prisma,
+): Promise<SchedulingOption[]> {
+  if (thread.kind === 'SESSION' && thread.booking) {
+    const booking = thread.booking;
+    const assignment = await db.serviceLocation.findFirst({
+      where: {
+        serviceId: booking.serviceId, locationId: booking.locationId,
+        service: { businessId: booking.businessId, active: true },
+        location: { businessId: booking.businessId, active: true },
+        instructors: { some: {
+          instructorId: booking.instructorId,
+          instructor: { is: bookableInstructorWhere(booking.businessId) },
+        } },
+      },
+      select: { price: true, location: { select: { address: true } } },
+    });
+    if (!assignment) return [];
+    return [{
+      businessId: booking.businessId, businessName: booking.business.name, businessSlug: booking.business.slug,
+      timezone: booking.business.timezone, price: assignment.price, currency: booking.business.currency,
+      instructorId: booking.instructorId, instructorName: booking.instructor.name,
+      serviceId: booking.serviceId, serviceName: booking.service.name, locationId: booking.locationId,
+      locationName: booking.location.name, address: assignment.location.address,
+    }];
+  }
+  if (thread.kind !== 'ACCOUNT') return [];
+  const members = activeAccountMembers(thread);
+  const student = members.find(member => member.user.accountType === 'STUDENT');
+  if (!student) return [];
+  const directCoach = members.find(member => member.source !== 'CLUB_ASSIGNED' && member.user.accountType === 'COACH');
+  const assigned = assignedCoachMember(thread);
+  const coachUserId = assigned?.userId ?? directCoach?.userId;
+  if (!coachUserId) return [];
+  const businessId = assigned?.membership?.businessId ?? thread.businessId ?? undefined;
+  const instructors = await db.instructor.findMany({
+    where: {
+      ...bookableInstructorWhere(businessId),
+      membership: { is: { userId: coachUserId, active: true, ...(businessId ? { businessId } : {}) } },
+      business: { kind: 'CLUB', legacyReadOnly: false },
+    },
+    select: {
+      id: true, name: true, business: { select: { id: true, name: true, slug: true, timezone: true, currency: true } },
+      assignments: {
+        where: { serviceLocation: { service: { active: true, type: 'PRIVATE' }, location: { active: true } } },
+        select: {
+          serviceLocation: { select: {
+            price: true,
+            service: { select: { id: true, name: true } },
+            location: { select: { id: true, name: true, address: true } },
+          } },
+        },
+      },
+    },
+    orderBy: [{ business: { name: 'asc' } }, { name: 'asc' }],
+  });
+  return instructors.flatMap(instructor => instructor.assignments.map(assignment => ({
+    businessId: instructor.business.id,
+    businessName: instructor.business.name, businessSlug: instructor.business.slug, timezone: instructor.business.timezone,
+    price: assignment.serviceLocation.price, currency: instructor.business.currency,
+    instructorId: instructor.id, instructorName: instructor.name,
+    serviceId: assignment.serviceLocation.service.id, serviceName: assignment.serviceLocation.service.name,
+    locationId: assignment.serviceLocation.location.id, locationName: assignment.serviceLocation.location.name,
+    address: assignment.serviceLocation.location.address,
+  })));
+}
+
+function publicSchedulingOption(option: SchedulingOption, role: ChatRole | 'ADMIN') {
+  const { businessId: _, address: __, ...result } = option;
+  if (role !== 'COACH') return result;
+  // Coaches choose the teaching graph and time, but club pricing remains
+  // private from them everywhere in the provider experience.
+  const { price: ___, currency: ____, ...coachSafe } = result;
+  return coachSafe;
+}
+
+async function conversationJson(
+  thread: LoadedThread, viewer: ChatViewer | null, role: ChatRole | 'ADMIN',
+  db: Tx | typeof prisma = prisma,
+) {
+  if (thread.kind === 'SESSION' && thread.booking) {
+    const session = thread.booking;
+    return {
+      title: session.service.name,
+      subtitle: `${session.instructor.name} · ${session.business.name}`,
+      timezone: session.business.timezone,
+      business: { name: session.business.name, slug: session.business.slug },
+      assignedCoach: membersJson(session, viewer?.userId ?? null).find(member => member.role === 'COACH') ?? null,
+      schedulingOptions: (await schedulingOptionsFor(thread, db)).map(option => publicSchedulingOption(option, role)),
+    };
+  }
+  const members = accountMembersJson(thread, viewer?.userId ?? null);
+  const directMembers = members.filter(member => !member.assigned);
+  const other = directMembers.find(member => !member.isYou) ?? directMembers[0] ?? null;
+  const assigned = members.find(member => member.assigned) ?? null;
+  const canAssignCoach = !!viewer && role === 'CLUB' && !!thread.businessId
+    && viewer.clubBusinessIds.includes(thread.businessId)
+    && directMembers.some(member => member.role === 'STUDENT')
+    && directMembers.some(member => member.role === 'CLUB');
+  const assignableCoaches = canAssignCoach ? await db.membership.findMany({
+    where: { businessId: thread.businessId!, active: true, instructor: { is: { active: true } }, user: { accountType: 'COACH', passwordHash: { not: null } } },
+    select: { id: true, user: { select: { name: true, username: true, sports: true } } },
+    orderBy: { user: { name: 'asc' } },
+  }) : null;
+  const options = await schedulingOptionsFor(thread, db);
+  return {
+    title: other?.name ?? 'Conversation',
+    subtitle: assigned ? `Coach ${assigned.name} assigned` : other ? `${other.role[0]}${other.role.slice(1).toLowerCase()} account` : '',
+    timezone: thread.business?.timezone ?? options[0]?.timezone ?? 'UTC',
+    business: thread.business ? { name: thread.business.name, slug: thread.business.slug } : null,
+    assignedCoach: assigned,
+    ...(assignableCoaches ? {
+      assignableCoaches: assignableCoaches.map(membership => ({
+        membershipId: membership.id, name: membership.user.name, username: membership.user.username, sports: membership.user.sports,
+      })),
+    } : {}),
+    schedulingOptions: options.map(option => publicSchedulingOption(option, role)),
+  };
+}
+
 async function buildThreadDetail(
-  thread: ThreadWithBooking,
+  thread: LoadedThread,
   viewer: ChatViewer | null,
   role: ChatRole | 'ADMIN',
   options: { before?: string } = {},
+  db: Tx | typeof prisma = prisma,
 ) {
   let pivot: { id: string; createdAt: Date } | null = null;
   if (options.before) {
-    pivot = await prisma.chatMessage.findFirst({
+    pivot = await db.chatMessage.findFirst({
       where: { id: options.before, threadId: thread.id }, select: { id: true, createdAt: true },
     });
     if (!pivot) throw new HttpError(400, 'That message is not part of this chat');
   }
-  const page = await prisma.chatMessage.findMany({
+  const page = await db.chatMessage.findMany({
     where: {
       threadId: thread.id,
       ...(pivot ? { OR: [
@@ -305,25 +575,37 @@ async function buildThreadDetail(
   const messages = page.slice(0, messagePageSize).reverse();
   const proposalIds = [...new Set(messages.flatMap(message => message.proposalId ? [message.proposalId] : []))];
   const proposals = proposalIds.length
-    ? await prisma.sessionProposal.findMany({ where: { id: { in: proposalIds } }, include: proposalInclude })
+    ? await db.sessionProposal.findMany({ where: { id: { in: proposalIds } }, include: proposalInclude })
     : [];
-  const students = activeStudents(thread.booking);
-  const context = { viewer, role, students, timezone: thread.booking.business.timezone, now: new Date() };
-  const proposalById = new Map(proposals.map(proposal => [proposal.id, proposalJson(proposal, context)]));
+  const students = thread.kind === 'SESSION' && thread.booking ? activeStudents(thread.booking) : accountStudents(thread);
+  const conversation = await conversationJson(thread, viewer, role, db);
+  const validProposal = (proposal: FullProposal) => thread.kind === 'SESSION'
+    || conversation.schedulingOptions.some(option => option.businessSlug === proposal.business.slug
+      && option.serviceId === proposal.serviceId && option.instructorId === proposal.instructorId
+      && option.locationId === proposal.locationId);
+  const proposalById = new Map(proposals.map(proposal => [proposal.id, proposalJson(proposal, {
+    viewer, role, students, validContext: validProposal(proposal), now: new Date(),
+  })]));
   const viewerId = viewer?.userId ?? null;
   const participant = role === 'STUDENT' || role === 'COACH' || role === 'CLUB';
   return {
     id: thread.id,
+    kind: thread.kind as 'SESSION' | 'ACCOUNT',
     bookingId: thread.bookingId,
     lastMessageAt: thread.lastMessageAt.toISOString(),
-    session: sessionJson(thread.booking),
-    members: membersJson(thread.booking, viewerId),
+    session: thread.booking ? sessionJson(thread.booking) : null,
+    conversation,
+    members: thread.booking ? membersJson(thread.booking, viewerId) : accountMembersJson(thread, viewerId),
     viewer: {
       role,
       canPost: participant,
       // Coaches and students plan their next session here; the club reads
       // along but books through its own workspace.
-      canPropose: (role === 'STUDENT' || role === 'COACH') && students.length > 0,
+      canPropose: (role === 'STUDENT' || role === 'COACH') && students.length > 0
+        && conversation.schedulingOptions.length > 0,
+      canAssignCoach: thread.kind === 'ACCOUNT' && role === 'CLUB' && !!thread.businessId
+        && !!viewer?.clubBusinessIds.includes(thread.businessId)
+        && activeAccountMembers(thread).some(member => member.source !== 'CLUB_ASSIGNED' && member.user.accountType === 'STUDENT'),
     },
     messages: messages.map(message => ({
       ...messageJson(message, viewerId),
@@ -335,32 +617,45 @@ async function buildThreadDetail(
 
 async function loadAccessibleThread(viewer: ChatViewer, threadId: string, db: Tx | typeof prisma = prisma) {
   const thread = await db.chatThread.findUnique({
-    where: { id: threadId }, include: { booking: { include: sessionInclude } },
+    where: { id: threadId }, include: threadInclude,
   });
-  const role = thread ? chatRoleIn(viewer, thread.booking) : null;
+  const role = !thread ? null
+    : thread.kind === 'SESSION' && thread.booking ? chatRoleIn(viewer, thread.booking)
+      : thread.kind === 'ACCOUNT' ? accountRoleIn(viewer, thread) : null;
   // A thread the reader cannot join is indistinguishable from one that does
   // not exist, so thread IDs cannot be probed across clubs.
   if (!thread || !role) throw new HttpError(404, 'Chat not found');
   return { thread, role };
 }
 
-export async function chatThreadForViewer(viewer: ChatViewer, threadId: string, options: { before?: string } = {}) {
+async function threadDetailInTransaction(tx: Tx, viewer: ChatViewer, threadId: string) {
+  const { thread, role } = await loadAccessibleThread(viewer, threadId, tx);
+  return buildThreadDetail(thread, viewer, role, {}, tx);
+}
+
+export async function chatThreadForViewer(
+  viewer: ChatViewer, threadId: string, options: { before?: string; includeAccountChats?: boolean } = {},
+) {
   const { thread, role } = await loadAccessibleThread(viewer, threadId);
+  if (thread.kind === 'ACCOUNT' && options.includeAccountChats === false) throw new HttpError(404, 'Chat not found');
   return buildThreadDetail(thread, viewer, role, options);
 }
 
 function threadSummaryJson(
-  thread: ThreadWithBooking & { messages: ChatMessage[] },
+  thread: LoadedThread & { messages: ChatMessage[] },
   viewerId: string | null,
   unread: number,
+  conversation: Awaited<ReturnType<typeof conversationJson>>,
 ) {
   const last = thread.messages[0];
   return {
     id: thread.id,
+    kind: thread.kind as 'SESSION' | 'ACCOUNT',
     bookingId: thread.bookingId,
     lastMessageAt: thread.lastMessageAt.toISOString(),
-    session: sessionJson(thread.booking),
-    members: membersJson(thread.booking, viewerId),
+    session: thread.booking ? sessionJson(thread.booking) : null,
+    conversation,
+    members: thread.booking ? membersJson(thread.booking, viewerId) : accountMembersJson(thread, viewerId),
     lastMessage: last ? messageJson(last, viewerId) : null,
     unreadCount: unread,
   };
@@ -374,6 +669,7 @@ function threadSearchWhere(search: string): Prisma.ChatThreadWhereInput {
     { booking: { instructor: { name: contains } } },
     { booking: { location: { name: contains } } },
     { booking: { participants: { some: { cancelledAt: null, student: { name: contains } } } } },
+    { members: { some: { removedAt: null, user: { OR: [{ name: contains }, { username: contains }] } } } },
   ] };
 }
 
@@ -381,13 +677,19 @@ const listQuery = z.object({
   cursor: z.string().trim().min(1).max(200).optional(),
   q: z.string().trim().max(80).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(30),
+  contract: z.literal('accounts').optional(),
 }).strict();
+const chatContractQuery = z.object({ contract: z.literal('accounts').optional() }).strict();
+const chatId = z.string().trim().min(1).max(200);
 
-async function listThreads(where: Prisma.ChatThreadWhereInput, query: z.infer<typeof listQuery>) {
+async function listThreads(
+  where: Prisma.ChatThreadWhereInput,
+  query: Pick<z.infer<typeof listQuery>, 'q' | 'cursor' | 'limit'>,
+) {
   const threads = await prisma.chatThread.findMany({
     where: query.q ? { AND: [where, threadSearchWhere(query.q)] } : where,
     include: {
-      booking: { include: sessionInclude },
+      ...threadInclude,
       messages: { orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 1 },
     },
     orderBy: [{ lastMessageAt: 'desc' }, { id: 'desc' }],
@@ -400,19 +702,25 @@ async function listThreads(where: Prisma.ChatThreadWhereInput, query: z.infer<ty
 }
 
 export async function listChatThreads(viewer: ChatViewer, query: z.infer<typeof listQuery>) {
-  const { page, nextCursor } = await listThreads(accessibleThreadsWhere(viewer), query);
+  const includeAccountChats = query.contract === 'accounts';
+  const { page, nextCursor } = await listThreads(accessibleThreadsWhere(viewer, includeAccountChats), query);
   const unread = await unreadCounts(viewer, page.map(thread => thread.id));
   return {
-    threads: page.map(thread => threadSummaryJson(thread, viewer.userId, unread.get(thread.id) ?? 0)),
+    threads: await Promise.all(page.map(async thread => threadSummaryJson(
+      thread, viewer.userId, unread.get(thread.id) ?? 0, await conversationJson(thread, viewer,
+        thread.kind === 'SESSION' && thread.booking ? chatRoleIn(viewer, thread.booking)! : accountRoleIn(viewer, thread)!),
+    ))),
     nextCursor,
-    unreadThreads: await unreadThreadCount(viewer),
+    unreadThreads: await unreadThreadCount(viewer, prisma, includeAccountChats),
+    accountChatAvailable: includeAccountChats,
   };
 }
 
 // Platform admins read every conversation for safety review. They never
 // post, so the reader has no viewer identity and no actions.
 export async function listChatThreadsForAdmin(query: z.infer<typeof listQuery>) {
-  const { page, nextCursor } = await listThreads({}, query);
+  const includeAccountChats = query.contract === 'accounts';
+  const { page, nextCursor } = await listThreads(includeAccountChats ? {} : { kind: 'SESSION' }, query);
   const counts = page.length
     ? await prisma.chatMessage.groupBy({
       // Count what people wrote; system lines are the platform's own record.
@@ -421,27 +729,38 @@ export async function listChatThreadsForAdmin(query: z.infer<typeof listQuery>) 
     : [];
   const countByThread = new Map(counts.map(count => [count.threadId, count._count._all]));
   return {
-    threads: page.map(thread => ({ ...threadSummaryJson(thread, null, 0), messageCount: countByThread.get(thread.id) ?? 0 })),
+    threads: await Promise.all(page.map(async thread => ({
+      ...threadSummaryJson(thread, null, 0, await conversationJson(thread, null, 'ADMIN')),
+      messageCount: countByThread.get(thread.id) ?? 0,
+    }))),
     nextCursor,
+    accountChatAvailable: includeAccountChats,
   };
 }
 
-export async function chatThreadForAdmin(threadId: string, options: { before?: string } = {}) {
+export async function chatThreadForAdmin(
+  threadId: string, options: { before?: string; includeAccountChats?: boolean } = {},
+) {
   const thread = await prisma.chatThread.findUnique({
-    where: { id: threadId }, include: { booking: { include: sessionInclude } },
+    where: { id: threadId }, include: threadInclude,
   });
-  if (!thread) throw new HttpError(404, 'Chat not found');
+  if (!thread || (thread.kind === 'ACCOUNT' && options.includeAccountChats === false)) {
+    throw new HttpError(404, 'Chat not found');
+  }
   return buildThreadDetail(thread, null, 'ADMIN', options);
 }
 
 export const adminChatListQuery = listQuery;
-export const threadQuery = z.object({ before: z.string().trim().min(1).max(200).optional() }).strict();
+export const threadQuery = z.object({
+  before: z.string().trim().min(1).max(200).optional(),
+  contract: z.literal('accounts').optional(),
+}).strict();
 
 /**
  * Validate a proposed time against live availability. Nothing is reserved:
  * acceptance repeats this inside the booking transaction.
  */
-async function assertProposedSlot(
+async function proposedSlotContext(
   tx: Tx,
   source: { businessId: string; serviceId: string; instructorId: string; locationId: string },
   startAt: Date,
@@ -451,6 +770,7 @@ async function assertProposedSlot(
     throw new HttpError(400, 'Choose a time in the future');
   }
   await lockInstructors(tx, [source.instructorId]);
+  await lockProposalCommercialTerms(tx, source);
   let context: Awaited<ReturnType<typeof schedulingContext>>;
   try {
     context = await schedulingContext(tx, source.businessId, source.serviceId, source.instructorId, source.locationId);
@@ -466,7 +786,22 @@ async function assertProposedSlot(
       conflicts: [{ date: startAt.toISOString(), reason: slot.reason || 'Unavailable' }],
     });
   }
-  return slot;
+  return { slot, context };
+}
+
+async function lockProposalCommercialTerms(
+  tx: Tx,
+  source: { businessId: string; serviceId: string; locationId: string },
+) {
+  // Currency and the venue-specific price are part of the agreement. Hold
+  // their rows through proposal creation or acceptance so catalogue edits
+  // cannot interleave after the live terms have been checked. Callers first
+  // take the instructor lock, matching the catalogue mutation lock order.
+  await tx.$queryRaw`SELECT "id" FROM "Business" WHERE "id" = ${source.businessId} FOR SHARE`;
+  await tx.$queryRaw`
+    SELECT "id" FROM "ServiceLocation"
+    WHERE "serviceId" = ${source.serviceId} AND "locationId" = ${source.locationId}
+    FOR SHARE`;
 }
 
 async function postProposalMessage(
@@ -505,9 +840,60 @@ async function markRead(tx: Tx | typeof prisma, threadId: string, userId: string
   await tx.chatReadState.updateMany({ where: { threadId, userId, lastReadAt: { lt: at } }, data: { lastReadAt: at } });
 }
 
+async function lockSessionCoachAccessForWrite(tx: Tx, viewer: ChatViewer, instructorId: string) {
+  if (viewer.accountType !== 'COACH') return;
+  // Follow the scheduling lock order before retaining shared roster locks.
+  // Every write reloads access after them, so deactivation either finishes
+  // first or waits until this authorized write commits.
+  await lockInstructors(tx, [instructorId]);
+  await tx.$queryRaw`SELECT "id" FROM "Membership" WHERE "instructorId" = ${instructorId} FOR SHARE`;
+  await tx.$queryRaw`SELECT "id" FROM "Instructor" WHERE "id" = ${instructorId} FOR SHARE`;
+}
+
+async function lockThreadAccessForWrite(tx: Tx, viewer: ChatViewer, threadId: string) {
+  const thread = await tx.chatThread.findUnique({
+    where: { id: threadId }, select: { kind: true, booking: { select: { instructorId: true } } },
+  });
+  if (thread?.kind === 'ACCOUNT') {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`account-chat-coach:${threadId}`}, 0))`;
+    const assignedInstructorIds = (await tx.chatThreadMember.findMany({
+      where: { threadId, source: 'CLUB_ASSIGNED', removedAt: null },
+      select: { membership: { select: { instructorId: true } } },
+    })).flatMap(member => member.membership?.instructorId ? [member.membership.instructorId] : []);
+    // Instructor lifecycle writers take the scheduling lock before changing
+    // roster rows. Follow that order here too, or a proposal could retain a
+    // row share lock while waiting on a deletion that needs the same row.
+    await lockInstructors(tx, assignedInstructorIds);
+    // Automatic roster revocation does not take the conversation advisory
+    // lock, so retain the assigned roster rows before rechecking membership.
+    await tx.$queryRaw`
+      SELECT membership."id"
+      FROM "ChatThreadMember" AS member
+      JOIN "Membership" AS membership ON membership."id" = member."membershipId"
+      WHERE member."threadId" = ${threadId}
+        AND member."source" = 'CLUB_ASSIGNED' AND member."removedAt" IS NULL
+      FOR SHARE OF membership`;
+    await tx.$queryRaw`
+      SELECT instructor."id"
+      FROM "ChatThreadMember" AS member
+      JOIN "Membership" AS membership ON membership."id" = member."membershipId"
+      JOIN "Instructor" AS instructor ON instructor."id" = membership."instructorId"
+      WHERE member."threadId" = ${threadId}
+        AND member."source" = 'CLUB_ASSIGNED' AND member."removedAt" IS NULL
+      FOR SHARE OF instructor`;
+  } else if (thread?.kind === 'SESSION' && viewer.accountType === 'COACH' && thread.booking) {
+    await lockSessionCoachAccessForWrite(tx, viewer, thread.booking.instructorId);
+  }
+}
+
 const proposalInput = z.object({
   startAt: z.string().datetime({ offset: true }),
   message: z.string().trim().max(500).default(''),
+}).strict();
+const accountProposalInput = proposalInput.extend({
+  businessSlug: z.string().trim().min(1).max(80),
+  serviceId: z.string().trim().min(1).max(200),
+  locationId: z.string().trim().min(1).max(200),
 }).strict();
 const declineInput = z.object({ message: z.string().trim().max(500).default('') }).strict();
 const emptyInput = z.object({}).strict();
@@ -516,19 +902,34 @@ const emptyInput = z.object({}).strict();
 const maxOpenProposalsPerPerson = 3;
 
 export async function proposeNextSession(viewer: ChatViewer, threadId: string, rawInput: unknown) {
-  const input = proposalInput.parse(rawInput);
   return prisma.$transaction(async tx => {
+    await lockThreadAccessForWrite(tx, viewer, threadId);
     const { thread, role } = await loadAccessibleThread(viewer, threadId, tx);
     if (role !== 'STUDENT' && role !== 'COACH') {
-      throw new HttpError(403, 'Only the coach and students in this session can propose a time');
+      throw new HttpError(403, 'Only a coach and student in this conversation can propose a time');
     }
-    const students = activeStudents(thread.booking);
-    if (!students.length) throw new HttpError(400, 'Nobody is booked into this session to propose a time to');
+    const accountInput = thread.kind === 'ACCOUNT' ? accountProposalInput.parse(rawInput) : null;
+    const input = accountInput ?? proposalInput.parse(rawInput);
+    const students = thread.kind === 'SESSION' && thread.booking ? activeStudents(thread.booking) : accountStudents(thread);
+    if (!students.length) throw new HttpError(400, 'There is no student in this conversation to propose a time to');
+    const choices = await schedulingOptionsFor(thread, tx);
+    const source = thread.kind === 'SESSION' && thread.booking ? {
+      businessId: thread.booking.businessId, businessName: thread.booking.business.name,
+      businessSlug: thread.booking.business.slug, timezone: thread.booking.business.timezone,
+      price: thread.booking.price, currency: thread.booking.business.currency,
+      serviceId: thread.booking.serviceId, serviceName: thread.booking.service.name,
+      instructorId: thread.booking.instructorId, instructorName: thread.booking.instructor.name,
+      locationId: thread.booking.locationId, locationName: thread.booking.location.name, address: thread.booking.address,
+    } : choices.find(option => option.businessSlug === accountInput!.businessSlug
+      && option.serviceId === accountInput!.serviceId && option.locationId === accountInput!.locationId);
+    if (!source) {
+      throw new HttpError(409, 'This class can no longer be proposed in this conversation. Choose another class or ask the club to assign a coach.');
+    }
     // A student proposes for themselves. A coach addresses the one student in
     // a private session, or the whole group, where each student answers.
     const target = role === 'STUDENT'
       ? students.find(student => student.userId === viewer.userId)!
-      : thread.booking.type === 'PRIVATE' && students.length === 1 ? students[0] : null;
+      : thread.kind === 'ACCOUNT' || (thread.booking?.type === 'PRIVATE' && students.length === 1) ? students[0] : null;
     const openCount = await tx.sessionProposal.count({
       where: { threadId: thread.id, proposedByUserId: viewer.userId, status: 'OPEN', startAt: { gt: new Date() } },
     });
@@ -536,22 +937,23 @@ export async function proposeNextSession(viewer: ChatViewer, threadId: string, r
       throw new HttpError(409, 'You already have several proposals waiting for an answer. Withdraw one first.');
     }
     const startAt = new Date(input.startAt);
-    const slot = await assertProposedSlot(tx, thread.booking, startAt, target ? [target.userId] : []);
-    const author = { userId: viewer.userId, name: displayNameIn(role, viewer, thread.booking), role };
+    const { slot, context } = await proposedSlotContext(tx, source, startAt, target ? [target.userId] : []);
+    const author = { userId: viewer.userId, name: displayNameForThread(thread, role, viewer), role };
     const proposal = await tx.sessionProposal.create({
       data: {
-        businessId: thread.businessId, threadId: thread.id,
-        serviceId: thread.booking.serviceId, instructorId: thread.booking.instructorId,
-        locationId: thread.booking.locationId, address: thread.booking.address,
+        businessId: source.businessId, threadId: thread.id,
+        serviceId: source.serviceId, instructorId: source.instructorId,
+        locationId: source.locationId, address: source.address ?? '',
+        price: context.assignment.price, currency: context.business.currency,
         startAt, endAt: slot.endAt, proposedByRole: role, proposedByUserId: viewer.userId,
         proposedByName: author.name, targetStudentUserId: target?.userId ?? null,
         targetStudentName: target?.name ?? '', message: input.message,
       },
     });
     await postProposalMessage(tx, thread.id, proposal, author, {
-      serviceName: thread.booking.service.name, timezone: thread.booking.business.timezone,
+      serviceName: source.serviceName, timezone: source.timezone,
     });
-    return thread.id;
+    return { threadId: thread.id, thread: await threadDetailInTransaction(tx, viewer, thread.id) };
   }, { timeout: 30_000 });
 }
 
@@ -562,11 +964,39 @@ async function lockAndLoadProposal(tx: Tx, viewer: ChatViewer, proposalId: strin
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`session-proposal:${proposalId}`}, 0))`;
   const proposal = await tx.sessionProposal.findUnique({ where: { id: proposalId }, include: proposalInclude });
   if (!proposal) throw new HttpError(404, 'Proposal not found');
+  await lockThreadAccessForWrite(tx, viewer, proposal.threadId);
   const { thread, role } = await loadAccessibleThread(viewer, proposal.threadId, tx).catch(error => {
     if (error instanceof HttpError && error.status === 404) throw new HttpError(404, 'Proposal not found');
     throw error;
   });
   return { proposal, thread, role };
+}
+
+async function proposalStudentsAndContext(
+  tx: Tx,
+  thread: LoadedThread,
+  proposal: FullProposal,
+) {
+  const students = thread.kind === 'SESSION' && thread.booking ? activeStudents(thread.booking) : accountStudents(thread);
+  if (thread.kind === 'ACCOUNT') {
+    const options = await schedulingOptionsFor(thread, tx);
+    if (!options.some(option => option.businessId === proposal.businessId
+      && option.serviceId === proposal.serviceId && option.instructorId === proposal.instructorId
+      && option.locationId === proposal.locationId)) {
+      throw new HttpError(409, 'This proposal is no longer available because the conversation’s scheduling setup changed');
+    }
+  }
+  return students;
+}
+
+function proposalSystemLine(
+  tx: Tx,
+  thread: LoadedThread,
+  line: Parameters<typeof postThreadSystemLine>[2],
+) {
+  return thread.kind === 'SESSION' && thread.bookingId
+    ? postChatSystemLine(tx, thread.bookingId, line)
+    : postThreadSystemLine(tx, thread.id, line);
 }
 
 function assertAnswerable(proposal: FullProposal, viewer: ChatViewer, role: ChatRole, students: Student[]) {
@@ -615,8 +1045,24 @@ export async function acceptProposal(viewer: ChatViewer, proposalId: string, raw
   emptyInput.parse(rawInput ?? {});
   return prisma.$transaction(async tx => {
     const { proposal, thread, role } = await lockAndLoadProposal(tx, viewer, proposalId);
-    const students = activeStudents(thread.booking);
+    const students = await proposalStudentsAndContext(tx, thread, proposal);
     const student = assertAnswerable(proposal, viewer, role, students);
+    await lockInstructors(tx, [proposal.instructorId]);
+    await lockProposalCommercialTerms(tx, proposal);
+    let liveContext: Awaited<ReturnType<typeof schedulingContext>>;
+    try {
+      liveContext = await schedulingContext(
+        tx, proposal.businessId, proposal.serviceId, proposal.instructorId, proposal.locationId,
+      );
+    } catch (error) {
+      if (error instanceof HttpError && [400, 404].includes(error.status)) {
+        throw new HttpError(409, 'This proposed class is no longer available. Send a new proposal.');
+      }
+      throw error;
+    }
+    if (liveContext.assignment.price !== proposal.price || liveContext.business.currency !== proposal.currency) {
+      throw new HttpError(409, 'The class price changed after this proposal was sent. Send a new proposal with the current price.');
+    }
     const account = await tx.user.findUnique({
       where: { id: student.userId }, select: { name: true, email: true, accountType: true, passwordHash: true },
     });
@@ -631,6 +1077,10 @@ export async function acceptProposal(viewer: ChatViewer, proposalId: string, raw
       student: { name: account.name, email: account.email },
     }), { studentUserId: student.userId });
     const booking = result.bookings[0];
+    if (booking.price !== proposal.price
+      || booking.participants.some(participant => participant.price !== proposal.price)) {
+      throw new HttpError(409, 'The class price changed after this proposal was sent. Send a new proposal with the current price.');
+    }
     await tx.sessionProposalResponse.create({
       data: {
         proposalId: proposal.id, studentUserId: student.userId, studentName: student.name,
@@ -638,19 +1088,22 @@ export async function acceptProposal(viewer: ChatViewer, proposalId: string, raw
       },
     });
     await settleProposal(tx, proposal, 'ACCEPTED', students);
-    const responderName = displayNameIn(role, viewer, thread.booking);
-    const when = chatWhen(proposal.startAt, thread.booking.business.timezone);
+    const responderName = displayNameForThread(thread, role, viewer);
+    const when = chatWhen(proposal.startAt, proposal.business.timezone);
     const booked = `${student.name} is booked for ${proposal.service.name} on ${when}`;
     const status = booking.status === 'PENDING'
       ? ' The club is confirming the venue before it goes on the calendar.'
       : ' It has been added to the calendar.';
-    await postChatSystemLine(tx, thread.bookingId, {
+    await proposalSystemLine(tx, thread, {
       event: 'PROPOSAL_ACCEPTED',
       body: role === 'COACH' ? `${responderName} accepted. ${booked}.${status}` : `${booked}.${status}`,
       actor: { userId: viewer.userId, name: responderName },
     });
     await markRead(tx, thread.id, viewer.userId, new Date());
-    return { threadId: thread.id, bookingId: booking.id };
+    return {
+      threadId: thread.id, bookingId: booking.id,
+      thread: await threadDetailInTransaction(tx, viewer, thread.id),
+    };
   }, { timeout: 30_000 });
 }
 
@@ -658,7 +1111,7 @@ export async function declineProposal(viewer: ChatViewer, proposalId: string, ra
   const input = declineInput.parse(rawInput ?? {});
   return prisma.$transaction(async tx => {
     const { proposal, thread, role } = await lockAndLoadProposal(tx, viewer, proposalId);
-    const students = activeStudents(thread.booking);
+    const students = await proposalStudentsAndContext(tx, thread, proposal);
     const student = assertAnswerable(proposal, viewer, role, students);
     await tx.sessionProposalResponse.create({
       data: {
@@ -667,15 +1120,15 @@ export async function declineProposal(viewer: ChatViewer, proposalId: string, ra
       },
     });
     await settleProposal(tx, proposal, 'DECLINED', students);
-    const responderName = displayNameIn(role, viewer, thread.booking);
-    await postChatSystemLine(tx, thread.bookingId, {
+    const responderName = displayNameForThread(thread, role, viewer);
+    await proposalSystemLine(tx, thread, {
       event: 'PROPOSAL_DECLINED',
-      body: `${responderName} declined ${chatWhen(proposal.startAt, thread.booking.business.timezone)}.`
+      body: `${responderName} declined ${chatWhen(proposal.startAt, proposal.business.timezone)}.`
         + (input.message ? ` “${input.message}”` : ''),
       actor: { userId: viewer.userId, name: responderName },
     });
     await markRead(tx, thread.id, viewer.userId, new Date());
-    return { threadId: thread.id };
+    return { threadId: thread.id, thread: await threadDetailInTransaction(tx, viewer, thread.id) };
   }, { timeout: 30_000 });
 }
 
@@ -685,16 +1138,33 @@ export async function declineProposal(viewer: ChatViewer, proposalId: string, ra
  * one who confirms the final time.
  */
 export async function counterProposal(viewer: ChatViewer, proposalId: string, rawInput: unknown) {
-  const input = proposalInput.parse(rawInput);
   return prisma.$transaction(async tx => {
     const { proposal, thread, role } = await lockAndLoadProposal(tx, viewer, proposalId);
-    const students = activeStudents(thread.booking);
+    const accountInput = thread.kind === 'ACCOUNT' ? accountProposalInput.parse(rawInput) : null;
+    const input = accountInput ?? proposalInput.parse(rawInput);
+    const students = await proposalStudentsAndContext(tx, thread, proposal);
     const student = assertAnswerable(proposal, viewer, role, students);
     const startAt = new Date(input.startAt);
     if (startAt.getTime() === proposal.startAt.getTime()) {
       throw new HttpError(400, 'Choose a different time to suggest, or accept this one');
     }
-    const slot = await assertProposedSlot(tx, proposal, startAt, [student.userId]);
+    let source: {
+      businessId: string; serviceId: string; instructorId: string; locationId: string; address: string;
+      serviceName: string; timezone: string; price: number; currency: string;
+    };
+    if (thread.kind === 'ACCOUNT') {
+      const choice = (await schedulingOptionsFor(thread, tx)).find(option => option.businessSlug === accountInput!.businessSlug
+        && option.serviceId === accountInput!.serviceId && option.locationId === accountInput!.locationId);
+      if (!choice) throw new HttpError(409, 'This class can no longer be proposed in this conversation');
+      source = { ...choice, address: choice.address ?? '' };
+    } else {
+      source = {
+        businessId: proposal.businessId, serviceId: proposal.serviceId, instructorId: proposal.instructorId,
+        locationId: proposal.locationId, address: proposal.address, serviceName: proposal.service.name,
+        timezone: proposal.business.timezone, price: proposal.price, currency: proposal.currency,
+      };
+    }
+    const { slot, context } = await proposedSlotContext(tx, source, startAt, [student.userId]);
     await tx.sessionProposalResponse.create({
       data: {
         proposalId: proposal.id, studentUserId: student.userId, studentName: student.name,
@@ -702,20 +1172,24 @@ export async function counterProposal(viewer: ChatViewer, proposalId: string, ra
       },
     });
     await settleProposal(tx, proposal, 'COUNTERED', students);
-    const author = { userId: viewer.userId, name: displayNameIn(role, viewer, thread.booking), role };
+    const author = { userId: viewer.userId, name: displayNameForThread(thread, role, viewer), role };
     const counter = await tx.sessionProposal.create({
       data: {
-        businessId: proposal.businessId, threadId: proposal.threadId, serviceId: proposal.serviceId,
-        instructorId: proposal.instructorId, locationId: proposal.locationId, address: proposal.address,
+        businessId: source.businessId, threadId: proposal.threadId, serviceId: source.serviceId,
+        instructorId: source.instructorId, locationId: source.locationId, address: source.address,
+        price: context.assignment.price, currency: context.business.currency,
         startAt, endAt: slot.endAt, proposedByRole: role, proposedByUserId: viewer.userId,
         proposedByName: author.name, targetStudentUserId: student.userId, targetStudentName: student.name,
         counterOfId: proposal.id, message: input.message,
       },
     });
     await postProposalMessage(tx, thread.id, counter, author, {
-      serviceName: proposal.service.name, timezone: thread.booking.business.timezone,
+      serviceName: source.serviceName, timezone: source.timezone,
     });
-    return { threadId: thread.id, proposalId: counter.id };
+    return {
+      threadId: thread.id, proposalId: counter.id,
+      thread: await threadDetailInTransaction(tx, viewer, thread.id),
+    };
   }, { timeout: 30_000 });
 }
 
@@ -728,14 +1202,14 @@ export async function withdrawProposal(viewer: ChatViewer, proposalId: string, r
     }
     if (proposal.status !== 'OPEN') throw new HttpError(409, 'This proposal has already been answered');
     await tx.sessionProposal.update({ where: { id: proposal.id }, data: { status: 'WITHDRAWN', closedAt: new Date() } });
-    const name = displayNameIn(role, viewer, thread.booking);
-    await postChatSystemLine(tx, thread.bookingId, {
+    const name = displayNameForThread(thread, role, viewer);
+    await proposalSystemLine(tx, thread, {
       event: 'PROPOSAL_WITHDRAWN',
-      body: `${name} withdrew the proposed time (${chatWhen(proposal.startAt, thread.booking.business.timezone)}).`,
+      body: `${name} withdrew the proposed time (${chatWhen(proposal.startAt, proposal.business.timezone)}).`,
       actor: { userId: viewer.userId, name },
     });
     await markRead(tx, thread.id, viewer.userId, new Date());
-    return { threadId: thread.id };
+    return { threadId: thread.id, thread: await threadDetailInTransaction(tx, viewer, thread.id) };
   }, { timeout: 30_000 });
 }
 
@@ -745,11 +1219,142 @@ export async function withdrawProposal(viewer: ChatViewer, proposalId: string, r
  */
 export async function openBookingChat(viewer: ChatViewer, bookingId: string) {
   return prisma.$transaction(async tx => {
+    const candidate = await tx.booking.findUnique({ where: { id: bookingId }, select: { instructorId: true } });
+    if (candidate) await lockSessionCoachAccessForWrite(tx, viewer, candidate.instructorId);
     const booking = await tx.booking.findUnique({ where: { id: bookingId }, include: sessionInclude });
+    if (candidate && booking?.instructorId !== candidate.instructorId) {
+      throw new HttpError(409, 'Session changed concurrently. Please retry.');
+    }
     if (!booking || !chatRoleIn(viewer, booking)) throw new HttpError(404, 'Chat not found');
     const threadId = await ensureChatThread(tx, booking.id);
     if (!threadId) throw new HttpError(404, 'Chat not found');
     return threadId;
+  });
+}
+
+const accountChatInput = z.object({
+  username: z.string().trim().min(3).max(30).regex(/^[A-Za-z0-9_]+$/, 'Enter an exact username'),
+}).strict();
+const coachAssignmentInput = z.object({ membershipId: z.string().trim().min(1).max(200) }).strict();
+
+/** Open the one durable account conversation for an unordered pair. */
+export async function openAccountChat(viewer: ChatViewer, rawInput: unknown) {
+  const { username: rawUsername } = accountChatInput.parse(rawInput);
+  const username = rawUsername.toLowerCase();
+  const target = await prisma.user.findUnique({
+    where: { username },
+    select: { id: true, name: true, username: true, accountType: true, passwordHash: true },
+  });
+  if (!target?.passwordHash) throw new HttpError(404, 'Account not found');
+  if (target.id === viewer.userId) throw new HttpError(400, 'Choose another account to start a conversation');
+  const accountIds = [viewer.userId, target.id].sort();
+  const directKey = accountIds.join(':');
+  return prisma.$transaction(async tx => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`account-chat:${directKey}`}, 0))`;
+    const existing = await tx.chatThread.findUnique({ where: { directKey }, select: { id: true } });
+    if (existing) return existing.id;
+    const clubUserId = [
+      ...(viewer.accountType === 'CLUB' ? [viewer.userId] : []),
+      ...(target.accountType === 'CLUB' ? [target.id] : []),
+    ];
+    let businessId: string | null = null;
+    if (clubUserId.length === 1) {
+      const institutional = await tx.membership.findFirst({
+        where: {
+          userId: clubUserId[0], active: true, instructorId: null,
+          business: { kind: 'CLUB', legacyReadOnly: false },
+        },
+        select: { businessId: true },
+      });
+      if (!institutional) throw new HttpError(409, 'That club is not available for conversations');
+      businessId = institutional.businessId;
+    }
+    const now = new Date();
+    const thread = await tx.chatThread.create({
+      data: {
+        kind: 'ACCOUNT', businessId, directKey, lastMessageAt: now, createdAt: now,
+        members: { create: [
+          { userId: viewer.userId, source: 'INITIATOR', joinedAt: now, addedByUserId: viewer.userId },
+          { userId: target.id, source: 'TARGET', joinedAt: now, addedByUserId: viewer.userId },
+        ] },
+        messages: { create: {
+          kind: 'SYSTEM', event: 'OPENED', senderRole: 'SYSTEM',
+          body: 'This account conversation is ready. Everyone shown as a member can read and reply here.', createdAt: now,
+        } },
+      },
+      select: { id: true },
+    });
+    await markRead(tx, thread.id, viewer.userId, now);
+    return thread.id;
+  });
+}
+
+function assertCoachAssignableRoom(viewer: ChatViewer, thread: LoadedThread, role: ChatRole) {
+  const directMembers = activeAccountMembers(thread).filter(member => member.source !== 'CLUB_ASSIGNED');
+  const clubStudentPair = directMembers.length === 2
+    && directMembers.some(member => member.user.accountType === 'CLUB')
+    && directMembers.some(member => member.user.accountType === 'STUDENT');
+  if (thread.kind !== 'ACCOUNT' || role !== 'CLUB' || !thread.businessId
+    || !viewer.clubBusinessIds.includes(thread.businessId) || !clubStudentPair) {
+    throw new HttpError(404, 'Chat not found');
+  }
+}
+
+export async function assignConversationCoach(viewer: ChatViewer, threadId: string, rawInput: unknown) {
+  const input = coachAssignmentInput.parse(rawInput);
+  return prisma.$transaction(async tx => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`account-chat-coach:${threadId}`}, 0))`;
+    const { thread, role } = await loadAccessibleThread(viewer, threadId, tx);
+    assertCoachAssignableRoom(viewer, thread, role);
+    const membership = await tx.membership.findFirst({
+      where: {
+        id: input.membershipId, businessId: thread.businessId!, active: true,
+        instructor: { is: bookableInstructorWhere(thread.businessId!) },
+        user: { accountType: 'COACH', passwordHash: { not: null } },
+      },
+      select: { id: true, userId: true, user: { select: { name: true } } },
+    });
+    if (!membership) throw new HttpError(404, 'Coach not found');
+    const current = activeAccountMembers(thread).find(member => member.source === 'CLUB_ASSIGNED');
+    if (current?.membershipId === membership.id) return thread.id;
+    const now = new Date();
+    await tx.chatThreadMember.updateMany({
+      where: { threadId, source: 'CLUB_ASSIGNED', removedAt: null }, data: { removedAt: now },
+    });
+    await tx.chatThreadMember.upsert({
+      where: { threadId_userId: { threadId, userId: membership.userId } },
+      create: {
+        threadId, userId: membership.userId, source: 'CLUB_ASSIGNED', membershipId: membership.id,
+        joinedAt: now, addedByUserId: viewer.userId,
+      },
+      update: {
+        source: 'CLUB_ASSIGNED', membershipId: membership.id, joinedAt: now, removedAt: null, addedByUserId: viewer.userId,
+      },
+    });
+    await postThreadSystemLine(tx, threadId, {
+      event: 'COACH_ASSIGNED', body: `${membership.user.name} was assigned to this conversation.`,
+      actor: { userId: viewer.userId, name: viewer.name },
+    });
+    return thread.id;
+  });
+}
+
+export async function removeConversationCoach(viewer: ChatViewer, threadId: string, rawInput: unknown) {
+  emptyInput.parse(rawInput ?? {});
+  return prisma.$transaction(async tx => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`account-chat-coach:${threadId}`}, 0))`;
+    const { thread, role } = await loadAccessibleThread(viewer, threadId, tx);
+    assertCoachAssignableRoom(viewer, thread, role);
+    const current = activeAccountMembers(thread).find(member => member.source === 'CLUB_ASSIGNED');
+    if (!current) return thread.id;
+    await tx.chatThreadMember.update({
+      where: { threadId_userId: { threadId, userId: current.userId } }, data: { removedAt: new Date() },
+    });
+    await postThreadSystemLine(tx, threadId, {
+      event: 'COACH_REMOVED', body: `${current.user.name} was removed from this conversation.`,
+      actor: { userId: viewer.userId, name: viewer.name },
+    });
+    return thread.id;
   });
 }
 
@@ -758,12 +1363,13 @@ export async function postChatMessage(viewer: ChatViewer, threadId: string, rawI
     body: z.string().trim().min(1, 'Write a message first').max(2000, 'Keep messages under 2,000 characters'),
   }).strict().parse(rawInput);
   return prisma.$transaction(async tx => {
+    await lockThreadAccessForWrite(tx, viewer, threadId);
     const { thread, role } = await loadAccessibleThread(viewer, threadId, tx);
     const createdAt = new Date();
     const message = await tx.chatMessage.create({
       data: {
         threadId: thread.id, kind: 'TEXT', senderUserId: viewer.userId, senderRole: role,
-        senderName: displayNameIn(role, viewer, thread.booking), body: input.body, createdAt,
+        senderName: displayNameForThread(thread, role, viewer), body: input.body, createdAt,
       },
     });
     await touchThread(tx, thread.id, createdAt);
@@ -772,10 +1378,13 @@ export async function postChatMessage(viewer: ChatViewer, threadId: string, rawI
   });
 }
 
-export async function markChatRead(viewer: ChatViewer, threadId: string) {
-  const { thread } = await loadAccessibleThread(viewer, threadId);
-  await markRead(prisma, thread.id, viewer.userId, new Date());
-  return unreadThreadCount(viewer);
+export async function markChatRead(viewer: ChatViewer, threadId: string, includeAccountChats = true) {
+  return prisma.$transaction(async tx => {
+    await lockThreadAccessForWrite(tx, viewer, threadId);
+    const { thread } = await loadAccessibleThread(viewer, threadId, tx);
+    await markRead(tx, thread.id, viewer.userId, new Date());
+    return unreadThreadCount(viewer, tx, includeAccountChats);
+  });
 }
 
 function reminderText(
@@ -901,6 +1510,13 @@ const chatWriteLimit = rateLimit({
   message: { error: 'You are sending messages too quickly. Please wait a moment.' },
 });
 
+const chatCreateLimit = rateLimit({
+  windowMs: 5 * 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false,
+  skip: skipRateLimits,
+  keyGenerator: req => (req as AccountRequest).auth?.user.id ?? 'unauthenticated',
+  message: { error: 'You are starting conversations too quickly. Please wait a moment.' },
+});
+
 export const chatRouter = Router();
 chatRouter.use(requireChatAccount);
 
@@ -909,56 +1525,78 @@ chatRouter.get('/', asyncRoute(async (req, res) => {
 }));
 
 chatRouter.get('/unread', asyncRoute(async (req, res) => {
-  z.object({}).strict().parse(req.query);
-  res.json({ unreadThreads: await unreadThreadCount(chatViewerFor(req.auth)) });
+  const query = chatContractQuery.parse(req.query);
+  res.json({ unreadThreads: await unreadThreadCount(
+    chatViewerFor(req.auth), prisma, query.contract === 'accounts',
+  ) });
+}));
+
+chatRouter.post('/accounts', chatCreateLimit, asyncRoute(async (req, res) => {
+  res.json({ threadId: await openAccountChat(chatViewerFor(req.auth), req.body) });
 }));
 
 chatRouter.post('/bookings/:bookingId', asyncRoute(async (req, res) => {
   emptyInput.parse(req.body ?? {});
-  const bookingId = z.string().trim().min(1).max(200).parse(req.params.bookingId);
+  const bookingId = chatId.parse(req.params.bookingId);
   res.json({ threadId: await openBookingChat(chatViewerFor(req.auth), bookingId) });
 }));
 
 chatRouter.post('/proposals/:proposalId/accept', chatWriteLimit, asyncRoute(async (req, res) => {
   const viewer = chatViewerFor(req.auth);
-  const result = await acceptProposal(viewer, req.params.proposalId, req.body);
-  res.json({ ...result, thread: await chatThreadForViewer(viewer, result.threadId) });
+  res.json(await acceptProposal(viewer, chatId.parse(req.params.proposalId), req.body));
 }));
 
 chatRouter.post('/proposals/:proposalId/decline', chatWriteLimit, asyncRoute(async (req, res) => {
   const viewer = chatViewerFor(req.auth);
-  const result = await declineProposal(viewer, req.params.proposalId, req.body);
-  res.json({ ...result, thread: await chatThreadForViewer(viewer, result.threadId) });
+  res.json(await declineProposal(viewer, chatId.parse(req.params.proposalId), req.body));
 }));
 
 chatRouter.post('/proposals/:proposalId/counter', chatWriteLimit, asyncRoute(async (req, res) => {
   const viewer = chatViewerFor(req.auth);
-  const result = await counterProposal(viewer, req.params.proposalId, req.body);
-  res.status(201).json({ ...result, thread: await chatThreadForViewer(viewer, result.threadId) });
+  res.status(201).json(await counterProposal(viewer, chatId.parse(req.params.proposalId), req.body));
 }));
 
 chatRouter.post('/proposals/:proposalId/withdraw', chatWriteLimit, asyncRoute(async (req, res) => {
   const viewer = chatViewerFor(req.auth);
-  const result = await withdrawProposal(viewer, req.params.proposalId, req.body);
-  res.json({ ...result, thread: await chatThreadForViewer(viewer, result.threadId) });
+  res.json(await withdrawProposal(viewer, chatId.parse(req.params.proposalId), req.body));
 }));
 
 chatRouter.get('/:threadId', asyncRoute(async (req, res) => {
-  const { before } = threadQuery.parse(req.query);
-  res.json(await chatThreadForViewer(chatViewerFor(req.auth), req.params.threadId, { before }));
+  const { before, contract } = threadQuery.parse(req.query);
+  res.json(await chatThreadForViewer(chatViewerFor(req.auth), chatId.parse(req.params.threadId), {
+    before, includeAccountChats: contract === 'accounts',
+  }));
 }));
 
 chatRouter.post('/:threadId/messages', chatWriteLimit, asyncRoute(async (req, res) => {
-  res.status(201).json({ message: await postChatMessage(chatViewerFor(req.auth), req.params.threadId, req.body) });
+  res.status(201).json({ message: await postChatMessage(chatViewerFor(req.auth), chatId.parse(req.params.threadId), req.body) });
+}));
+
+chatRouter.post('/:threadId/coach', chatWriteLimit, asyncRoute(async (req, res) => {
+  const viewer = chatViewerFor(req.auth);
+  const threadId = await assignConversationCoach(viewer, chatId.parse(req.params.threadId), req.body);
+  res.json({ thread: await chatThreadForViewer(viewer, threadId) });
+}));
+
+chatRouter.delete('/:threadId/coach', chatWriteLimit, asyncRoute(async (req, res) => {
+  const viewer = chatViewerFor(req.auth);
+  const threadId = await removeConversationCoach(viewer, chatId.parse(req.params.threadId), req.body);
+  res.json({ thread: await chatThreadForViewer(viewer, threadId) });
 }));
 
 chatRouter.post('/:threadId/read', asyncRoute(async (req, res) => {
   emptyInput.parse(req.body ?? {});
-  res.json({ ok: true, unreadThreads: await markChatRead(chatViewerFor(req.auth), req.params.threadId) });
+  const query = chatContractQuery.parse(req.query);
+  res.json({
+    ok: true,
+    unreadThreads: await markChatRead(
+      chatViewerFor(req.auth), chatId.parse(req.params.threadId), query.contract === 'accounts',
+    ),
+  });
 }));
 
 chatRouter.post('/:threadId/proposals', chatWriteLimit, asyncRoute(async (req, res) => {
   const viewer = chatViewerFor(req.auth);
-  const threadId = await proposeNextSession(viewer, req.params.threadId, req.body);
-  res.status(201).json({ thread: await chatThreadForViewer(viewer, threadId) });
+  const result = await proposeNextSession(viewer, chatId.parse(req.params.threadId), req.body);
+  res.status(201).json({ thread: result.thread });
 }));
