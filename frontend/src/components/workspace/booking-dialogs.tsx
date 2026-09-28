@@ -74,6 +74,7 @@ function BusinessBookingDialog({ data, open, onClose, refresh }: NewBookingDialo
   const [slot, setSlot] = useState('');
   const [slots, setSlots] = useState<Slot[]>([]);
   const [slotsLoading, setSlotsLoading] = useState(false);
+  const [slotsError, setSlotsError] = useState('');
   const [studentId, setStudent] = useState('');
   const [packageId, setPackage] = useState('');
   const [repeat, setRepeat] = useState(1);
@@ -107,10 +108,10 @@ function BusinessBookingDialog({ data, open, onClose, refresh }: NewBookingDialo
   }, [eligiblePackages, packageId]);
   useEffect(() => {
     let active = true;
-    setSlot(''); setSlots([]); setError('');
+    setSlot(''); setSlots([]); setError(''); setSlotsError('');
     if (!open || !serviceId || !locationId || !bookingInstructorId || !date) return;
     setSlotsLoading(true);
-    loadSlots(data.business.slug, { serviceId, locationId, instructorId: bookingInstructorId, date }).then(r => { if (active) setSlots(r.slots); }).catch(e => { if (active) setError(e.message); }).finally(() => { if (active) setSlotsLoading(false); });
+    loadSlots(data.business.slug, { serviceId, locationId, instructorId: bookingInstructorId, date }).then(r => { if (active) setSlots(r.slots); }).catch(e => { if (active) setSlotsError(e.message); }).finally(() => { if (active) setSlotsLoading(false); });
     return () => { active = false; };
   }, [open, serviceId, locationId, bookingInstructorId, date, data.business.slug]);
   async function submit(event: React.FormEvent<HTMLFormElement>) {
@@ -127,7 +128,7 @@ function BusinessBookingDialog({ data, open, onClose, refresh }: NewBookingDialo
   }
   return <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}><DialogContent className="max-w-xl"><DialogTitle className="text-xl font-semibold tracking-tight">Add a booking</DialogTitle><DialogDescription className="mt-2 mb-6 text-xs text-stone-500">Choose the class, venue, student, and time.</DialogDescription><form onSubmit={submit} className="form-stack">
     <div className="form-grid"><div className="field-wide"><label htmlFor="booking-service">{isClubCoach ? '1-1 session' : 'Class'}</label><select id="booking-service" value={serviceId} onChange={e => { setService(e.target.value); setPackage(''); }} required><option value="" disabled>Choose a class</option>{availableServices.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></div>{isClubCoach && <div className="field-wide grid gap-3 rounded-xl border border-[#e3e8df] bg-[#f7f9f4] p-3 sm:grid-cols-2" role="group" aria-label="1-1 session details"><p className="text-[11px] text-stone-500"><span className="block text-[10px] font-semibold uppercase tracking-wide text-stone-400">Club</span><strong className="mt-1 block font-semibold text-[#344b39]">{data.business.name}</strong></p><p className="text-[11px] text-stone-500"><span className="block text-[10px] font-semibold uppercase tracking-wide text-stone-400">Duration</span><strong className="mt-1 block font-semibold text-[#344b39]">{mapping?.duration || service?.duration || 60} minutes</strong></p></div>}<div><label htmlFor="booking-location">Location</label><select id="booking-location" value={locationId} onChange={e => setLocation(e.target.value)} required><option value="" disabled>Select location</option>{serviceLocations.map(l => <option key={l.locationId} value={l.locationId}>{data.locations.find(x => x.id === l.locationId)?.name}</option>)}</select></div>{!isClubCoach && <div><label htmlFor="booking-instructor">Instructor</label><select id="booking-instructor" value={instructorId} onChange={e => setInstructor(e.target.value)} required><option value="" disabled>Select instructor</option>{data.instructors.filter(i => activeInstructorIds.has(i.id) && mapping?.instructorIds.includes(i.id)).map(i => <option key={i.id} value={i.id}>{i.name}</option>)}</select></div>}<div><label htmlFor="booking-date">Date</label><input id="booking-date" type="date" min={dateKey()} value={date} onChange={e => setDate(e.target.value)} required /></div><div><label htmlFor="booking-repeat">Repeat</label><select id="booking-repeat" value={repeat} onChange={e => setRepeat(Number(e.target.value))}><option value={1}>Does not repeat</option><option value={4}>Weekly · 4 classes</option><option value={8}>Weekly · 8 classes</option><option value={10}>Weekly · 10 classes</option></select></div></div>
-    <div><label>Available start times · {mapping?.duration || service?.duration || 60} min</label>{slotsLoading ? <p className="flex items-center gap-2 py-4 text-xs text-stone-500"><Loader2 size={14} className="animate-spin" />Checking all locations and travel time…</p> : <div className="grid grid-cols-4 gap-2">{slots.filter(s => s.available).map(s => <button type="button" key={s.startAt} onClick={() => setSlot(s.startAt)} className={`rounded-lg border px-2 py-2.5 text-[11px] ${slot === s.startAt ? 'border-[#214e3e] bg-[#214e3e] text-white' : 'border-stone-200 hover:bg-stone-50'}`}>{time(s.startAt)}</button>)}{!slots.some(s => s.available) && <p className="col-span-4 rounded-lg bg-stone-50 p-4 text-xs text-stone-500">No available times. Try a different date, {isClubCoach ? 'class' : 'instructor'}, or location.</p>}</div>}</div>
+    <div aria-busy={slotsLoading}><label id="booking-times-label">Available start times · {mapping?.duration || service?.duration || 60} min</label><p role="status" aria-live="polite" className="sr-only">{slotsLoading ? 'Checking availability.' : slotsError ? 'Available times could not be loaded.' : slots.filter(s => s.available).length === 1 ? '1 available time loaded.' : slots.filter(s => s.available).length + ' available times loaded.'}</p>{slotsLoading ? <p className="flex items-center gap-2 py-4 text-xs text-stone-500"><Loader2 size={14} className="animate-spin" />Checking all locations and travel time…</p> : slotsError ? <p role="alert" className="rounded-lg bg-red-50 p-3 text-xs text-red-700">{slotsError}</p> : <div role="radiogroup" aria-labelledby="booking-times-label" className="grid grid-cols-4 gap-2">{slots.filter(s => s.available).map(s => <button type="button" role="radio" aria-checked={slot === s.startAt} key={s.startAt} onClick={() => setSlot(s.startAt)} className={`rounded-lg border px-2 py-2.5 text-sm ${slot === s.startAt ? 'border-[#214e3e] bg-[#214e3e] text-white' : 'border-stone-200 hover:bg-stone-50'}`}>{time(s.startAt)}</button>)}{!slots.some(s => s.available) && <p className="col-span-4 rounded-lg bg-stone-50 p-4 text-xs text-stone-500">No available times. Try a different date, {isClubCoach ? 'class' : 'instructor'}, or location.</p>}</div>}</div>
     <div><label htmlFor="booking-student">Registered student</label><select id="booking-student" value={studentId} onChange={e => { setStudent(e.target.value); setPackage(''); }} required><option value="" disabled>Select a student account</option>{data.students.filter(student => !!student.userId).map(student => <option key={student.id} value={student.id}>{student.name} · {student.email}</option>)}</select></div>
     {managerData && eligiblePackages.length > 0 && <div><label htmlFor="booking-package">Package credits</label><select id="booking-package" value={packageId} onChange={e => setPackage(e.target.value)}><option value="">Pay per class</option>{eligiblePackages.map(p => <option key={p.id} value={p.id}>{p.name} · {p.totalCredits - p.usedCredits} credits left</option>)}</select></div>}
     {location?.type === 'HOME' && <div><label htmlFor="booking-address">Student address</label><input id="booking-address" name="address" required placeholder="Full address and unit number" /></div>}
@@ -160,14 +161,18 @@ export function BookingDetail({ bookingId, data, onClose, refresh, onOpenChat }:
   const [date, setDate] = useState(dateKey());
   const [slots, setSlots] = useState<Slot[]>([]);
   const [selectedSlot, setSelectedSlot] = useState('');
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [slotsError, setSlotsError] = useState('');
   const [proposalMessage, setProposalMessage] = useState('');
   const [payMethod, setPayMethod] = useState('BANK_TRANSFER');
+  const [confirmation, setConfirmation] = useState<{ kind: 'decline' | 'cancel' | 'reverse'; paymentId?: string } | null>(null);
+  const [reversalReason, setReversalReason] = useState('Recorded by mistake');
   const [nowMs, setNowMs] = useState(() => Date.now());
   const current = data.bookings.find(booking => booking.id === bookingId) ?? null;
   const managerBooking = managerData?.bookings.find(booking => booking.id === bookingId) ?? null;
   const currentStatus = current?.status;
   const currentEndAt = current?.endAt;
-  useEffect(() => { setReschedule(false); setSelectedSlot(''); setProposalMessage(''); setNowMs(Date.now()); }, [bookingId]);
+  useEffect(() => { setReschedule(false); setSelectedSlot(''); setProposalMessage(''); setConfirmation(null); setReversalReason('Recorded by mistake'); setNowMs(Date.now()); }, [bookingId]);
   useEffect(() => {
     if (!bookingId || !currentEndAt || currentStatus === 'CANCELLED' || currentStatus === 'COMPLETED') return;
     const end = new Date(currentEndAt).getTime();
@@ -199,18 +204,18 @@ export function BookingDetail({ bookingId, data, onClose, refresh, onOpenChat }:
     setReschedule(false);
     setSelectedSlot('');
   }, [currentEndAt, nowMs]);
-  useEffect(() => { let active = true; if (reschedule && current) { setSlots([]); setSelectedSlot(''); loadSlots(data.business.slug, { serviceId: current.serviceId, instructorId: current.instructorId, locationId: current.locationId, date }).then(r => { if (active) setSlots(r.slots); }).catch(e => toast.error(e.message)); } return () => { active = false; }; }, [reschedule, date, bookingId, current, data.business.slug]);
+  useEffect(() => { let active = true; if (reschedule && current) { setSlots([]); setSelectedSlot(''); setSlotsError(''); setSlotsLoading(true); loadSlots(data.business.slug, { serviceId: current.serviceId, instructorId: current.instructorId, locationId: current.locationId, date }).then(r => { if (active) setSlots(r.slots); }).catch(e => { if (active) setSlotsError(e.message); }).finally(() => { if (active) setSlotsLoading(false); }); } return () => { active = false; }; }, [reschedule, date, bookingId, current, data.business.slug]);
   if (!current) return null;
   const endAt = current.endAt;
 
   async function run<T>(work: () => Promise<T>, success: string) {
     setBusy(true);
-    try { await work(); await refresh(); toast.success(success); }
-    catch (e) { toast.error((e as Error).message); }
+    try { await work(); await refresh(); toast.success(success); return true; }
+    catch (e) { toast.error((e as Error).message); return false; }
     finally { setBusy(false); }
   }
   async function action(path: string, values: unknown, method: 'PATCH' | 'POST' = 'PATCH') {
-    await run(() => mutate(path, method, values), 'Booking updated');
+    return run(() => mutate(path, method, values), 'Booking updated');
   }
   function allowBeforeLessonEnd() {
     const liveNow = Date.now();
@@ -281,7 +286,7 @@ export function BookingDetail({ bookingId, data, onClose, refresh, onOpenChat }:
       <p className="leading-relaxed">{current.createdByRole === 'CLUB' ? 'The club assigned this class. The student does not need to accept it, but the coach does before it is confirmed.' : 'This class is waiting for the coach to accept it.'}</p>
       {canAnswerAssignment && <div className="mt-3 flex flex-wrap gap-2">
         <Button size="sm" disabled={busy} onClick={() => { if (allowBeforeLessonEnd()) void run(() => respondToAssignment(current.id, 'accept'), 'Class accepted'); }}><Check size={13} />Accept class</Button>
-        <Button size="sm" variant="outline" disabled={busy} onClick={() => { if (allowBeforeLessonEnd() && window.confirm('Decline this class? The slot is released, any package credit is returned, and the club is asked to reassign it.') && allowBeforeLessonEnd()) void run(() => respondToAssignment(current.id, 'decline'), 'Class declined'); }}><X size={13} />Cannot teach this</Button>
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => { if (allowBeforeLessonEnd()) setConfirmation({ kind: 'decline' }); }}><X size={13} />Cannot teach this</Button>
       </div>}
     </div>}
 
@@ -312,7 +317,7 @@ export function BookingDetail({ bookingId, data, onClose, refresh, onOpenChat }:
           {managerParticipant && !managerParticipant.paid && !managerParticipant.packageId && !inactive && <Button size="sm" variant="outline" disabled={busy} onClick={() => action('/payments', { studentId: p.studentId, bookingId: current.id, amount: managerParticipant.price, method: payMethod, note: 'Class payment' }, 'POST')}>Record payment</Button>}
           {/* Recording a payment is undoable: the row stays in the ledger,
               marked reversed, and the participant returns to unpaid. */}
-          {managerParticipant && payment && !managerParticipant.packageId && <Button size="sm" variant="ghost" disabled={busy} onClick={() => { const reason = window.prompt('Reverse this payment? Say briefly why, for the ledger.', 'Recorded by mistake'); if (reason !== null) void run(() => reversePayment(payment.id, reason), 'Payment reversed'); }}><Undo2 size={12} />Undo payment</Button>}
+          {managerParticipant && payment && !managerParticipant.packageId && <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setReversalReason('Recorded by mistake'); setConfirmation({ kind: 'reverse', paymentId: payment.id }); }}><Undo2 size={12} />Undo payment</Button>}
         </div>
         {managerParticipant && payment && <p className="mt-2 text-[10px] text-stone-400">{money(payment.amount)} recorded {shortDate(payment.paidAt)} · {payment.method.replace('_', ' ').toLowerCase()}</p>}
         {managerParticipant && lessonPayments.some(candidate => candidate.studentId === p.studentId && candidate.reversedAt) && <p className="mt-1 text-[10px] text-stone-400">{lessonPayments.filter(candidate => candidate.studentId === p.studentId && candidate.reversedAt).length} reversed payment(s) kept in the ledger.</p>}
@@ -321,12 +326,19 @@ export function BookingDetail({ bookingId, data, onClose, refresh, onOpenChat }:
 
     {managerBooking && managerBooking.participants.some(p => !p.paid && !p.packageId) && !inactive && <div className="mt-4"><label htmlFor="detail-payment-method">Payment recording method</label><select id="detail-payment-method" value={payMethod} onChange={e => setPayMethod(e.target.value)}><option value="BANK_TRANSFER">Bank transfer / PayNow</option><option value="CASH">Cash</option><option value="OTHER">Other</option></select>{managerBooking.paymentRoute === 'CLUB' && <p className="mt-1.5 flex items-start gap-1.5 text-[10px] leading-relaxed text-stone-500"><ShieldCheck size={12} className="mt-0.5 shrink-0" />This class runs through the club. Record what the student paid the club here, then record the coach&rsquo;s payout under Payments.</p>}</div>}
 
+    {confirmation && <section role="region" aria-labelledby="booking-confirmation-heading" className="mt-5 rounded-xl border border-[#e5c8be] bg-[#fff7f3] p-4">
+      <h3 id="booking-confirmation-heading" className="text-base font-semibold text-[#5f3025]">{confirmation.kind === 'decline' ? 'Decline this class?' : confirmation.kind === 'cancel' ? 'Cancel this class?' : 'Reverse this payment?'}</h3>
+      <p className="mt-2 text-sm leading-relaxed text-[#704c42]">{confirmation.kind === 'decline' ? 'The slot will be released, any package credit returned, and the club asked to reassign it.' : confirmation.kind === 'cancel' ? 'This cancels the class for every participant and returns package credits. Other recurring classes stay unchanged.' : 'The payment stays in the ledger for the audit trail, but it will no longer count toward the balance.'}</p>
+      {confirmation.kind === 'reverse' && <div className="mt-4"><label htmlFor="booking-reversal-reason" className="text-sm font-medium text-[#5f3025]">Reason for reversal</label><textarea autoFocus id="booking-reversal-reason" rows={2} value={reversalReason} onChange={event => setReversalReason(event.target.value)} className="mt-2" /></div>}
+      <div className="mt-4 flex flex-wrap gap-2"><Button autoFocus={confirmation.kind !== 'reverse'} type="button" variant="outline" disabled={busy} onClick={() => setConfirmation(null)}>Keep as is</Button><Button type="button" variant="destructive" disabled={busy || (confirmation.kind === 'reverse' && !reversalReason.trim())} onClick={() => { void (async () => { if (confirmation.kind !== 'reverse' && !allowBeforeLessonEnd()) return; const succeeded = confirmation.kind === 'decline' ? await run(() => respondToAssignment(current.id, 'decline'), 'Class declined') : confirmation.kind === 'cancel' ? await action(`/bookings/${current.id}`, { status: 'CANCELLED' }) : confirmation.paymentId ? await run(() => reversePayment(confirmation.paymentId!, reversalReason.trim()), 'Payment reversed') : false; if (succeeded) setConfirmation(null); })(); }}>{busy && <Loader2 size={14} className="animate-spin" />}{confirmation.kind === 'decline' ? 'Decline class' : confirmation.kind === 'cancel' ? 'Cancel class' : 'Reverse payment'}</Button></div>
+    </section>}
+
     <form className="mt-5" onSubmit={event => { event.preventDefault(); const form = new FormData(event.currentTarget); void action(`/bookings/${current.id}`, { notes: String(form.get('notes') || '') }); }}><label htmlFor="detail-notes">Internal class notes</label><textarea key={current.id} id="detail-notes" name="notes" rows={3} maxLength={2000} defaultValue={current.notes} placeholder="Goals, progress, and details for your team" /><p className="mt-1 text-[10px] text-stone-400">Visible only to your team. Student-submitted context is kept with that participant.</p><Button className="mt-2" type="submit" size="sm" variant="outline" disabled={busy}>Save notes</Button></form>
 
     {reschedule && !scheduleClosed && <div className="mt-5 space-y-3 rounded-lg bg-stone-50 p-3">
       <label htmlFor="reschedule-date">Propose a new time</label>
       <input id="reschedule-date" type="date" min={dateKey()} value={date} onChange={e => setDate(e.target.value)} />
-      <select aria-label="New class time" value={selectedSlot} onChange={e => setSelectedSlot(e.target.value)}><option value="">Select available time</option>{slots.filter(s => s.available && s.startAt !== current.startAt).map(s => <option key={s.startAt} value={s.startAt}>{time(s.startAt)}</option>)}</select>
+      <div aria-busy={slotsLoading}><p role="status" aria-live="polite" className="sr-only">{slotsLoading ? 'Checking availability.' : slotsError ? 'Available times could not be loaded.' : slots.filter(s => s.available && s.startAt !== current.startAt).length + ' available times loaded.'}</p>{slotsLoading ? <p className="flex items-center gap-2 py-3 text-xs text-stone-500"><Loader2 size={14} className="animate-spin" />Checking availability…</p> : slotsError ? <p role="alert" className="rounded-lg bg-red-50 p-3 text-xs text-red-700">{slotsError}</p> : <select aria-label="New class time" value={selectedSlot} onChange={e => setSelectedSlot(e.target.value)}><option value="">Select available time</option>{slots.filter(s => s.available && s.startAt !== current.startAt).map(s => <option key={s.startAt} value={s.startAt}>{time(s.startAt)}</option>)}</select>}</div>
       <div><label htmlFor="reschedule-message">Message to the student <span className="font-normal text-stone-400">(optional)</span></label><input id="reschedule-message" value={proposalMessage} maxLength={500} onChange={e => setProposalMessage(e.target.value)} placeholder="Why the time needs to move" /></div>
       <p className="text-[10px] leading-relaxed text-stone-500">The student has to accept before the session moves. This affects only the selected class, not the full series.</p>
       <Button size="sm" disabled={busy || !selectedSlot} onClick={() => { if (allowBeforeLessonEnd()) void run(async () => { await proposeWorkspaceReschedule(current.id, selectedSlot, proposalMessage); setReschedule(false); }, 'Request sent to the student'); }}>Send request<ArrowRight size={13} /></Button>
@@ -336,7 +348,7 @@ export function BookingDetail({ bookingId, data, onClose, refresh, onOpenChat }:
       {canMarkCompleted
         ? <Button size="sm" disabled={busy} onClick={() => { if (allowAfterLessonEnd()) void run(() => mutate(`/bookings/${current.id}`, 'PATCH', { status: 'COMPLETED' }), 'Class marked completed'); }}><Check size={13} />Mark completed</Button>
         : <Button variant="outline" size="sm" disabled={!!openRequest || awaitingCoach} onClick={() => { if (allowBeforeLessonEnd()) setReschedule(v => !v); }}><Clock3 size={13} />{openRequest ? 'Reschedule pending' : 'Propose a new time'}</Button>}
-      {!scheduleClosed && <Button variant="destructive" size="sm" disabled={busy} onClick={() => { if (allowBeforeLessonEnd() && window.confirm('Cancel this class for all participants? Package credits will be returned. Other recurring classes stay unchanged.') && allowBeforeLessonEnd()) void action(`/bookings/${current.id}`, { status: 'CANCELLED' }); }}>Cancel class</Button>}
+      {!scheduleClosed && <Button variant="destructive" size="sm" disabled={busy} onClick={() => { if (allowBeforeLessonEnd()) setConfirmation({ kind: 'cancel' }); }}>Cancel class</Button>}
     </div>}
   </DialogContent></Dialog>;
 }

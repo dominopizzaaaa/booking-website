@@ -132,7 +132,7 @@ async function createBookingThroughProviderUi(page: Page, journey: ProviderJourn
   expect(available).toBeTruthy();
   if (!available) throw new Error('The isolated provider journey needs an available slot');
 
-  await dialog.getByRole('button', { name: formatTime(available.startAt), exact: true }).click();
+  await dialog.getByRole('radio', { name: formatTime(available.startAt), exact: true }).click();
   await dialog.getByLabel('Registered student', { exact: true }).selectOption(journey.studentId);
   const notes = `Created from the provider booking form for ${journey.serviceName}.`;
   await dialog.getByLabel('Internal class notes (optional)', { exact: true }).fill(notes);
@@ -342,13 +342,11 @@ test('a club creates a booking and completes its venue, receipt, reversal, and c
     response.request().method() === 'DELETE'
       && new URL(response.url()).pathname === `/api/payments/${payment.id}`,
   );
-  const promptPromise = page.waitForEvent('dialog');
-  const undoClick = dialog.getByRole('button', { name: 'Undo payment', exact: true }).click();
-  const prompt = await promptPromise;
-  expect(prompt.type()).toBe('prompt');
-  expect(prompt.message()).toBe('Reverse this payment? Say briefly why, for the ledger.');
-  await prompt.accept(reversalReason);
-  await undoClick;
+  await dialog.getByRole('button', { name: 'Undo payment', exact: true }).click();
+  const reversalRegion = dialog.getByRole('region', { name: 'Reverse this payment?' });
+  await expect(reversalRegion).toBeVisible();
+  await reversalRegion.getByLabel('Reason for reversal').fill(reversalReason);
+  await reversalRegion.getByRole('button', { name: 'Reverse payment', exact: true }).click();
   const reversalResponse = await reversalResponsePromise;
   expect(reversalResponse.request().postDataJSON()).toEqual({ reason: reversalReason });
   const reversal = await responseJson<{ ok: true; payment: Payment }>(reversalResponse);
@@ -424,15 +422,10 @@ test('a club creates a booking and completes its venue, receipt, reversal, and c
     response.request().method() === 'PATCH'
       && new URL(response.url()).pathname === `/api/bookings/${refundBooking.id}`,
   );
-  const confirmationPromise = page.waitForEvent('dialog');
-  const cancelClick = dialog.getByRole('button', { name: 'Cancel class', exact: true }).click();
-  const cancellationPrompt = await confirmationPromise;
-  expect(cancellationPrompt.type()).toBe('confirm');
-  expect(cancellationPrompt.message()).toBe(
-    'Cancel this class for all participants? Package credits will be returned. Other recurring classes stay unchanged.',
-  );
-  await cancellationPrompt.accept();
-  await cancelClick;
+  await dialog.getByRole('button', { name: 'Cancel class', exact: true }).click();
+  const cancellationRegion = dialog.getByRole('region', { name: 'Cancel this class?' });
+  await expect(cancellationRegion).toContainText('returns package credits');
+  await cancellationRegion.getByRole('button', { name: 'Cancel class', exact: true }).click();
   const cancellationResponse = await cancellationResponsePromise;
   expect(cancellationResponse.request().postDataJSON()).toEqual({ status: 'CANCELLED' });
   expect(await responseJson<Booking>(cancellationResponse)).toMatchObject({

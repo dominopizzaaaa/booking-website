@@ -36,6 +36,7 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
       ok: true,
       service: 'courtly',
       database: 'connected',
+      schema: 'ready',
       accountModel: 'student-coach-club-affiliations',
       capabilities: {
         accountProfile: true,

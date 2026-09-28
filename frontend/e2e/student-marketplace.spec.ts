@@ -242,11 +242,11 @@ test('student filters rentals and completes a clearly simulated reservation', as
   await expect(dialog.getByRole('heading', { name: 'River Pickleball Hall' })).toBeVisible();
   await expect(dialog.getByLabel('Date', { exact: true })).toHaveAttribute('max', '2099-09-26');
   await expect(dialog.getByText('Demo checkout only')).toHaveCount(0);
-  await dialog.getByRole('button', { name: '6:00 PM' }).click();
+  await dialog.getByRole('radio', { name: '6:00 PM' }).click();
   await expect(dialog.getByText(/Demo checkout only/)).toBeVisible();
   await dialog.getByRole('button', { name: 'Reserve with simulated Stripe' }).click();
   await expect(dialog.getByRole('status').filter({ hasText: 'no real card was charged' })).toBeVisible();
-  await expect(dialog.getByRole('button', { name: '6:00 PM' })).toHaveCount(0);
+  await expect(dialog.getByRole('radio', { name: '6:00 PM' })).toHaveCount(0);
   await expect(dialog).toContainText('No available times for this date and duration.');
   expect(state.rentalRequest()).toMatchObject({
     unitId: 'court-1', startAt: '2099-09-26T10:00:00.000Z', duration: 60, simulatedOutcome: 'SUCCEEDED',
@@ -272,7 +272,7 @@ test('a free student rental hides card and package controls and needs no refund'
   await page.getByRole('tab', { name: 'Venue rentals' }).click();
   await page.getByRole('button', { name: 'View times' }).nth(1).click();
   const dialog = page.getByRole('dialog');
-  await dialog.getByRole('button', { name: '6:00 PM' }).click();
+  await dialog.getByRole('radio', { name: '6:00 PM' }).click();
   await expect(dialog).toContainText('Free');
   await expect(dialog.getByLabel('Payment option')).toHaveCount(0);
   await expect(dialog.getByLabel('Demo payment result')).toHaveCount(0);
@@ -290,13 +290,13 @@ test('a cancelled refunded rental replay is not presented as a new reservation',
   await page.getByRole('button', { name: 'View times' }).nth(1).click();
 
   const dialog = page.getByRole('dialog');
-  await dialog.getByRole('button', { name: '6:00 PM' }).click();
+  await dialog.getByRole('radio', { name: '6:00 PM' }).click();
   await dialog.getByRole('button', { name: 'Reserve with simulated Stripe' }).click();
   await expect(dialog.getByRole('alert')).toBeVisible();
 
   await dialog.getByRole('button', { name: 'Reserve with simulated Stripe' }).click();
   await expect(dialog.getByRole('alert')).toContainText('cancelled and refunded');
-  await expect(dialog.getByRole('status')).toHaveCount(0);
+  await expect(dialog.getByRole('heading', { name: 'Reservation confirmed', exact: true })).toHaveCount(0);
   let requests = state.rentalRequests();
   expect(requests).toHaveLength(2);
   expect(requests[1]?.idempotencyKey).toBe(requests[0]?.idempotencyKey);

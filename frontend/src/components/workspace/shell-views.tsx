@@ -21,6 +21,7 @@ import {
   MapPin,
   Pencil,
   Plus,
+  Search,
   Settings2,
   ShieldCheck,
   Ticket,
@@ -46,6 +47,7 @@ export const exploreViewIds = [
   'locations',
   'team',
   'availability',
+  'rentals',
   'packages',
   'payments',
   'insights',
@@ -53,7 +55,7 @@ export const exploreViewIds = [
 
 export type ExploreViewId = (typeof exploreViewIds)[number];
 
-const clubCoachViews = new Set<ExploreViewId>(['calendar', 'bookings', 'students', 'locations', 'availability']);
+const clubCoachViews = new Set<ExploreViewId>(['calendar', 'bookings', 'students', 'locations', 'availability', 'rentals']);
 
 export function isExploreView(value: string): value is ExploreViewId {
   return exploreViewIds.includes(value as ExploreViewId);
@@ -124,6 +126,7 @@ const sharedExploreItems: ExploreItem[] = [
   { id: 'students', label: 'Students', description: 'Keep player details, notes, and class history together.', icon: Users, detail: data => `${data.students.length} student${data.students.length === 1 ? '' : 's'}` },
   { id: 'locations', label: 'Locations', description: 'Manage venues, travel time, and approval rules.', icon: MapPin, detail: data => `${data.locations.filter(location => location.active).length} active` },
   { id: 'availability', label: 'Availability', description: 'Manage teaching windows and protect time away.', icon: Clock3, detail: data => `${data.availability.length} weekly windows` },
+  { id: 'rentals', label: 'Rent a court', description: 'Browse live court and training-space availability.', icon: Search, detail: () => 'Marketplace' },
 ];
 
 const managerExploreItems: ManagerExploreItem[] = [
@@ -138,7 +141,7 @@ const exploreItems = [...sharedExploreItems, ...managerExploreItems];
 const exploreGroups: { title: string; ids: ExploreViewId[] }[] = [
   { title: 'Schedule', ids: ['calendar', 'bookings', 'availability'] },
   { title: 'People', ids: ['students', 'team'] },
-  { title: 'Business setup', ids: ['services', 'locations'] },
+  { title: 'Business setup', ids: ['services', 'locations', 'rentals'] },
   { title: 'Money & reporting', ids: ['packages', 'payments', 'insights'] },
 ];
 

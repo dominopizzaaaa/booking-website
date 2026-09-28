@@ -36,6 +36,7 @@ import {
   AlertsView,
   canAccessExploreView,
   CreateDialog,
+  ExploreHub,
   isExploreView,
   PersonalProfileDialog,
   ProfileView,
@@ -58,6 +59,7 @@ const viewTitles: Record<string, string> = {
   locations: 'Locations',
   team: 'My coaches',
   availability: 'Availability',
+  rentals: 'Rent a court',
   packages: 'Packages',
   payments: 'Payments',
   insights: 'Insights',
@@ -209,7 +211,9 @@ export default function WorkspaceApp() {
       // Next's App Router also restores its URL state during popstate. Let that
       // listener finish before replacing a stale workspace entry, otherwise it
       // can restore the old query string after this handler has corrected it.
-      window.requestAnimationFrame(() => updateRoute(next, data.business.id, true, thread));
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => updateRoute(next, data.business.id, true, thread));
+      });
       window.scrollTo({ top: 0 });
     };
     window.addEventListener('popstate', handleHistory);
@@ -456,7 +460,7 @@ export default function WorkspaceApp() {
     </aside>
 
     <div className="main-shell">
-      <header className="topbar"><div className="topbar-context flex min-w-0 items-center gap-2"><button className="topbar-action mobile-menu" onClick={() => navigate('explore')} aria-label="Explore"><Compass size={20} /></button><span className="truncate text-[12px] font-semibold">{title}</span><span className="desktop-only ml-1 text-[#d4d9cb]">/</span><span className="desktop-only text-[11px] text-[#59675c]">{primaryTab === 'home' ? 'A little clarity for your day' : primaryTab === 'explore' ? 'Everything your business needs' : primaryTab === 'alerts' ? `${unread} unread update${unread === 1 ? '' : 's'}` : primaryTab === 'chat' ? 'Conversations for every session' : 'Account and workspace'}</span></div><div className="topbar-actions flex items-center gap-2"><span className="desktop-only mr-3 text-[10px] text-[#59675c]">{formatInTimeZone(new Date(), data.business.timezone, 'EEEE, d MMM yyyy')}</span><div className="desktop-only mr-3 h-4 w-px bg-[#e9ece2]" /><button aria-label="Search workspace" className="topbar-action text-[#8a967b]" onClick={() => setSearchOpen(true)}><Search size={18} strokeWidth={1.7} /></button><button type="button" aria-label={alertsButtonLabel(unread)} aria-current={view === 'alerts' ? 'page' : undefined} className={cn('topbar-action topbar-alerts relative text-[#59675c]', view === 'alerts' && 'active')} onClick={() => navigate('alerts')}><Bell size={19} strokeWidth={view === 'alerts' ? 2.2 : 1.7} aria-hidden="true" />{unread > 0 && <span className="topbar-badge" aria-hidden="true">{chatBadge(unread)}</span>}</button><button aria-label="Profile" onClick={() => navigate('profile')} className="topbar-action desktop-only"><span className="tiny-avatar !h-7 !w-7 !bg-[#e8dccc] !text-[#6f5738]">{initials(data.user.name)}</span></button></div></header>
+      <header className="topbar"><div className="topbar-context flex min-w-0 items-center gap-2"><button className="mobile-workspace-context mobile-menu min-w-0 items-center gap-2 rounded-xl px-1.5 py-1 text-left" onClick={() => isCoach ? setWorkspaceOpen(true) : navigate('profile')} aria-label={isCoach ? `Current workspace ${data.business.name}. Switch workspace` : `Current workspace ${data.business.name}. Open profile`}><span className="business-avatar !h-8 !w-8 shrink-0">{initials(data.business.name)}</span><span className="min-w-0"><span className="block truncate text-[11px] font-semibold text-[#304b39]">{data.business.name}</span><span className="block truncate text-[10px] text-[#59675c]">{title}</span></span>{isCoach && <ChevronsUpDown size={12} className="shrink-0 text-[#71806e]" />}</button><span className="desktop-only truncate text-[12px] font-semibold">{title}</span><span className="desktop-only ml-1 text-[#d4d9cb]">/</span><span className="desktop-only text-[11px] text-[#59675c]">{primaryTab === 'home' ? 'A little clarity for your day' : primaryTab === 'explore' ? 'Everything your business needs' : primaryTab === 'alerts' ? `${unread} unread update${unread === 1 ? '' : 's'}` : primaryTab === 'chat' ? 'Conversations with players, coaches and clubs' : 'Account and workspace'}</span></div><div className="topbar-actions flex items-center gap-2"><span className="desktop-only mr-3 text-[10px] text-[#59675c]">{formatInTimeZone(new Date(), data.business.timezone, 'EEEE, d MMM yyyy')}</span><div className="desktop-only mr-3 h-4 w-px bg-[#e9ece2]" /><button aria-label="Search workspace" className="topbar-action text-[#8a967b]" onClick={() => setSearchOpen(true)}><Search size={18} strokeWidth={1.7} /></button><button type="button" aria-label={alertsButtonLabel(unread)} aria-current={view === 'alerts' ? 'page' : undefined} className={cn('topbar-action topbar-alerts relative text-[#59675c]', view === 'alerts' && 'active')} onClick={() => navigate('alerts')}><Bell size={19} strokeWidth={view === 'alerts' ? 2.2 : 1.7} aria-hidden="true" />{unread > 0 && <span className="topbar-badge" aria-hidden="true">{chatBadge(unread)}</span>}</button><button aria-label="Profile" onClick={() => navigate('profile')} className="topbar-action desktop-only"><span className="tiny-avatar !h-7 !w-7 !bg-[#e8dccc] !text-[#6f5738]">{initials(data.user.name)}</span></button></div></header>
       <main ref={mainRef} tabIndex={-1} aria-label={`${title} workspace view`} className={`content view-${view} ${view === 'calendar' || view === 'bookings' ? 'max-sm:[&>.section-heading>button]:hidden' : ''}`}>
         {isExploreView(view) && (
           <nav aria-label="Explore navigation" className="mb-4">
@@ -467,7 +471,8 @@ export default function WorkspaceApp() {
           </nav>
         )}
         {view === 'overview' ? <Dashboard key={data.business.id} data={data} onNavigate={navigate} onNew={() => setBookingOpen(true)} onBooking={setSelectedBookingId} />
-          : view === 'explore' ? <RentalExplore data={data} onNavigate={navigate} />
+          : view === 'explore' ? <ExploreHub data={data} onNavigate={navigate} />
+          : view === 'rentals' ? <RentalExplore />
           : view === 'alerts' ? <AlertsView data={data} refresh={refresh} onOpenBooking={openBookingById} onNavigate={navigate} />
           : view === 'chat' ? <ChatInbox
             key={data.business.id}

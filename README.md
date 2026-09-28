@@ -15,7 +15,7 @@ Agents working on this repository should read [AGENTS.md](AGENTS.md) first.
 Courtly has exactly three account types: `STUDENT`, `COACH`, and `CLUB`. Students and coaches are people with portable global identities. A club account represents the organisation itself, belongs to its one club workspace, and is never a teaching profile.
 
 - **Students** create or sign in to a student account from a club's booking page. Signing in is required before a booking can be submitted. The resulting club-specific student record is linked to the global account, so the student can return to view receipts and booking history, buy package offers, reserve club-owned courts, then cancel or propose a reschedule for eligible sessions. New guest bookings and private management links are not supported; already-issued legacy links remain available only for their existing bookings.
-- **Coaches** register their own coach account. A club finds the account by public username, name, or email and adds it to its roster with the coach's reschedule-notice window. Coaches carry the same identity across clubs and switch between those affiliations. Creating new independent practices is no longer supported.
+- **Coaches** register their own coach account. A club can find the account by public username, name, or email, or create a seven-day email-bound invitation and share its one-time signup link. Accepting an invitation creates the same roster affiliation and selects that workspace. Coaches carry the same identity across clubs and switch between those affiliations. Creating new independent practices is no longer supported.
 - **Clubs** choose the club account type at sign-up, which creates their one club workspace. The business name becomes the club account's identity, while the person's name supplied at sign-up is kept as the club contact. The club account manages Classes, locations, coach affiliations, schedules, bookings, students, package offers, rentals, payments, and settings. It has no coach profile and cannot teach a class; even a founder who coaches uses a separate `COACH` account and joins the roster like every other coach.
 
 Each account has one globally unique lowercase username (`a-z`, `0-9`, and `_`, 3–30 characters) and up to 20 chosen sports. Email and password remain the sign-in credentials; the username is the public/search handle used to find accounts.
@@ -27,7 +27,7 @@ Memberships are affiliations only: they connect an account to a business and, fo
 All new commercial activity belongs to a `CLUB` workspace. Every class booking snapshots `paymentRoute: 'CLUB'`, so the student pays the club and the club can later record a `CLUB_TO_COACH` payout. Legacy `SOLO`, `DIRECT`, and `STUDENT_TO_COACH` values are retained only so existing contractual history stays readable.
 
 - Clubs publish **Package offers** scoped to any non-empty combination of Classes and rentable locations. A purchase creates an immutable `LessonPackage` snapshot shown to the student under **My Packages**, including copied scope, credit count, price, and expiry.
-- A club can make an owned facility rentable by configuring its sport, courts or other units, opening hours, hourly price, duration rules, notice and cancellation windows, rules, and amenities. Every account can browse and reserve a specific unit and time from the in-app **Explore** destination: students choose **Explore → Venue rentals** in the five-tab player app, while coaches and clubs open **Explore** in their workspace.
+- A club can make an owned facility rentable by configuring its sport, courts or other units, opening hours, hourly price, duration rules, notice and cancellation windows, rules, and amenities. Every account can browse and reserve a specific unit and time: students choose **Explore → Venue rentals** in the five-tab player app, while coaches and clubs choose **Explore → Rent a court** in the grouped workspace hub.
 - Online checkout is deliberately simulated Stripe: the server derives price, currency, payer, and the club route; a successful `PaymentIntent` records the corresponding package, class, or rental payment atomically, while a simulated failure records only the failed intent. Package-funded reservations consume one credit and create no cash payment.
 
 A recorded payment can be reversed. The record stays in the ledger marked as reversed, and the class or package returns to unpaid, so a correction is visible rather than silent. An eligible rental cancellation restores its package credit exactly once, or marks a paid reservation refunded and reverses the linked student payment.
@@ -108,7 +108,7 @@ OAuth tokens are encrypted at rest with deployment-managed keys and are never re
    npm run dev
    ```
 
-   Open [http://localhost:3000](http://localhost:3000). The Next.js server rewrites same-origin `/api/*` requests to the API at `http://127.0.0.1:4000`.
+   Open [http://localhost:3000](http://localhost:3000). The Next.js server rewrites same-origin `/api/*` requests to the API at `http://127.0.0.1:4000`. Local development also allows the standard fallback origins on port 3001 for both `localhost` and `127.0.0.1`; list any additional browser origins in `APP_ORIGIN`.
 
 To create a persistent sample club and club account instead of using the demo workspace, optionally set `SEED_CLUB_EMAIL`, `SEED_CLUB_PASSWORD`, `SEED_BUSINESS_NAME`, and `SEED_BUSINESS_SLUG` in `backend/.env`, then run `npm run seed --prefix backend`. If `SEED_CLUB_PASSWORD` is omitted, the command prints a generated password once.
 
@@ -213,6 +213,10 @@ For encryption-key rotation, add the new `keyId:base64` entry to `CALENDAR_TOKEN
 ## Production operations
 
 - Commit a new Prisma migration for every schema change. Railway runs `prisma migrate deploy` through `npm run db:migrate`; it does not run destructive development migrations or seed production automatically.
+- Backend startup checks the small set of schema contracts required by the
+  running release and refuses to serve traffic when they are missing.
+  `/api/health` returns `schema: "ready"` on success or HTTP 503 with
+  `schema: "out-of-date"`; apply pending migrations before restarting.
 - Marketplace migrations deliberately wait at most ten seconds for their
   application-table locks. A `55P03` or `lock timeout` failure means concurrent
   traffic prevented a safe migration start: stop writes or use a quiet release

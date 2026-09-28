@@ -355,7 +355,7 @@ async function chooseLessonAndTime(
   await page.getByRole('button', { name: new RegExp(escapeRegExp(setup.coachName)) }).click();
   await visibleBookingAction(page, 'Continue').click();
   await page.getByLabel('Choose a date', { exact: true }).fill(date);
-  await page.getByRole('button', { name: new RegExp(`^${escapeRegExp(timeLabel)}`) }).click();
+  await page.getByRole('radio', { name: new RegExp(`^${escapeRegExp(timeLabel)}`) }).click();
   await visibleBookingAction(page, 'Continue').click();
 }
 
@@ -408,7 +408,7 @@ test('a signed-in coach is rejected and can safely sign out without losing the s
   expect((await logout).ok()).toBeTruthy();
   await expect(page.getByRole('tab', { name: 'Sign in', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Date & time', exact: true }).click();
-  await expect(page.getByRole('button', { name: /^10:00 AM/ })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('radio', { name: /^10:00 AM/ })).toHaveAttribute('aria-checked', 'true');
   await expectNoHorizontalOverflow(page);
 });
 
@@ -422,8 +422,8 @@ test('a student joins an existing group while a full group stays unavailable', a
   await visibleBookingAction(page, 'Continue').click();
   await page.getByLabel('Choose a date', { exact: true }).fill(setup.groupDate);
 
-  await expect(page.getByRole('button', { name: /10:00 AM.*2 places left/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: '12:00 PM', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('radio', { name: /10:00 AM.*2 places left/ })).toBeVisible();
+  await expect(page.getByRole('radio', { name: '12:00 PM', exact: true })).toHaveCount(0);
   const slots = await responseJson<{ slots: Slot[] }>(await page.request.get(`/api/public/${setup.slug}/slots`, {
     params: {
       serviceId: setup.groupService.id,
@@ -438,7 +438,7 @@ test('a student joins an existing group while a full group stays unavailable', a
     reason: 'This group is full',
   });
 
-  await page.getByRole('button', { name: /10:00 AM.*2 places left/ }).click();
+  await page.getByRole('radio', { name: /10:00 AM.*2 places left/ }).click();
   await visibleBookingAction(page, 'Continue').click();
   await visibleBookingAction(page, 'Review booking').click();
   const response = await submitReviewedBooking(page, 'Confirm booking');
@@ -592,7 +592,7 @@ test('invalid slugs and slot failures provide working retry controls', async ({ 
   await expect(page.getByRole('alert').filter({ hasText: 'Availability is temporarily unavailable' })).toBeVisible();
   slotsAvailable = true;
   await page.getByRole('button', { name: 'Retry availability', exact: true }).click();
-  await expect(page.getByRole('button', { name: /^10:00 AM/ })).toBeVisible();
+  await expect(page.getByRole('radio', { name: /^10:00 AM/ })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 });
 

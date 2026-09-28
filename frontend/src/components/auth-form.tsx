@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowRight, CalendarDays, Check, CircleDot, Eye, EyeOff, Layers3, LoaderCircle, LockKeyhole, MapPin, Sparkles, UsersRound } from 'lucide-react';
 import { api, loginAccount, registerAccount } from '@/lib/api';
 import { CourtlyLogo } from '@/components/public-booking';
@@ -16,6 +16,8 @@ const accountOptions: Array<{ value: AccountType; label: string }> = [
 ];
 
 const usernamePattern = /^[a-z0-9_]{3,30}$/;
+type AuthValues = { businessName: string; name: string; username: string; sports: string; email: string; password: string };
+type AuthField = 'accountType' | keyof AuthValues;
 
 function sportsFromText(value: string): string[] | null {
   if (!value.trim()) return [];
@@ -73,10 +75,12 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
   const router = useRouter();
   const [accountType, setAccountType] = useState<AccountType | null>(null);
   const [redirect, setRedirect] = useState<AuthRedirect | null>(null);
-  const [values, setValues] = useState({ businessName: '', name: '', username: '', sports: '', email: '', password: '' });
+  const [values, setValues] = useState<AuthValues>({ businessName: '', name: '', username: '', sports: '', email: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState<'form' | 'demo' | null>(null);
   const [error, setError] = useState('');
+  const [errorField, setErrorField] = useState<AuthField | null>(null);
+  const formRef = useRef<HTMLFormElement>(null);
   const input = '!min-h-12 !rounded-xl !border-[#dfe5dd] !px-3.5 !text-base placeholder:!text-[#596653]';
   const primary = 'inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#174c3c] px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[#103e2f] disabled:cursor-wait disabled:opacity-60 disabled:shadow-none';
   useEffect(() => {
@@ -86,30 +90,52 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
   }, [signup]);
   const loginHref = hrefWithRedirect('/login', redirect);
   const alternateHref = hrefWithRedirect(signup ? '/login' : '/signup', redirect);
-  function update(key: keyof typeof values, value: string) { setValues(current => ({ ...current, [key]: value })); if (error) setError(''); }
+  function clearError(field?: AuthField) {
+    if (!error || (field && errorField && errorField !== field)) return;
+    setError('');
+    setErrorField(null);
+  }
+  function update(key: keyof AuthValues, value: string) { setValues(current => ({ ...current, [key]: value })); clearError(key); }
+  function validationError(field: AuthField, message: string) {
+    setError(message);
+    setErrorField(field);
+    requestAnimationFrame(() => {
+      const suffix = field === 'businessName' ? 'business' : field;
+      const selector = field === 'accountType' ? 'input[name="accountType"]' : '#auth-' + suffix;
+      formRef.current?.querySelector<HTMLElement>(selector)?.focus();
+    });
+  }
+  function describedBy(field: AuthField, hint?: string) {
+    return [hint, errorField === field ? 'auth-' + field + '-error' : ''].filter(Boolean).join(' ') || undefined;
+  }
+  function fieldError(field: AuthField) {
+    return errorField === field ? <p id={'auth-' + field + '-error'} role="alert" className="!mt-2 text-sm leading-relaxed text-[#8a4937]">{error}</p> : null;
+  }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
-    if (signup && !accountType) { setError('Please choose how you’re joining Courtly.'); return; }
-    if (signup && values.name.trim().length < 2) { setError(`Please enter ${accountType === 'CLUB' ? 'a contact name' : 'your name'} using at least two characters.`); return; }
-    if (signup && accountType === 'CLUB' && values.businessName.trim().length < 2) { setError('Please enter a club or academy name using at least two characters.'); return; }
+    if (signup && !accountType) { validationError('accountType', 'Please choose how you’re joining Courtly.'); return; }
+    if (signup && accountType === 'CLUB' && values.businessName.trim().length < 2) { validationError('businessName', 'Please enter a club or academy name using at least two characters.'); return; }
+    if (signup && values.name.trim().length < 2) { validationError('name', `Please enter ${accountType === 'CLUB' ? 'a contact name' : 'your name'} using at least two characters.`); return; }
     const username = values.username.trim().toLowerCase();
-    if (signup && !usernamePattern.test(username)) { setError('Choose a username with 3–30 lowercase letters, numbers, or underscores.'); return; }
+    if (signup && !usernamePattern.test(username)) { validationError('username', 'Choose a username with 3–30 lowercase letters, numbers, or underscores.'); return; }
     const sports = sportsFromText(values.sports);
-    if (signup && (!sports || sports.length > 20 || sports.some(sport => sport.length > 40))) { setError('Separate sports with single commas and add up to 20, using no more than 40 characters for each.'); return; }
-    setBusy('form'); setError('');
+    if (signup && (!sports || sports.length > 20 || sports.some(sport => sport.length > 40))) { validationError('sports', 'Separate sports with single commas and add up to 20, using no more than 40 characters for each.'); return; }
+    if (!/^\S+@\S+\.\S+$/.test(values.email.trim())) { validationError('email', 'Enter a valid email address.'); return; }
+    if (!values.password || (signup && values.password.length < 12)) { validationError('password', signup ? 'Use at least 12 characters for your password.' : 'Enter your password.'); return; }
+    setBusy('form'); clearError();
     try {
       const result = signup
         ? await registerAccount({ accountType: accountType!, ...(accountType === 'CLUB' ? { businessName: values.businessName.trim() } : {}), name: values.name.trim(), username, sports: sports!, email: values.email.trim(), password: values.password })
         : await loginAccount({ email: values.email.trim(), password: values.password });
       router.replace(destinationFor(result, redirect?.destination ?? null)); router.refresh();
-    } catch (err) { setError(err instanceof Error ? err.message : 'We couldn’t sign you in. Please try again.'); setBusy(null); }
+    } catch (err) { setError(err instanceof Error ? err.message : 'We couldn’t sign you in. Please try again.'); setErrorField(null); setBusy(null); }
   }
   async function demo() {
     if (busy) return;
-    setBusy('demo'); setError('');
+    setBusy('demo'); clearError();
     try { await api('/auth/demo', { method: 'POST', body: JSON.stringify({}) }); router.replace('/'); router.refresh(); }
-    catch (err) { setError(err instanceof Error ? err.message : 'The demo is not available right now. Please try again.'); setBusy(null); }
+    catch (err) { setError(err instanceof Error ? err.message : 'The demo is not available right now. Please try again.'); setErrorField(null); setBusy(null); }
   }
   return <main className="min-h-screen overflow-x-clip bg-[#f6f7f4] text-[#1c3029] lg:grid lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
     <section className="relative hidden min-h-screen overflow-hidden bg-[#174c3c] p-12 text-white lg:flex lg:flex-col xl:p-16">
@@ -135,11 +161,21 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
         <p className="!mb-2 text-[10px] font-semibold uppercase tracking-[2px] text-[#596653]">{signup ? 'A FRESH START, A LITTLE MORE PLAY' : 'ONE ACCOUNT, EVERY COURT'}</p>
         <h1 className="!text-[31px] !font-medium !leading-[1.12] !tracking-[-1px] sm:!text-[34px] sm:!tracking-[-1.1px]">{signup ? 'Make room for more.' : 'Good to see you again.'}</h1>
         <p className="!mt-3 text-sm leading-relaxed text-[#596653]">{signup ? 'Choose an account type, then create your Courtly profile.' : 'Sign in once, then we’ll take you to the right place.'}</p>
-        <form className="!mt-7 space-y-4 sm:!mt-8 sm:space-y-5" onSubmit={submit}>
-          {signup && <><fieldset><legend className="!mb-2 !text-xs !font-medium !text-[#617257]">I’m joining Courtly as</legend><div className="grid grid-cols-3 gap-2">{accountOptions.map(option => { const id = `auth-account-${option.value.toLowerCase()}`; return <div key={option.value} className="relative"><input id={id} type="radio" name="accountType" value={option.value} checked={accountType === option.value} onChange={() => { setAccountType(option.value); if (error) setError(''); }} onInvalid={() => { if (!accountType) setError('Please choose how you’re joining Courtly.'); }} required disabled={!!busy} aria-label={option.label} className="peer absolute right-2.5 top-3 z-10 h-4 w-4 accent-[#66865b]" /><label htmlFor={id} className="flex min-h-14 cursor-pointer items-center rounded-xl border border-[#dfe5dd] bg-white px-2.5 py-3 pr-7 text-left transition hover:bg-[#f5f7f2] peer-checked:border-[#66865b] peer-checked:bg-[#edf3e6] peer-checked:shadow-[0_0_0_1px_#66865b] peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[#66865b] peer-disabled:cursor-wait peer-disabled:opacity-60"><span className="block text-xs font-semibold text-[#34523d]">{option.label}</span></label></div>; })}</div></fieldset>{accountType === 'CLUB' && <div><label htmlFor="auth-business" className="!mb-2 !text-xs !font-medium !text-[#617257]">Club or academy name</label><input id="auth-business" className={input} value={values.businessName} onChange={event => update('businessName', event.target.value)} required minLength={2} maxLength={120} autoComplete="organization" placeholder="e.g. Oakwood Tennis Academy" disabled={!!busy} /></div>}<div><label htmlFor="auth-name" className="!mb-2 !text-xs !font-medium !text-[#617257]">{accountType === 'CLUB' ? 'Contact name' : 'Your full name'}</label><input id="auth-name" className={input} value={values.name} onChange={event => update('name', event.target.value)} required minLength={2} maxLength={120} autoComplete="name" placeholder="e.g. Jamie Lee" disabled={!!busy} /></div><div><label htmlFor="auth-username" className="!mb-2 !text-xs !font-medium !text-[#617257]">Username</label><input id="auth-username" className={input} value={values.username} onChange={event => update('username', event.target.value.toLowerCase())} required minLength={3} maxLength={30} pattern="[a-z0-9_]{3,30}" autoComplete="username" placeholder="e.g. jamie_lee" disabled={!!busy} /><p className="!mt-2 text-xs text-[#596653]">Lowercase letters, numbers, and underscores.</p></div><div><label htmlFor="auth-sports" className="!mb-2 !text-xs !font-medium !text-[#617257]">Sports <span className="font-normal text-[#596653]">optional</span></label><input id="auth-sports" className={input} value={values.sports} onChange={event => update('sports', event.target.value)} maxLength={819} placeholder="Tennis, badminton, padel" disabled={!!busy} /><p className="!mt-2 text-xs text-[#596653]">Separate multiple sports with commas.</p></div></>}
-          <div><label htmlFor="auth-email" className="!mb-2 !text-xs !font-medium !text-[#617257]">Email address</label><input id="auth-email" className={input} type="email" value={values.email} onChange={event => update('email', event.target.value)} required maxLength={254} autoComplete="email" placeholder="you@example.com" disabled={!!busy} /></div>
-          <div><label htmlFor="auth-password" className="!mb-2 !text-xs !font-medium !text-[#617257]">Password</label><div className="relative"><input id="auth-password" className={cn(input, '!pr-12')} type={showPassword ? 'text' : 'password'} value={values.password} onChange={event => update('password', event.target.value)} required minLength={signup ? 12 : undefined} maxLength={72} autoComplete={signup ? 'new-password' : 'current-password'} placeholder={signup ? 'Create a password' : 'Your password'} disabled={!!busy} aria-describedby={signup ? 'password-hint' : undefined} /><button type="button" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword} className="absolute inset-y-0 right-0 flex w-12 items-center justify-center rounded-r-xl text-[#596653] transition hover:text-[#49673d]">{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></div>{signup && <p id="password-hint" className="!mt-2 text-[10px] text-[#596653]">Make it yours. Use at least 12 characters.</p>}</div>
-          {error && <div role="alert" aria-live="polite" className="rounded-xl border border-[#eedbd4] bg-[#fff6f1] p-3.5 text-xs leading-relaxed text-[#a16a55]">{error}</div>}
+        <form ref={formRef} noValidate className="!mt-7 space-y-4 sm:!mt-8 sm:space-y-5" onSubmit={submit}>
+          {signup && <>
+            <fieldset aria-invalid={errorField === 'accountType'} aria-describedby={describedBy('accountType')}>
+              <legend className="!mb-2 !text-sm !font-medium !text-[#52634b]">I’m joining Courtly as</legend>
+              <div className="grid grid-cols-3 gap-2">{accountOptions.map(option => { const id = `auth-account-${option.value.toLowerCase()}`; return <div key={option.value} className="relative"><input id={id} type="radio" name="accountType" value={option.value} checked={accountType === option.value} onChange={() => { setAccountType(option.value); clearError('accountType'); }} required disabled={!!busy} aria-label={option.label} className="peer absolute right-2.5 top-3 z-10 h-4 w-4 accent-[#66865b]" /><label htmlFor={id} className="flex min-h-14 cursor-pointer items-center rounded-xl border border-[#dfe5dd] bg-white px-2.5 py-3 pr-7 text-left transition hover:bg-[#f5f7f2] peer-checked:border-[#66865b] peer-checked:bg-[#edf3e6] peer-checked:shadow-[0_0_0_1px_#66865b] peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[#66865b] peer-disabled:cursor-wait peer-disabled:opacity-60"><span className="block text-sm font-semibold text-[#34523d]">{option.label}</span></label></div>; })}</div>
+              {fieldError('accountType')}
+            </fieldset>
+            {accountType === 'CLUB' && <div><label htmlFor="auth-business" className="!mb-2 !text-sm !font-medium !text-[#52634b]">Club or academy name</label><input id="auth-business" className={input} value={values.businessName} onChange={event => update('businessName', event.target.value)} required minLength={2} maxLength={120} autoComplete="organization" placeholder="e.g. Oakwood Tennis Academy" disabled={!!busy} aria-invalid={errorField === 'businessName'} aria-describedby={describedBy('businessName')} />{fieldError('businessName')}</div>}
+            <div><label htmlFor="auth-name" className="!mb-2 !text-sm !font-medium !text-[#52634b]">{accountType === 'CLUB' ? 'Contact name' : 'Your full name'}</label><input id="auth-name" className={input} value={values.name} onChange={event => update('name', event.target.value)} required minLength={2} maxLength={120} autoComplete="name" placeholder="e.g. Jamie Lee" disabled={!!busy} aria-invalid={errorField === 'name'} aria-describedby={describedBy('name')} />{fieldError('name')}</div>
+            <div><label htmlFor="auth-username" className="!mb-2 !text-sm !font-medium !text-[#52634b]">Username</label><input id="auth-username" className={input} value={values.username} onChange={event => update('username', event.target.value.toLowerCase())} required minLength={3} maxLength={30} pattern="[a-z0-9_]{3,30}" autoComplete="username" placeholder="e.g. jamie_lee" disabled={!!busy} aria-invalid={errorField === 'username'} aria-describedby={describedBy('username', 'username-hint')} /><p id="username-hint" className="!mt-2 text-sm text-[#596653]">Lowercase letters, numbers, and underscores.</p>{fieldError('username')}</div>
+            <div><label htmlFor="auth-sports" className="!mb-2 !text-sm !font-medium !text-[#52634b]">Sports <span className="font-normal text-[#596653]">optional</span></label><input id="auth-sports" className={input} value={values.sports} onChange={event => update('sports', event.target.value)} maxLength={819} placeholder="Tennis, badminton, padel" disabled={!!busy} aria-invalid={errorField === 'sports'} aria-describedby={describedBy('sports', 'sports-hint')} /><p id="sports-hint" className="!mt-2 text-sm text-[#596653]">Separate multiple sports with commas.</p>{fieldError('sports')}</div>
+          </>}
+          <div><label htmlFor="auth-email" className="!mb-2 !text-sm !font-medium !text-[#52634b]">Email address</label><input id="auth-email" className={input} type="email" value={values.email} onChange={event => update('email', event.target.value)} required maxLength={254} autoComplete="email" placeholder="you@example.com" disabled={!!busy} aria-invalid={errorField === 'email'} aria-describedby={describedBy('email')} />{fieldError('email')}</div>
+          <div><label htmlFor="auth-password" className="!mb-2 !text-sm !font-medium !text-[#52634b]">Password</label><div className="relative"><input id="auth-password" className={cn(input, '!pr-12')} type={showPassword ? 'text' : 'password'} value={values.password} onChange={event => update('password', event.target.value)} required minLength={signup ? 12 : undefined} maxLength={72} autoComplete={signup ? 'new-password' : 'current-password'} placeholder={signup ? 'Create a password' : 'Your password'} disabled={!!busy} aria-invalid={errorField === 'password'} aria-describedby={describedBy('password', signup ? 'password-hint' : undefined)} /><button type="button" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword} className="absolute inset-y-0 right-0 flex w-12 items-center justify-center rounded-r-xl text-[#596653] transition hover:text-[#49673d]">{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></div>{signup && <p id="password-hint" className="!mt-2 text-sm text-[#596653]">Make it yours. Use at least 12 characters.</p>}{fieldError('password')}</div>
+          {error && !errorField && <div role="alert" aria-live="polite" className="rounded-xl border border-[#e4c7bc] bg-[#fff6f1] p-3.5 text-sm leading-relaxed text-[#8a4937]">{error}</div>}
           <button type="submit" className={primary} disabled={!!busy}>{busy === 'form' ? <><LoaderCircle size={16} className="animate-spin" />{signup ? 'Creating your account…' : 'Signing you in…'}</> : <>{signup ? accountType === 'CLUB' ? 'Create your workspace' : accountType === 'COACH' ? 'Create coach account' : accountType === 'STUDENT' ? 'Create student account' : 'Create account' : 'Sign in'}<ArrowRight size={16} /></>}</button>
         </form>
         {(!signup || accountType === 'CLUB') && <><div className="my-5 flex items-center gap-3 sm:my-6 sm:gap-4"><span className="h-px flex-1 bg-[#e3e7dd]" /><span className="shrink-0 text-[10px] text-[#596653]">or take a little look around</span><span className="h-px flex-1 bg-[#e3e7dd]" /></div><button type="button" disabled={!!busy} onClick={() => void demo()} className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-[#dce4d4] bg-[#f2f5eb] px-4 py-3 text-xs font-semibold text-[#4f6048] transition hover:bg-[#eaf0df] disabled:cursor-wait disabled:opacity-60">{busy === 'demo' ? <LoaderCircle size={16} className="animate-spin" /> : <Sparkles size={15} />}{busy === 'demo' ? 'Preparing your demo…' : 'Explore the demo workspace'}<ArrowRight size={14} /></button><p className="!mt-3 text-center text-[10px] leading-relaxed text-[#596653]">No sign-up needed. A sample club workspace, ready to explore.</p></>}

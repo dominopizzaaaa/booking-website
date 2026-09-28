@@ -29,19 +29,16 @@ export function IntegrityAlertDetail({ flag, refresh, onResolved, actionable = t
   actionable?: boolean;
 }) {
   const [busyStatus, setBusyStatus] = useState<IntegrityFlag['status'] | null>(null);
+  const [decision, setDecision] = useState<'DISMISSED' | 'UPHELD' | null>(null);
+  const [note, setNote] = useState('');
 
-  async function resolve(status: IntegrityFlag['status'], promptText?: string) {
-    let note = '';
-    if (promptText) {
-      const answer = window.prompt(promptText, '');
-      if (answer === null) return;
-      note = answer;
-    }
+  async function resolve(status: IntegrityFlag['status'], resolutionNote = '') {
     setBusyStatus(status);
     try {
-      await mutate(`/integrity-flags/${encodeURIComponent(flag.id)}`, 'PATCH', { status, note });
+      await mutate(`/integrity-flags/${encodeURIComponent(flag.id)}`, 'PATCH', { status, note: resolutionNote });
       await refresh();
       toast.success(`Flag marked ${statusLabels[status].toLowerCase()}`);
+      setDecision(null);
       onResolved();
     } catch (error) {
       toast.error((error as Error).message);
@@ -76,13 +73,20 @@ export function IntegrityAlertDetail({ flag, refresh, onResolved, actionable = t
       {flag.status !== 'REVIEWING' && <Button size="sm" variant="outline" disabled={busy} onClick={() => void resolve('REVIEWING')}>
         {busyStatus === 'REVIEWING' && <Loader2 size={13} className="animate-spin" />}Reviewing
       </Button>}
-      <Button size="sm" variant="outline" disabled={busy} onClick={() => void resolve('DISMISSED', 'Dismiss this review. What did you find? (optional)')}>
+      <Button size="sm" variant="outline" disabled={busy} onClick={() => { setNote(''); setDecision('DISMISSED'); }}>
         {busyStatus === 'DISMISSED' ? <Loader2 size={13} className="animate-spin" /> : <CircleCheck size={13} />}Dismiss
       </Button>
-      <Button size="sm" variant="destructive" disabled={busy} onClick={() => void resolve('UPHELD', 'Uphold this review. What did you conclude?')}>
+      <Button size="sm" variant="destructive" disabled={busy} onClick={() => { setNote(''); setDecision('UPHELD'); }}>
         {busyStatus === 'UPHELD' && <Loader2 size={13} className="animate-spin" />}Uphold
       </Button>
     </div>}
     <p className="mt-4 text-[10px] leading-relaxed text-[#59675c]">A flag is a prompt to have a conversation, not a finding.</p>
+    {decision && <section role="region" aria-labelledby="integrity-decision-heading" className="mt-5 rounded-xl border border-[#e4d5ce] bg-[#fff9f5] p-4">
+      <h3 id="integrity-decision-heading" className="text-base font-semibold text-[#57352c]">{decision === 'UPHELD' ? 'Uphold this review?' : 'Dismiss this review?'}</h3>
+      <p className="mt-2 text-sm leading-relaxed text-[#6f5148]">{decision === 'UPHELD' ? 'Record what you concluded. The booking is not blocked and the coach or student is not notified.' : 'Add anything you found, then close the review. The coach or student is not notified.'}</p>
+      <label htmlFor="integrity-review-note" className="mt-4 block text-sm font-medium text-[#57352c]">{decision === 'UPHELD' ? 'Conclusion' : 'Review note'}{decision !== 'UPHELD' && <span className="font-normal text-[#6f5148]"> (optional)</span>}</label>
+      <textarea autoFocus id="integrity-review-note" rows={3} value={note} onChange={event => setNote(event.target.value)} className="mt-2" />
+      <div className="mt-4 flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={busy} onClick={() => setDecision(null)}>Keep reviewing</Button><Button type="button" variant={decision === 'UPHELD' ? 'destructive' : 'default'} disabled={busy || (decision === 'UPHELD' && !note.trim())} onClick={() => void resolve(decision, note.trim())}>{busy && <Loader2 size={13} className="animate-spin" />}{decision === 'UPHELD' ? 'Uphold review' : 'Dismiss review'}</Button></div>
+    </section>}
   </div>;
 }

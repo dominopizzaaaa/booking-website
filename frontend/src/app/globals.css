@@ -75,7 +75,8 @@ h1,h2,h3,p { margin:0; } h1 { font-size:29px; letter-spacing:-.85px; font-weight
   .topbar-context { max-width:calc(100% - 140px); }
   .topbar-actions { gap:0; margin-right:0; }
   .topbar-action { width:44px; height:44px; flex-basis:44px; border-radius:50%; }
-  .mobile-menu { display:grid; }
+  .mobile-menu { display:flex; }
+  .mobile-workspace-context { max-width:calc(100vw - 116px); }
   .desktop-only { display:none!important; }
   .content { width:100%; min-width:0; padding:21px 14px calc(var(--mobile-tab-height) + env(safe-area-inset-bottom) + 30px); overflow:hidden; }
   h1 { font-size:25px; line-height:1.22; }

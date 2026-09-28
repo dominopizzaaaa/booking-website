@@ -19,6 +19,7 @@ import {
   type ChatMessage,
   type CheckoutInput,
   type CheckoutResult,
+  type CoachInvitation,
   type IntegrityFlag,
   type PackageOffer,
   type PackageOfferBusiness,
@@ -175,6 +176,14 @@ export async function loadAccountClubs(): Promise<StudentClubDirectoryResult> {
   return { clubs };
 }
 export const cancelAccountBooking = (participantId: string) => api(`/account/bookings/${encodeURIComponent(participantId)}/cancel`, { method: 'POST', body: JSON.stringify({}) });
+export const loadCoachInvitations = () => api<{ invitations: CoachInvitation[] }>('/coach-invitations');
+export const acceptCoachInvitation = (input: { invitationId: string } | { token: string }) =>
+  api<{ membershipId: string }>('/coach-invitations/accept', { method: 'POST', body: JSON.stringify(input) });
+export const loadStaffInvitations = () => api<{ invitations: CoachInvitation[] }>('/staff/invitations');
+export const createStaffInvitation = (values: { email: string; rescheduleNoticeHours: number }) =>
+  api<{ invitation: CoachInvitation; invitePath: string }>('/staff/invitations', { method: 'POST', body: JSON.stringify(values) });
+export const revokeStaffInvitation = (invitationId: string) =>
+  api<{ ok: true }>(`/staff/invitations/${encodeURIComponent(invitationId)}`, { method: 'DELETE', body: JSON.stringify({}) });
 
 // A student proposes a new time; the coach's side decides. Nothing moves
 // until the request is accepted, so all three of these return the booking in
