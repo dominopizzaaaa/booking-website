@@ -1,12 +1,16 @@
 import { Router } from 'express';
+import { DateTime } from 'luxon';
 import { z } from 'zod';
 import { prisma } from './db.js';
-import { asyncRoute, coachScope, coachScoped, requireBusinessManager, HttpError } from './http.js';
+import { asyncRoute, coachScope, coachScoped, hasClubPermission, requireClubPermission, requireCoachOrClubPermission, HttpError } from './http.js';
 import { assertWritableClubBooking, bookingInput, cancelBooking, createBookings, lockInstructors, rescheduleBooking, type BookingInput } from './scheduling.js';
 import { bookingInclude, bookingJson, paymentJson, withoutBookingFinancials } from './serializers.js';
 import { createBookingAccountAlerts } from './account-notifications.js';
 import { notifyWorkspace } from './notifications.js';
 import { enqueueCalendarSync } from './calendar-sync.js';
+import { bookingOrder, bookingWhere, encodeBookingCursor, localCalendarDate, parseBookingListQuery } from './booking-query.js';
+import { operationsRouter } from './operations.js';
+import { executePreparedRefund, prepareProviderRefund, type RefundPreparation } from './payments/refunds.js';
 import {
   acceptRescheduleRequest,
   createRescheduleRequest,
@@ -19,9 +23,13 @@ import {
   type RequesterRole,
 } from './reschedule.js';
 export const bookingsRouter = Router();
+bookingsRouter.use(operationsRouter);
 
 /** A workspace member acts either as the coach or as the club's office. */
-const requesterRole = (accountType: string): RequesterRole => accountType === 'COACH' ? 'COACH' : 'CLUB';
+const requesterRole = (auth: { accessMode: string; user: { accountType: string } }): RequesterRole =>
+  auth.accessMode === 'COACH' && auth.user.accountType === 'COACH' ? 'COACH' : 'CLUB';
+const hidesFinancials = (auth: Parameters<typeof coachScoped>[0]) =>
+  coachScoped(auth) || !hasClubPermission(auth, 'PAYMENTS_VIEW');
 const bookingStatus = z.enum(['CONFIRMED', 'PENDING', 'CANCELLED', 'COMPLETED']);
 type BookingStatus = z.infer<typeof bookingStatus>;
 
@@ -65,11 +73,11 @@ function requireActiveAcceptanceDecision(booking: { status: string; coachAccepta
   if (booking.status !== 'PENDING') throw new HttpError(409, 'Only a pending lesson can receive a coach decision');
 }
 
-bookingsRouter.post('/bookings', asyncRoute(async (req, res) => {
-  const membership = req.auth.membership!;
+bookingsRouter.post('/bookings', requireCoachOrClubPermission('BOOKINGS_MANAGE'), asyncRoute(async (req, res) => {
+  const membership = req.auth.membership;
   let input: BookingInput;
   if (coachScoped(req.auth)) {
-    if (!membership.instructorId) throw new HttpError(403, 'This coach account is not connected to a club roster profile');
+    if (!membership?.instructorId) throw new HttpError(403, 'This coach account is not connected to a club roster profile');
     const raw = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
       ? req.body as Record<string, unknown>
       : {};
@@ -89,23 +97,87 @@ bookingsRouter.post('/bookings', asyncRoute(async (req, res) => {
     requireLinkedStudent: true,
     actor: {
       userId: req.auth.user.id,
-      accountType: req.auth.user.accountType as 'STUDENT' | 'COACH' | 'CLUB',
-      instructorId: membership.instructorId,
+      accountType: coachScoped(req.auth) ? 'COACH' : 'CLUB',
+      instructorId: membership?.instructorId ?? null,
     },
   });
-  res.status(201).json(coachScoped(req.auth)
+  res.status(201).json(hidesFinancials(req.auth)
     ? { ...result, bookings: result.bookings.map(withoutBookingFinancials) }
     : result);
 }));
-bookingsRouter.get('/bookings', asyncRoute(async (req, res) => {
+bookingsRouter.get('/bookings', requireCoachOrClubPermission('BOOKINGS_VIEW'), asyncRoute(async (req, res) => {
   const coach = coachScoped(req.auth);
-  const bookings = await prisma.booking.findMany({ where: { businessId: req.auth.business!.id, instructorId: coach ? req.auth.membership!.instructorId || '__none__' : undefined }, include: bookingInclude, orderBy: { startAt: 'asc' } });
-  res.json(bookings.map(b => {
+  const query = parseBookingListQuery(req.query, req.auth.business.timezone);
+  const bookings = await prisma.booking.findMany({
+    where: bookingWhere(req.auth.business.id, query, coach ? req.auth.membership?.instructorId || '__none__' : undefined),
+    include: bookingInclude, orderBy: bookingOrder(query.sort), take: query.limit + 1,
+  });
+  const page = bookings.slice(0, query.limit);
+  res.json({ bookings: page.map(b => {
     const json = bookingJson(b);
-    return coach ? withoutBookingFinancials(json) : json;
-  }));
+    return hidesFinancials(req.auth) ? withoutBookingFinancials(json) : json;
+  }), nextCursor: bookings.length > query.limit && page.length
+    ? encodeBookingCursor({ startAt: page.at(-1)!.startAt, id: page.at(-1)!.id }) : null });
 }));
-bookingsRouter.patch('/bookings/:id', asyncRoute(async (req, res) => {
+
+const csvCell = (value: unknown) => {
+  let text = value === null || value === undefined ? '' : String(value);
+  if (/^[=+\-@\t\r]/u.test(text)) text = `'${text}`;
+  return `"${text.replaceAll('"', '""')}"`;
+};
+
+const localCalendarDayCount = (from: Date, exclusiveTo: Date, timezone: string) => {
+  const firstDate = localCalendarDate(from, timezone);
+  const lastDate = localCalendarDate(new Date(exclusiveTo.getTime() - 1), timezone);
+  const firstDay = DateTime.fromISO(firstDate, { zone: 'UTC' });
+  const lastDay = DateTime.fromISO(lastDate, { zone: 'UTC' });
+  return lastDay.diff(firstDay, 'days').days + 1;
+};
+
+bookingsRouter.get('/bookings/export.csv', requireCoachOrClubPermission('BOOKINGS_VIEW'), asyncRoute(async (req, res) => {
+  const coach = coachScoped(req.auth);
+  const query = parseBookingListQuery({ ...req.query, cursor: undefined, limit: 100 }, req.auth.business.timezone);
+  if (!query.from || !query.to) throw new HttpError(400, 'Choose a start and end date for export');
+  if (localCalendarDayCount(query.from, query.to, req.auth.business.timezone) > 366) {
+    throw new HttpError(400, 'Booking exports are limited to 366 days');
+  }
+  const rows = await prisma.booking.findMany({
+    where: bookingWhere(req.auth.business.id, query, coach ? req.auth.membership?.instructorId || '__none__' : undefined),
+    include: bookingInclude, orderBy: bookingOrder(query.sort), take: 10_001,
+  });
+  if (rows.length > 10_000) throw new HttpError(422, 'This export is too large. Narrow the date range.', { code: 'EXPORT_TOO_LARGE' });
+  const headers = coach
+    ? ['Booking ID', 'Start', 'End', 'Status', 'Type', 'Service', 'Instructor', 'Location', 'Participants', 'Capacity', 'Coach acceptance', 'Created by', 'Address']
+    : ['Booking ID', 'Start', 'End', 'Status', 'Type', 'Service', 'Instructor', 'Location', 'Participants', 'Capacity', 'Price', 'Payment route', 'Coach acceptance', 'Created by', 'Address'];
+  const lines = [headers, ...rows.map(booking => {
+    const common: unknown[] = [booking.id, booking.startAt.toISOString(), booking.endAt.toISOString(), booking.status,
+      booking.type, booking.service.name, booking.instructor.name, booking.location.name,
+      booking.participants.filter(participant => !participant.cancelledAt).map(participant => participant.student.name).join('; '),
+      booking.capacity];
+    return coach ? [...common, booking.coachAcceptance, booking.createdByRole, booking.address]
+      : [...common, booking.price, booking.paymentRoute, booking.coachAcceptance, booking.createdByRole, booking.address];
+  })].map(row => row.map(csvCell).join(','));
+  const from = localCalendarDate(query.from, req.auth.business.timezone);
+  const to = localCalendarDate(new Date(query.to.getTime() - 1), req.auth.business.timezone);
+  res.type('text/csv').set('Content-Disposition', `attachment; filename="courtly-bookings-${from}-to-${to}.csv"`)
+    .send(`\uFEFF${lines.join('\r\n')}\r\n`);
+}));
+
+bookingsRouter.get('/bookings/:id', requireCoachOrClubPermission('BOOKINGS_VIEW'), asyncRoute(async (req, res) => {
+  const coach = coachScoped(req.auth);
+  const booking = await prisma.booking.findFirst({
+    where: {
+      id: req.params.id, businessId: req.auth.business.id,
+      ...(coach ? { instructorId: req.auth.membership?.instructorId || '__none__' } : {}),
+    },
+    include: bookingInclude,
+  });
+  if (!booking) throw new HttpError(404, 'Booking not found');
+  const json = bookingJson(booking);
+  res.json({ booking: hidesFinancials(req.auth) ? withoutBookingFinancials(json) : json });
+}));
+
+bookingsRouter.patch('/bookings/:id', requireCoachOrClubPermission('BOOKINGS_MANAGE'), asyncRoute(async (req, res) => {
   const body = z.object({ status: bookingStatus.optional(), notes: z.string().max(2000).optional() }).strict().parse(req.body);
   const result = await prisma.$transaction(async tx => {
     const initial = await tx.booking.findFirst({ where: { id: req.params.id, businessId: req.auth.business.id } });
@@ -138,9 +210,9 @@ bookingsRouter.patch('/bookings/:id', asyncRoute(async (req, res) => {
     return tx.booking.findUniqueOrThrow({ where: { id: current.id }, include: bookingInclude });
   });
   const json = bookingJson(result);
-  res.json(coachScoped(req.auth) ? withoutBookingFinancials(json) : json);
+  res.json(hidesFinancials(req.auth) ? withoutBookingFinancials(json) : json);
 }));
-bookingsRouter.patch('/bookings/:id/participants/:participantId', asyncRoute(async (req, res) => {
+bookingsRouter.patch('/bookings/:id/participants/:participantId', requireCoachOrClubPermission('BOOKINGS_MANAGE'), asyncRoute(async (req, res) => {
   const body = z.object({ attendance: z.enum(['UNMARKED', 'PRESENT', 'ABSENT']) }).strict().parse(req.body);
   const result = await prisma.$transaction(async tx => {
     const initial = await tx.booking.findFirst({ where: { id: req.params.id, businessId: req.auth.business.id } });
@@ -200,7 +272,7 @@ bookingsRouter.post('/bookings/:id/accept', asyncRoute(async (req, res) => {
     return updated;
   });
   const json = bookingJson(result);
-  res.json(coachScoped(req.auth) ? withoutBookingFinancials(json) : json);
+  res.json(hidesFinancials(req.auth) ? withoutBookingFinancials(json) : json);
 }));
 
 bookingsRouter.post('/bookings/:id/decline', asyncRoute(async (req, res) => {
@@ -233,13 +305,13 @@ bookingsRouter.post('/bookings/:id/decline', asyncRoute(async (req, res) => {
     return tx.booking.findUniqueOrThrow({ where: { id: current.id }, include: bookingInclude });
   });
   const json = bookingJson(result);
-  res.json(coachScoped(req.auth) ? withoutBookingFinancials(json) : json);
+  res.json(hidesFinancials(req.auth) ? withoutBookingFinancials(json) : json);
 }));
 
 // Rescheduling is a negotiation. The provider side proposes; the student
 // accepts. The one-sided move below stays only for a booking with nobody to
 // ask — otherwise it would move a session under a student's feet.
-bookingsRouter.post('/bookings/:id/reschedule-requests', asyncRoute(async (req, res) => {
+bookingsRouter.post('/bookings/:id/reschedule-requests', requireCoachOrClubPermission('BOOKINGS_MANAGE'), asyncRoute(async (req, res) => {
   const input = rescheduleRequestInput.parse(req.body);
   const request = await prisma.$transaction(async tx => {
     const initial = await tx.booking.findFirst({ where: { id: req.params.id, businessId: req.auth.business.id } });
@@ -251,7 +323,7 @@ bookingsRouter.post('/bookings/:id/reschedule-requests', asyncRoute(async (req, 
     return createRescheduleRequest(tx, {
       bookingId: initial.id,
       businessId: req.auth.business.id,
-      role: requesterRole(req.auth.user.accountType),
+      role: requesterRole(req.auth),
       userId: req.auth.user.id,
       startAt: input.startAt,
       message: input.message,
@@ -260,7 +332,7 @@ bookingsRouter.post('/bookings/:id/reschedule-requests', asyncRoute(async (req, 
   res.status(201).json(rescheduleRequestJson(request));
 }));
 
-bookingsRouter.get('/reschedule-requests', asyncRoute(async (req, res) => {
+bookingsRouter.get('/reschedule-requests', requireCoachOrClubPermission('BOOKINGS_VIEW'), asyncRoute(async (req, res) => {
   const membership = req.auth.membership!;
   const coach = coachScoped(req.auth);
   const requests = await prisma.rescheduleRequest.findMany({
@@ -284,7 +356,7 @@ bookingsRouter.get('/reschedule-requests', asyncRoute(async (req, res) => {
   res.json({ requests: requests.map(rescheduleRequestJson) });
 }));
 
-bookingsRouter.post('/reschedule-requests/:requestId/accept', asyncRoute(async (req, res) => {
+bookingsRouter.post('/reschedule-requests/:requestId/accept', requireCoachOrClubPermission('BOOKINGS_MANAGE'), asyncRoute(async (req, res) => {
   const body = rescheduleResponseInput.parse(req.body ?? {});
   const membership = req.auth.membership!;
   const result = await prisma.$transaction(async tx => {
@@ -295,7 +367,7 @@ bookingsRouter.post('/reschedule-requests/:requestId/accept', asyncRoute(async (
     if (!request) throw new HttpError(404, 'Reschedule request not found');
     coachScope(req, request.booking.instructorId);
     return acceptRescheduleRequest(tx, request.id, {
-      role: requesterRole(req.auth.user.accountType), userId: req.auth.user.id, message: body.message,
+      role: requesterRole(req.auth), userId: req.auth.user.id, message: body.message,
     });
   }, { timeout: 30_000 });
   if (result.outcome === 'EXPIRED') {
@@ -303,11 +375,11 @@ bookingsRouter.post('/reschedule-requests/:requestId/accept', asyncRoute(async (
   }
   res.json({
     request: rescheduleRequestJson(result.request),
-    booking: coachScoped(req.auth) ? withoutBookingFinancials(result.booking) : result.booking,
+    booking: hidesFinancials(req.auth) ? withoutBookingFinancials(result.booking) : result.booking,
   });
 }));
 
-bookingsRouter.post('/reschedule-requests/:requestId/decline', asyncRoute(async (req, res) => {
+bookingsRouter.post('/reschedule-requests/:requestId/decline', requireCoachOrClubPermission('BOOKINGS_MANAGE'), asyncRoute(async (req, res) => {
   const body = rescheduleResponseInput.parse(req.body ?? {});
   const membership = req.auth.membership!;
   const request = await prisma.$transaction(async tx => {
@@ -318,13 +390,13 @@ bookingsRouter.post('/reschedule-requests/:requestId/decline', asyncRoute(async 
     if (!found) throw new HttpError(404, 'Reschedule request not found');
     coachScope(req, found.booking.instructorId);
     return declineRescheduleRequest(tx, found.id, {
-      role: requesterRole(req.auth.user.accountType), userId: req.auth.user.id, message: body.message,
+      role: requesterRole(req.auth), userId: req.auth.user.id, message: body.message,
     });
   });
   res.json(rescheduleRequestJson(request));
 }));
 
-bookingsRouter.post('/reschedule-requests/:requestId/withdraw', asyncRoute(async (req, res) => {
+bookingsRouter.post('/reschedule-requests/:requestId/withdraw', requireCoachOrClubPermission('BOOKINGS_MANAGE'), asyncRoute(async (req, res) => {
   withdrawRescheduleRequestInput.parse(req.body ?? {});
   const membership = req.auth.membership!;
   const request = await prisma.$transaction(async tx => {
@@ -335,13 +407,13 @@ bookingsRouter.post('/reschedule-requests/:requestId/withdraw', asyncRoute(async
     if (!found) throw new HttpError(404, 'Reschedule request not found');
     coachScope(req, found.booking.instructorId);
     return withdrawRescheduleRequest(tx, found.id, {
-      role: requesterRole(req.auth.user.accountType), userId: req.auth.user.id,
+      role: requesterRole(req.auth), userId: req.auth.user.id,
     });
   });
   res.json(rescheduleRequestJson(request));
 }));
 
-bookingsRouter.post('/bookings/:id/reschedule', asyncRoute(async (req, res) => {
+bookingsRouter.post('/bookings/:id/reschedule', requireCoachOrClubPermission('BOOKINGS_MANAGE'), asyncRoute(async (req, res) => {
   const changes = z.object({ startAt: z.string().datetime({ offset: true }) }).strict().parse(req.body);
   const initial = await prisma.booking.findFirst({ where: { id: req.params.id, businessId: req.auth.business.id } });
   if (!initial) throw new HttpError(404, 'Booking not found');
@@ -361,9 +433,9 @@ bookingsRouter.post('/bookings/:id/reschedule', asyncRoute(async (req, res) => {
     }
     return rescheduleBooking(tx, req.auth.business.id, req.params.id, changes);
   }, { timeout: 30_000 });
-  res.json(coachScoped(req.auth) ? withoutBookingFinancials(result) : result);
+  res.json(hidesFinancials(req.auth) ? withoutBookingFinancials(result) : result);
 }));
-bookingsRouter.post('/payments', requireBusinessManager, asyncRoute(async (req, res) => {
+bookingsRouter.post('/payments', requireClubPermission('PAYMENTS_RECORD'), asyncRoute(async (req, res) => {
   const input = z.object({ studentId: z.string().min(1), bookingId: z.string().min(1).optional(), packageId: z.string().min(1).optional(), participantId: z.string().min(1).optional(), amount: z.number().int().positive().max(100_000_000), method: z.enum(['CASH', 'BANK_TRANSFER', 'OTHER']), note: z.string().max(1000).default('') }).strict().refine(x => !(x.bookingId && x.packageId), { message: 'Record a payment against a booking or a package, not both' }).parse(req.body);
   const result = await prisma.$transaction(async tx => {
     const student = await tx.student.findFirst({ where: { id: input.studentId, businessId: req.auth.business.id } });
@@ -404,7 +476,7 @@ bookingsRouter.post('/payments', requireBusinessManager, asyncRoute(async (req, 
     }
     const { participantId: _participantId, ...data } = input;
     const payment = await tx.payment.create({
-      data: { ...data, kind: paymentKind, businessId: req.auth.business.id },
+      data: { ...data, kind: paymentKind, businessId: req.auth.business.id, recordedByUserId: req.auth.user.id },
       include: { student: true, instructor: { select: { name: true } } },
     });
     await notifyWorkspace(tx, {
@@ -420,7 +492,7 @@ bookingsRouter.post('/payments', requireBusinessManager, asyncRoute(async (req, 
 // Recording a payment is a human action and humans mistype. A reversal undoes
 // the balance it created and flips the participant or package back to unpaid,
 // while keeping both rows so the correction stays visible in the ledger.
-bookingsRouter.delete('/payments/:id', requireBusinessManager, asyncRoute(async (req, res) => {
+bookingsRouter.delete('/payments/:id', requireClubPermission('PAYMENTS_REVERSE'), asyncRoute(async (req, res) => {
   const reason = z.object({ reason: z.string().trim().max(500).default('') }).strict().parse(req.body ?? {});
   const result = await prisma.$transaction(async tx => {
     const initial = await tx.payment.findFirst({
@@ -443,7 +515,6 @@ bookingsRouter.delete('/payments/:id', requireBusinessManager, asyncRoute(async 
     const paymentIntent = payment.paymentIntentId
       ? await tx.paymentIntent.findFirst({
           where: { id: payment.paymentIntentId, businessId: req.auth.business.id },
-          select: { kind: true, reservationId: true },
         })
       : null;
     // Rental cancellation owns the reservation, checkout intent, package
@@ -464,6 +535,9 @@ bookingsRouter.delete('/payments/:id', requireBusinessManager, asyncRoute(async 
       await tx.$queryRaw`SELECT id FROM "LessonPackage" WHERE id = ${payment.packageId} AND "businessId" = ${req.auth.business.id} FOR UPDATE`;
     }
     const isPayout = payment.kind === 'CLUB_TO_COACH';
+    if (isPayout && !hasClubPermission(req.auth, 'PAYOUTS_RECORD')) {
+      throw new HttpError(403, 'Reversing a coach payout requires payouts record permission');
+    }
     if (isPayout) {
       if (!payment.instructorId || payment.studentId || !payment.instructor) {
         throw new HttpError(409, 'This payout has invalid party details and cannot be reversed safely');
@@ -492,6 +566,13 @@ bookingsRouter.delete('/payments/:id', requireBusinessManager, asyncRoute(async 
       if (pkg.usedCredits > 0 || pkg.participants.length || pkg.reservations.length) {
         throw new HttpError(409, 'This purchased package has already been used and cannot be refunded');
       }
+    }
+    if (paymentIntent?.provider === 'STRIPE') {
+      const prepared = await prepareProviderRefund(tx, {
+        intent: paymentIntent, paymentId: payment.id, reason: reason.reason,
+        requestedByUserId: req.auth.user.id,
+      });
+      return { kind: 'PROVIDER' as const, prepared };
     }
     const studentId = payment.studentId;
     const reversed = await tx.payment.update({
@@ -555,15 +636,35 @@ bookingsRouter.delete('/payments/:id', requireBusinessManager, asyncRoute(async 
         ? `${req.auth.business.currency} ${(payment.amount / 100).toFixed(2)} recorded as paid to ${payment.instructor!.name} was reversed${reason.reason ? `: ${reason.reason}` : '.'}`
         : `${req.auth.business.currency} ${(payment.amount / 100).toFixed(2)} recorded for ${payment.student!.name} was reversed${reason.reason ? `: ${reason.reason}` : '.'}`,
     });
-    return paymentJson({ ...reversed, student: payment.student, instructor: payment.instructor });
+    return {
+      kind: 'LOCAL' as const,
+      payment: paymentJson({ ...reversed, student: payment.student, instructor: payment.instructor }),
+    };
   });
-  res.json({ ok: true, payment: { ...result, reversedAt: result.reversedAt?.toISOString() ?? null } });
+  if (result.kind === 'PROVIDER') {
+    const providerResult = await executePreparedRefund(result.prepared as RefundPreparation);
+    const payment = await prisma.payment.findUniqueOrThrow({
+      where: { id: req.params.id }, include: { student: true, instructor: { select: { name: true } } },
+    });
+    const body = {
+      ok: true, refundId: providerResult.refundId, refundStatus: providerResult.status,
+      payment: paymentJson(payment),
+    };
+    if (providerResult.status === 'PENDING') { res.status(202).json(body); return; }
+    res.json(body);
+    return;
+  }
+  res.json({
+    ok: true, payment: {
+      ...result.payment, reversedAt: result.payment.reversedAt?.toISOString() ?? null,
+    },
+  });
 }));
 
 // The second leg of a club lesson: the club paying the coach for work already
 // done. Kept in the same ledger so a club can see, per coach, what it has
 // collected and what it still owes.
-bookingsRouter.post('/payouts', requireBusinessManager, asyncRoute(async (req, res) => {
+bookingsRouter.post('/payouts', requireClubPermission('PAYOUTS_RECORD'), asyncRoute(async (req, res) => {
   const input = z.object({
     instructorId: z.string().trim().min(1).max(200),
     amount: z.number().int().positive().max(100_000_000),
@@ -582,7 +683,7 @@ bookingsRouter.post('/payouts', requireBusinessManager, asyncRoute(async (req, r
       data: {
         businessId: req.auth.business.id, studentId: null, instructorId: instructor.id,
         kind: 'CLUB_TO_COACH', amount: input.amount, method: input.method,
-        note: input.note || `Coach payout · ${instructor.name}`,
+        note: input.note || `Coach payout · ${instructor.name}`, recordedByUserId: req.auth.user.id,
       },
       include: { student: true, instructor: { select: { name: true } } },
     });

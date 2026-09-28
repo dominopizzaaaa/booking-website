@@ -31,13 +31,15 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { CalendarConnectionCard } from '@/components/calendar-connection-card';
+import { NotificationPreferencesCard } from '@/components/notification-preferences';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { mutate, updateAuthAccount } from '@/lib/api';
 import { alertAppearance, alertPageSize, linkedIntegrityFlag, sortAlerts } from '@/lib/alerts';
-import { isManagerWorkspace, type AccountType, type AuthSession, type BusinessKind, type ManagerWorkspace, type Notification, type WorkspaceResponse, type WorkspaceUser } from '@/lib/types';
+import { isManagerWorkspace, type AccountType, type AuthSession, type BusinessKind, type ClubPermission, type ManagerWorkspace, type Notification, type WorkspaceAccessMode, type WorkspaceResponse, type WorkspaceUser } from '@/lib/types';
 import { initials, shortDate, time } from '@/lib/utils';
 import { IntegrityAlertDetail } from './management-integrity';
+import { NamedStaffAccess } from './staff-access';
 
 export const exploreViewIds = [
   'calendar',
@@ -56,14 +58,40 @@ export const exploreViewIds = [
 export type ExploreViewId = (typeof exploreViewIds)[number];
 
 const clubCoachViews = new Set<ExploreViewId>(['calendar', 'bookings', 'students', 'locations', 'availability', 'rentals']);
+const explorePermissions: Partial<Record<ExploreViewId, ClubPermission[]>> = {
+  calendar: ['BOOKINGS_VIEW'], bookings: ['BOOKINGS_VIEW'], students: ['STUDENTS_VIEW'],
+  services: ['CATALOG_VIEW', 'CATALOG_MANAGE'], locations: ['CATALOG_VIEW', 'CATALOG_MANAGE'],
+  team: ['ROSTER_VIEW', 'ROSTER_MANAGE'], availability: ['AVAILABILITY_MANAGE'],
+  rentals: ['RENTALS_VIEW', 'RENTALS_MANAGE'], packages: ['PACKAGES_VIEW', 'PACKAGES_MANAGE'],
+  payments: ['PAYMENTS_VIEW'], insights: ['PAYMENTS_VIEW', 'AUDIT_VIEW'],
+};
+
+type AccessContext = {
+  accountType?: AccountType; businessKind?: BusinessKind; accessMode?: WorkspaceAccessMode; permissions?: readonly ClubPermission[];
+  user?: Pick<WorkspaceUser, 'accountType'>; business?: Pick<WorkspaceResponse['business'], 'kind'>;
+};
+
+export function workspaceAccessMode(context: AccessContext): WorkspaceAccessMode {
+  if (context.accessMode) return context.accessMode;
+  const accountType = context.accountType ?? context.user?.accountType;
+  return accountType === 'CLUB' ? 'CLUB_ACCOUNT' : accountType === 'COACH' ? 'COACH' : 'NONE';
+}
+
+export function hasWorkspacePermission(context: AccessContext, permission: ClubPermission) {
+  return workspaceAccessMode(context) === 'CLUB_ACCOUNT' || context.permissions?.includes(permission) === true;
+}
 
 export function isExploreView(value: string): value is ExploreViewId {
   return exploreViewIds.includes(value as ExploreViewId);
 }
 
-export function canAccessExploreView(context: { accountType: AccountType; businessKind: BusinessKind }, view: string) {
-  const isClubCoach = context.accountType === 'COACH' && context.businessKind === 'CLUB';
-  return isExploreView(view) && (!isClubCoach || clubCoachViews.has(view));
+export function canAccessExploreView(context: AccessContext, view: string) {
+  if (!isExploreView(view)) return false;
+  const mode = workspaceAccessMode(context);
+  if (mode === 'COACH') return clubCoachViews.has(view);
+  if (mode === 'CLUB_ACCOUNT') return true;
+  const required = explorePermissions[view] ?? [];
+  return mode === 'STAFF' && required.some(permission => hasWorkspacePermission(context, permission));
 }
 
 export type BookingReadiness = {
@@ -81,10 +109,10 @@ export type BookingReadiness = {
  * produce a slot. Coaches are scoped to their own roster assignment.
  */
 export function getBookingReadiness(data: WorkspaceResponse): BookingReadiness {
-  const isCoach = data.user.accountType === 'COACH';
+  const isCoach = workspaceAccessMode(data) === 'COACH';
   const activeLocationIds = new Set(data.locations.filter(location => location.active).map(location => location.id));
   const activeInstructorIds = new Set(data.instructors
-    .filter(instructor => instructor.active && (!isCoach || instructor.id === data.membership.instructorId))
+    .filter(instructor => instructor.active && (!isCoach || instructor.id === data.membership?.instructorId))
     .map(instructor => instructor.id));
   const assignedPaths = data.services
     .filter(service => service.active)
@@ -133,8 +161,8 @@ const managerExploreItems: ManagerExploreItem[] = [
   { id: 'services', label: 'Classes', description: 'Shape the classes students can choose and book.', icon: Gift, detail: data => `${data.services.filter(service => service.active).length} active` },
   { id: 'team', label: 'My coaches', description: 'Add coaches to your roster and keep their details together.', icon: UsersRound, detail: data => `${data.instructors.filter(instructor => instructor.active).length} active` },
   { id: 'packages', label: 'Packages', description: 'Track class and rental credits and student commitments.', icon: Ticket, detail: data => `${data.packages.length} package${data.packages.length === 1 ? '' : 's'}` },
-  { id: 'payments', label: 'Payments', description: 'Review simulated Stripe checkouts, receipts, and unpaid classes.', icon: CreditCard, detail: data => `${data.payments.length} recorded` },
-  { id: 'insights', label: 'Insights', description: 'Understand attendance, lessons, and recorded receipts.', icon: ChartNoAxesCombined, detail: data => `${data.bookings.filter(booking => booking.status === 'COMPLETED').length} completed lessons` },
+  { id: 'payments', label: 'Payments', description: 'Review online and offline receipts, payouts, and unpaid classes.', icon: CreditCard, detail: data => `${data.payments.length} recorded` },
+  { id: 'insights', label: 'Insights', description: 'Review reporting and the club audit log.', icon: ChartNoAxesCombined, detail: data => workspaceAccessMode(data) === 'STAFF' && !data.permissions?.includes('PAYMENTS_VIEW') ? 'Audit history' : `${data.bookings.filter(booking => booking.status === 'COMPLETED').length} completed lessons` },
 ];
 const exploreItems = [...sharedExploreItems, ...managerExploreItems];
 
@@ -147,7 +175,7 @@ const exploreGroups: { title: string; ids: ExploreViewId[] }[] = [
 
 export function ExploreHub({ data, onNavigate }: { data: WorkspaceResponse; onNavigate: (view: string) => void }) {
   const managerData = isManagerWorkspace(data) ? data : null;
-  const isClubCoach = managerData === null;
+  const isClubCoach = workspaceAccessMode(data) === 'COACH';
   function renderSharedCard(item: ExploreItem) {
     const Icon = item.icon;
     const description = isClubCoach && item.id === 'students'
@@ -174,7 +202,7 @@ export function ExploreHub({ data, onNavigate }: { data: WorkspaceResponse; onNa
     </button>;
   }
   function renderManagerCard(item: ManagerExploreItem) {
-    if (!managerData) return null;
+    if (!managerData || !canAccessExploreView(data, item.id)) return null;
     const Icon = item.icon;
     return <button key={item.id} type="button" className="workspace-explore-card group min-h-40 rounded-2xl border border-[#e2e8df] bg-white p-5 text-left transition hover:-translate-y-0.5 hover:border-[#cbd8c5] hover:shadow-sm" onClick={() => onNavigate(item.id)} aria-label={`Open ${item.label}`}><span className="flex items-start justify-between gap-4"><span className="grid h-10 w-10 place-items-center rounded-xl bg-[#edf2e7] text-[#66805a]"><Icon size={19} strokeWidth={1.6} /></span><ArrowRight size={16} className="mt-1 text-[#a0aa99] transition-transform group-hover:translate-x-0.5" /></span><span className="mt-5 block text-sm font-semibold text-[#294735]">{item.label}</span><span className="mt-2 block text-[11px] leading-relaxed text-stone-500">{item.description}</span><span className="mt-4 block text-[10px] text-stone-400">{item.detail(managerData)}</span></button>;
   }
@@ -189,7 +217,7 @@ export function ExploreHub({ data, onNavigate }: { data: WorkspaceResponse; onNa
     {isClubCoach ? <div className="space-y-5">
       <section aria-labelledby="explore-your-tools">
         <h2 id="explore-your-tools" className="mb-3 text-sm text-[#405744]">Your tools</h2>
-        <div className="workspace-explore-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{sharedExploreItems.filter(item => clubCoachViews.has(item.id)).map(renderSharedCard)}</div>
+        <div className="workspace-explore-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{sharedExploreItems.filter(item => canAccessExploreView(data, item.id)).map(renderSharedCard)}</div>
       </section>
       <div className="workspace-explore-role-note flex items-start gap-3 rounded-xl border border-[#e4e9dd] bg-[#f4f7ef] p-4 text-xs leading-relaxed text-[#66755f]"><ShieldCheck size={17} className="mt-0.5 shrink-0" /><p>Business setup, coach access, packages, payments, and reporting are managed by the club.</p></div>
     </div> : <div className="space-y-7">
@@ -197,7 +225,7 @@ export function ExploreHub({ data, onNavigate }: { data: WorkspaceResponse; onNa
         const headingId = `explore-${group.title.toLowerCase().replace(/[^a-z]+/g, '-')}`;
         return <section key={group.title} aria-labelledby={headingId}>
           <h2 id={headingId} className="mb-3 text-sm text-[#405744]">{group.title}</h2>
-          <div className="workspace-explore-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{group.ids.map(id => { const shared = sharedExploreItems.find(item => item.id === id); return shared ? renderSharedCard(shared) : renderManagerCard(managerExploreItems.find(item => item.id === id)!); })}</div>
+          <div className="workspace-explore-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{group.ids.filter(id => canAccessExploreView(data, id)).map(id => { const shared = sharedExploreItems.find(item => item.id === id); return shared ? renderSharedCard(shared) : renderManagerCard(managerExploreItems.find(item => item.id === id)!); })}</div>
         </section>;
       })}
     </div>}
@@ -353,10 +381,12 @@ const clubProfileShortcuts: ExploreViewId[] = [
  * keeps one personal profile while moving between clubs that hired them.
  */
 export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusinessSettings, onHelp, onSignOut, onNavigate }: ProfileViewProps) {
-  const isCoach = data.user.accountType === 'COACH';
-  const clubAccount = data.user.accountType === 'CLUB';
+  const accessMode = workspaceAccessMode(data);
+  const isCoach = accessMode === 'COACH';
+  const clubAccount = accessMode === 'CLUB_ACCOUNT';
+  const namedStaff = accessMode === 'STAFF';
   const isClubCoach = isCoach;
-  const canManageBusiness = clubAccount;
+  const canManageBusiness = hasWorkspacePermission(data, 'SETTINGS_MANAGE');
   const clubMemberships = data.memberships.filter(membership =>
     membership.active && membership.business.kind === 'CLUB' && !membership.business.legacyReadOnly,
   );
@@ -365,7 +395,7 @@ export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusiness
   const awaitingCoach = data.bookings.filter(booking => booking.coachAcceptance === 'PENDING').length;
   const shortcuts = clubProfileShortcuts
     .map(id => exploreItems.find(item => item.id === id))
-    .filter((item): item is ExploreItem => !!item);
+    .filter((item): item is ExploreItem => !!item && canAccessExploreView(data, item.id));
 
   async function copyBookingLink() {
     try {
@@ -383,11 +413,11 @@ export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusiness
           {initials(clubAccount ? data.business.name : data.user.name)}
         </span>
         <div className="min-w-0 flex-1">
-          <p className="eyebrow">{clubAccount ? 'Club account' : 'Personal profile'}</p>
+          <p className="eyebrow">{clubAccount ? 'Club account' : namedStaff ? 'Club staff access' : 'Personal profile'}</p>
           <h1 id="workspace-profile-title" className="mt-2 truncate">{clubAccount ? data.business.name : data.user.name}</h1>
           <p className="mt-1 break-all text-xs text-stone-500">{clubAccount ? (data.business.tagline || data.business.email) : data.user.email}</p>
           <div className="mt-3 flex flex-wrap gap-2">
-            <span className="badge">{clubAccount ? 'Club manager' : 'Coach'}</span>
+            <span className="badge">{clubAccount ? 'Club manager' : namedStaff ? data.staffAccess?.accessLevel.toLowerCase().replaceAll('_', ' ') : 'Coach'}</span>
             {clubAccount && <span className="badge bg-stone-100! text-stone-500!">Managed by {data.business.name}</span>}
             {!clubAccount && data.user.phone && <span className="badge bg-stone-100! text-stone-500!">{data.user.phone}</span>}
           </div>
@@ -395,11 +425,13 @@ export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusiness
             This login belongs to {data.business.name}, not to one person. It is created by the club and works with this club alone.
           </p>}
         </div>
-        <Button variant="outline" onClick={clubAccount ? onBusinessSettings : onEditProfile}><Pencil size={14} />{clubAccount ? 'Edit club details' : 'Edit personal profile'}</Button>
+        <Button variant="outline" onClick={canManageBusiness ? onBusinessSettings : onEditProfile}><Pencil size={14} />{canManageBusiness ? 'Edit club details' : 'Edit personal profile'}</Button>
       </div>
     </header>
 
-    {clubAccount && onNavigate && <section className="mb-5" aria-labelledby="workspace-profile-tools">
+    {hasWorkspacePermission(data, 'STAFF_MANAGE') && <NamedStaffAccess data={data} />}
+
+    {(clubAccount || namedStaff) && onNavigate && shortcuts.length > 0 && <section className="mb-5" aria-labelledby="workspace-profile-tools">
       <h2 id="workspace-profile-tools" className="mb-3 text-sm text-[#405744]">Running {data.business.name}</h2>
       {awaitingCoach > 0 && <div className="mb-3 flex flex-wrap gap-2">
         {awaitingCoach > 0 && <button type="button" className="badge pending" onClick={() => onNavigate('bookings')}>{awaitingCoach} lesson{awaitingCoach === 1 ? '' : 's'} awaiting a coach</button>}
@@ -459,6 +491,7 @@ export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusiness
       <aside className="space-y-5">
         <section className="panel overflow-hidden"><div className="panel-heading"><h2 className="text-[#294735]">Account &amp; support</h2></div><div className="workspace-profile-actions px-3 pb-3"><button type="button" className="nav-link !min-h-11" onClick={clubAccount ? onBusinessSettings : onEditProfile}><UserRound size={16} />{clubAccount ? 'Club details' : 'Personal details'}<ArrowRight size={13} className="ml-auto" /></button><button type="button" className="nav-link !min-h-11" onClick={onHelp}><HelpCircle size={16} />A little help<ArrowRight size={13} className="ml-auto" /></button><button type="button" className="nav-link !min-h-11 text-[#8b625c]!" onClick={onSignOut}><LogOut size={16} />Sign out</button></div></section>
         <CalendarConnectionCard accountType={data.user.accountType} returnTo="/?tab=profile" />
+        <NotificationPreferencesCard />
         {isCoach && onNavigate && <section className="panel overflow-hidden">
           <div className="panel-heading"><h2 className="text-[#294735]">My workspaces</h2></div>
           <div className="px-5 pb-5 sm:px-6 sm:pb-6">
@@ -499,7 +532,7 @@ export function CreateDialog({ open, onOpenChange, data, accountType: accountTyp
     { label: 'Availability', description: 'Shape your teaching week', view: 'availability', icon: Clock3, coach: true },
     { label: 'Classes', description: 'Add or edit a class', view: 'services', icon: Gift, coach: false },
     { label: 'Locations', description: isClubCoach ? 'Find or add a teaching venue' : 'Manage teaching venues', view: 'locations', icon: MapPin, coach: true },
-    { label: 'Payments', description: 'Review simulated checkout and receipts', view: 'payments', icon: CreditCard, coach: false },
+    { label: 'Payments', description: 'Review checkout, receipts, and payouts', view: 'payments', icon: CreditCard, coach: false },
   ].filter(action => !isClubCoach || action.coach);
   function go(view: string) { onOpenChange(false); onNavigate(view); }
   const ownerManagedBlockers = [

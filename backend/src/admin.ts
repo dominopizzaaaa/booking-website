@@ -192,11 +192,17 @@ async function deleteBusinessDeep(tx: Prisma.TransactionClient, businessId: stri
       throw new HttpError(409, 'This business cannot be deleted while an account that would be removed still has a Google Calendar connection. Disconnect the calendar and wait for cleanup to finish, then try again.');
     }
   }
+  // Provider reconciliation and the shared venue ledger use restrictive links
+  // so history cannot disappear accidentally. Explicit whole-business teardown
+  // removes those children first, in dependency order.
+  await tx.paymentRefund.deleteMany({ where: { businessId } });
+  await tx.paymentSettlement.deleteMany({ where: { paymentIntent: { businessId } } });
   await tx.payment.deleteMany({ where: { businessId } });
   // Online checkout history pins its target rows with RESTRICT relations.
   // Remove intents first, then reservations, before clearing lesson/package
   // records during an explicit whole-business teardown.
   await tx.paymentIntent.deleteMany({ where: { businessId } });
+  await tx.venueUnitAllocation.deleteMany({ where: { businessId } });
   await tx.venueReservation.deleteMany({ where: { businessId } });
   await tx.participant.deleteMany({ where: { booking: { businessId } } });
   await tx.booking.deleteMany({ where: { businessId } });

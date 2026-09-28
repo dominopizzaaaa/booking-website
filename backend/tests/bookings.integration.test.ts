@@ -1036,18 +1036,21 @@ describe.sequential('Global account authentication and workspace memberships', (
       id: addedVenue.body.id, name: 'Coach-discovered court', source: 'GOOGLE_MAPS', active: true,
     }));
     expect(JSON.stringify(refreshedWorkspace.body.services)).not.toContain(addedVenue.body.id);
-    await f.agent.get('/api/locations').expect(403);
+    const coachLocations = await f.agent.get('/api/locations').expect(200);
+    expect(coachLocations.body).toContainEqual(expect.objectContaining({
+      id: addedVenue.body.id, active: true,
+    }));
     await f.agent.patch(`/api/locations/${addedVenue.body.id}`).send({ name: 'Unauthorized edit' }).expect(403);
     await f.agent.delete(`/api/locations/${addedVenue.body.id}`).expect(403);
     expect(await prisma.location.findUniqueOrThrow({ where: { id: addedVenue.body.id } }))
       .toMatchObject({ name: 'Coach-discovered court', active: true });
 
     const coachBookings = await f.agent.get('/api/bookings').expect(200);
-    expect(coachBookings.body.map((booking: { id: string }) => booking.id)).toEqual([own.bookings[0]!.id]);
-    expect(coachBookings.body[0]).not.toHaveProperty('price');
-    expect(coachBookings.body[0].participants[0]).not.toHaveProperty('paid');
-    expect(coachBookings.body[0].participants[0]).not.toHaveProperty('price');
-    expect(coachBookings.body[0].participants[0]).not.toHaveProperty('packageId');
+    expect(coachBookings.body.bookings.map((booking: { id: string }) => booking.id)).toEqual([own.bookings[0]!.id]);
+    expect(coachBookings.body.bookings[0]).not.toHaveProperty('price');
+    expect(coachBookings.body.bookings[0].participants[0]).not.toHaveProperty('paid');
+    expect(coachBookings.body.bookings[0].participants[0]).not.toHaveProperty('price');
+    expect(coachBookings.body.bookings[0].participants[0]).not.toHaveProperty('packageId');
     const packageForOwnStudent = await createPackage(f, ownStudent.id);
     await f.agent.post('/api/bookings').send(inputFor(f, {
       studentId: ownStudent.id, student: undefined, packageId: packageForOwnStudent.id,
@@ -1067,6 +1070,58 @@ describe.sequential('Global account authentication and workspace memberships', (
       startAt: f.starts.plus({ days: 1 }).toISO()!,
     })).expect(403);
     await f.agent.post('/api/payments').send({ studentId: ownStudent.id, amount: 100, method: 'CASH' }).expect(403);
+  });
+
+  it('bounds the workspace schedule while retaining tenant-scoped access to exact booking details', async () => {
+    const f = await loginFixture();
+    const bookingData = (startAt: Date) => ({
+      businessId: f.business.id, serviceId: f.service.id, instructorId: f.instructor.id, locationId: f.location.id,
+      startAt, endAt: new Date(startAt.getTime() + 3_600_000), duration: 60, type: 'PRIVATE', capacity: 1, price: 8_000,
+    });
+    const [oldBooking, distantBooking, currentBooking] = await Promise.all([
+      prisma.booking.create({ data: bookingData(new Date(Date.now() - 100 * 86_400_000)) }),
+      prisma.booking.create({ data: bookingData(new Date(Date.now() + 600 * 86_400_000)) }),
+      prisma.booking.create({ data: bookingData(new Date(Date.now() + 7 * 86_400_000)) }),
+    ]);
+
+    const workspace = await f.agent.get('/api/workspace').expect(200);
+    expect(workspace.body.bookingWindow).toMatchObject({ truncated: false });
+    expect(new Date(workspace.body.bookingWindow.from).getTime()).toBeLessThan(Date.now() - 83 * 86_400_000);
+    expect(new Date(workspace.body.bookingWindow.to).getTime()).toBeGreaterThan(Date.now() + 547 * 86_400_000);
+    expect(workspace.body.bookings.map((booking: { id: string }) => booking.id)).toContain(currentBooking.id);
+    expect(workspace.body.bookings.map((booking: { id: string }) => booking.id)).not.toContain(oldBooking.id);
+    expect(workspace.body.bookings.map((booking: { id: string }) => booking.id)).not.toContain(distantBooking.id);
+
+    const exact = await f.agent.get(`/api/bookings/${oldBooking.id}`).expect(200);
+    expect(exact.body.booking).toMatchObject({ id: oldBooking.id, serviceName: f.service.name });
+    const coach = await request(app).get(`/api/bookings/${currentBooking.id}`).set('Cookie', f.coachCookie).expect(200);
+    expect(coach.body.booking).not.toHaveProperty('price');
+    const other = await tenants.fixture();
+    const foreign = await prisma.booking.create({
+      data: {
+        businessId: other.business.id, serviceId: other.service.id, instructorId: other.instructor.id,
+        locationId: other.location.id, startAt: other.starts.toJSDate(), endAt: other.starts.plus({ hours: 1 }).toJSDate(),
+        duration: 60, type: 'PRIVATE', capacity: 1, price: 8_000,
+      },
+    });
+    await f.agent.get(`/api/bookings/${foreign.id}`).expect(404, { error: 'Booking not found' });
+  });
+
+  it('limits exports by local calendar days across the New York fall-back transition', async () => {
+    const f = await loginFixture();
+    await prisma.business.update({
+      where: { id: f.business.id }, data: { timezone: 'America/New_York' },
+    });
+
+    const allowed = await f.agent.get('/api/bookings/export.csv').query({
+      from: '2025-11-02', to: '2026-11-02',
+    }).expect(200);
+    expect(allowed.headers['content-disposition'])
+      .toContain('courtly-bookings-2025-11-02-to-2026-11-02.csv');
+
+    await f.agent.get('/api/bookings/export.csv').query({
+      from: '2025-11-02', to: '2026-11-03',
+    }).expect(400, { error: 'Booking exports are limited to 366 days' });
   });
 });
 

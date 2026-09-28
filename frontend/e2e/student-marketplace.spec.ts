@@ -60,7 +60,7 @@ const rentalDetail: RentalDetail = {
 };
 
 const packageRentalReservation: RentalReservation = {
-  id: 'student-package-reservation', businessName: business.name, locationId: rentalDetail.locationId, locationName: rentalDetail.name,
+  id: 'student-package-reservation', businessName: business.name, renterName: session.user.name, locationId: rentalDetail.locationId, locationName: rentalDetail.name,
   unitId: 'court-1', unitName: 'Court 1', startAt: '2099-09-26T10:00:00.000Z', endAt: '2099-09-26T11:00:00.000Z',
   duration: 60, price: 3_000, status: 'CONFIRMED', paymentStatus: 'PACKAGE', packageId: 'package-1',
   creditConsumed: true, currency: 'SGD', timezone: 'Asia/Singapore',
@@ -91,6 +91,15 @@ async function mockMarketplace(page: Page, options: {
   let reservations = [...(options.initialReservations ?? [])];
   let packageLoads = 0;
 
+  await page.route('**/api/payments/capabilities', route => route.fulfill({
+    json: {
+      mode: 'simulated',
+      enabled: true,
+      liveCheckout: false,
+      simulatedCheckout: true,
+      publishableKey: null,
+    },
+  }));
   await page.route('**/api/auth/me', async route => {
     if (route.request().method() === 'PATCH') {
       const update = route.request().postDataJSON() as Partial<AuthSession['user']>;
@@ -144,14 +153,14 @@ async function mockMarketplace(page: Page, options: {
     }
     if (options.rentalReplayRefundedAfterLostResponse && rentalRequests.length === 2) {
       await route.fulfill({ status: 200, json: {
-        reservation: { id: 'reservation-cancelled', businessName: business.name, locationId: rentalDetail.locationId, locationName: rentalDetail.name, unitId: 'court-1', unitName: 'Court 1', startAt: '2099-09-26T10:00:00.000Z', endAt: '2099-09-26T11:00:00.000Z', duration: 60, price: 3_000, status: 'CANCELLED', paymentStatus: 'REFUNDED', packageId: null, creditConsumed: false, currency: 'SGD', timezone: 'Asia/Singapore', cancellationDeadline: '2099-09-25T22:00:00.000Z', cancellable: false },
+        reservation: { id: 'reservation-cancelled', businessName: business.name, renterName: session.user.name, locationId: rentalDetail.locationId, locationName: rentalDetail.name, unitId: 'court-1', unitName: 'Court 1', startAt: '2099-09-26T10:00:00.000Z', endAt: '2099-09-26T11:00:00.000Z', duration: 60, price: 3_000, status: 'CANCELLED', paymentStatus: 'REFUNDED', packageId: null, creditConsumed: false, currency: 'SGD', timezone: 'Asia/Singapore', cancellationDeadline: '2099-09-25T22:00:00.000Z', cancellable: false },
         paymentIntent: { id: 'pi-rental-refunded', amount: 3_000, currency: 'SGD', status: 'REFUNDED', provider: 'SIMULATED_STRIPE', providerReference: 'sim-rental-refunded', createdAt: new Date().toISOString(), confirmedAt: new Date().toISOString(), failedAt: null },
       } });
       return;
     }
     rentalConfirmed = true;
     const confirmedReservation: RentalReservation = {
-      id: 'reservation-1', businessName: business.name, locationId: rentalDetail.locationId, locationName: rentalDetail.name, unitId: 'court-1', unitName: 'Court 1', startAt: '2099-09-26T10:00:00.000Z', endAt: '2099-09-26T11:00:00.000Z', duration: 60, price: options.freeRental ? 0 : 3_000, status: 'CONFIRMED', paymentStatus: 'PAID', packageId: null, creditConsumed: false, currency: 'SGD', timezone: 'Asia/Singapore', cancellationDeadline: '2099-09-25T22:00:00.000Z', cancellable: true,
+      id: 'reservation-1', businessName: business.name, renterName: session.user.name, locationId: rentalDetail.locationId, locationName: rentalDetail.name, unitId: 'court-1', unitName: 'Court 1', startAt: '2099-09-26T10:00:00.000Z', endAt: '2099-09-26T11:00:00.000Z', duration: 60, price: options.freeRental ? 0 : 3_000, status: 'CONFIRMED', paymentStatus: 'PAID', packageId: null, creditConsumed: false, currency: 'SGD', timezone: 'Asia/Singapore', cancellationDeadline: '2099-09-25T22:00:00.000Z', cancellable: true,
     };
     reservations = [confirmedReservation, ...reservations.filter(item => item.id !== confirmedReservation.id)];
     await route.fulfill({ status: 201, json: {
@@ -243,7 +252,7 @@ test('student filters rentals and completes a clearly simulated reservation', as
   await expect(dialog.getByLabel('Date', { exact: true })).toHaveAttribute('max', '2099-09-26');
   await expect(dialog.getByText('Demo checkout only')).toHaveCount(0);
   await dialog.getByRole('radio', { name: '6:00 PM' }).click();
-  await expect(dialog.getByText(/Demo checkout only/)).toBeVisible();
+  await expect(dialog.getByText(/Simulated rental checkout/)).toBeVisible();
   await dialog.getByRole('button', { name: 'Reserve with simulated Stripe' }).click();
   await expect(dialog.getByRole('status').filter({ hasText: 'no real card was charged' })).toBeVisible();
   await expect(dialog.getByRole('radio', { name: '6:00 PM' })).toHaveCount(0);
@@ -350,7 +359,7 @@ test('unpaid class checkout is simulated and the marketplace does not overflow o
   const dialog = page.getByRole('dialog');
   await expect(dialog).toContainText(`Payment is due to ${business.name}, who pays your coach`);
   await expect(dialog).toContainText('does not charge a real card');
-  await dialog.getByRole('button', { name: /Pay .* with simulated Stripe/ }).click();
+  await dialog.getByRole('button', { name: /Simulate .* payment/ }).click();
   await expect(dialog.getByRole('status')).toContainText(`Paid to ${business.name}`);
   await expect(dialog.getByRole('status')).toContainText('no real card was charged');
   await expect(dialog).toContainText(`Paid to ${business.name}`);

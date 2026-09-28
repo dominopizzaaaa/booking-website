@@ -174,6 +174,9 @@ async function mockWorkspace(page: Page, workspace: WorkspaceResponse) {
 
 async function mockStudent(page: Page) {
   await page.route('**/api/auth/me', route => route.fulfill({ json: studentSession }));
+  await page.route('**/api/payments/capabilities', route => route.fulfill({
+    json: { mode: 'disabled', enabled: false, liveCheckout: false, simulatedCheckout: false, publishableKey: null },
+  }));
   await page.route('**/api/account/clubs*', route => route.fulfill({ json: { clubs: [] } }));
   await page.route('**/api/account/bookings*', route => route.fulfill({ json: { bookings: [] } }));
   await page.route('**/api/account/notifications', route => route.fulfill({ json: { notifications: [] } }));
@@ -253,6 +256,8 @@ test('an existing connection can be removed when Google Calendar configuration i
   };
 
   await page.route('**/api/auth/me', route => route.fulfill({ json: coachSession }));
+  await page.route('**/api/club-staff-invitations', route => route.fulfill({ json: { invitations: [] } }));
+  await page.route('**/api/coach-invitations', route => route.fulfill({ json: { invitations: [] } }));
   await page.route('**/api/calendar/connection', async route => {
     const request = route.request();
     if (request.method() === 'GET') return route.fulfill({ json: status });
@@ -300,6 +305,8 @@ test('a connected coach can change preferences, queue a sync, and confirm discon
   const preferenceBodies: Array<Record<string, unknown>> = [];
 
   await page.route('**/api/auth/me', route => route.fulfill({ json: coachSession }));
+  await page.route('**/api/club-staff-invitations', route => route.fulfill({ json: { invitations: [] } }));
+  await page.route('**/api/coach-invitations', route => route.fulfill({ json: { invitations: [] } }));
   await page.route('**/api/calendar/connection', async route => {
     const request = route.request();
     if (request.method() === 'GET') return route.fulfill({ json: status });

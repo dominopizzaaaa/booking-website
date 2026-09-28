@@ -114,7 +114,7 @@ test('standalone student signup requires an explicit account type and opens the 
   await page.getByRole('navigation', { name: 'Student navigation' }).getByRole('button', { name: 'Book', exact: true }).click();
   await expect(page).toHaveURL(url => url.pathname === '/manage' && url.searchParams.get('tab') === 'book');
   await expect(page.getByRole('heading', { name: 'Book a session', exact: true })).toBeVisible();
-  await expect(page.getByRole('status')).toContainText(/club.*found/i);
+  await expect(page.getByRole('status').filter({ hasText: /club.*found/i })).toBeVisible();
   const clubChoice = page.getByRole('radio', { name: new RegExp(escapeRegExp(publicBusiness.business.name)) });
   await expect(clubChoice).toBeVisible();
   await clubChoice.focus();
@@ -246,6 +246,12 @@ test('student bottom-tab navigation moves focus to the main content', async ({ p
   };
 
   await page.route('**/api/auth/me', route => route.fulfill({ json: session }));
+  await page.route('**/api/payments/capabilities', route => route.fulfill({
+    json: {
+      mode: 'simulated', enabled: true, liveCheckout: false,
+      simulatedCheckout: true, publishableKey: null,
+    },
+  }));
   await page.route('**/api/account/clubs*', route => route.fulfill({ json: { clubs: [] } }));
   await page.route('**/api/account/bookings*', route => route.fulfill({ json: { bookings: [] } }));
   await page.route('**/api/account/notifications', route => route.fulfill({ json: { notifications: [] } }));

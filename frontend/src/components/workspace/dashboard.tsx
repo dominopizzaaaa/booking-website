@@ -1,12 +1,14 @@
 'use client';
-import { useState } from 'react';
-import { ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Clock3, Copy, CreditCard, ExternalLink, MapPin, Plus, Repeat2, Route, Sparkles, Users, Wallet } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Clock3, Copy, CreditCard, ExternalLink, Loader2, MapPin, Plus, Repeat2, Route, Sparkles, Users, Wallet } from 'lucide-react';
 import { formatInTimeZone } from 'date-fns-tz';
 import { Button } from '@/components/ui/button';
-import { isManagerWorkspace, type WorkspaceBooking, type WorkspaceResponse } from '@/lib/types';
-import { addDaysKey, dateKey, initials, money, shortDate, time } from '@/lib/utils';
+import { loadOperationsInbox } from '@/lib/api';
+import { isManagerWorkspace, type OperationsInboxCategory, type OperationsInboxItem, type WorkspaceBooking, type WorkspaceResponse } from '@/lib/types';
+import { addDaysKey, dateKey, initials, money, shortDateKey, time } from '@/lib/utils';
 import { toast } from 'sonner';
 import { getBookingReadiness } from './shell-views';
+import { BookingsView } from './bookings-view';
 
 export function StatusBadge({ status, coachAcceptance, className = '' }: { status: string; coachAcceptance?: string; className?: string }) { return <span className={`badge ${status.toLowerCase()} ${className}`}><span className={`h-1 w-1 rounded-full ${status === 'PENDING' ? 'bg-[#b19756]' : status === 'CANCELLED' ? 'bg-red-400' : 'bg-[#809a68]'}`} />{status === 'PENDING' ? coachAcceptance === 'PENDING' ? 'Awaiting coach' : 'Venue pending' : status.charAt(0) + status.slice(1).toLowerCase()}</span>; }
 export function ScheduleList({ bookings, onSelect, data, compact = false }: { bookings: WorkspaceBooking[]; onSelect: (bookingId: string) => void; data: WorkspaceResponse; compact?: boolean }) {
@@ -21,31 +23,35 @@ export function ScheduleList({ bookings, onSelect, data, compact = false }: { bo
 }
 
 export default function Dashboard({ data, onNavigate, onNew, onBooking }: { data: WorkspaceResponse; onNavigate: (v: string) => void; onNew: () => void; onBooking: (bookingId: string) => void }) {
-  const isCoach = data.user.accountType === 'COACH';
+  const accessMode = data.accessMode ?? (data.user.accountType === 'CLUB' ? 'CLUB_ACCOUNT' : 'COACH');
+  const isCoach = accessMode === 'COACH';
   const isClubCoach = isCoach && data.business.kind === 'CLUB';
-  const managerData = isManagerWorkspace(data) ? data : null;
+  const hasPermission = (permission: string) => accessMode === 'CLUB_ACCOUNT' || data.permissions?.includes(permission as never) === true;
+  const canManageBookings = isCoach || hasPermission('BOOKINGS_MANAGE');
+  const canViewPayments = hasPermission('PAYMENTS_VIEW');
+  const managerData = isManagerWorkspace(data) && canViewPayments ? data : null;
   const bookingReadiness = getBookingReadiness(data);
   const today = dateKey(new Date(), data.business.timezone);
   const [selectedDate, setSelectedDate] = useState(today);
   const [weekOffset, setWeekOffset] = useState(0);
   const [locationFilter, setLocationFilter] = useState('all');
   const dayOfWeek = Number(formatInTimeZone(new Date(), data.business.timezone, 'i'));
-  const weekStart = addDaysKey(today, -((dayOfWeek + 6) % 7) + weekOffset * 7);
+  const weekStart = addDaysKey(today, -((dayOfWeek + 6) % 7) + weekOffset * 7, data.business.timezone);
   const visibleBookings = isCoach ? data.bookings.filter(b => b.instructorId === data.user.instructorId) : data.bookings;
   const activeBookings = visibleBookings.filter(b => b.status !== 'CANCELLED');
   const todays = activeBookings.filter(b => dateKey(b.startAt, data.business.timezone) === today);
-  const weekBookings = activeBookings.filter(b => dateKey(b.startAt, data.business.timezone) >= weekStart && dateKey(b.startAt, data.business.timezone) <= addDaysKey(weekStart, 6));
+  const weekBookings = activeBookings.filter(b => dateKey(b.startAt, data.business.timezone) >= weekStart && dateKey(b.startAt, data.business.timezone) <= addDaysKey(weekStart, 6, data.business.timezone));
   const managerBookings = managerData?.bookings.filter(b => b.status !== 'CANCELLED') ?? [];
   const receipts = managerData?.payments.filter(p => !p.reversedAt && p.kind !== 'CLUB_TO_COACH') ?? [];
-  const weeklyRevenue = receipts.filter(p => dateKey(p.paidAt, data.business.timezone) >= weekStart && dateKey(p.paidAt, data.business.timezone) <= addDaysKey(weekStart, 6)).reduce((sum, p) => sum + p.amount, 0);
+  const weeklyRevenue = receipts.filter(p => dateKey(p.paidAt, data.business.timezone) >= weekStart && dateKey(p.paidAt, data.business.timezone) <= addDaysKey(weekStart, 6, data.business.timezone)).reduce((sum, p) => sum + p.amount, 0);
   const outstanding = managerBookings.reduce((sum, b) => sum + b.participants.filter(p => !p.paid && !p.packageId).reduce((s, p) => s + p.price, 0), 0);
   const outstandingCount = managerBookings.reduce((sum, b) => sum + b.participants.filter(p => !p.paid && !p.packageId).length, 0);
   const uniqueToday = new Set(todays.flatMap(b => b.participants.map(p => p.studentId))).size;
   const selectedBookings = activeBookings.filter(b => dateKey(b.startAt, data.business.timezone) === selectedDate && (locationFilter === 'all' || b.locationId === locationFilter));
   const recent = [...visibleBookings].filter(b => b.status !== 'CANCELLED' && new Date(b.endAt) >= new Date()).sort((a, b) => a.startAt.localeCompare(b.startAt)).slice(0, 4);
-  const revenueDays = managerData ? Array.from({ length: 7 }, (_, i) => { const date = addDaysKey(weekStart, i); return receipts.filter(p => dateKey(p.paidAt, data.business.timezone) === date).reduce((s, p) => s + p.amount, 0); }) : [];
+  const revenueDays = managerData ? Array.from({ length: 7 }, (_, i) => { const date = addDaysKey(weekStart, i, data.business.timezone); return receipts.filter(p => dateKey(p.paidAt, data.business.timezone) === date).reduce((s, p) => s + p.amount, 0); }) : [];
   const maxRevenue = Math.max(...revenueDays, 1);
-  const sessionDays = Array.from({ length: 7 }, (_, i) => { const date = addDaysKey(weekStart, i); return activeBookings.filter(b => dateKey(b.startAt, data.business.timezone) === date).length; });
+  const sessionDays = Array.from({ length: 7 }, (_, i) => { const date = addDaysKey(weekStart, i, data.business.timezone); return activeBookings.filter(b => dateKey(b.startAt, data.business.timezone) === date).length; });
   const maxSessions = Math.max(...sessionDays, 1);
   const pendingCoachBookings = activeBookings.filter(b => b.status === 'PENDING' && b.coachAcceptance === 'PENDING' && new Date(b.endAt) >= new Date());
   const pendingVenueBookings = activeBookings.filter(b => b.status === 'PENDING' && b.coachAcceptance !== 'PENDING' && new Date(b.endAt) >= new Date());
@@ -80,7 +86,7 @@ export default function Dashboard({ data, onNavigate, onNew, onBooking }: { data
     }
     onNavigate(firstStaffSetupView);
   }
-  function shiftWeek(direction: number) { setWeekOffset(value => value + direction); setSelectedDate(value => addDaysKey(value, direction * 7)); }
+  function shiftWeek(direction: number) { setWeekOffset(value => value + direction); setSelectedDate(value => addDaysKey(value, direction * 7, data.business.timezone)); }
   async function copyLink() { try { await navigator.clipboard.writeText(`${window.location.origin}/book/${data.business.slug}`); toast.success('Your booking link is copied'); } catch { toast.error('Copy is unavailable. Open your booking page and copy the address.'); } }
   return <div className="mx-auto max-w-[1380px]">
     <header className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
@@ -90,8 +96,8 @@ export default function Dashboard({ data, onNavigate, onNew, onBooking }: { data
         <p className="mt-1.5 text-[13px] text-[#59675c]">Welcome back, {data.user.name.split(' ')[0]}. {todays.length ? `${todays.length} session${todays.length === 1 ? '' : 's'} on today’s agenda.` : 'Your schedule is clear today.'}</p>
       </div>
       <div className="flex items-center gap-2.5">
-        {!isClubCoach && <Button variant="outline" className="desktop-only !text-[12px]" onClick={() => window.open(`/book/${data.business.slug}`, '_blank', 'noopener,noreferrer')}><ExternalLink size={14} />Booking page</Button>}
-        <Button className="!text-[12px]" onClick={requestNewBooking} aria-describedby={!bookingReadiness.staffBookingReady ? 'booking-setup-guidance' : undefined}><Plus size={15} />New booking</Button>
+        {hasPermission('CATALOG_VIEW') && <Button variant="outline" className="desktop-only !text-[12px]" onClick={() => window.open(`/book/${data.business.slug}`, '_blank', 'noopener,noreferrer')}><ExternalLink size={14} />Booking page</Button>}
+        {canManageBookings && <Button className="!text-[12px]" onClick={requestNewBooking} aria-describedby={!bookingReadiness.staffBookingReady ? 'booking-setup-guidance' : undefined}><Plus size={15} />New booking</Button>}
       </div>
     </header>
 
@@ -110,23 +116,17 @@ export default function Dashboard({ data, onNavigate, onNew, onBooking }: { data
       <section className="panel overflow-hidden" aria-labelledby="today-agenda-heading">
         <div className="flex items-start justify-between gap-3 px-4 pb-3 pt-4 sm:items-center sm:px-5">
           <div><h2 id="today-agenda-heading" className="!text-[17px]">Today’s agenda</h2><p className="mt-1 text-[11px] text-[#59675c]">Choose a day to see every lesson, venue, and travel buffer.</p></div>
-          <div className="flex shrink-0 items-center rounded-lg border border-[#e7ebe3] bg-[#fafbf8]"><button aria-label="Previous week" className="inline-flex h-11 w-11 items-center justify-center rounded-md text-[#7d8978] hover:bg-white" onClick={() => shiftWeek(-1)}><ChevronLeft size={16} /></button><span className="hidden min-w-[108px] text-center text-[11px] font-medium text-[#657360] sm:inline">{formatInTimeZone(weekStart + 'T12:00:00+08:00', data.business.timezone, 'MMMM yyyy')}</span><span className="min-w-8 text-center text-[11px] font-medium text-[#657360] sm:hidden">{formatInTimeZone(weekStart + 'T12:00:00+08:00', data.business.timezone, 'MMM')}</span><button aria-label="Next week" className="inline-flex h-11 w-11 items-center justify-center rounded-md text-[#7d8978] hover:bg-white" onClick={() => shiftWeek(1)}><ChevronRight size={16} /></button></div>
+          <div className="flex shrink-0 items-center rounded-lg border border-[#e7ebe3] bg-[#fafbf8]"><button aria-label="Previous week" className="inline-flex h-11 w-11 items-center justify-center rounded-md text-[#7d8978] hover:bg-white" onClick={() => shiftWeek(-1)}><ChevronLeft size={16} /></button><span className="hidden min-w-[108px] text-center text-[11px] font-medium text-[#657360] sm:inline">{new Intl.DateTimeFormat('en-SG', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(weekStart + 'T12:00:00Z'))}</span><span className="min-w-8 text-center text-[11px] font-medium text-[#657360] sm:hidden">{new Intl.DateTimeFormat('en-SG', { month: 'short', timeZone: 'UTC' }).format(new Date(weekStart + 'T12:00:00Z'))}</span><button aria-label="Next week" className="inline-flex h-11 w-11 items-center justify-center rounded-md text-[#7d8978] hover:bg-white" onClick={() => shiftWeek(1)}><ChevronRight size={16} /></button></div>
         </div>
-        <div className="week-strip !gap-1 !px-3 !pb-3 sm:!px-4">{Array.from({ length: 7 }, (_, i) => { const d = addDaysKey(weekStart, i); const count = activeBookings.filter(b => dateKey(b.startAt, data.business.timezone) === d).length; return <button key={d} aria-label={shortDate(d + 'T12:00:00+08:00', data.business.timezone)} aria-pressed={selectedDate === d} className={`day-cell !gap-1.5 !py-2 ${selectedDate === d ? 'selected' : ''}`} onClick={() => setSelectedDate(d)}><span className="text-[9px]">{['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'][i]}</span><span className="day-number !text-[17px]">{Number(d.slice(-2))}</span><span className="day-dots">{Array.from({ length: Math.min(count, 3) }, (_, j) => <i key={j} />)}</span></button>; })}</div>
-        <div className="flex items-center justify-between gap-3 border-b border-[#f0f2ec] bg-[#fcfdfb] px-4 py-3 sm:px-5"><div className="flex items-center gap-2"><span className="text-[11px] font-semibold text-[#657260]">{selectedDate === today ? 'Today' : shortDate(selectedDate + 'T12:00:00+08:00', data.business.timezone)}</span><span className="rounded-full bg-[#eef2e9] px-2 py-0.5 text-[10px] text-[#4f6847]">{selectedBookings.length} session{selectedBookings.length === 1 ? '' : 's'}</span></div><select aria-label="Filter schedule location" className="!min-h-0 !w-auto !max-w-[150px] !border-0 !bg-transparent !p-0 !text-[11px] !font-medium !text-[#59675c]" value={locationFilter} onChange={e => setLocationFilter(e.target.value)}><option value="all">All locations</option>{visibleLocations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}</select></div>
+        <div className="week-strip !gap-1 !px-3 !pb-3 sm:!px-4">{Array.from({ length: 7 }, (_, i) => { const d = addDaysKey(weekStart, i, data.business.timezone); const count = activeBookings.filter(b => dateKey(b.startAt, data.business.timezone) === d).length; return <button key={d} aria-label={shortDateKey(d)} aria-pressed={selectedDate === d} className={`day-cell !gap-1.5 !py-2 ${selectedDate === d ? 'selected' : ''}`} onClick={() => setSelectedDate(d)}><span className="text-[9px]">{['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'][i]}</span><span className="day-number !text-[17px]">{Number(d.slice(-2))}</span><span className="day-dots">{Array.from({ length: Math.min(count, 3) }, (_, j) => <i key={j} />)}</span></button>; })}</div>
+        <div className="flex items-center justify-between gap-3 border-b border-[#f0f2ec] bg-[#fcfdfb] px-4 py-3 sm:px-5"><div className="flex items-center gap-2"><span className="text-[11px] font-semibold text-[#657260]">{selectedDate === today ? 'Today' : shortDateKey(selectedDate)}</span><span className="rounded-full bg-[#eef2e9] px-2 py-0.5 text-[10px] text-[#4f6847]">{selectedBookings.length} session{selectedBookings.length === 1 ? '' : 's'}</span></div><select aria-label="Filter schedule location" className="!min-h-0 !w-auto !max-w-[150px] !border-0 !bg-transparent !p-0 !text-[11px] !font-medium !text-[#59675c]" value={locationFilter} onChange={e => setLocationFilter(e.target.value)}><option value="all">All locations</option>{visibleLocations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}</select></div>
         <ScheduleList bookings={selectedBookings} onSelect={onBooking} data={data} compact />
         <div className="flex items-center justify-between border-t border-[#eef0e9] px-4 py-3 sm:px-5"><button className="text-[11px] font-medium text-[#59675c] hover:text-[#244f3a]" onClick={() => { setSelectedDate(today); setWeekOffset(0); }}>Jump to today</button><button className="subtle-link !text-[11px] !font-medium" onClick={() => onNavigate('calendar')}>Full calendar<ArrowRight size={13} /></button></div>
       </section>
 
       <aside className="grid gap-4 md:grid-cols-2 lg:grid-cols-1">
         <section className="panel overflow-hidden" aria-labelledby="attention-heading">
-          <div className="flex items-center justify-between px-5 pb-3 pt-4"><div><p className="eyebrow !text-[9px]">ACTION CENTRE</p><h2 id="attention-heading" className="mt-1 !text-[16px]">Needs your attention</h2></div><span className={`h-2 w-2 rounded-full ${pendingCoachBookings.length || pendingVenueBookings.length || (!isClubCoach && outstandingCount) ? 'bg-[#c3a45f]' : 'bg-[#88a273]'}`} /></div>
-          <div className="space-y-2 px-3 pb-3">
-            {pendingCoachBookings.length > 0 && <button onClick={() => onNavigate('bookings')} className="flex w-full items-center gap-3 rounded-lg border border-[#eee5cd] bg-[#fbf8ef] p-3 text-left transition-colors hover:bg-[#f8f2e3]"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#f1e7cb] text-[#a68b4c]"><Clock3 size={15} /></span><span className="min-w-0 flex-1"><span className="block text-[12px] font-semibold text-[#6e6246]">Awaiting coach</span><span className="mt-0.5 block text-[11px] text-[#6f5738]">{isClubCoach ? `${pendingCoachBookings.length} assigned session${pendingCoachBookings.length === 1 ? '' : 's'} need your response.` : `${pendingCoachBookings.length} assigned session${pendingCoachBookings.length === 1 ? '' : 's'} still need a coach response.`}</span></span><ChevronRight size={15} className="text-[#ad9d77]" /></button>}
-            {pendingVenueBookings.length > 0 && <button onClick={() => onNavigate('bookings')} className="flex w-full items-center gap-3 rounded-lg border border-[#eee5cd] bg-[#fbf8ef] p-3 text-left transition-colors hover:bg-[#f8f2e3]"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#f1e7cb] text-[#a68b4c]"><Clock3 size={15} /></span><span className="min-w-0 flex-1"><span className="block text-[12px] font-semibold text-[#6e6246]">Venue pending</span><span className="mt-0.5 block text-[11px] text-[#6f5738]">{isClubCoach ? `${pendingVenueBookings.length} session${pendingVenueBookings.length === 1 ? '' : 's'} await club confirmation.` : `${pendingVenueBookings.length} session${pendingVenueBookings.length === 1 ? '' : 's'} still need a court.`}</span></span><ChevronRight size={15} className="text-[#ad9d77]" /></button>}
-            {!isClubCoach && outstandingCount > 0 && <button onClick={() => onNavigate('payments')} className="flex w-full items-center gap-3 rounded-lg border border-[#e7eae2] bg-[#fafbf8] p-3 text-left transition-colors hover:bg-[#f4f6f1]"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#edf1e9] text-[#75876b]"><CreditCard size={15} /></span><span className="min-w-0 flex-1"><span className="block text-[12px] font-semibold">Review {money(outstanding)} outstanding</span><span className="mt-0.5 block text-[11px] text-[#59675c]">Across {outstandingCount} unpaid session{outstandingCount === 1 ? '' : 's'}.</span></span><ChevronRight size={15} className="text-[#98a290]" /></button>}
-            {!pendingCoachBookings.length && !pendingVenueBookings.length && (isClubCoach || !outstandingCount) && <div className="rounded-lg bg-[#f2f6ee] px-4 py-5 text-center"><Check size={17} className="mx-auto text-[#79936b]" /><p className="mt-2 text-[12px] font-semibold">You’re all caught up.</p><p className="mt-1 text-[11px] text-[#829079]">{isClubCoach ? 'No schedule follow-ups.' : 'No schedule or payment follow-ups.'}</p></div>}
-          </div>
+          <OperationsInbox data={data} onNavigate={onNavigate} onBooking={onBooking} />
           {!isClubCoach && <div className="border-t border-[#edf0e8] px-5 py-3"><div className="flex items-center justify-between gap-3"><div><p className="text-[11px] font-semibold">Your booking page</p><p className="mt-0.5 text-[10px] text-[#59675c]">{bookingReadiness.publicReady ? 'Ready to share with students.' : 'Finish setup before sharing this page.'}</p></div><div className="flex gap-1.5">{bookingReadiness.publicReady && <Button variant="outline" size="sm" className="!px-2.5 !text-[10px]" onClick={copyLink}><Copy size={12} />Copy link</Button>}<Button size="icon" variant="outline" aria-label="Preview booking page" onClick={() => window.open(`/book/${data.business.slug}`, '_blank', 'noopener,noreferrer')}><ExternalLink size={13} /></Button></div></div></div>}
         </section>
 
@@ -136,7 +136,7 @@ export default function Dashboard({ data, onNavigate, onNew, onBooking }: { data
         </section>
 
         <section className="panel overflow-hidden md:col-span-2 lg:col-span-1" aria-labelledby="week-heading">
-          <div className="flex items-center justify-between px-5 pb-2 pt-4"><div><p className="eyebrow !text-[9px]">WEEKLY PULSE</p><h2 id="week-heading" className="mt-1 !text-[16px]">This week, at a glance</h2></div><span className="rounded-md bg-[#f1f4ec] px-2 py-1 text-[10px] font-medium text-[#59675c]">{formatInTimeZone(weekStart + 'T12:00:00+08:00', data.business.timezone, 'd')}–{formatInTimeZone(addDaysKey(weekStart, 6) + 'T12:00:00+08:00', data.business.timezone, 'd MMM')}</span></div>
+          <div className="flex items-center justify-between px-5 pb-2 pt-4"><div><p className="eyebrow !text-[9px]">WEEKLY PULSE</p><h2 id="week-heading" className="mt-1 !text-[16px]">This week, at a glance</h2></div><span className="rounded-md bg-[#f1f4ec] px-2 py-1 text-[10px] font-medium text-[#59675c]">{weekStart.slice(-2).replace(/^0/u, '')}–{shortDateKey(addDaysKey(weekStart, 6, data.business.timezone)).replace(/^[A-Za-z]{3}, /u, '')}</span></div>
           <div className="flex items-end gap-4 px-5 pb-4"><div className="shrink-0 pb-1"><p className="text-[21px] font-semibold tracking-[-0.5px]">{weekBookings.length}</p><p className="mt-0.5 text-[10px] text-[#59675c]">sessions booked</p></div><div className="flex h-14 flex-1 items-end gap-1.5">{(isClubCoach ? sessionDays : revenueDays).map((amount, i) => <div key={i} className="flex h-full flex-1 flex-col items-center justify-end gap-1"><div className={`w-full max-w-8 rounded-t-sm ${i === dayOfWeek - 1 ? 'bg-[#55794f]' : 'bg-[#e3eadb]'}`} style={{ height: `${Math.max(3, amount / (isClubCoach ? maxSessions : maxRevenue) * 38)}px` }} title={isClubCoach ? `${['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][i]}: ${amount} session${amount === 1 ? '' : 's'}` : `${['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][i]}: ${money(amount)}`} /><span className="text-[8px] text-[#59675c]">{['M', 'T', 'W', 'T', 'F', 'S', 'S'][i]}</span></div>)}</div></div>
           <div className="flex items-center justify-between border-t border-[#edf0e8] px-5 py-3"><span className="text-[10px] text-[#59675c]">{isClubCoach ? 'Teaching time this week' : 'Collected this week'}</span><span className="text-[12px] font-semibold">{isClubCoach ? `${weekHours % 1 ? weekHours.toFixed(1) : weekHours} hours` : money(weeklyRevenue)}</span></div>
         </section>
@@ -159,7 +159,9 @@ function Stat({ title, value, detail, icon, onClick }: { title: string; value: s
 
 export function CalendarView({ data, onNew, onBooking, listOnly = false }: { data: WorkspaceResponse; onNew: () => void; onBooking: (bookingId: string) => void; listOnly?: boolean }) {
   const bookingReadiness = getBookingReadiness(data);
-  const isClubCoach = data.user.accountType === 'COACH' && data.business.kind === 'CLUB';
+  const accessMode = data.accessMode ?? (data.user.accountType === 'CLUB' ? 'CLUB_ACCOUNT' : 'COACH');
+  const isClubCoach = accessMode === 'COACH' && data.business.kind === 'CLUB';
+  const canManageBookings = isClubCoach || accessMode === 'CLUB_ACCOUNT' || data.permissions?.includes('BOOKINGS_MANAGE') === true;
   const bookingBlockers = [
     !bookingReadiness.hasActiveLocation && 'an active location',
     !bookingReadiness.hasActiveInstructor && 'a coach on the roster',
@@ -167,18 +169,96 @@ export function CalendarView({ data, onNew, onBooking, listOnly = false }: { dat
     bookingReadiness.hasAssignedService && !bookingReadiness.hasMatchingAvailability && 'matching availability',
     !bookingReadiness.hasLinkedStudent && 'a linked student account',
   ].filter((item): item is string => !!item);
-  const [selectedDate, setDate] = useState(dateKey());
+  const today = dateKey(new Date(), data.business.timezone);
+  const [selectedDate, setDate] = useState(today);
   const [instructor, setInstructor] = useState('all');
   const [location, setLocation] = useState('all');
   const [status, setStatus] = useState('all');
   const [view, setView] = useState<'day' | 'week'>('day');
-  const selected = data.bookings.filter(b => (listOnly || view === 'week' ? true : dateKey(b.startAt) === selectedDate) && (instructor === 'all' || b.instructorId === instructor) && (location === 'all' || b.locationId === location) && (status === 'all' || b.status === status)).sort((a, b) => a.startAt.localeCompare(b.startAt));
-  const weekStart = addDaysKey(selectedDate, -((new Date(`${selectedDate}T12:00:00+08:00`).getUTCDay() + 6) % 7));
+  const bookingWindowFrom = data.bookingWindow ? dateKey(data.bookingWindow.from, data.business.timezone) : undefined;
+  const bookingWindowTo = data.bookingWindow ? addDaysKey(dateKey(data.bookingWindow.to, data.business.timezone), -1, data.business.timezone) : undefined;
+  const selected = data.bookings.filter(b => (listOnly || view === 'week' ? true : dateKey(b.startAt, data.business.timezone) === selectedDate) && (instructor === 'all' || b.instructorId === instructor) && (location === 'all' || b.locationId === location) && (status === 'all' || b.status === status)).sort((a, b) => a.startAt.localeCompare(b.startAt));
+  const weekStart = addDaysKey(selectedDate, -((new Date(`${selectedDate}T12:00:00Z`).getUTCDay() + 6) % 7), data.business.timezone);
   const missingBookingText = isClubCoach
     ? `New booking needs ${bookingBlockers.join(', ')}. Ask the club for assigned setup; you can manage your own availability.`
     : `New booking needs ${bookingBlockers.join(', ')}. Finish setup from Home or Explore first.`;
-  return <><div className="section-heading"><div><div className="eyebrow mb-2">EVERY LESSON, IN SYNC</div><h1>{listOnly ? 'Bookings' : 'Your calendar'}</h1><p className="mt-2 text-xs text-[#59675c]">One schedule. Every instructor. Every place you play.</p>{!bookingReadiness.staffBookingReady && <p id="calendar-booking-setup" className="mt-2 max-w-xl text-[11px] leading-relaxed text-amber-700">{missingBookingText}</p>}</div><Button onClick={onNew} disabled={!bookingReadiness.staffBookingReady} aria-describedby={!bookingReadiness.staffBookingReady ? 'calendar-booking-setup' : undefined}><Plus size={14} />New booking</Button></div><div className="mb-5 flex flex-wrap items-center gap-3">{!listOnly && <><div className="flex items-center gap-2"><Button size="icon" variant="outline" aria-label="Previous date" onClick={() => setDate(addDaysKey(selectedDate, view === 'week' ? -7 : -1))}><ChevronLeft size={15} /></Button><input type="date" aria-label="Calendar date" className="!w-auto" value={selectedDate} onChange={e => setDate(e.target.value)} /><Button size="icon" variant="outline" aria-label="Next date" onClick={() => setDate(addDaysKey(selectedDate, view === 'week' ? 7 : 1))}><ChevronRight size={15} /></Button><Button variant="outline" size="sm" onClick={() => setDate(dateKey())}>Today</Button></div><div className="tab-bar"><button onClick={() => setView('day')} className={view === 'day' ? 'active' : ''}>Day</button><button onClick={() => setView('week')} className={view === 'week' ? 'active' : ''}>Week</button></div></>}
+  if (listOnly) return <BookingsView data={data} onBooking={onBooking} onNew={canManageBookings ? onNew : undefined} />;
+  return <><div className="section-heading"><div><div className="eyebrow mb-2">EVERY LESSON, IN SYNC</div><h1>Your calendar</h1><p className="mt-2 text-xs text-[#59675c]">One schedule. Every instructor. Every place you play.</p>{data.bookingWindow?.truncated && <p className="mt-2 max-w-xl text-[11px] leading-relaxed text-amber-700">This busy calendar is showing the first 2,000 lessons in its operational window. Use Bookings to find the rest.</p>}{!bookingReadiness.staffBookingReady && canManageBookings && <p id="calendar-booking-setup" className="mt-2 max-w-xl text-[11px] leading-relaxed text-amber-700">{missingBookingText}</p>}</div>{canManageBookings && <Button onClick={onNew} disabled={!bookingReadiness.staffBookingReady} aria-describedby={!bookingReadiness.staffBookingReady ? 'calendar-booking-setup' : undefined}><Plus size={14} />New booking</Button>}</div><div className="mb-5 flex flex-wrap items-center gap-3"><><div className="flex flex-wrap items-center gap-2"><Button size="icon" variant="outline" aria-label="Previous date" disabled={!!bookingWindowFrom && addDaysKey(selectedDate, view === 'week' ? -7 : -1, data.business.timezone) < bookingWindowFrom} onClick={() => setDate(addDaysKey(selectedDate, view === 'week' ? -7 : -1, data.business.timezone))}><ChevronLeft size={15} /></Button><input type="date" aria-label="Calendar date" className="!w-auto max-w-full" min={bookingWindowFrom} max={bookingWindowTo} value={selectedDate} onChange={e => setDate(e.target.value)} /><Button size="icon" variant="outline" aria-label="Next date" disabled={!!bookingWindowTo && addDaysKey(selectedDate, view === 'week' ? 7 : 1, data.business.timezone) > bookingWindowTo} onClick={() => setDate(addDaysKey(selectedDate, view === 'week' ? 7 : 1, data.business.timezone))}><ChevronRight size={15} /></Button><Button variant="outline" size="sm" onClick={() => setDate(today)}>Today</Button></div><div className="tab-bar" role="group" aria-label="Calendar view"><button type="button" aria-pressed={view === 'day'} onClick={() => setView('day')} className={view === 'day' ? 'active' : ''}>Day</button><button type="button" aria-pressed={view === 'week'} onClick={() => setView('week')} className={view === 'week' ? 'active' : ''}>Week</button></div></>
     <select aria-label="Filter instructor" className="!w-auto !text-xs" value={instructor} onChange={e => setInstructor(e.target.value)}><option value="all">All instructors</option>{data.instructors.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}</select><select aria-label="Filter location" className="!w-auto !text-xs" value={location} onChange={e => setLocation(e.target.value)}><option value="all">All locations</option>{data.locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}</select><select aria-label="Filter booking status" className="!w-auto !text-xs" value={status} onChange={e => setStatus(e.target.value)}><option value="all">All statuses</option><option value="CONFIRMED">Confirmed</option><option value="PENDING">Pending</option><option value="CANCELLED">Cancelled</option><option value="COMPLETED">Completed</option></select></div>
-    {listOnly ? <section className="panel table-wrap"><table className="data-table"><thead><tr><th>Lesson</th><th>Student</th><th>When</th><th>Location</th><th>Instructor</th><th>Status</th></tr></thead><tbody>{selected.map(b => { const participants = b.participants.map(p => p.name).join(', ') || 'no participants'; return <tr key={b.id} className="hover:bg-stone-50"><td className="font-medium"><button type="button" className="rounded-sm text-left font-medium text-inherit underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 focus-visible:ring-offset-2" aria-label={`Open booking details for ${b.serviceName} with ${participants}`} onClick={() => onBooking(b.id)}>{b.serviceName}</button></td><td>{participants}</td><td>{shortDate(b.startAt)}<p className="mt-1 text-[10px] text-[#59675c]">{time(b.startAt)} – {time(b.endAt)}</p></td><td>{b.locationName}</td><td>{b.instructorName}</td><td><StatusBadge status={b.status} coachAcceptance={b.coachAcceptance} /></td></tr>; })}</tbody></table>{!selected.length && <div className="empty-state">No bookings match your filters.</div>}</section> : view === 'day' ? <section className="panel max-w-4xl"><div className="panel-heading"><h2>{shortDate(selectedDate + 'T12:00:00+08:00')}</h2><span className="text-xs text-[#59675c]">{selected.length} sessions</span></div><ScheduleList bookings={selected} data={data} onSelect={onBooking} /></section> : <section className="panel overflow-x-auto"><div className="grid min-w-[900px] grid-cols-7">{Array.from({ length: 7 }, (_, i) => { const day = addDaysKey(weekStart, i); return <div key={day} className="min-h-[500px] border-r border-stone-100 last:border-0"><div className={`border-b border-stone-100 px-3 py-5 text-center text-xs ${day === dateKey() ? 'bg-[#eaf0e5]' : ''}`}>{shortDate(day + 'T12:00:00+08:00')}</div><div className="space-y-2 p-2">{selected.filter(b => dateKey(b.startAt) === day).map(b => <button key={b.id} onClick={() => onBooking(b.id)} className="w-full rounded-lg border border-[#e0e8d7] bg-[#f3f7ee] p-3 text-left"><p className="text-[9px] text-[#859775]">{time(b.startAt)}</p><p className="mt-2 text-[11px] font-semibold">{b.serviceName}</p><p className="mt-2 text-[9px] text-[#859775]">{b.locationName}</p><p className="mt-1 text-[9px] text-[#859775]">{b.instructorName}</p>{b.status === 'PENDING' && <StatusBadge status={b.status} coachAcceptance={b.coachAcceptance} className="mt-2" />}</button>)}</div></div>; })}</div></section>}
+    {view === 'day' ? <section className="panel max-w-4xl"><div className="panel-heading"><h2>{shortDateKey(selectedDate)}</h2><span className="text-xs text-[#59675c]">{selected.length} sessions</span></div><ScheduleList bookings={selected} data={data} onSelect={onBooking} /></section> : <section className="panel overflow-x-auto"><div className="grid min-w-[900px] grid-cols-7">{Array.from({ length: 7 }, (_, i) => { const day = addDaysKey(weekStart, i, data.business.timezone); return <div key={day} className="min-h-[500px] border-r border-stone-100 last:border-0"><div className={`border-b border-stone-100 px-3 py-5 text-center text-xs ${day === today ? 'bg-[#eaf0e5]' : ''}`}>{shortDateKey(day)}</div><div className="space-y-2 p-2">{selected.filter(b => dateKey(b.startAt, data.business.timezone) === day).map(b => <button key={b.id} onClick={() => onBooking(b.id)} className="w-full rounded-lg border border-[#e0e8d7] bg-[#f3f7ee] p-3 text-left"><p className="text-[9px] text-[#859775]">{time(b.startAt, data.business.timezone)}</p><p className="mt-2 text-[11px] font-semibold">{b.serviceName}</p><p className="mt-2 text-[9px] text-[#859775]">{b.locationName}</p><p className="mt-1 text-[9px] text-[#859775]">{b.instructorName}</p>{b.status === 'PENDING' && <StatusBadge status={b.status} coachAcceptance={b.coachAcceptance} className="mt-2" />}</button>)}</div></div>; })}</div></section>}
+  </>;
+}
+
+const operationCategories: Array<{ id: 'all' | OperationsInboxCategory; label: string }> = [
+  { id: 'all', label: 'All' }, { id: 'coach', label: 'Coach' }, { id: 'venue', label: 'Venue' },
+  { id: 'attendance', label: 'Attendance' }, { id: 'reschedule', label: 'Reschedule' },
+  { id: 'payment', label: 'Payment' }, { id: 'rental', label: 'Rental' },
+];
+
+function OperationsInbox({ data, onNavigate, onBooking }: { data: WorkspaceResponse; onNavigate: (view: string) => void; onBooking: (bookingId: string) => void }) {
+  const [category, setCategory] = useState<'all' | OperationsInboxCategory>('all');
+  const [items, setItems] = useState<OperationsInboxItem[]>([]);
+  const [counts, setCounts] = useState<Record<'all' | OperationsInboxCategory, number>>({ all: 0, coach: 0, venue: 0, attendance: 0, reschedule: 0, payment: 0, rental: 0 });
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState('');
+  const generation = useRef(0);
+  const accessMode = data.accessMode ?? (data.user.accountType === 'CLUB' ? 'CLUB_ACCOUNT' : 'COACH');
+  const canViewBookings = accessMode === 'COACH' || accessMode === 'CLUB_ACCOUNT' || data.permissions?.includes('BOOKINGS_VIEW') === true;
+  const canViewPayments = accessMode === 'CLUB_ACCOUNT' || data.permissions?.includes('PAYMENTS_VIEW') === true;
+  const canViewRentals = accessMode === 'CLUB_ACCOUNT' || data.permissions?.includes('RENTALS_VIEW') === true;
+  const canLoad = canViewBookings || canViewPayments || canViewRentals;
+  const canViewCategory = (nextCategory: 'all' | OperationsInboxCategory) => nextCategory === 'all'
+    || (nextCategory === 'payment' ? canViewPayments : nextCategory === 'rental' ? canViewRentals : canViewBookings);
+  const activeCategory = canViewCategory(category) ? category : 'all';
+  const visibleCategories = operationCategories.filter(option =>
+    canViewCategory(option.id) && (option.id === 'all' || counts[option.id] > 0));
+  const resultStatus = loading
+    ? 'Loading operations.'
+    : loadingMore
+      ? 'Loading more operations.'
+      : `${items.length} ${activeCategory === 'all' ? 'operational' : activeCategory} ${items.length === 1 ? 'item' : 'items'} loaded.`;
+  const load = useCallback(async (nextCategory: 'all' | OperationsInboxCategory, cursor?: string) => {
+    const current = ++generation.current;
+    cursor ? setLoadingMore(true) : setLoading(true);
+    setError('');
+    try {
+      const result = await loadOperationsInbox({ category: nextCategory === 'all' ? undefined : nextCategory, cursor, limit: 6 });
+      if (current !== generation.current) return;
+      setItems(previous => cursor ? [...previous, ...result.items] : result.items);
+      setCounts(result.counts);
+      setNextCursor(result.nextCursor);
+    } catch (cause) {
+      if (current !== generation.current) return;
+      setError(cause instanceof Error ? cause.message : 'Operations could not be loaded.');
+      if (!cursor) { setItems([]); setNextCursor(null); }
+    } finally {
+      if (current === generation.current) { setLoading(false); setLoadingMore(false); }
+    }
+  }, []);
+  useEffect(() => {
+    if (!canLoad) { setLoading(false); return; }
+    void load(activeCategory);
+    return () => { generation.current += 1; };
+  }, [canLoad, activeCategory, load]);
+  function open(item: OperationsInboxItem) {
+    const bookingId = item.entityType === 'booking' ? item.entityId : item.destination.params.bookingId;
+    if (bookingId) { onBooking(bookingId); return; }
+    if (item.destination.view === 'rentals') {
+      const url = new URL(window.location.href);
+      url.searchParams.set('mode', 'manage');
+      window.history.replaceState(window.history.state, '', url);
+    }
+    onNavigate(item.destination.view);
+  }
+  if (!canLoad) return <div className="px-5 py-6"><p className="eyebrow !text-[9px]">ACTION CENTRE</p><h2 id="attention-heading" className="mt-1 !text-[16px]">Operations</h2><p className="mt-3 text-xs leading-relaxed text-stone-500">Your current access does not include booking operations.</p></div>;
+  return <>
+    <div className="flex items-center justify-between px-4 pb-3 pt-4 sm:px-5"><div><p className="eyebrow !text-[9px]">ACTION CENTRE</p><h2 id="attention-heading" className="mt-1 !text-[16px]">Needs your attention</h2></div><span><span aria-hidden="true" className={`block h-2 w-2 rounded-full ${counts.all ? 'bg-[#c3a45f]' : 'bg-[#88a273]'}`} /><span className="sr-only">{counts.all} operational items</span></span></div>
+    <div className="px-3 pb-3"><div className="flex flex-wrap gap-1" role="group" aria-label="Filter operations">{visibleCategories.map(option => <button key={option.id} type="button" aria-pressed={activeCategory === option.id} className={`rounded-full px-2.5 py-1.5 text-[10px] font-semibold ${activeCategory === option.id ? 'bg-[#294735] text-white' : 'bg-[#f2f4ee] text-[#59675c]'}`} onClick={() => setCategory(option.id)}>{option.label} {counts[option.id]}</button>)}</div></div>
+    <p role="status" aria-live="polite" aria-atomic="true" className="sr-only">{resultStatus}</p>
+    <div className="space-y-2 px-3 pb-3" aria-busy={loading || loadingMore}>{loading ? <p className="flex items-center justify-center gap-2 py-8 text-xs text-stone-500"><Loader2 size={14} className="animate-spin" />Loading operations…</p> : error && !items.length ? <div className="rounded-lg bg-red-50 p-3 text-center"><p role="alert" className="text-xs text-red-700">{error}</p><Button variant="ghost" size="sm" className="mt-2" onClick={() => void load(activeCategory)}>Try again</Button></div> : items.length ? items.map(item => <button key={item.id} type="button" onClick={() => open(item)} className={`flex min-h-16 w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-[#f8f7f1] ${item.severity === 'urgent' ? 'border-[#ecd6cc] bg-[#fdf7f4]' : item.severity === 'attention' ? 'border-[#eee5cd] bg-[#fbf8ef]' : 'border-[#e7eae2] bg-[#fafbf8]'}`}><span aria-hidden="true" className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${item.severity === 'urgent' ? 'bg-[#f5ded4] text-[#a65f4d]' : 'bg-[#f1e7cb] text-[#947940]'}`}><Clock3 size={15} /></span><span className="min-w-0 flex-1"><span className="sr-only">{item.severity === 'urgent' ? 'Urgent' : item.severity === 'attention' ? 'Attention' : 'Information'}: </span><span className="block text-[12px] font-semibold text-[#544f42]">{item.title}</span><span className="mt-0.5 block break-words text-[11px] text-[#6f695b]">{item.detail}</span></span><ChevronRight aria-hidden="true" size={15} className="shrink-0 text-[#ad9d77]" /></button>) : <div className="rounded-lg bg-[#f2f6ee] px-4 py-5 text-center"><Check size={17} className="mx-auto text-[#79936b]" /><p className="mt-2 text-[12px] font-semibold">You’re all caught up.</p><p className="mt-1 text-[11px] text-[#59675c]">No {activeCategory === 'all' ? 'operational' : activeCategory} follow-ups.</p></div>}</div>
+    {error && items.length > 0 && <p role="alert" className="px-4 pb-3 text-xs text-red-700">{error}</p>}
+    {nextCursor && <div className="border-t border-[#edf0e8] p-3 text-center"><Button variant="ghost" size="sm" disabled={loadingMore} onClick={() => void load(activeCategory, nextCursor)}>{loadingMore && <Loader2 size={13} className="animate-spin" />}Load more</Button></div>}
   </>;
 }

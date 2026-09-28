@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from './db.js';
-import { requireClubAccount, asyncRoute, HttpError } from './http.js';
+import { requireClubPermission, asyncRoute, HttpError } from './http.js';
 import { notifyWorkspace } from './notifications.js';
 
 type Tx = Prisma.TransactionClient;
@@ -189,7 +189,7 @@ const resolutionInput = z.object({
   note: z.string().trim().max(1000).default(''),
 }).strict();
 
-integrityRouter.get('/integrity-flags', requireClubAccount, asyncRoute(async (req, res) => {
+integrityRouter.get('/integrity-flags', requireClubPermission('INTEGRITY_VIEW'), asyncRoute(async (req, res) => {
   const flags = await prisma.integrityFlag.findMany({
     where: { businessId: req.auth.business.id },
     include: flagInclude,
@@ -199,7 +199,7 @@ integrityRouter.get('/integrity-flags', requireClubAccount, asyncRoute(async (re
   res.json({ flags: flags.map(integrityFlagJson) });
 }));
 
-integrityRouter.patch('/integrity-flags/:id', requireClubAccount, asyncRoute(async (req, res) => {
+integrityRouter.patch('/integrity-flags/:id', requireClubPermission('INTEGRITY_REVIEW'), asyncRoute(async (req, res) => {
   const input = resolutionInput.parse(req.body);
   const resolved = input.status === 'DISMISSED' || input.status === 'UPHELD';
   const updated = await prisma.$transaction(async tx => {

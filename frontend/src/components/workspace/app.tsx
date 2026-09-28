@@ -22,9 +22,9 @@ import { formatInTimeZone } from 'date-fns-tz';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
-import { api, ApiError, loadWorkspace, mutate, openBookingChat, searchAccounts } from '@/lib/api';
+import { ApiError, loadAuthSession, loadBooking, loadWorkspace, mutate, openBookingChat, searchAccounts, switchWorkspaceAccess } from '@/lib/api';
 import { alertsButtonLabel, chatBadge, chatTabLabel } from '@/lib/chat';
-import type { AccountDirectoryUser, AccountType, AuthSession, BusinessKind, Membership, WorkspaceResponse } from '@/lib/types';
+import type { AccountDirectoryUser, ClubPermission, ClubStaffWorkspaceAccess, Membership, WorkspaceResponse } from '@/lib/types';
 import { cn, initials, shortDate } from '@/lib/utils';
 import { ChatInbox } from '@/components/chat/chat-inbox';
 import { useChatUnread } from '@/components/chat/use-chat-unread';
@@ -32,6 +32,7 @@ import Dashboard, { CalendarView } from './dashboard';
 import { ManagementView } from './management';
 import { NewBookingDialog, BookingDetail } from './booking-dialogs';
 import { RentalExplore } from './rental-explore';
+import { RentalReservations } from './rental-reservations';
 import {
   AlertsView,
   canAccessExploreView,
@@ -74,18 +75,63 @@ function primaryTabForView(view: string): PrimaryTab {
   return 'explore';
 }
 
-function routeView(accountType: AccountType, businessKind: BusinessKind) {
-  const isClubCoach = accountType === 'COACH' && businessKind === 'CLUB';
+const staffViewPermissions: Partial<Record<string, ClubPermission[]>> = {
+  calendar: ['BOOKINGS_VIEW', 'BOOKINGS_MANAGE'],
+  bookings: ['BOOKINGS_VIEW', 'BOOKINGS_MANAGE'],
+  students: ['STUDENTS_VIEW', 'STUDENTS_MANAGE'],
+  services: ['CATALOG_VIEW', 'CATALOG_MANAGE'],
+  locations: ['CATALOG_VIEW', 'CATALOG_MANAGE'],
+  team: ['ROSTER_VIEW', 'ROSTER_MANAGE'],
+  availability: ['AVAILABILITY_MANAGE'],
+  rentals: ['RENTALS_VIEW', 'RENTALS_MANAGE'],
+  packages: ['PACKAGES_VIEW', 'PACKAGES_MANAGE'],
+  payments: ['PAYMENTS_VIEW', 'PAYMENTS_RECORD', 'PAYMENTS_REVERSE', 'PAYOUTS_RECORD'],
+  insights: ['PAYMENTS_VIEW', 'AUDIT_VIEW'],
+  settings: ['SETTINGS_MANAGE'],
+};
+
+function accessMode(data: WorkspaceResponse) {
+  return data.accessMode ?? (data.user.accountType === 'CLUB' ? 'CLUB_ACCOUNT' : 'COACH');
+}
+
+function canAccessWorkspaceView(data: WorkspaceResponse, view: string) {
+  if (accessMode(data) !== 'STAFF') {
+    return !isExploreView(view) || canAccessExploreView({ accountType: data.user.accountType, businessKind: data.business.kind }, view);
+  }
+  if (!isExploreView(view) && view !== 'settings') return true;
+  const required = staffViewPermissions[view];
+  return !!required?.some(permission => (data.permissions ?? data.staffAccess?.permissions ?? []).includes(permission));
+}
+
+const staffToolDescriptions: Partial<Record<string, string>> = {
+  calendar: 'See the club schedule and venue status.', bookings: 'Find and review club lessons.',
+  students: 'Open the club student directory.', services: 'Review classes and their venue assignments.',
+  locations: 'Review club venues and rental configuration.', team: 'Review the coach roster.',
+  availability: 'Manage coach availability.', rentals: 'Review owned-venue reservations.',
+  packages: 'Review class and rental credit packages.', payments: 'Review receipts and payouts.',
+  insights: 'Open reporting and the club audit log.', settings: 'Manage club settings.',
+};
+
+function StaffLanding({ data, onNavigate, home }: { data: WorkspaceResponse; onNavigate: (view: string) => void; home: boolean }) {
+  const tools = Object.keys(staffViewPermissions).filter(view => view !== 'settings' && canAccessWorkspaceView(data, view));
+  return <section className="mx-auto max-w-5xl" aria-labelledby="staff-workspace-title">
+    <header className="section-heading"><div><p className="eyebrow">Named staff access</p><h1 id="staff-workspace-title" className="mt-2">{home ? `Welcome, ${data.user.name.split(' ')[0]}.` : 'Your club tools'}</h1><p className="mt-2 max-w-2xl text-xs leading-relaxed text-stone-500">You are working in {data.business.name} as named staff. The tools below reflect the permissions assigned by the club.</p></div></header>
+    {tools.length ? <div className="workspace-explore-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{tools.map(tool => <button key={tool} type="button" className="workspace-explore-card group min-h-32 rounded-2xl border border-[#e2e8df] bg-white p-5 text-left transition hover:-translate-y-0.5 hover:border-[#cbd8c5] hover:shadow-sm" onClick={() => onNavigate(tool)}><span className="grid h-9 w-9 place-items-center rounded-xl bg-[#edf2e7] text-[#66805a]"><Compass size={17} /></span><span className="mt-4 block text-sm font-semibold text-[#294735]">{viewTitles[tool] ?? tool}</span><span className="mt-2 block text-[11px] leading-relaxed text-stone-500">{staffToolDescriptions[tool]}</span></button>)}</div> : <div className="rounded-2xl border border-[#e2e8df] bg-white p-6 text-sm text-stone-500">This role does not currently include any workspace tools. Ask the club account to review your staff access.</div>}
+  </section>;
+}
+
+function routeView(data: WorkspaceResponse) {
+  const isClubCoach = accessMode(data) === 'COACH';
   const parameters = new URLSearchParams(window.location.search);
   const tab = parameters.get('tab');
   const nestedView = parameters.get('view');
   if (tab === 'alerts') return 'alerts';
   if (tab === 'chat') return 'chat';
-  if (tab === 'profile') return nestedView === 'settings' && !isClubCoach ? 'settings' : 'profile';
-  if (tab === 'explore') return nestedView && canAccessExploreView({ accountType, businessKind }, nestedView) ? nestedView : 'explore';
+  if (tab === 'profile') return nestedView === 'settings' && !isClubCoach && canAccessWorkspaceView(data, 'settings') ? 'settings' : 'profile';
+  if (tab === 'explore') return nestedView && canAccessWorkspaceView(data, nestedView) ? nestedView : 'explore';
   if (!tab && nestedView) {
-    if (nestedView === 'settings') return isClubCoach ? 'profile' : 'settings';
-    if (canAccessExploreView({ accountType, businessKind }, nestedView)) return nestedView;
+    if (nestedView === 'settings') return isClubCoach || !canAccessWorkspaceView(data, 'settings') ? 'profile' : 'settings';
+    if (canAccessWorkspaceView(data, nestedView)) return nestedView;
   }
   return 'overview';
 }
@@ -131,7 +177,7 @@ export default function WorkspaceApp() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
-  const [switchingMembershipId, setSwitchingMembershipId] = useState<string | null>(null);
+  const [switchingAccessId, setSwitchingAccessId] = useState<string | null>(null);
   const [isMobile, setIsMobile] = useState(false);
   const [mainFocusRequest, setMainFocusRequest] = useState(0);
   const initialized = useRef(false);
@@ -140,9 +186,17 @@ export default function WorkspaceApp() {
   const { unreadThreads: chatUnread, beginUnreadRequest, commitUnreadNow } = useChatUnread(!!data);
 
   const refresh = useCallback(async () => {
-    const workspace = await loadWorkspace();
+    let workspace = await loadWorkspace();
+    if (selectedBookingId && !workspace.bookings.some(booking => booking.id === selectedBookingId)) {
+      try {
+        const { booking } = await loadBooking(selectedBookingId);
+        workspace = { ...workspace, bookings: [...workspace.bookings, booking] } as WorkspaceResponse;
+      } catch {
+        // A removed or newly inaccessible booking should disappear on refresh.
+      }
+    }
     setData(workspace);
-  }, [router]);
+  }, [selectedBookingId]);
 
   const initialize = useCallback(async () => {
     setError('');
@@ -153,8 +207,8 @@ export default function WorkspaceApp() {
         router.replace('/login');
       } else if (cause instanceof ApiError && cause.status === 403) {
         try {
-          const auth = await api<AuthSession>('/auth/me');
-          router.replace(auth.user.accountType === 'STUDENT' ? '/manage' : auth.membership && auth.business ? '/' : '/account');
+          const auth = await loadAuthSession();
+          router.replace(auth.business && auth.accessMode !== 'NONE' ? '/' : auth.user.accountType === 'STUDENT' ? '/manage' : '/account');
         } catch (authError) {
           if (authError instanceof ApiError && authError.status === 401) router.replace('/login');
           else setError((authError as Error).message);
@@ -178,7 +232,7 @@ export default function WorkspaceApp() {
     const historyBusinessId = window.history.state?.workspaceBusinessId;
     const next = typeof historyBusinessId === 'string' && historyBusinessId !== data.business.id
       ? 'overview'
-      : routeView(data.user.accountType, data.business.kind);
+      : routeView(data);
     const thread = routeThread(next);
     setView(next);
     setChatThreadId(thread);
@@ -201,7 +255,7 @@ export default function WorkspaceApp() {
       const historyBusinessId = window.history.state?.workspaceBusinessId;
       const next = typeof historyBusinessId === 'string' && historyBusinessId !== data.business.id
         ? 'overview'
-        : routeView(data.user.accountType, data.business.kind);
+        : routeView(data);
       const thread = routeThread(next);
       setChatThreadId(thread);
       if (next !== view) {
@@ -280,24 +334,24 @@ export default function WorkspaceApp() {
     return () => media.removeEventListener('change', update);
   }, []);
 
-  /** Open a booking named by an alert, so an alert can lead somewhere. */
-  function openBookingById(bookingId: string) {
-    const found = data?.bookings.some(booking => booking.id === bookingId);
-    if (!found) {
-      toast.error('That booking is no longer in this workspace.');
+  /** Open a booking from the bounded workspace snapshot or fetch its exact record. */
+  async function openBookingById(bookingId: string) {
+    if (data?.bookings.some(booking => booking.id === bookingId)) {
+      setSelectedBookingId(bookingId);
       return;
     }
-    setSelectedBookingId(bookingId);
+    try {
+      const { booking } = await loadBooking(bookingId);
+      setData(current => current ? { ...current, bookings: [...current.bookings, booking] } as WorkspaceResponse : current);
+      setSelectedBookingId(bookingId);
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : 'That booking could not be opened.');
+    }
   }
 
   function navigate(nextView: string) {
     if (!data) return;
-    const isClubCoach = data.user.accountType === 'COACH' && data.business.kind === 'CLUB';
-    const safeView = isClubCoach && nextView === 'settings'
-      ? 'profile'
-      : isExploreView(nextView) && !canAccessExploreView({ accountType: data.user.accountType, businessKind: data.business.kind }, nextView)
-        ? 'explore'
-        : nextView;
+    const safeView = !canAccessWorkspaceView(data, nextView) ? 'explore' : nextView;
     setCreateOpen(false);
     if (safeView !== view || (safeView === 'chat' && chatThreadId)) {
       setView(safeView);
@@ -350,20 +404,24 @@ export default function WorkspaceApp() {
     }
   }
 
-  async function switchWorkspace(membership: Membership) {
-    if (switchingMembershipId || membership.id === data?.membership?.id || !membership.active) {
+  async function switchWorkspace(source: 'MEMBERSHIP' | 'STAFF', access: Membership | ClubStaffWorkspaceAccess) {
+    const current = source === 'MEMBERSHIP'
+      ? accessMode(data!) === 'COACH' && access.id === data?.membership?.id
+      : accessMode(data!) === 'STAFF' && access.id === data?.staffAccess?.id;
+    if (switchingAccessId || current || !access.active) {
       setWorkspaceOpen(false);
       return;
     }
-    setSwitchingMembershipId(membership.id);
+    const accessId = `${source}:${access.id}`;
+    setSwitchingAccessId(accessId);
     let sessionSwitched = false;
     try {
-      const auth = await api<AuthSession>('/auth/switch-workspace', { method: 'POST', body: JSON.stringify({ membershipId: membership.id }) });
+      const auth = await switchWorkspaceAccess(source, access.id);
       sessionSwitched = true;
       setData(null);
       setError('');
       setWorkspaceOpen(false);
-      if (!auth.membership || !auth.business) {
+      if (auth.accessMode === 'NONE' || !auth.business) {
         router.replace('/account');
         return;
       }
@@ -392,7 +450,7 @@ export default function WorkspaceApp() {
         toast.error(message);
       }
     } finally {
-      setSwitchingMembershipId(null);
+      setSwitchingAccessId(null);
     }
   }
 
@@ -410,12 +468,20 @@ export default function WorkspaceApp() {
   }
 
   const unread = data.notifications.filter(notification => !notification.read).length;
-  const accountType = data.user.accountType;
-  const isCoach = accountType === 'COACH';
-  const clubAccount = accountType === 'CLUB';
+  const mode = accessMode(data);
+  const isCoach = mode === 'COACH';
+  const isStaff = mode === 'STAFF';
+  const clubAccount = mode === 'CLUB_ACCOUNT';
   const clubMemberships = data.memberships.filter(membership =>
     membership.active && membership.business.kind === 'CLUB' && !membership.business.legacyReadOnly,
   );
+  const staffWorkspaces = (data.staffAccesses ?? []).filter(access =>
+    access.active && access.business.kind === 'CLUB' && !access.business.legacyReadOnly,
+  );
+  const workspaceAccessCount = clubMemberships.length + staffWorkspaces.length;
+  const canSwitchWorkspace = !clubAccount && workspaceAccessCount > 0;
+  const permissions = data.permissions ?? data.staffAccess?.permissions ?? [];
+  const canCreateBooking = !isStaff || permissions.includes('BOOKINGS_MANAGE');
   const title = isCoach && view === 'availability' ? 'Your availability' : viewTitles[view] || 'Workspace';
   const primaryTab = primaryTabForView(view);
   const searchResults = search.trim().length > 0 ? data.students.filter(student => `${student.name} ${student.email}`.toLowerCase().includes(search.toLowerCase())).slice(0, 5) : [];
@@ -431,7 +497,7 @@ export default function WorkspaceApp() {
         ['1', 'Make yourself at home', 'Add the places your coaches teach, then create your classes. Set duration, pricing, and coaches for each location.'],
         ['2', 'Give your week some shape', 'Set location-specific working hours in Availability. Travel buffers protect time between venues; blocked dates keep your days off clear.'],
         ['3', 'Let the bookings come to you', 'Share your booking link. Students see only available slots. Recurring lessons are checked together, so conflicts never silently slip through.'],
-        ['4', 'Keep the real world in the loop', 'A pending class holds coach time, but does not reserve a court. Secure an external venue separately, then confirm it. Student checkout uses simulated Stripe, so no real card is charged.'],
+        ['4', 'Keep the real world in the loop', 'A pending class holds coach time, but does not reserve a court. Secure an external venue separately, then confirm it. Students can review the club’s available payment options from My bookings.'],
       ];
 
   const primaryNavigation = [
@@ -448,10 +514,10 @@ export default function WorkspaceApp() {
           rather than a switcher that can only lead back to itself. */}
       {clubAccount
         ? <div className="workspace-switch text-left"><span className="business-avatar">{initials(data.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-[11px] font-semibold">{data.business.name}</span><span className="mt-1 block text-[9px] text-[#59675c]">{data.business.isDemo ? 'Demo workspace' : 'Club account'}</span></span></div>
-        : <button className="workspace-switch text-left" aria-haspopup="dialog" onClick={() => setWorkspaceOpen(true)}><span className="business-avatar">{initials(data.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-[11px] font-semibold">{data.business.name}</span><span className="mt-1 block text-[9px] text-[#59675c]">{data.business.isDemo ? 'Demo workspace' : clubMemberships.length > 1 ? `${clubMemberships.length} club workspaces` : 'Coach workspace'}</span></span><ChevronsUpDown size={12} className="text-[#59675c]" /></button>}
+        : <button className="workspace-switch text-left" aria-haspopup="dialog" onClick={() => setWorkspaceOpen(true)}><span className="business-avatar">{initials(data.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-[11px] font-semibold">{data.business.name}</span><span className="mt-1 block text-[9px] text-[#59675c]">{data.business.isDemo ? 'Demo workspace' : workspaceAccessCount > 1 ? `${workspaceAccessCount} workspace roles` : isStaff ? 'Staff workspace' : 'Coach workspace'}</span></span><ChevronsUpDown size={12} className="text-[#59675c]" /></button>}
       <nav className="workspace-primary-nav workspace-primary-nav-desktop mt-5 flex-1" aria-label="Primary">
         {primaryNavigation.slice(0, 2).map(item => <button key={item.id} type="button" className={`nav-link workspace-primary-tab workspace-primary-tab-${item.id} ${primaryTab === item.id ? 'active' : ''}`} aria-current={primaryTab === item.id ? 'page' : undefined} onClick={item.action}><item.icon size={18} strokeWidth={1.65} /><span>{item.label}</span></button>)}
-        <button type="button" className="nav-link workspace-primary-tab workspace-primary-tab-create" aria-haspopup="dialog" aria-expanded={isCoach ? bookingOpen : createOpen} onClick={() => isCoach ? setBookingOpen(true) : setCreateOpen(true)}><Plus size={19} strokeWidth={1.8} /><span>{isCoach ? 'Book' : 'Create'}</span></button>
+        {canCreateBooking && <button type="button" className="nav-link workspace-primary-tab workspace-primary-tab-create" aria-haspopup="dialog" aria-expanded={isCoach ? bookingOpen : createOpen} onClick={() => isCoach ? setBookingOpen(true) : setCreateOpen(true)}><Plus size={19} strokeWidth={1.8} /><span>{isCoach ? 'Book' : 'Create'}</span></button>}
         {primaryNavigation.slice(2).map(item => <button key={item.id} type="button" className={`nav-link workspace-primary-tab workspace-primary-tab-${item.id} ${primaryTab === item.id ? 'active' : ''}`} aria-current={primaryTab === item.id ? 'page' : undefined} aria-label={item.id === 'chat' ? chatTabLabel(chatUnread) : undefined} onClick={item.action}><item.icon size={18} strokeWidth={1.65} /><span>{item.label}</span>{item.id === 'chat' && chatUnread > 0 && <span className="nav-count workspace-tab-badge !bg-[#b3483a] !text-white" aria-hidden="true">{chatBadge(chatUnread)}</span>}</button>)}
       </nav>
       <div className="sidebar-bottom">
@@ -460,7 +526,7 @@ export default function WorkspaceApp() {
     </aside>
 
     <div className="main-shell">
-      <header className="topbar"><div className="topbar-context flex min-w-0 items-center gap-2"><button className="mobile-workspace-context mobile-menu min-w-0 items-center gap-2 rounded-xl px-1.5 py-1 text-left" onClick={() => isCoach ? setWorkspaceOpen(true) : navigate('profile')} aria-label={isCoach ? `Current workspace ${data.business.name}. Switch workspace` : `Current workspace ${data.business.name}. Open profile`}><span className="business-avatar !h-8 !w-8 shrink-0">{initials(data.business.name)}</span><span className="min-w-0"><span className="block truncate text-[11px] font-semibold text-[#304b39]">{data.business.name}</span><span className="block truncate text-[10px] text-[#59675c]">{title}</span></span>{isCoach && <ChevronsUpDown size={12} className="shrink-0 text-[#71806e]" />}</button><span className="desktop-only truncate text-[12px] font-semibold">{title}</span><span className="desktop-only ml-1 text-[#d4d9cb]">/</span><span className="desktop-only text-[11px] text-[#59675c]">{primaryTab === 'home' ? 'A little clarity for your day' : primaryTab === 'explore' ? 'Everything your business needs' : primaryTab === 'alerts' ? `${unread} unread update${unread === 1 ? '' : 's'}` : primaryTab === 'chat' ? 'Conversations with players, coaches and clubs' : 'Account and workspace'}</span></div><div className="topbar-actions flex items-center gap-2"><span className="desktop-only mr-3 text-[10px] text-[#59675c]">{formatInTimeZone(new Date(), data.business.timezone, 'EEEE, d MMM yyyy')}</span><div className="desktop-only mr-3 h-4 w-px bg-[#e9ece2]" /><button aria-label="Search workspace" className="topbar-action text-[#8a967b]" onClick={() => setSearchOpen(true)}><Search size={18} strokeWidth={1.7} /></button><button type="button" aria-label={alertsButtonLabel(unread)} aria-current={view === 'alerts' ? 'page' : undefined} className={cn('topbar-action topbar-alerts relative text-[#59675c]', view === 'alerts' && 'active')} onClick={() => navigate('alerts')}><Bell size={19} strokeWidth={view === 'alerts' ? 2.2 : 1.7} aria-hidden="true" />{unread > 0 && <span className="topbar-badge" aria-hidden="true">{chatBadge(unread)}</span>}</button><button aria-label="Profile" onClick={() => navigate('profile')} className="topbar-action desktop-only"><span className="tiny-avatar !h-7 !w-7 !bg-[#e8dccc] !text-[#6f5738]">{initials(data.user.name)}</span></button></div></header>
+      <header className="topbar"><div className="topbar-context flex min-w-0 items-center gap-2"><button className="mobile-workspace-context mobile-menu min-w-0 items-center gap-2 rounded-xl px-1.5 py-1 text-left" onClick={() => canSwitchWorkspace ? setWorkspaceOpen(true) : navigate('profile')} aria-label={canSwitchWorkspace ? `Current workspace ${data.business.name}. Switch workspace` : `Current workspace ${data.business.name}. Open profile`}><span className="business-avatar !h-8 !w-8 shrink-0">{initials(data.business.name)}</span><span className="min-w-0"><span className="block truncate text-[11px] font-semibold text-[#304b39]">{data.business.name}</span><span className="block truncate text-[10px] text-[#59675c]">{title}</span></span>{canSwitchWorkspace && <ChevronsUpDown size={12} className="shrink-0 text-[#71806e]" />}</button><span className="desktop-only truncate text-[12px] font-semibold">{title}</span><span className="desktop-only ml-1 text-[#d4d9cb]">/</span><span className="desktop-only text-[11px] text-[#59675c]">{primaryTab === 'home' ? 'A little clarity for your day' : primaryTab === 'explore' ? 'Everything your business needs' : primaryTab === 'alerts' ? `${unread} unread update${unread === 1 ? '' : 's'}` : primaryTab === 'chat' ? 'Conversations with players, coaches and clubs' : 'Account and workspace'}</span></div><div className="topbar-actions flex items-center gap-2"><span className="desktop-only mr-3 text-[10px] text-[#59675c]">{formatInTimeZone(new Date(), data.business.timezone, 'EEEE, d MMM yyyy')}</span><div className="desktop-only mr-3 h-4 w-px bg-[#e9ece2]" /><button aria-label="Search workspace" className="topbar-action text-[#8a967b]" onClick={() => setSearchOpen(true)}><Search size={18} strokeWidth={1.7} /></button><button type="button" aria-label={alertsButtonLabel(unread)} aria-current={view === 'alerts' ? 'page' : undefined} className={cn('topbar-action topbar-alerts relative text-[#59675c]', view === 'alerts' && 'active')} onClick={() => navigate('alerts')}><Bell size={19} strokeWidth={view === 'alerts' ? 2.2 : 1.7} aria-hidden="true" />{unread > 0 && <span className="topbar-badge" aria-hidden="true">{chatBadge(unread)}</span>}</button><button aria-label="Profile" onClick={() => navigate('profile')} className="topbar-action desktop-only"><span className="tiny-avatar !h-7 !w-7 !bg-[#e8dccc] !text-[#6f5738]">{initials(data.user.name)}</span></button></div></header>
       <main ref={mainRef} tabIndex={-1} aria-label={`${title} workspace view`} className={`content view-${view} ${view === 'calendar' || view === 'bookings' ? 'max-sm:[&>.section-heading>button]:hidden' : ''}`}>
         {isExploreView(view) && (
           <nav aria-label="Explore navigation" className="mb-4">
@@ -470,9 +536,9 @@ export default function WorkspaceApp() {
             </Button>
           </nav>
         )}
-        {view === 'overview' ? <Dashboard key={data.business.id} data={data} onNavigate={navigate} onNew={() => setBookingOpen(true)} onBooking={setSelectedBookingId} />
-          : view === 'explore' ? <ExploreHub data={data} onNavigate={navigate} />
-          : view === 'rentals' ? <RentalExplore />
+        {view === 'overview' ? isStaff ? <StaffLanding data={data} onNavigate={navigate} home /> : <Dashboard key={data.business.id} data={data} onNavigate={navigate} onNew={() => setBookingOpen(true)} onBooking={bookingId => void openBookingById(bookingId)} />
+          : view === 'explore' ? isStaff ? <StaffLanding data={data} onNavigate={navigate} home={false} /> : <ExploreHub data={data} onNavigate={navigate} />
+          : view === 'rentals' ? isStaff ? <RentalReservations /> : <RentalExplore />
           : view === 'alerts' ? <AlertsView data={data} refresh={refresh} onOpenBooking={openBookingById} onNavigate={navigate} />
           : view === 'chat' ? <ChatInbox
             key={data.business.id}
@@ -495,7 +561,7 @@ export default function WorkspaceApp() {
             }}
           />
           : view === 'profile' ? <ProfileView data={data} onEditProfile={() => setProfileEditorOpen(true)} onSwitchWorkspace={() => setWorkspaceOpen(true)} onBusinessSettings={() => navigate('settings')} onHelp={() => setHelpOpen(true)} onSignOut={() => void signOut()} onNavigate={navigate} />
-          : view === 'calendar' || view === 'bookings' ? <CalendarView key={`${data.business.id}:${view}`} data={data} onNew={() => setBookingOpen(true)} onBooking={setSelectedBookingId} listOnly={view === 'bookings'} />
+          : view === 'calendar' || view === 'bookings' ? <CalendarView key={`${data.business.id}:${view}`} data={data} onNew={() => setBookingOpen(true)} onBooking={bookingId => void openBookingById(bookingId)} listOnly={view === 'bookings'} />
           : <ManagementView key={`${data.business.id}:${view}`} view={view} data={data} refresh={refresh} />}
       </main>
     </div>
@@ -503,13 +569,13 @@ export default function WorkspaceApp() {
     <nav className="mobile-bottom workspace-primary-nav workspace-primary-nav-mobile" aria-label="Mobile navigation">
       <button type="button" className={`workspace-primary-tab workspace-primary-tab-home ${primaryTab === 'home' ? 'active' : ''}`} aria-current={primaryTab === 'home' ? 'page' : undefined} onClick={() => navigate('overview')}><House size={20} strokeWidth={1.7} /><span>Home</span></button>
       <button type="button" className={`workspace-primary-tab workspace-primary-tab-explore ${primaryTab === 'explore' ? 'active' : ''}`} aria-current={primaryTab === 'explore' ? 'page' : undefined} onClick={() => navigate('explore')}><Compass size={20} strokeWidth={1.7} /><span>Explore</span></button>
-      <button type="button" className="mobile-bottom-new workspace-primary-tab workspace-primary-tab-create" aria-label={isCoach ? 'Book' : 'Create'} aria-haspopup="dialog" aria-expanded={isCoach ? bookingOpen : createOpen} onClick={() => isCoach ? setBookingOpen(true) : setCreateOpen(true)}><span className="mobile-bottom-new-icon"><Plus size={23} strokeWidth={2} /></span><span>{isCoach ? 'Book' : 'Create'}</span></button>
+      {canCreateBooking && <button type="button" className="mobile-bottom-new workspace-primary-tab workspace-primary-tab-create" aria-label={isCoach ? 'Book' : 'Create'} aria-haspopup="dialog" aria-expanded={isCoach ? bookingOpen : createOpen} onClick={() => isCoach ? setBookingOpen(true) : setCreateOpen(true)}><span className="mobile-bottom-new-icon"><Plus size={23} strokeWidth={2} /></span><span>{isCoach ? 'Book' : 'Create'}</span></button>}
       <button type="button" className={`workspace-primary-tab workspace-primary-tab-chat relative ${primaryTab === 'chat' ? 'active' : ''}`} aria-current={primaryTab === 'chat' ? 'page' : undefined} aria-label={chatTabLabel(chatUnread)} onClick={() => navigate('chat')}><MessageCircle size={20} strokeWidth={1.7} aria-hidden="true" /><span>Chat</span>{chatUnread > 0 && <span className="workspace-tab-badge absolute right-[24%] top-1.5 grid h-4 min-w-4 place-items-center rounded-full border-2 border-white bg-[#b3483a] px-0.5 text-[8px] font-bold leading-none text-white" aria-hidden="true">{chatBadge(chatUnread)}</span>}</button>
       <button type="button" className={`workspace-primary-tab workspace-primary-tab-profile ${primaryTab === 'profile' ? 'active' : ''}`} aria-current={primaryTab === 'profile' ? 'page' : undefined} onClick={() => navigate('profile')}><UserRound size={20} strokeWidth={1.7} /><span>Profile</span></button>
     </nav>
 
-    {!isCoach && <CreateDialog open={createOpen} onOpenChange={setCreateOpen} data={data} onNewBooking={() => setBookingOpen(true)} onNavigate={navigate} />}
-    <NewBookingDialog data={data} open={bookingOpen} onClose={() => setBookingOpen(false)} refresh={refresh} />
+    {!isCoach && canCreateBooking && <CreateDialog open={createOpen} onOpenChange={setCreateOpen} data={data} onNewBooking={() => setBookingOpen(true)} onNavigate={navigate} />}
+    {canCreateBooking && <NewBookingDialog data={data} open={bookingOpen} onClose={() => setBookingOpen(false)} refresh={refresh} />}
     <BookingDetail bookingId={selectedBookingId} data={data} onClose={() => setSelectedBookingId(null)} refresh={refresh} onOpenChat={bookingId => void openChatForBooking(bookingId)} />
     <PersonalProfileDialog open={profileEditorOpen} onOpenChange={setProfileEditorOpen} user={data.user} refresh={refresh} />
 
@@ -517,6 +583,11 @@ export default function WorkspaceApp() {
 
     <Dialog open={helpOpen} onOpenChange={setHelpOpen}><DialogContent><DialogTitle className="text-lg font-semibold">{isCoach ? 'Help with your coaching workspace' : 'A little help to get going'}</DialogTitle><DialogDescription className="mt-2 text-xs text-stone-400">{isCoach ? 'Your schedule, students, availability, and attendance—all in one place.' : 'Less admin. More time doing what you love.'}</DialogDescription><div className="mt-6 space-y-5 text-xs leading-relaxed">{helpSteps.map(([number, heading, body]) => <div className="flex gap-3" key={number}><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#edf2e5] text-[#7e926c]">{number}</span><div><h3>{heading}</h3><p className="mt-1 text-stone-500">{body}</p></div></div>)}</div></DialogContent></Dialog>
 
-    <Dialog open={workspaceOpen && !clubAccount} onOpenChange={open => { if (!switchingMembershipId) setWorkspaceOpen(open); }}><DialogContent onEscapeKeyDown={event => { if (switchingMembershipId) event.preventDefault(); }} onPointerDownOutside={event => { if (switchingMembershipId) event.preventDefault(); }}><DialogTitle className="text-lg font-semibold">Switch workspace</DialogTitle><DialogDescription className="mt-2 text-xs leading-relaxed text-stone-500">Switch between clubs or academies that have added your coach account to their roster.</DialogDescription><div className="mt-5 space-y-2">{clubMemberships.map(membership => { const current = membership.id === data.membership?.id || membership.business.id === data.business.id; return <button key={membership.id} type="button" disabled={!!switchingMembershipId || current} aria-current={current ? 'true' : undefined} onClick={() => void switchWorkspace(membership)} className={`flex min-h-16 w-full items-center gap-3 rounded-xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-55 ${current ? 'border-[#cbd9bf] bg-[#f0f5e9]' : 'border-[#e3e8df] hover:bg-[#f8faf6]'}`}><span className="business-avatar shrink-0">{initials(membership.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-semibold text-[#344b39]">{membership.business.name}</span><span className="mt-1 block text-[10px] text-stone-500">Club or academy</span></span>{switchingMembershipId === membership.id ? <Loader2 size={16} className="shrink-0 animate-spin text-[#69805e]" /> : current ? <span className="flex items-center gap-1 text-[10px] font-semibold text-[#66805a]"><Check size={13} />Current</span> : null}</button>; })}{!clubMemberships.length && <p className="rounded-xl bg-stone-50 p-4 text-xs leading-relaxed text-stone-500">No active club workspaces are available.</p>}</div></DialogContent></Dialog>
+    <Dialog open={workspaceOpen && !clubAccount} onOpenChange={open => { if (!switchingAccessId) setWorkspaceOpen(open); }}><DialogContent onEscapeKeyDown={event => { if (switchingAccessId) event.preventDefault(); }} onPointerDownOutside={event => { if (switchingAccessId) event.preventDefault(); }}><DialogTitle className="text-lg font-semibold">Switch workspace</DialogTitle><DialogDescription className="mt-2 text-xs leading-relaxed text-stone-500">Choose a coach affiliation or named staff role. Switching roles never changes your personal account type.</DialogDescription><div className="mt-5 space-y-2">
+      {clubMemberships.map(membership => { const current = mode === 'COACH' && membership.id === data.membership?.id; const key = `MEMBERSHIP:${membership.id}`; return <button key={key} type="button" disabled={!!switchingAccessId || current} aria-current={current ? 'true' : undefined} onClick={() => void switchWorkspace('MEMBERSHIP', membership)} className={`flex min-h-16 w-full items-center gap-3 rounded-xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-55 ${current ? 'border-[#cbd9bf] bg-[#f0f5e9]' : 'border-[#e3e8df] hover:bg-[#f8faf6]'}`}><span className="business-avatar shrink-0">{initials(membership.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-semibold text-[#344b39]">{membership.business.name}</span><span className="mt-1 block text-[10px] text-stone-500">Coach affiliation</span></span>{switchingAccessId === key ? <Loader2 size={16} className="shrink-0 animate-spin text-[#69805e]" /> : current ? <span className="flex items-center gap-1 text-[10px] font-semibold text-[#66805a]"><Check size={13} />Current</span> : null}</button>; })}
+      {staffWorkspaces.map(access => { const current = mode === 'STAFF' && access.id === data.staffAccess?.id; const key = `STAFF:${access.id}`; return <button key={key} type="button" disabled={!!switchingAccessId || current} aria-current={current ? 'true' : undefined} onClick={() => void switchWorkspace('STAFF', access)} className={`flex min-h-16 w-full items-center gap-3 rounded-xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-55 ${current ? 'border-[#cbd9bf] bg-[#f0f5e9]' : 'border-[#e3e8df] hover:bg-[#f8faf6]'}`}><span className="business-avatar shrink-0">{initials(access.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-semibold text-[#344b39]">{access.business.name}</span><span className="mt-1 block text-[10px] text-stone-500">{access.accessLevel.toLowerCase().replaceAll('_', ' ')} staff access</span></span>{switchingAccessId === key ? <Loader2 size={16} className="shrink-0 animate-spin text-[#69805e]" /> : current ? <span className="flex items-center gap-1 text-[10px] font-semibold text-[#66805a]"><Check size={13} />Current</span> : null}</button>; })}
+      {!workspaceAccessCount && <p className="rounded-xl bg-stone-50 p-4 text-xs leading-relaxed text-stone-500">No active club workspaces are available.</p>}
+      <Button variant="outline" className="w-full" asChild><Link href="/account">Manage workspace access</Link></Button>
+    </div></DialogContent></Dialog>
   </div>;
 }

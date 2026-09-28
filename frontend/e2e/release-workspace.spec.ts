@@ -27,6 +27,7 @@ const location = {
   type: 'FACILITY',
   color: '#78915e',
   requiresApproval: false,
+  classUnitSchedulingEnabled: false,
   travelMinutes: 15,
   notes: 'Indoor court.',
   source: 'MANUAL',
@@ -133,6 +134,15 @@ function workspace(accountType: 'CLUB' | 'COACH') {
     exceptions: [],
     students: [student],
     packages: [],
+    packageScopes: {
+      services: [privateService, groupService].map(({ id, name, active }) => ({ id, name, active })),
+      rentalLocations: [{
+        id: location.id,
+        name: location.name,
+        active: location.active,
+        rentalEnabled: true,
+      }],
+    },
     bookings: [],
     payments: [],
     notifications: [],
@@ -262,6 +272,7 @@ const rental = {
 const reservation = {
   id: 'release-reservation',
   businessName: business.name,
+  renterName: 'Avery Student',
   locationId: location.id,
   locationName: location.name,
   unitId: 'release-unit',
@@ -836,11 +847,16 @@ test('public booking can drop a preselected package that expires before the fina
 
 test('club managers create, edit, and disable a facility rental listing', async ({ page }) => {
   let configuredRental: Record<string, unknown> | null = null;
+  let classUnitSchedulingEnabled = false;
   const compositeSaves: Array<{ path: string; body: Record<string, unknown> }> = [];
   let rejectNextSave = true;
   const { id: _locationId, ...locationInput } = location;
 
-  await mockWorkspace(page, 'CLUB');
+  await page.route('**/api/workspace', route => fulfillJson(route, {
+    ...workspace('CLUB'),
+    locations: [{ ...location, classUnitSchedulingEnabled }],
+  }));
+  await page.route('**/api/staff/invitations', route => fulfillJson(route, { invitations: [] }));
   await page.route(/\/api\/rental-locations\/[^/?]+$/, route => {
     const request = route.request();
     if (request.method() !== 'PUT') {
@@ -854,6 +870,7 @@ test('club managers create, edit, and disable a facility rental listing', async 
     }
     const rentalInput = body.rental as Record<string, unknown>;
     const savedLocation = { ...location, ...(body.location as Record<string, unknown>) };
+    classUnitSchedulingEnabled = savedLocation.classUnitSchedulingEnabled as boolean;
     configuredRental = rentalInput.enabled ? {
       ...rental, ...rentalInput, id: location.id, locationId: location.id, enabled: true,
       units: (rentalInput.units as Array<Record<string, unknown>>).map((unit, index) => ({
@@ -889,8 +906,13 @@ test('club managers create, edit, and disable a facility rental listing', async 
   let dialog = page.getByRole('dialog', { name: 'Edit location' });
   await expect(dialog.getByRole('heading', { name: 'Training ground rental', exact: true })).toBeVisible();
   const rentalToggle = dialog.getByRole('checkbox', { name: /^Offer this location for public rental/ });
+  const classUnitToggle = dialog.getByRole('checkbox', { name: /^Reserve a specific court for coached classes/ });
   await expect(rentalToggle).not.toBeChecked();
+  await expect(classUnitToggle).toBeDisabled();
+  await expect(classUnitToggle).not.toBeChecked();
   await rentalToggle.check();
+  await expect(classUnitToggle).toBeEnabled();
+  await classUnitToggle.check();
   await dialog.getByRole('textbox', { name: /^Sport/ }).fill('Tennis');
   await dialog.getByRole('spinbutton', { name: /^Hourly rate \(SGD\)/ }).fill('55');
   await dialog.getByRole('textbox', { name: /^Unit label/ }).fill('Court');
@@ -921,7 +943,7 @@ test('club managers create, edit, and disable a facility rental listing', async 
   expect(compositeSaves[1].path).toBe(`/api/rental-locations/${location.id}`);
   expect(compositeSaves[1].body).toEqual({
     mode: 'UPDATE',
-    location: locationInput,
+    location: { ...locationInput, classUnitSchedulingEnabled: true },
     rental: { enabled: true, sport: 'Tennis',
     rules: 'Non-marking shoes only.',
     amenities: ['Indoor', 'Showers'],
@@ -945,6 +967,7 @@ test('club managers create, edit, and disable a facility rental listing', async 
   await locationCard.getByRole('button', { name: 'Edit location', exact: true }).click();
   dialog = page.getByRole('dialog', { name: 'Edit location' });
   await expect(dialog.getByRole('checkbox', { name: /^Offer this location for public rental/ })).toBeChecked();
+  await expect(dialog.getByRole('checkbox', { name: /^Reserve a specific court for coached classes/ })).toBeChecked();
   await dialog.getByRole('spinbutton', { name: /^Hourly rate \(SGD\)/ }).fill('62.50');
   await dialog.getByRole('spinbutton', { name: /^Minimum booking notice \(hours\)/ }).fill('4');
   await dialog.getByRole('textbox', { name: /^Amenities/ }).fill('Indoor\nLockers');
@@ -953,7 +976,7 @@ test('club managers create, edit, and disable a facility rental listing', async 
   await expect(dialog).toHaveCount(0);
   expect(compositeSaves).toHaveLength(3);
   expect(compositeSaves[2].body).toEqual({
-    mode: 'UPDATE', location: locationInput, rental: { enabled: true, sport: 'Tennis',
+    mode: 'UPDATE', location: { ...locationInput, classUnitSchedulingEnabled: true }, rental: { enabled: true, sport: 'Tennis',
     rules: 'Non-marking shoes only.',
     amenities: ['Indoor', 'Lockers'],
     unitLabel: 'Court',
@@ -975,6 +998,8 @@ test('club managers create, edit, and disable a facility rental listing', async 
 
   await locationCard.getByRole('button', { name: 'Edit location', exact: true }).click();
   dialog = page.getByRole('dialog', { name: 'Edit location' });
+  await expect(dialog.getByRole('checkbox', { name: /^Reserve a specific court for coached classes/ })).toBeChecked();
+  await dialog.getByRole('checkbox', { name: /^Reserve a specific court for coached classes/ }).uncheck();
   await dialog.getByRole('checkbox', { name: /^Offer this location for public rental/ }).uncheck();
   await dialog.getByRole('button', { name: 'Save location', exact: true }).click();
   await expect(dialog).toHaveCount(0);

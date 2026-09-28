@@ -2254,9 +2254,8 @@ function BookingReceipt({
             </span>
           </div>
           <p className="text-[11px] leading-relaxed text-[#8d9881]">
-            No payment was collected while making this booking. You can pay
-            {" "}{data.business.name} from My bookings using the simulated Stripe
-            checkout; no real card will be charged.
+            No payment was collected while making this booking. You can review
+            {" "}{data.business.name}&rsquo;s available payment options from My bookings.
           </p>
         </div>
       </div>

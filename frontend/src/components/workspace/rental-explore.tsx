@@ -17,8 +17,9 @@ import { AccountRentalHistory } from '@/components/account-rental-dialog';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { createRentalReservation, loadRental, loadRentals, loadRentalSlots } from '@/lib/api';
-import type { RentalDetail, RentalListing, RentalReservation, RentalSlot } from '@/lib/types';
+import type { RentalDetail, RentalListing, RentalReservation, RentalSlot, WorkspaceResponse } from '@/lib/types';
 import { dateKey, money, shortDate, time } from '@/lib/utils';
+import { RentalReservations } from './rental-reservations';
 
 function durationOptions(rental: RentalDetail) {
   const values: number[] = [];
@@ -40,7 +41,10 @@ function requestId() {
 type RentalFilters = { query: string; sport: string };
 const emptyFilters: RentalFilters = { query: '', sport: '' };
 
-export function RentalExplore() {
+export function RentalExplore({ data }: { data?: WorkspaceResponse }) {
+  const accessMode = data?.accessMode ?? (data?.user.accountType === 'CLUB' ? 'CLUB_ACCOUNT' : data ? 'COACH' : 'NONE');
+  const canManageReservations = accessMode === 'CLUB_ACCOUNT' || data?.permissions?.includes('RENTALS_VIEW') === true;
+  const [mode, setModeState] = useState<'find' | 'manage'>(() => canManageReservations && typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('mode') === 'manage' ? 'manage' : 'find');
   const [rentals, setRentals] = useState<RentalListing[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -53,6 +57,18 @@ export function RentalExplore() {
   const [failedCursor, setFailedCursor] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [historyRefreshToken, setHistoryRefreshToken] = useState(0);
+  const resultStatus = loading
+    ? 'Finding available rental venues.'
+    : loadingMore
+      ? 'Loading more rental venues.'
+      : `${rentals.length} rental ${rentals.length === 1 ? 'venue' : 'venues'} loaded.`;
+  function setMode(next: 'find' | 'manage') {
+    setModeState(next);
+    const url = new URL(window.location.href);
+    if (next === 'manage') url.searchParams.set('mode', 'manage');
+    else url.searchParams.delete('mode');
+    window.history.replaceState(window.history.state, '', url);
+  }
   const requestGeneration = useRef(0);
 
   const load = useCallback(async (filters: RentalFilters, cursor?: string) => {
@@ -112,6 +128,13 @@ export function RentalExplore() {
       </div>
     </div>
 
+    {canManageReservations && <div className="tab-bar mb-5 grid w-full grid-cols-2 sm:w-fit" role="group" aria-label="Rental workspace view">
+      <button type="button" aria-pressed={mode === 'find'} className={mode === 'find' ? 'active' : ''} onClick={() => setMode('find')}>Find a court</button>
+      <button type="button" aria-pressed={mode === 'manage'} className={mode === 'manage' ? 'active' : ''} onClick={() => setMode('manage')}>Manage reservations</button>
+    </div>}
+
+    {canManageReservations && mode === 'manage' ? <div><RentalReservations /></div> : <div>
+
     <form onSubmit={submitSearch} role="search" className="mb-5 grid gap-2 rounded-xl border border-[#e1e7dd] bg-white p-3 sm:grid-cols-[minmax(0,1fr)_minmax(150px,0.35fr)_auto] sm:p-4">
       <label className="relative mb-0">
         <span className="sr-only">Search rentable venues</span>
@@ -126,7 +149,8 @@ export function RentalExplore() {
       <Button type="submit" disabled={loading}><Search size={14} />Search</Button>
     </form>
 
-    {loading ? <div className="panel grid min-h-48 place-items-center text-xs text-stone-500"><span className="flex items-center gap-2"><Loader2 size={15} className="animate-spin" />Finding available places…</span></div>
+    <p role="status" aria-live="polite" aria-atomic="true" className="sr-only">{resultStatus}</p>
+    <div aria-busy={loading || loadingMore}>{loading ? <div className="panel grid min-h-48 place-items-center text-xs text-stone-500"><span className="flex items-center gap-2"><Loader2 size={15} className="animate-spin" />Finding available places…</span></div>
       : error ? <div className="panel p-6 text-center"><p role="alert" className="text-xs text-red-700">{error}</p><Button type="button" variant="outline" size="sm" className="mt-4" onClick={() => void load(submittedFilters)}>Try again</Button></div>
         : rentals.length ? <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{rentals.map(rental => <article key={rental.id} className="panel flex min-w-0 flex-col overflow-hidden">
         <div className="flex min-h-28 items-end bg-[linear-gradient(135deg,#e8f0e2,#f4eee3)] p-5"><span className="grid h-11 w-11 place-items-center rounded-xl bg-white/85 text-[#64805b] shadow-sm"><MapPin size={21} /></span></div>
@@ -137,7 +161,7 @@ export function RentalExplore() {
             <div className="mt-auto flex items-end justify-between gap-3 border-t border-[#edf0e8] pt-4"><p><strong className="text-lg text-[#254b38]">{money(rental.price, rental.currency)}</strong><span className="block text-[9px] text-stone-400">per hour</span></p><Button type="button" size="sm" aria-label={`View times for ${rental.name}`} onClick={() => setSelectedId(rental.id)}>View times<ArrowRight size={13} /></Button></div>
           </div>
         </article>)}</div>
-          : <div className="panel px-5 py-12 text-center"><Compass size={25} className="mx-auto text-[#91a486]" /><h2 className="mt-4 text-base text-[#294735]">No training grounds matched</h2><p className="mt-2 text-xs text-stone-500">Try a broader venue, area, or sport.</p></div>}
+          : <div className="panel px-5 py-12 text-center"><Compass size={25} className="mx-auto text-[#91a486]" /><h2 className="mt-4 text-base text-[#294735]">No training grounds matched</h2><p className="mt-2 text-xs text-stone-500">Try a broader venue, area, or sport.</p></div>}</div>
 
     {(nextCursor || failedCursor) && !loading && <div className="mt-5 flex flex-col items-center gap-3">
       {paginationError && <p role="alert" className="max-w-xl text-center text-xs text-red-700">{paginationError}</p>}
@@ -151,6 +175,7 @@ export function RentalExplore() {
       onClose={() => setSelectedId(null)}
       onReserved={() => setHistoryRefreshToken(value => value + 1)}
     />
+    </div>}
   </section>;
 }
 
@@ -252,7 +277,7 @@ function RentalDialog({ rentalId, onClose, onReserved }: { rentalId: string | nu
     <DialogContent className="max-w-2xl" onEscapeKeyDown={event => { if (reserving) event.preventDefault(); }} onPointerDownOutside={event => { if (reserving) event.preventDefault(); }}>
       <DialogTitle className="text-xl font-semibold tracking-tight">{rental?.name || 'Training ground'}</DialogTitle>
       <DialogDescription className="mt-2 text-xs text-stone-500">{rental ? `${rental.sport} · hosted by ${rental.club.name}` : 'Loading venue details…'}</DialogDescription>
-      {loading ? <div className="grid min-h-40 place-items-center text-xs text-stone-500"><Loader2 size={16} className="animate-spin" /></div> : rental && !reservation ? <div className="mt-5 space-y-5">
+      {loading ? <div role="status" aria-live="polite" className="grid min-h-40 place-items-center text-xs text-stone-500"><span className="flex items-center gap-2"><Loader2 size={16} className="animate-spin" />Loading venue details…</span></div> : rental && !reservation ? <div className="mt-5 space-y-5">
         <div className="grid gap-3 rounded-xl bg-[#f7f9f4] p-4 text-[11px] text-stone-600 sm:grid-cols-2"><p className="flex items-start gap-2"><MapPin size={14} className="mt-0.5 shrink-0" />{rental.address}</p><p className="flex items-center gap-2"><Clock3 size={14} />{rental.minDuration}–{rental.maxDuration} minutes</p></div>
         {rental.amenities.length > 0 && <div><h3 className="text-xs font-semibold text-[#344b39]">Amenities</h3><div className="mt-2 flex flex-wrap gap-2">{rental.amenities.map(amenity => <span key={amenity} className="badge bg-stone-100! text-stone-500!">{amenity}</span>)}</div></div>}
         <div className="form-grid max-sm:grid-cols-1!">

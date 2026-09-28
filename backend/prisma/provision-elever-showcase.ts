@@ -42,13 +42,16 @@ if (new Set(Object.values(credentials).map(credential => credential.password)).s
 }
 
 const allApplicationTables = [
-  'AccountNotification', 'CalendarBusyInterval', 'CalendarEventProjection', 'CalendarOAuthAttempt',
+  'AccountNotification', 'BusinessAuditEvent', 'BusinessPaymentAccount', 'CalendarBusyInterval', 'CalendarEventProjection', 'CalendarOAuthAttempt',
   'CalendarRevocationJob', 'CalendarSyncJob', 'CalendarConnection', 'CoachInvitation', 'AuthSession', 'Availability',
+  'ClubStaffAccess', 'ClubStaffInvitation',
   'ChatMessage', 'ChatReadState', 'ChatThreadMember', 'ChatThread', 'SessionProposal', 'SessionProposalResponse',
-  'AvailabilityException', 'Booking', 'Business', 'Instructor', 'IntegrityFlag', 'LessonPackage',
+  'AvailabilityException', 'Booking', 'BookingSeries', 'BookingSeriesMember', 'Business', 'Instructor', 'IntegrityFlag', 'LessonPackage',
   'LessonPackageLocation', 'LessonPackageService', 'Location', 'Membership', 'Notification', 'PackageOffer',
-  'PackageOfferLocation', 'PackageOfferService', 'Participant', 'Payment', 'PaymentIntent', 'RescheduleRequest',
-  'Service', 'ServiceInstructor', 'ServiceLocation', 'Student', 'User', 'VenueOpeningHour', 'VenueReservation', 'VenueUnit',
+  'NotificationPreference', 'OutboundDelivery', 'PackageOfferLocation', 'PackageOfferService', 'Participant',
+  'Payment', 'PaymentIntent', 'PaymentProviderEvent', 'PaymentRefund', 'PaymentSettlement', 'RescheduleRequest',
+  'Service', 'ServiceInstructor', 'ServiceLocation', 'Student', 'User', 'VenueOpeningHour', 'VenueReservation',
+  'VenueUnit', 'VenueUnitAllocation',
 ] as const;
 
 const expectedMigrations = readdirSync(new URL('./migrations/', import.meta.url), { withFileTypes: true })

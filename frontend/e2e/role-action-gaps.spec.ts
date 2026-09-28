@@ -412,6 +412,7 @@ test('the account page saves a coach profile and keeps the new details after rel
     await route.fulfill({ json: session });
   });
   await page.route('**/api/coach-invitations', route => route.fulfill({ json: { invitations: [] } }));
+  await page.route('**/api/club-staff-invitations', route => route.fulfill({ json: { invitations: [] } }));
 
   await page.goto('/account');
   await expect(page.getByRole('heading', { name: 'Welcome, Morgan Coach.', exact: true })).toBeVisible();
@@ -473,6 +474,7 @@ test('an unaffiliated coach can search public account profiles from the account 
 
   await page.route('**/api/auth/me', route => route.fulfill({ json: session }));
   await page.route('**/api/coach-invitations', route => route.fulfill({ json: { invitations: [] } }));
+  await page.route('**/api/club-staff-invitations', route => route.fulfill({ json: { invitations: [] } }));
   await page.route('**/api/rentals', route => route.fulfill({ json: { rentals: [], nextCursor: null } }));
   await page.route('**/api/calendar/connection', route => route.fulfill({
     json: { configured: false, eligible: true, provider: null, state: 'DISCONNECTED', connected: false, email: null, calendarName: null, syncEnabled: false, busyCheckEnabled: false, connectedAt: null, lastSyncedAt: null, lastBusyAt: null, busyCacheExpiresAt: null, error: null },
@@ -522,6 +524,9 @@ test('a student can see and update their username from Profile', async ({ page }
   const updates: Array<Record<string, unknown>> = [];
 
   await page.route('**/api/auth/me', route => route.fulfill({ json: session }));
+  await page.route('**/api/payments/capabilities', route => route.fulfill({
+    json: { mode: 'disabled', enabled: false, liveCheckout: false, simulatedCheckout: false, publishableKey: null },
+  }));
   await page.route('**/api/account/profile', async route => {
     const update = route.request().postDataJSON() as Record<string, unknown>;
     updates.push(update);
@@ -586,6 +591,9 @@ test('the account page redirects anonymous visitors to sign in and students to s
     memberships: [],
   };
   await page.route('**/api/auth/me', route => route.fulfill({ json: studentSession }));
+  await page.route('**/api/payments/capabilities', route => route.fulfill({
+    json: { mode: 'disabled', enabled: false, liveCheckout: false, simulatedCheckout: false, publishableKey: null },
+  }));
   await page.route('**/api/account/clubs*', route => route.fulfill({ json: { clubs: [] } }));
   await page.route('**/api/account/bookings*', route => route.fulfill({ json: { bookings: [] } }));
   await page.route('**/api/account/notifications', route => route.fulfill({ json: { notifications: [] } }));

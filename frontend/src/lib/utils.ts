@@ -7,6 +7,11 @@ export const money = (value: number, currency = 'SGD') => new Intl.NumberFormat(
 export const dateKey = (value: Date | string = new Date(), timezone = 'Asia/Singapore') => formatInTimeZone(value, timezone, 'yyyy-MM-dd');
 export const time = (value: Date | string, timezone = 'Asia/Singapore') => formatInTimeZone(value, timezone, 'h:mm a');
 export const shortDate = (value: Date | string, timezone = 'Asia/Singapore') => formatInTimeZone(value, timezone, 'EEE, d MMM');
+export function shortDateKey(key: string) {
+  const [year, month, day] = key.split('-').map(Number);
+  return new Intl.DateTimeFormat('en-SG', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })
+    .format(new Date(Date.UTC(year, month - 1, day)));
+}
 /** Match the backend's calendar-week recurrence in the business timezone. */
 export function addCalendarWeeks(value: Date | string, weeks: number, timezone: string) {
   const date = typeof value === 'string' ? new Date(value) : value;

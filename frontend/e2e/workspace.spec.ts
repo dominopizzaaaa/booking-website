@@ -50,7 +50,8 @@ test('demo workspace loads, persists, and adapts to the screen', async ({ page }
   await expect.poll(() => page.evaluate(() => window.history.state?.workspaceBusinessId)).toBe(data.business.id);
   await expect(page.locator('header .mobile-menu')).toHaveAttribute('aria-label', `Current workspace ${data.business.name}. Open profile`);
   if (await page.getByRole('navigation', { name: 'Mobile navigation' }).isVisible()) {
-    await expect(page.locator('header').getByRole('button', { name: 'Explore', exact: true })).toBeVisible();
+    await expect(page.getByRole('navigation', { name: 'Mobile navigation' })
+      .getByRole('button', { name: 'Explore', exact: true })).toBeVisible();
   }
   expect(data.locations.length).toBeGreaterThanOrEqual(3);
   expect(data.bookings.length).toBeGreaterThan(0);
@@ -119,18 +120,21 @@ test('booking states distinguish coach and venue waits and keep completed lesson
     return booking;
   });
   await page.route('**/api/workspace', route => route.fulfill({ json: { ...workspace, bookings } }));
+  await page.route(/\/api\/bookings(?:\?.*)?$/, route => route.fulfill({
+    json: { bookings, nextCursor: null },
+  }));
 
   await page.goto('/?tab=explore&view=bookings');
   await expect(page.locator('main').getByRole('heading', { name: 'Bookings', exact: true })).toBeVisible();
 
-  const coachRow = page.getByRole('row').filter({ hasText: 'Coach response status check' });
-  const venueRow = page.getByRole('row').filter({ hasText: 'Venue status check' });
-  const completedRow = page.getByRole('row').filter({ hasText: 'Completed status check' });
-  await expect(coachRow.getByText('Awaiting coach', { exact: true })).toBeVisible();
-  await expect(venueRow.getByText('Venue pending', { exact: true })).toBeVisible();
-  await expect(completedRow.getByText('Completed', { exact: true })).toBeVisible();
+  const coachCard = page.locator('main article').filter({ hasText: 'Coach response status check' });
+  const venueCard = page.locator('main article').filter({ hasText: 'Venue status check' });
+  const completedCard = page.locator('main article').filter({ hasText: 'Completed status check' });
+  await expect(coachCard.getByText('Awaiting coach', { exact: true })).toBeVisible();
+  await expect(venueCard.getByText('Venue pending', { exact: true })).toBeVisible();
+  await expect(completedCard.getByText('Completed', { exact: true })).toBeVisible();
 
-  await completedRow.getByRole('button', { name: /Open booking details/ }).click();
+  await completedCard.getByRole('button', { name: /Open booking details/ }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: 'Completed status check', exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Propose a new time', exact: true })).toHaveCount(0);

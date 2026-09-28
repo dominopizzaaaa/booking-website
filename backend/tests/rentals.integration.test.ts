@@ -122,9 +122,32 @@ describe.sequential('venue rentals', () => {
 
     await request(app).put(`/api/rental-locations/${locationId}`).set('Cookie', club.cookie)
       .send(compositeBody('CREATE', { location: { name: 'Conflicting replay' } })).expect(409);
+    await request(app).put(`/api/rental-locations/${locationId}`).set('Cookie', club.cookie)
+      .send(compositeBody('CREATE', { location: { classUnitSchedulingEnabled: true } })).expect(409);
     const otherClub = await tenants.fixture();
     await request(app).put(`/api/rental-locations/${locationId}`).set('Cookie', otherClub.cookie)
       .send(body).expect(409);
+  });
+
+  it('requires rental inventory when enabling Class unit scheduling and keeps the composite body strict', async () => {
+    const disabledRentalId = `rental_loc_${randomUUID().replaceAll('-', '')}`;
+    await request(app).put(`/api/rental-locations/${disabledRentalId}`).set('Cookie', club.cookie).send({
+      mode: 'CREATE', location: { ...locationBody, classUnitSchedulingEnabled: true }, rental: { enabled: false },
+    }).expect(400);
+    expect(await prisma.location.findUnique({ where: { id: disabledRentalId } })).toBeNull();
+
+    const inactiveInventoryId = `rental_loc_${randomUUID().replaceAll('-', '')}`;
+    await request(app).put(`/api/rental-locations/${inactiveInventoryId}`).set('Cookie', club.cookie)
+      .send(compositeBody('CREATE', {
+        location: { classUnitSchedulingEnabled: true },
+        rental: { units: configBody.units.map(unit => ({ ...unit, active: false })) },
+      })).expect(400);
+    expect(await prisma.location.findUnique({ where: { id: inactiveInventoryId } })).toBeNull();
+
+    const extraFieldId = `rental_loc_${randomUUID().replaceAll('-', '')}`;
+    await request(app).put(`/api/rental-locations/${extraFieldId}`).set('Cookie', club.cookie)
+      .send({ ...compositeBody('CREATE'), unexpected: true }).expect(400);
+    expect(await prisma.location.findUnique({ where: { id: extraFieldId } })).toBeNull();
   });
 
   it('rolls back location and inventory changes when rental or core location validation fails', async () => {
@@ -242,11 +265,17 @@ describe.sequential('venue rentals', () => {
     const student = await account();
     const start = futureStart();
     const unit = configured.body.rental.units[0];
-    await prisma.venueReservation.create({ data: {
-      businessId: club.business.id, locationId: club.location.id, unitId: unit.id, userId: student.user.id,
-      startAt: start.toJSDate(), endAt: start.plus({ minutes: 60 }).toJSDate(), duration: 60, price: 2_400,
-      status: 'PENDING', paymentStatus: 'UNPAID',
-    } });
+    await prisma.$transaction(async tx => {
+      const reservation = await tx.venueReservation.create({ data: {
+        businessId: club.business.id, locationId: club.location.id, unitId: unit.id, userId: student.user.id,
+        startAt: start.toJSDate(), endAt: start.plus({ minutes: 60 }).toJSDate(), duration: 60, price: 2_400,
+        status: 'PENDING', paymentStatus: 'UNPAID',
+      } });
+      await tx.venueUnitAllocation.create({ data: {
+        businessId: club.business.id, locationId: club.location.id, unitId: unit.id, reservationId: reservation.id,
+        startAt: reservation.startAt, endAt: reservation.endAt, source: 'RENTAL', unitName: unit.name,
+      } });
+    });
     const slots = await request(app).get(`/api/rentals/${club.location.id}/slots`)
       .query({ date: start.toISODate(), duration: 60 }).set('Cookie', student.cookie).expect(200);
     expect(slots.body.timezone).toBe('Asia/Singapore');
@@ -441,6 +470,11 @@ describe.sequential('venue rentals', () => {
     const mine = await request(app).get('/api/rentals/reservations/mine').set('Cookie', student.cookie).expect(200);
     expect(mine.body.reservations.map((reservation: { id: string }) => reservation.id)).toContain(paid.body.reservation.id);
     expect(mine.body.reservations[0].businessName).toBe(club.business.name);
+    expect(mine.body.reservations[0].renterName).toBe(student.user.name);
+    const provider = await request(app).get('/api/rental-reservations').set('Cookie', club.cookie).expect(200);
+    expect(provider.body.reservations).toContainEqual(expect.objectContaining({
+      id: paid.body.reservation.id, renterName: student.user.name,
+    }));
     const originalUnitName = paid.body.reservation.unitName as string;
     await request(app).patch(`/api/rentals/${club.location.id}`).set('Cookie', club.cookie).send({
       cancellationHours: 8760, units: configured.body.rental.units.map((unit: { id: string; name: string }, index: number) => ({

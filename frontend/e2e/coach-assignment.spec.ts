@@ -116,6 +116,8 @@ test('a coach accepts a lesson assigned by the club from the booking dialog', as
 
   await page.goto('/?tab=explore&view=bookings');
   await expect(page.locator('main').getByRole('heading', { name: 'Bookings', exact: true })).toBeVisible();
+  await page.getByRole('textbox', { name: 'Search', exact: true }).fill(serviceName);
+  await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
   await page.getByRole('button', {
     name: `Open booking details for ${serviceName} with ${studentName}`,
     exact: true,
@@ -168,6 +170,8 @@ test('a coach accepts a lesson assigned by the club from the booking dialog', as
 
   await page.goto('/?tab=explore&view=bookings');
   await expect(page.locator('main').getByRole('heading', { name: 'Bookings', exact: true })).toBeVisible();
+  await page.getByRole('textbox', { name: 'Search', exact: true }).fill(serviceName);
+  await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
   await page.getByRole('button', {
     name: `Open booking details for ${serviceName} with ${studentName}`,
     exact: true,

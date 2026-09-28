@@ -6,12 +6,19 @@ import {
   type AccountDirectoryUser,
   type AccountPackage,
   type AuthSession,
+  type AuditEventListResult,
   type BookingInput,
+  type BookingListFilters,
+  type BookingListResult,
+  type BookingSeriesInput,
+  type BookingSeriesResult,
   type BookingResult,
   type Business,
   type CalendarConnectionStatus,
   type CalendarPreferences,
   type CalendarReturnTo,
+  type NotificationPreferences,
+  type NotificationPreferencesResponse,
   type ChatProposalAction,
   type ChatProposalSchedulingChoice,
   type ChatThreadDetail,
@@ -20,11 +27,19 @@ import {
   type CheckoutInput,
   type CheckoutResult,
   type CoachInvitation,
+  type ClubStaffAccess,
+  type ClubStaffAccessInput,
+  type ClubStaffInvitation,
+  type ClubStaffWorkspaceAccess,
   type IntegrityFlag,
+  type LiveCheckoutInput,
+  type LiveCheckoutResult,
   type PackageOffer,
   type PackageOfferBusiness,
   type PackageOfferInput,
   type Payment,
+  type PaymentCapabilities,
+  type PaymentIntent,
   type ProviderBookingResult,
   type PublicBusiness,
   type PublicBookingInput,
@@ -35,10 +50,14 @@ import {
   type RentalLocationSaveResult,
   type RentalListing,
   type RentalReservation,
+  type RentalReservationFilters,
+  type RentalReservationListResult,
   type RentalReservationInput,
   type RentalReservationResult,
   type RentalSlotsResult,
   type RescheduleRequest,
+  type OperationsInboxCategory,
+  type OperationsInboxResult,
   type Slot,
   type StudentClubDirectoryPage,
   type StudentClubDirectoryResult,
@@ -78,6 +97,8 @@ export async function loadWorkspace(): Promise<WorkspaceResponse> {
     throw new ApiError('This legacy practice workspace is no longer available. Choose a club workspace from your account.', 403);
   }
   const common = {
+    staffAccesses: workspace.staffAccesses ?? [],
+    permissions: workspace.permissions ?? [],
     rescheduleRequests: workspace.rescheduleRequests ?? [],
     notifications: (workspace.notifications ?? []).map(notification => ({
       ...notification,
@@ -94,11 +115,13 @@ export async function loadWorkspace(): Promise<WorkspaceResponse> {
 }
 
 type CompatibleBusiness = Business;
-type CompatibleAuthSession = Omit<AuthSession, 'user' | 'membership' | 'business' | 'memberships'> & {
+type CompatibleAuthSession = Omit<AuthSession, 'user' | 'membership' | 'business' | 'memberships' | 'staffAccess' | 'staffAccesses'> & {
   user: AuthSession['user'];
   membership: (Omit<NonNullable<AuthSession['membership']>, 'business'> & { business: CompatibleBusiness }) | null;
   business: CompatibleBusiness | null;
   memberships: Array<Omit<AuthSession['memberships'][number], 'business'> & { business: CompatibleBusiness }>;
+  staffAccess?: (Omit<ClubStaffWorkspaceAccess, 'business'> & { business: CompatibleBusiness }) | null;
+  staffAccesses?: Array<Omit<ClubStaffWorkspaceAccess, 'business'> & { business: CompatibleBusiness }>;
 };
 
 function readableUsername(user: CompatibleAuthSession['user']) {
@@ -110,18 +133,48 @@ function readableUsername(user: CompatibleAuthSession['user']) {
 /** Keep a rolling deployment usable while older auth payloads are still in flight. */
 export function normalizeAuthSession(value: CompatibleAuthSession): AuthSession {
   const business = (candidate: CompatibleBusiness): Business => ({ ...candidate, legacyReadOnly: candidate.legacyReadOnly ?? false });
+  const membership = value.membership ? { ...value.membership, business: business(value.membership.business) } : null;
+  const staffAccess = value.staffAccess ? { ...value.staffAccess, business: business(value.staffAccess.business) } : null;
   return {
     ...value,
     user: { ...value.user, username: readableUsername(value.user), sports: value.user.sports ?? [] },
-    membership: value.membership ? { ...value.membership, business: business(value.membership.business) } : null,
+    membership,
+    staffAccess,
     business: value.business ? business(value.business) : null,
     memberships: (value.memberships ?? []).map(membership => ({ ...membership, business: business(membership.business) })),
+    staffAccesses: (value.staffAccesses ?? []).map(access => ({ ...access, business: business(access.business) })),
+    accessMode: value.accessMode ?? (staffAccess ? 'STAFF' : membership ? value.user.accountType === 'CLUB' ? 'CLUB_ACCOUNT' : 'COACH' : 'NONE'),
   };
 }
 
 export const loadPublicBusiness = (slug: string) => api<PublicBusiness>(`/public/${encodeURIComponent(slug)}`);
 export const loadSlots = (slug: string, values: { serviceId: string; instructorId: string; locationId: string; date: string }) => api<{ slots: Slot[] }>(`/public/${encodeURIComponent(slug)}/slots?${new URLSearchParams(values)}`);
 export const createBooking = (values: BookingInput) => api<ProviderBookingResult>('/bookings', { method: 'POST', body: JSON.stringify(values) });
+const filteredQuery = (values: Record<string, string | number | undefined>) => {
+  const parameters = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) if (value !== undefined && value !== '') parameters.set(key, String(value));
+  return parameters.size ? `?${parameters}` : '';
+};
+export const loadBookings = (filters: BookingListFilters = {}) =>
+  api<BookingListResult>(`/bookings${filteredQuery(filters)}`);
+export const loadBooking = (bookingId: string) =>
+  api<{ booking: WorkspaceBooking }>(`/bookings/${encodeURIComponent(bookingId)}`);
+export const loadAuditEvents = (filters: { cursor?: string; limit?: number } = {}) =>
+  api<AuditEventListResult>(`/audit-events${filteredQuery(filters)}`);
+export async function downloadBookingsCsv(filters: Omit<BookingListFilters, 'cursor' | 'limit'>) {
+  const response = await fetch(`/api/bookings/export.csv${filteredQuery(filters)}`, { credentials: 'include' });
+  if (!response.ok) {
+    let data: { error?: string } = {};
+    if (response.headers.get('content-type')?.includes('application/json')) data = await response.json();
+    throw new ApiError(data.error || 'The booking export could not be downloaded.', response.status, data);
+  }
+  const disposition = response.headers.get('content-disposition') || '';
+  const filename = /filename="?([^";]+)"?/iu.exec(disposition)?.[1] || 'courtly-bookings.csv';
+  return { blob: await response.blob(), filename };
+}
+export const loadOperationsInbox = (filters: { category?: OperationsInboxCategory; cursor?: string; limit?: number } = {}) =>
+  api<OperationsInboxResult>(`/operations/inbox${filteredQuery(filters)}`);
+export const createBookingSeries = (values: BookingSeriesInput) => api<BookingSeriesResult>('/booking-series', { method: 'POST', body: JSON.stringify(values) });
 export const createPublicBooking = (slug: string, values: PublicBookingInput) => api<BookingResult>(`/public/${encodeURIComponent(slug)}/bookings`, { method: 'POST', body: JSON.stringify(values) });
 export async function loadAuthSession(): Promise<AuthSession> {
   return normalizeAuthSession(await api<CompatibleAuthSession>('/auth/me'));
@@ -179,11 +232,29 @@ export const cancelAccountBooking = (participantId: string) => api(`/account/boo
 export const loadCoachInvitations = () => api<{ invitations: CoachInvitation[] }>('/coach-invitations');
 export const acceptCoachInvitation = (input: { invitationId: string } | { token: string }) =>
   api<{ membershipId: string }>('/coach-invitations/accept', { method: 'POST', body: JSON.stringify(input) });
+export const loadClubStaffInvitations = () => api<{ invitations: ClubStaffInvitation[] }>('/club-staff-invitations');
+export const acceptClubStaffInvitation = (input: { invitationId: string } | { token: string }) =>
+  api<{ staffAccess: ClubStaffAccess }>('/club-staff-invitations/accept', { method: 'POST', body: JSON.stringify(input) });
+export async function switchWorkspaceAccess(source: 'MEMBERSHIP' | 'STAFF', id: string | null): Promise<AuthSession> {
+  return normalizeAuthSession(await api<CompatibleAuthSession>('/auth/workspace-access', {
+    method: 'POST', body: JSON.stringify({ source, id }),
+  }));
+}
 export const loadStaffInvitations = () => api<{ invitations: CoachInvitation[] }>('/staff/invitations');
 export const createStaffInvitation = (values: { email: string; rescheduleNoticeHours: number }) =>
   api<{ invitation: CoachInvitation; invitePath: string }>('/staff/invitations', { method: 'POST', body: JSON.stringify(values) });
 export const revokeStaffInvitation = (invitationId: string) =>
   api<{ ok: true }>(`/staff/invitations/${encodeURIComponent(invitationId)}`, { method: 'DELETE', body: JSON.stringify({}) });
+export const loadClubStaffAccess = () => api<{ staff: ClubStaffAccess[] }>('/staff-access');
+export const loadClubStaffAccessInvitations = () => api<{ invitations: ClubStaffInvitation[] }>('/staff-access/invitations');
+export const createClubStaffAccessInvitation = (values: ClubStaffAccessInput & { email: string }) =>
+  api<{ invitation: ClubStaffInvitation; invitePath: string }>('/staff-access/invitations', { method: 'POST', body: JSON.stringify(values) });
+export const updateClubStaffAccess = (accessId: string, values: ClubStaffAccessInput) =>
+  api<ClubStaffAccess>(`/staff-access/${encodeURIComponent(accessId)}`, { method: 'PATCH', body: JSON.stringify(values) });
+export const revokeClubStaffAccess = (accessId: string) =>
+  api<{ ok: true }>(`/staff-access/${encodeURIComponent(accessId)}`, { method: 'DELETE', body: JSON.stringify({}) });
+export const revokeClubStaffAccessInvitation = (invitationId: string) =>
+  api<{ ok: true }>(`/staff-access/invitations/${encodeURIComponent(invitationId)}`, { method: 'DELETE', body: JSON.stringify({}) });
 
 // A student proposes a new time; the coach's side decides. Nothing moves
 // until the request is accepted, so all three of these return the booking in
@@ -254,6 +325,11 @@ export const checkoutPackageOffer = (id: string, values: CheckoutInput) =>
   api<CheckoutResult>(`/account/package-offers/${encodeURIComponent(id)}/checkout`, { method: 'POST', body: JSON.stringify(values) });
 export const checkoutBookingParticipant = (participantId: string, values: CheckoutInput) =>
   api<CheckoutResult>(`/account/bookings/${encodeURIComponent(participantId)}/checkout`, { method: 'POST', body: JSON.stringify(values) });
+export const loadPaymentCapabilities = () => api<PaymentCapabilities>('/payments/capabilities');
+export const createLiveCheckoutIntent = (values: LiveCheckoutInput) =>
+  api<LiveCheckoutResult>('/payments/checkout-intents', { method: 'POST', body: JSON.stringify(values) });
+export const loadLiveCheckoutIntent = (id: string) =>
+  api<{ paymentIntent: PaymentIntent }>(`/payments/checkout-intents/${encodeURIComponent(id)}`);
 
 export const loadRentals = (filters: { query?: string; sport?: string; cursor?: string } = {}) => {
   const parameters = new URLSearchParams();
@@ -273,6 +349,8 @@ export const createRentalReservation = (id: string, values: RentalReservationInp
   api<RentalReservationResult>(`/rentals/${encodeURIComponent(id)}/reservations`, { method: 'POST', body: JSON.stringify(values) });
 export const loadAccountRentalReservations = () =>
   api<{ reservations: RentalReservation[] }>('/rentals/reservations/mine');
+export const loadRentalReservations = (filters: RentalReservationFilters = {}) =>
+  api<RentalReservationListResult>(`/rental-reservations${filteredQuery(filters)}`);
 export const cancelRentalReservation = (id: string) =>
   api<{ reservation: RentalReservation }>(`/rentals/reservations/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: JSON.stringify({}) });
 export async function createRental(values: RentalConfigInput): Promise<RentalDetail> {
@@ -335,6 +413,12 @@ export async function disconnectGoogleCalendar(): Promise<CalendarConnectionStat
   const hasInlineStatus = Object.keys(value).some(key => key !== 'ok' && key !== 'status');
   return hasInlineStatus ? normalizeCalendarConnection(value) : null;
 }
+export const loadNotificationPreferences = () =>
+  api<NotificationPreferencesResponse>('/account/notification-preferences');
+export const updateNotificationPreferences = (preferences: NotificationPreferences) =>
+  api<NotificationPreferencesResponse>('/account/notification-preferences', {
+    method: 'PATCH', body: JSON.stringify(preferences),
+  });
 export const resolveIntegrityFlag = (id: string, status: IntegrityFlag['status'], note = '') =>
   api<IntegrityFlag>(`/integrity-flags/${encodeURIComponent(id)}`, {
     method: 'PATCH', body: JSON.stringify({ status, note }),

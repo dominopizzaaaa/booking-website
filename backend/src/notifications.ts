@@ -1,4 +1,5 @@
 import type { Prisma } from '@prisma/client';
+import { coachScoped, hasClubPermission, type AuthContext } from './http.js';
 
 /**
  * The shared alert vocabulary for both audiences.
@@ -54,4 +55,23 @@ export function notifyWorkspace(tx: Tx, alert: ProviderAlert) {
       actionNeeded: alert.actionNeeded ?? false,
     },
   });
+}
+
+/** One permission-aware notification scope shared by workspace reads and
+ * mark-as-read mutations. Hiding a card in the browser is not authorization. */
+export function workspaceNotificationWhere(auth: AuthContext): Prisma.NotificationWhereInput {
+  const businessId = auth.business?.id ?? '__none__';
+  if (coachScoped(auth)) {
+    return {
+      businessId, instructorId: auth.membership?.instructorId ?? '__none__',
+      type: { notIn: ['INTEGRITY', 'PAYMENT', 'PAYOUT'] },
+    };
+  }
+  const types: string[] = [];
+  if (hasClubPermission(auth, 'BOOKINGS_VIEW') || hasClubPermission(auth, 'BOOKINGS_MANAGE')) {
+    types.push('BOOKING', 'RESCHEDULE', 'CANCELLATION', 'PENDING_ACTION', 'ATTENDANCE', 'NOTICE');
+  }
+  if (hasClubPermission(auth, 'PAYMENTS_VIEW')) types.push('PAYMENT', 'PAYOUT');
+  if (hasClubPermission(auth, 'INTEGRITY_VIEW')) types.push('INTEGRITY');
+  return { businessId, type: { in: [...new Set(types)] } };
 }

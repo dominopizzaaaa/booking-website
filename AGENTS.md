@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 3.3.0** · Last updated 2026-09-28
+**Version 3.5.5** · Last updated 2026-09-28
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -27,8 +27,10 @@ not a person, and never teaches. A founder who also coaches uses a separate
 `Membership` is only an affiliation link. It has no role: a club has one
 membership to its own business; a coach has one per club that added them; a
 student has none. Permissions come from `User.accountType` plus
-`Business.kind`. Existing `SOLO` memberships may remain as inaccessible
-history, but Courtly creates no new private-practice workspace or direct sale.
+`Business.kind`, or from an explicitly selected `ClubStaffAccess` grant. Named
+staff access is not a fourth account type and never creates a teaching
+affiliation. Existing `SOLO` memberships may remain as inaccessible history,
+but Courtly creates no new private-practice workspace or direct sale.
 
 ### The money path — the single most important rule
 
@@ -68,6 +70,10 @@ backend/           Express + Prisma API (TypeScript, ESM)
     http.ts        Errors, manager/club guards, coachScope, initials()
     serializers.ts authState, bookingJson, membershipJson, isClubAccount
     scheduling.ts  Slot evaluation, conflict/travel rules, booking creation
+    booking-series.ts  Atomic finite series creation
+    booking-query.ts   Paginated booking search/export query rules
+    venue-allocations.ts Shared Class/rental unit occupancy ledger
+    operations.ts  Derived action-needed operations inbox
     reschedule.ts  Two-sided reschedule requests
     chat.ts        Account + session chat, scheduling proposals, reminder worker
     chat-events.ts Thread creation and lifecycle system lines (no scheduling imports)
@@ -77,14 +83,20 @@ backend/           Express + Prisma API (TypeScript, ESM)
     bookings.ts    Bookings, coach acceptance, payments, payouts, reversal
     crud.ts        Classes, instructors, locations, students, packages, …
     staff.ts       Club-created coach affiliations
+    staff-access.ts Named non-teaching staff invitations and permission grants
+    audit.ts       Immutable named-actor snapshots for staff-access changes
     venues.ts      Google Maps venue lookup
     calendar.ts    Personal Google OAuth and connection API
     calendar-crypto.ts  OAuth-token encryption and key rotation
     google-calendar.ts  Narrow Google Calendar HTTP client
     calendar-sync.ts  Async event projection and free/busy refresh worker
     account-directory.ts  Privacy-safe authenticated account search
-    commerce.ts    Package offers, My Packages, simulated checkout
+    commerce.ts    Package offers, My Packages, and simulated checkout fallback
     rentals.ts     Rental discovery, inventory, slots, and reservations
+    payments/      Stripe provider adapter, checkout orchestration, webhooks
+    outbound-events.ts  Durable transactional-email enqueueing
+    outbound-worker.ts  Leased retrying email delivery worker
+    email-provider.ts   Disabled, capture, and Resend providers
     workspace.ts   The single GET /api/workspace payload
     public.ts      Public booking page + student self-service
     admin.ts       Platform console (ADMIN_PASSWORD gated; not an account type)
@@ -130,7 +142,13 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
 | Change Google Calendar OAuth/sync | `backend/src/calendar.ts`, `calendar-sync.ts`, `google-calendar.ts`, then `frontend/src/components/calendar-connection-card.tsx` |
 | Change provider UI | `frontend/src/components/workspace/` |
 | Change slot / conflict rules | `backend/src/scheduling.ts` |
+| Change finite booking series | `backend/src/booking-series.ts`, then the booking dialog/types |
+| Change Class/rental court allocation | `backend/src/venue-allocations.ts`, then `scheduling.ts` and `rentals.ts` |
+| Change booking search, export, or operations inbox | `backend/src/booking-query.ts`, `operations.ts`, then the workspace booking UI |
+| Change named staff access or permissions | `backend/src/staff-access.ts`, `http.ts`, `workspace.ts`, then the staff-access UI |
 | Change alert icons or ordering | `frontend/src/lib/alerts.ts` |
+| Change live Stripe orchestration | `backend/src/payments/`, then the student checkout UI |
+| Change transactional email | `backend/src/outbound-events.ts`, `outbound-worker.ts`, `email-provider.ts`, and `email-templates.ts` |
 | Change account/session chat, proposals or reminders | `backend/src/chat.ts`, `chat-events.ts`, then `frontend/src/components/chat/` |
 | Add an env var | `backend/src/config.ts` + `backend/.env.example` + README |
 
@@ -166,6 +184,28 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
   inside a club. Do not recreate these checks from membership counts or
   instructor presence. A membership is usable only when it is active, belongs
   to a `CLUB`, and its business is not `legacyReadOnly`.
+- **Named staff is a separately selected access mode.** `ClubStaffAccess`
+  belongs to a registered `STUDENT` or `COACH` account and a `CLUB`; it must
+  never create a `Membership`, `Instructor`, or new account type. A session
+  selects either `activeMembershipId` or `activeStaffAccessId`, never both. Use
+  `hasClubPermission()`, `requireClubPermission()`, and
+  `requireCoachOrClubPermission()` rather than treating every result of
+  `managesBusiness()` as fully authorized. The institutional `CLUB` account
+  retains implicit full authority. Staff presets are copied to each invitation
+  and grant; changing a preset later must not silently broaden existing access.
+  Named staff may delegate only a strict subset of their own permissions and
+  may never grant, edit, or revoke `STAFF_MANAGE` or administrator-equivalent
+  access; those actions belong to the institutional club account. Delegation
+  compares effective permissions, including transitive manage-to-view
+  implications, so the API and workspace permission choices stay aligned.
+- Staff invitations are email-bound, valid for seven days, and store only a
+  SHA-256 token digest. Accepting preserves the person's account type and
+  selects staff mode. Revocation is soft, clears every session using the grant,
+  and leaves audit history. `BusinessAuditEvent` currently records staff-access
+  invitation, acceptance, update, and revocation with actor/permission
+  snapshots. `GET /api/audit-events` exposes the selected club's cursor-paginated,
+  redacted history to `AUDIT_VIEW` users, and the responsive audit log is shown
+  in Insights without granting access to financial reporting.
 - **An instructor row is not bookable on its own.** `bookableInstructorWhere()`
   in `scheduling.ts` is the shared predicate: active roster row + active
   membership + registered provider account. Use it, do not re-implement it.
@@ -209,7 +249,7 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
   grouped workspace tool hub, with owned-venue discovery under the named
   **Rent a court** destination.
 
-### Package offers and simulated checkout
+### Package offers and payment checkout
 
 `PackageOffer` is the club-owned marketplace product. It must scope credits to
 at least one active Class (`PackageOfferService`) and/or active rentable
@@ -219,11 +259,48 @@ name, price, credits, expiry, and all scopes into `LessonPackage` plus its join
 rows. Students see those purchases as **My Packages**.
 
 `PaymentIntent` is the idempotent checkout record for `PACKAGE`, `BOOKING`, or
-`RENTAL`; the implemented provider is deliberately `SIMULATED_STRIPE`. The
-server owns amount, currency, payment route, and target. A successful paid
-checkout creates exactly one `STUDENT_TO_CLUB` `Payment`; a failed simulation
-creates only a failed intent. Reusing one user's idempotency key with a
-different target or outcome is a conflict.
+`RENTAL`; the server owns amount, currency, payment route, and target. The
+legacy commerce routes and all rentals still use `SIMULATED_STRIPE`. The
+provider-backed `/api/payments/checkout-intents` route supports only `PACKAGE`
+and `BOOKING` with Stripe. It requires `PAYMENTS_MODE=stripe` plus an externally
+provisioned `BusinessPaymentAccount` for the club whose connected account has
+`chargesEnabled`; Courtly has no Connect onboarding or account-provisioning API.
+The student package and Class payment surfaces select live Stripe Elements in
+Stripe mode and retain the explicit simulated flow only in simulated mode.
+
+Stripe webhooks use the raw body, verify the signature, and idempotently persist
+provider events before fulfillment. A successful result creates exactly one
+`STUDENT_TO_CLUB` payment and either the package snapshot or paid participant.
+Reversing a Stripe-backed payment first creates a durable refund request, calls
+Stripe outside the transaction with a stable idempotency key, and changes local
+payment and entitlement state only after provider-confirmed success. Webhooks
+converge pending refunds. Rental checkout remains simulated, and automated
+settlement reconciliation, connected-account onboarding, coach payouts, and
+business subscription billing are not implemented.
+Only one retryable Stripe checkout intent may exist per booking participant;
+the application serializes creation and a partial unique index protects writes
+that bypass the normal route. Webhook `livemode` must match the configured key.
+
+### Finite booking series and operational views
+
+`BookingSeries` is an explicit, finite aggregate of 2–24 dated bookings, not a
+recurrence rule. Club-side `BOOKINGS_MANAGE` users create the initial series and
+roster atomically through `POST /api/booking-series`: all occurrences, student
+conflicts, package credits, and venue resources succeed or none do. After
+creation, ordinary `Booking` and `Participant` rows remain authoritative, so a
+single cancellation, attendance mark, payment, or accepted reschedule does not
+edit the rest of the series. There is no bulk series update/cancel or later
+series-roster endpoint.
+
+Booking list queries are cursor-paginated and bounded. CSV export requires a
+closed date range of at most 366 days and refuses more than 10,000 rows. The
+workspace bootstrap contains a bounded 12-week-past/548-day-future operational
+window (at most 2,000 past plus 2,000 future records); `GET /api/bookings/:id`
+loads an exact tenant-scoped record selected from paginated results or alerts.
+The operations inbox is a derived view of current coach acceptance, venue approval,
+attendance, reschedule, unpaid-participant, and rental work; it is not persisted
+assignment state. The workspace Home screen renders it with permission-aware
+categories, counts, pagination, and links to the relevant operational view.
 
 ### Owned-venue rentals
 
@@ -240,6 +317,8 @@ facilities with rental enabled, an active unit, and opening hours. Sport
 filtering is case-insensitive against the location's one `sport`. Reservations
 take an advisory lock for the unit, reject overlap, and enforce the venue's
 notice, advance, duration, increment, opening-hour, and cancellation rules. A
+provider rental-reservation result includes the renter's display name but never
+their email or internal account ID. A
 package reservation consumes one eligible rental credit and creates no cash
 payment; timely cancellation restores that credit once. A paid cancellation
 refunds the intent and reverses its student payment when one exists.
@@ -247,6 +326,14 @@ After insertion, a reservation's identity, unit, interval, price, package, and
 stored terms are immutable. Its only state change is an atomic `CONFIRMED` or
 `PENDING` to `CANCELLED` + `REFUNDED` transition that retains `packageId`,
 clears `creditConsumed`, and records `cancelledAt`; cancelled rows cannot reopen.
+
+When `Location.classUnitSchedulingEnabled` is true, coached Classes and rentals
+share `VenueUnitAllocation`. Scheduling chooses an available active unit and
+the database exclusion constraint rejects overlapping `ACTIVE` allocations;
+cancellation releases the row and rescheduling replaces it while preserving
+history. The feature is opt-in, auto-selects rather than accepting a unit ID,
+and does not backfill Classes created before it was enabled. Third-party and
+approval-required locations remain externally managed.
 
 ### Booking lifecycle
 
@@ -344,6 +431,24 @@ The account-level routes are `GET /api/calendar/connection`, `POST
 an authenticated global account but no selected workspace; the mutating routes
 still use strict bodies. OAuth return targets are restricted to `/account`,
 `/?tab=profile`, and `/manage?tab=profile`.
+
+### Transactional email is a durable side effect
+
+Email is disabled unless `EMAIL_PROVIDER` is `capture` (non-production only)
+or `resend`. Enabling it also requires `EMAIL_FROM_ADDRESS`; Resend additionally
+requires `EMAIL_API_KEY`. `PUBLIC_APP_ORIGIN` supplies the canonical base for
+message links and falls back to the first `APP_ORIGIN`. The API process runs
+the leased delivery worker; it retries transient failures with bounded backoff
+and several API replicas may safely claim different jobs.
+
+Enqueue `OutboundDelivery` in the same transaction as its source mutation and
+give it a stable dedupe key. Respect `NotificationPreference`; never put
+provider responses, credentials, tokens, or arbitrary user HTML into a delivery
+payload. Currently only booking-lifecycle and booking-payment student alerts
+flow through `createBookingAccountAlerts()` and enqueue email. Package/rental
+receipts, Chat, staff/coach invitation links, and reminder emails are not wired.
+`ACCEPTED` means Resend accepted the request; there is no delivery/bounce webhook
+or suppression-management console. SMS, push, and WhatsApp are unsupported.
 
 ### Account conversations and session chat
 
@@ -451,8 +556,8 @@ receipt and a participant's package must name the package owner. A
 payment may target a booking or a package, never both, and a coach payout cannot
 target a package. Reversal is serialized per financial party: only one
 concurrent request reverses the row, recomputes balances, and emits alerts.
-`Payment.paymentIntentId` is unique and links a successful simulated checkout
-to its ledger result. Rental payments deliberately have neither `bookingId`
+`Payment.paymentIntentId` is unique and links a successful checkout to its
+ledger result. Rental payments deliberately have neither `bookingId`
 nor `packageId`; their intent points to the `VenueReservation`. Club and coach
 renters have an intent but no `Payment`, because the legacy ledger requires a
 student payer or coach payee and must not fabricate either identity.
@@ -638,9 +743,15 @@ with real data, since only the second exercises repair and historical audits.
 | --- | --- | --- |
 | `DATABASE_URL` | backend | PostgreSQL connection (Railway provides it) |
 | `APP_ORIGIN` | backend | Comma-separated allowed browser origins |
+| `PUBLIC_APP_ORIGIN` | backend | Canonical frontend origin for transactional-email links; defaults to the first `APP_ORIGIN` |
 | `DEMO_ENABLED` | backend | `false` in production to stop demo workspaces |
 | `E2E_DISABLE_RATE_LIMITS` | backend | Explicit non-production-only bypass for the full browser suite; never deploy |
 | `ADMIN_PASSWORD` | backend | Unlocks `/admin`; unset disables it entirely |
+| `PAYMENTS_MODE` | backend | `disabled`, `stripe`, or non-production-only `simulated` |
+| `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` | backend | Required together for Stripe checkout and signed webhook processing |
+| `EMAIL_PROVIDER` | backend | `disabled`, `resend`, or non-production-only `capture` |
+| `EMAIL_API_KEY` | backend | Resend credential; required when `EMAIL_PROVIDER=resend` |
+| `EMAIL_FROM_ADDRESS`, `EMAIL_FROM_NAME`, `EMAIL_REPLY_TO` | backend | Transactional-email sender identity; address is required when enabled |
 | `GOOGLE_MAPS_API_KEY` | backend | **Optional.** Enables Places venue search |
 | `GOOGLE_CALENDAR_CLIENT_ID`, `GOOGLE_CALENDAR_CLIENT_SECRET` | backend | Optional Google OAuth web-client credentials |
 | `GOOGLE_CALENDAR_REDIRECT_URI` | backend | Exact public `/api/calendar/google/callback` URI registered with Google |
@@ -667,11 +778,18 @@ quickest way to tell which mode a deployment is in.
   kept compiling but should not gain features. Delete it when convenient.
 - `legacy-booking.tsx` and `/manage/[token]` serve management links issued
   before account-only booking. No new tokens are minted.
-- Class confirmations and reminders are recorded in-app only. No email or SMS
-  delivery is connected, and simulated Stripe never moves real funds.
-- A Class reserves coach time, not an external court. A third-party venue
-  needing approval leaves the booking `PENDING`; only the separate Rentals
-  workflow reserves an owned `VenueUnit`.
+- Transactional email currently covers booking-lifecycle and booking-payment
+  account alerts only. Package/rental receipts, Chat, staff/coach invitations,
+  and reminder email are not wired; there is no SMS/push/WhatsApp provider or
+  delivery/bounce webhook.
+- Live Stripe orchestration and the student Stripe Elements UI cover package
+  and Class checkout only and require externally provisioned connected-account
+  rows. Rentals remain simulated. Stripe-backed reversal and eligible rental
+  cancellation use durable provider refunds; automated settlement/payout
+  reconciliation and subscription billing are not wired.
+- A Class always reserves coach time and reserves a Courtly-managed unit only
+  when the facility opts into Class unit scheduling. A third-party venue
+  needing approval remains external and leaves the booking `PENDING`.
 - Google Calendar is a one-way, eventually consistent view of confirmed
   Classes. Remote edits do not change Courtly, and stale external free/busy
   data never blocks scheduling.
@@ -679,6 +797,46 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 3.5.5 — 2026-09-28
+
+Aligned named-staff delegation with transitive effective permissions, made
+Bookings and Calendar date handling follow the selected club timezone, and
+removed stale simulated-only payment guidance from mode-neutral surfaces.
+
+### 3.5.4 — 2026-09-28
+
+Made booking and rental-reservation date filters inclusive local calendar days in the selected club timezone, and made rental-management grants explicitly include catalogue management because rental configuration belongs to locations.
+
+### 3.5.3 — 2026-09-28
+
+Hardened staff delegation, Stripe retries/webhooks, financial tenant keys, and
+append-only audit history. Bounded the workspace schedule while preserving
+exact paginated booking access, exposed privacy-scoped renter names to club
+operations, and supplied least-privilege package scope choices to finance staff.
+
+### 3.5.2 — 2026-09-28
+
+Connected student package and Class checkout to Stripe Elements when Stripe is
+configured, and added provider-confirmed, webhook-convergent refund handling
+without changing the deliberately simulated rental checkout path.
+
+### 3.5.0 — 2026-09-28
+
+Added the production-readiness model: finite atomic booking series, a shared
+Class/rental venue allocation ledger, paginated booking operations and export,
+provider-backed Stripe orchestration for packages and Classes, and durable
+transactional email delivery. Documented named-staff selection and permission
+enforcement, external Stripe connected-account provisioning, worker monitoring,
+and the rental, reconciliation, and messaging boundaries.
+
+### 3.4.0 — 2026-09-28
+
+Added named, least-privilege club staff access independently of the teaching
+roster. Clubs can invite an existing student or coach account with a snapshotted
+job preset or custom permission set, then edit or revoke that grant without
+changing the person's global account type, memberships, or coach profile.
+Institutional club accounts retain implicit full authority.
 
 ### 3.3.0 — 2026-09-28
 

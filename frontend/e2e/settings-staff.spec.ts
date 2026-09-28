@@ -189,7 +189,7 @@ test('club settings and coach access persist through the responsive UI', async (
     expect((await workspace(page)).instructors.find(candidate => candidate.id === retainedInstructorId))
       .toMatchObject({ active: false, accountLinkAvailable: false });
 
-    await accessSection.getByRole('button', { name: 'Add coach', exact: true }).click();
+    await accessSection.getByRole('button', { name: 'Add account', exact: true }).click();
     dialog = page.getByRole('dialog', { name: 'Add coach access' });
     await dialog.getByRole('searchbox', { name: 'Courtly coach account', exact: true }).fill(coachEmail);
     const restoredNoticeHours = 72;

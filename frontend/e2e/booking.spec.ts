@@ -383,6 +383,9 @@ test('student shell guards stale actions and exposes current sessions and action
     },
   }));
   await page.route('**/api/account/packages', route => route.fulfill({ json: { packages: [] } }));
+  await page.route('**/api/payments/capabilities', route => route.fulfill({
+    json: { mode: 'simulated', enabled: true, liveCheckout: false, simulatedCheckout: true, publishableKey: null },
+  }));
   await page.route(/\/api\/rentals(?:\?.*)?$/, route => route.fulfill({
     json: { rentals: [], nextCursor: null },
   }));
@@ -699,7 +702,7 @@ test('self-registered coach is linked to a club by its club account', async ({ p
   // endpoint and its UI must not recreate a player-like private workspace.
   await page.goto('/account');
   await expect(page.getByRole('heading', { name: /Welcome, Casey Coach/ })).toBeVisible();
-  const accountWorkspaces = page.getByRole('region', { name: 'Your coaching workspaces' });
+  const accountWorkspaces = page.getByRole('region', { name: 'Your workspace access' });
   await expect(accountWorkspaces.getByRole('button').filter({ hasText: clubWorkspace.business.name })).toBeVisible();
   await expect(page.getByLabel('Name your practice')).toHaveCount(0);
   await expect(page.getByRole('button', { name: /Create practice/ })).toHaveCount(0);

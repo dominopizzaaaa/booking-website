@@ -182,13 +182,13 @@ describe.sequential('Final backend branch coverage', () => {
       .set('Cookie', fixture.coachCookie).send({
         studentId: clubStudent.id, amount: 3_500, method: 'BANK_TRANSFER', note: 'Hidden account credit',
       }).expect(403);
-    expect(deniedPayment.body.error).toBe('Only the club account can do this');
+    expect(deniedPayment.body.error).toBe('This workspace requires payments record permission');
 
     const deniedPayout = await request(app).post('/api/payouts')
       .set('Cookie', fixture.coachCookie).send({
         instructorId: fixture.instructor.id, amount: 1_500, method: 'CASH', note: 'Hidden payout',
       }).expect(403);
-    expect(deniedPayout.body.error).toBe('Only the club account can do this');
+    expect(deniedPayout.body.error).toBe('This workspace requires payouts record permission');
     expect(await prisma.payment.count({ where: { businessId: fixture.business.id } }))
       .toBe(paymentCount);
   });

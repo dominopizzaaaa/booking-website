@@ -106,6 +106,8 @@ async function openStudentBooking(page: Page, journey: Journey) {
 async function openProviderBooking(page: Page, journey: Journey) {
   await page.goto('/?tab=explore&view=bookings');
   await expect(page.locator('main').getByRole('heading', { name: 'Bookings', exact: true })).toBeVisible();
+  await page.getByRole('search').getByRole('textbox', { name: 'Search', exact: true }).fill(journey.serviceName);
+  await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
   await page.getByRole('button', {
     name: `Open booking details for ${journey.serviceName} with ${journey.studentName}`,
     exact: true,
@@ -238,8 +240,8 @@ test.describe('two-sided rescheduling', () => {
     await dialog.getByRole('button', { name: 'Ask for a new time', exact: true }).click();
     await expect(dialog.getByRole('heading', { name: 'Ask for a new time', exact: true })).toBeVisible();
     await dialog.getByLabel('Choose a date', { exact: true }).fill(futureSingaporeDate());
-    await expect(dialog.getByRole('button', { name: displayedTime(journey.proposedStartAt), exact: true })).toBeVisible();
-    await dialog.getByRole('button', { name: displayedTime(journey.proposedStartAt), exact: true }).click();
+    await expect(dialog.getByRole('radio', { name: displayedTime(journey.proposedStartAt), exact: true })).toBeVisible();
+    await dialog.getByRole('radio', { name: displayedTime(journey.proposedStartAt), exact: true }).click();
 
     const proposalResponse = page.waitForResponse(response =>
       response.request().method() === 'POST'
