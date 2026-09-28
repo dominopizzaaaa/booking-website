@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 3.1.1** · Last updated 2026-09-26
+**Version 3.1.2** · Last updated 2026-09-28
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -626,6 +626,13 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 3.1.2 — 2026-09-28
+
+Made the marketplace migration flush deferred account-shape checks after it
+marks historical `SOLO` businesses read-only, before its next `ALTER TABLE`.
+This keeps upgrades with retained solo practices from failing on pending
+trigger events; the migration fixture now covers that production-shaped path.
 
 ### 3.1.1 — 2026-09-26
 
