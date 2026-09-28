@@ -6,8 +6,12 @@ import { prisma } from './db.js';
 import { asyncRoute, HttpError } from './http.js';
 import { editablePersonalProfile, updatePersonalProfile } from './account-profile.js';
 import { authState } from './serializers.js';
+import { config } from './config.js';
+import { queueOutboundEmail } from './outbound-events.js';
+import type { TransactionalEmailEvent } from './email-templates.js';
 
 export const accountRouter = Router();
+export const notificationPreferencesRouter = Router();
 export type BookingAccountAlert =
   | 'CREATED'
   | 'REQUESTED'
@@ -89,7 +93,7 @@ export async function createBookingAccountAlerts(
     .toFormat("ccc, d LLL yyyy 'at' h:mm a");
   const lesson = `${booking.service.name} with ${booking.instructor.name} at ${booking.location.name}`;
   const reschedulePending = booking.status === 'PENDING';
-  const copy: Record<BookingAccountAlert, { type: string; title: string; message: string; actionNeeded: boolean }> = {
+  const copy: Record<BookingAccountAlert, { type: TransactionalEmailEvent; title: string; message: string; actionNeeded: boolean }> = {
     CREATED: {
       type: 'BOOKING_CREATED', title: 'Booking confirmed',
       message: `${lesson} is confirmed for ${when}.`, actionNeeded: false,
@@ -171,17 +175,31 @@ export async function createBookingAccountAlerts(
     },
   };
   const alert = copy[event];
-  const result = await tx.accountNotification.createMany({
-    data: userIds.map(userId => ({
-      userId, businessId: booking.businessId, bookingId: booking.id, ...alert,
-    })),
-  });
-  return result.count;
+  if (!config.email.enabled) {
+    const result = await tx.accountNotification.createMany({
+      data: userIds.map(userId => ({ userId, businessId: booking.businessId, bookingId: booking.id, ...alert })),
+    });
+    return result.count;
+  }
+  const recipients = await tx.user.findMany({ where: { id: { in: userIds } }, select: { id: true, name: true, email: true } });
+  for (const recipient of recipients) {
+    const notification = await tx.accountNotification.create({
+      data: { userId: recipient.id, businessId: booking.businessId, bookingId: booking.id, ...alert },
+    });
+    await queueOutboundEmail(tx, {
+      eventType: alert.type, dedupeKey: `booking:${booking.id}:${event}:${notification.id}`,
+      recipientEmail: recipient.email, recipientName: recipient.name, recipientUserId: recipient.id,
+      businessId: booking.businessId, bookingId: booking.id, accountNotificationId: notification.id,
+      title: alert.title, message: alert.message, actionNeeded: alert.actionNeeded,
+      actionUrl: `${config.publicAppOrigin}/manage?tab=alerts`, actionLabel: 'Open Courtly',
+    });
+  }
+  return recipients.length;
 }
 
 // Personal details belong to the student account, not to a selected club.
-// This router is mounted behind requireAuth + requireStudent and deliberately
-// sits before every provider-only workspace guard in app.ts.
+// Student-only account routes and account-wide notification preferences are
+// mounted separately so coaches and named staff retain control of email.
 accountRouter.patch('/profile', asyncRoute(async (req, res) => {
   const input = editablePersonalProfile.parse(req.body);
   await updatePersonalProfile(req.auth.user.id, input);
@@ -196,6 +214,28 @@ accountRouter.get('/notifications', asyncRoute(async (req, res) => {
     take: 100,
   });
   res.json({ notifications: notifications.map(accountNotificationJson) });
+}));
+
+notificationPreferencesRouter.get('/notification-preferences', asyncRoute(async (req, res) => {
+  const preferences = await prisma.notificationPreference.findUnique({ where: { userId: req.auth.user.id } });
+  res.json({
+    emailAvailable: config.email.enabled,
+    preferences: {
+      emailTransactionalEnabled: preferences?.emailTransactionalEnabled ?? true,
+      emailReminderEnabled: preferences?.emailReminderEnabled ?? true,
+      emailActionNeededEnabled: preferences?.emailActionNeededEnabled ?? true,
+    },
+  });
+}));
+
+notificationPreferencesRouter.patch('/notification-preferences', asyncRoute(async (req, res) => {
+  const input = z.object({
+    emailTransactionalEnabled: z.boolean(), emailReminderEnabled: z.boolean(), emailActionNeededEnabled: z.boolean(),
+  }).strict().parse(req.body);
+  const preferences = await prisma.notificationPreference.upsert({
+    where: { userId: req.auth.user.id }, create: { userId: req.auth.user.id, ...input }, update: input,
+  });
+  res.json({ emailAvailable: config.email.enabled, preferences: input, updatedAt: preferences.updatedAt.toISOString() });
 }));
 
 const notificationId = z.string().trim().min(1).max(200);

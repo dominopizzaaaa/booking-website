@@ -57,6 +57,36 @@ function calendarConfiguration() {
   };
 }
 
+function paymentConfiguration() {
+  const requested = (process.env.PAYMENTS_MODE || 'disabled').trim().toLowerCase();
+  if (!['disabled', 'stripe', 'simulated'].includes(requested)) throw new Error('PAYMENTS_MODE must be disabled, stripe, or simulated');
+  if (production && requested === 'simulated') throw new Error('Simulated payments cannot run in production');
+  const secretKey = (process.env.STRIPE_SECRET_KEY || '').trim();
+  const publishableKey = (process.env.STRIPE_PUBLISHABLE_KEY || '').trim();
+  const webhookSecret = (process.env.STRIPE_WEBHOOK_SECRET || '').trim();
+  if (requested === 'stripe') {
+    if (!secretKey || !publishableKey || !webhookSecret) throw new Error('Stripe mode requires STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, and STRIPE_WEBHOOK_SECRET');
+    const secretLive = secretKey.startsWith('sk_live_');
+    const publishableLive = publishableKey.startsWith('pk_live_');
+    if (secretLive !== publishableLive) throw new Error('Stripe secret and publishable keys must use the same test or live mode');
+  }
+  return { mode: requested as 'disabled' | 'stripe' | 'simulated', enabled: requested !== 'disabled', secretKey, publishableKey, webhookSecret };
+}
+
+function emailConfiguration() {
+  const requested = (process.env.EMAIL_PROVIDER || 'disabled').trim().toLowerCase();
+  if (!['disabled', 'capture', 'resend'].includes(requested)) throw new Error('EMAIL_PROVIDER must be disabled, capture, or resend');
+  if (production && requested === 'capture') throw new Error('Capture email cannot run in production');
+  const apiKey = (process.env.EMAIL_API_KEY || '').trim();
+  const fromAddress = (process.env.EMAIL_FROM_ADDRESS || '').trim();
+  const fromName = (process.env.EMAIL_FROM_NAME || 'Courtly').trim();
+  const replyTo = (process.env.EMAIL_REPLY_TO || '').trim();
+  if (requested !== 'disabled' && (!fromAddress || (requested === 'resend' && !apiKey))) {
+    throw new Error('Configured email requires EMAIL_FROM_ADDRESS and provider credentials');
+  }
+  return { mode: requested as 'disabled' | 'capture' | 'resend', enabled: requested !== 'disabled', apiKey, fromAddress, fromName, replyTo };
+}
+
 export const config = {
   port: Number(process.env.PORT || 4000),
   sessionCookie: production ? '__Host-courtly_session' : 'courtly_session',
@@ -68,6 +98,9 @@ export const config = {
   // or by typing an address.
   googleMapsApiKey: (process.env.GOOGLE_MAPS_API_KEY || '').trim(),
   googleCalendar: calendarConfiguration(),
+  payments: paymentConfiguration(),
+  email: emailConfiguration(),
+  publicAppOrigin: (process.env.PUBLIC_APP_ORIGIN || process.env.APP_ORIGIN?.split(',')[0] || 'http://localhost:3000').trim().replace(/\/$/, ''),
   sessionDays: 14,
   demoEnabled: process.env.DEMO_ENABLED === 'true' || (!production && process.env.DEMO_ENABLED !== 'false'),
   // The browser suite creates many isolated accounts from one loopback IP.

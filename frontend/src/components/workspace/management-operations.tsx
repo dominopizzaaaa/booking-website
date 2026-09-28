@@ -587,7 +587,13 @@ export function AvailabilityView({ data, refresh }: WorkspaceProps) {
 export function SettingsView({ data, refresh }: ManagementProps) {
   const [editing, setEditing] = useState(false);
   const business = data.business;
-  const canManageBusiness = data.user.accountType === "CLUB";
+  const clubAccount = data.accessMode === "CLUB_ACCOUNT" || data.user.accountType === "CLUB";
+  const canManageBusiness = clubAccount || data.permissions?.includes("SETTINGS_MANAGE") === true;
+  const accountLabel = clubAccount
+    ? "club account"
+    : data.accessMode === "STAFF"
+      ? `named staff · ${data.user.accountType.toLowerCase()} account`
+      : "coach account";
   const bookingPath = `/book/${encodeURIComponent(business.slug)}`;
   const bookingUrl =
     typeof window !== "undefined"
@@ -760,15 +766,15 @@ export function SettingsView({ data, refresh }: ManagementProps) {
               <div className="border-b border-[#edf0e8] pb-5 last:border-0 last:pb-0">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h3 className="text-xs text-[#344b39]">Google Calendar</h3>
-                  <span className="badge bg-[#edf2e7]! text-[#58704e]!">{data.user.accountType === "CLUB" ? "Coach-managed" : "Managed in Profile"}</span>
+                  <span className="badge bg-[#edf2e7]! text-[#58704e]!">{clubAccount ? "Coach-managed" : "Managed in Profile"}</span>
                 </div>
                 <p className="mt-2 text-[11px] leading-relaxed text-stone-500">
-                  {data.user.accountType === "CLUB"
+                  {clubAccount
                     ? "Calendar connections are personal. Each coach connects their own Google Calendar from their Courtly profile."
-                    : "Your Google Calendar connection follows your coach account across every workspace. Manage it from Profile."}
+                    : `Your Google Calendar connection follows your ${data.user.accountType.toLowerCase()} account across every workspace. Manage it from Profile.`}
                 </p>
                 <Button size="sm" variant="outline" className="mt-3" asChild>
-                  <a href="/?tab=profile">{data.user.accountType === "CLUB" ? "View calendar guidance" : "Open Profile"}</a>
+                  <a href="/?tab=profile">{clubAccount ? "View calendar guidance" : "Open Profile"}</a>
                 </Button>
               </div>
             </div>
@@ -781,10 +787,9 @@ export function SettingsView({ data, refresh }: ManagementProps) {
             />
             <h2 className="text-[#294735]">Workspace access</h2>
             <p className="mt-2 text-xs leading-relaxed text-[#7e8c72]">
-              Signed in as {data.user.name} ({data.user.accountType === "CLUB" ? "club account" : "coach account"}).
-              Coach profiles do not grant account access. Clubs manage coach
-              access in My coaches; email invitations and subscription billing
-              are not connected.
+              Signed in as {data.user.name} ({accountLabel}). {data.accessMode === "STAFF"
+                ? "Named staff access grants only the club permissions assigned to you. It does not change your account type or create a teaching affiliation."
+                : "Coach profiles do not grant account access. Clubs manage coach access in My coaches; email invitations and subscription billing are not connected."}
             </p>
             {business.isDemo && (
               <p className="mt-3 text-[11px] leading-relaxed text-[#7e8c72]">

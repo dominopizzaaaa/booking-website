@@ -1,5 +1,18 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import type { ManagerWorkspace } from '../src/lib/types';
+
+type WorkspaceBooking = ManagerWorkspace['bookings'][number];
+
+async function mockBookingList(page: Page, bookings: () => WorkspaceBooking[]) {
+  await page.route(/\/api\/bookings(?:\?.*)?$/, route => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    return route.fulfill({ json: { bookings: bookings(), nextCursor: null } });
+  });
+}
+
+function bookingCard(page: Page, serviceName: string) {
+  return page.locator('main article').filter({ hasText: serviceName });
+}
 
 test.beforeEach(async ({ page }, testInfo) => {
   if (testInfo.title.includes('switches actions when the lesson end passes')) {
@@ -42,16 +55,18 @@ test('provider records attendance and notes before completing an ended session',
     status: 'CONFIRMED',
     coachAcceptance: 'NOT_REQUIRED',
   };
+  const bookings = () => [
+    ...workspace.bookings.map(candidate => candidate.id === booking.id ? booking : candidate),
+    futureBooking,
+  ];
 
   await page.route('**/api/workspace', route => route.fulfill({
     json: {
       ...workspace,
-      bookings: [
-        ...workspace.bookings.map(candidate => candidate.id === booking.id ? booking : candidate),
-        futureBooking,
-      ],
+      bookings: bookings(),
     },
   }));
+  await mockBookingList(page, bookings);
   await page.route(`**/api/bookings/${booking.id}/participants/${participant.id}`, async route => {
     const values = route.request().postDataJSON() as { attendance: 'PRESENT' | 'ABSENT' };
     booking = {
@@ -70,9 +85,9 @@ test('provider records attendance and notes before completing an ended session',
 
   await page.goto('/?tab=explore&view=bookings');
   await expect(page.locator('main').getByRole('heading', { name: 'Bookings', exact: true })).toBeVisible();
-  const bookingRow = page.getByRole('row').filter({ hasText: serviceName });
-  await expect(bookingRow).toContainText('Confirmed');
-  await bookingRow.getByRole('button', { name: /Open booking details/ }).click();
+  const bookingArticle = bookingCard(page, serviceName);
+  await expect(bookingArticle).toContainText('Confirmed');
+  await bookingArticle.getByRole('button', { name: /Open booking details/ }).click();
 
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: serviceName, exact: true })).toBeVisible();
@@ -110,8 +125,8 @@ test('provider records attendance and notes before completing an ended session',
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
 
   await dialog.getByRole('button', { name: 'Close dialog' }).click();
-  const futureRow = page.getByRole('row').filter({ hasText: futureBooking.serviceName });
-  await futureRow.getByRole('button', { name: /Open booking details/ }).click();
+  const futureCard = bookingCard(page, futureBooking.serviceName);
+  await futureCard.getByRole('button', { name: /Open booking details/ }).click();
   await expect(dialog.getByRole('heading', { name: futureBooking.serviceName, exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Mark completed', exact: true })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Propose a new time', exact: true })).toBeVisible();
@@ -146,10 +161,11 @@ test('an open provider booking switches actions when the lesson end passes', asy
   await page.route('**/api/workspace', route => route.fulfill({
     json: { ...workspace, bookings: [...workspace.bookings, boundaryBooking] },
   }));
+  await mockBookingList(page, () => [...workspace.bookings, boundaryBooking]);
 
   await page.goto('/?tab=explore&view=bookings');
-  const bookingRow = page.getByRole('row').filter({ hasText: boundaryBooking.serviceName });
-  await bookingRow.getByRole('button', { name: /Open booking details/ }).click();
+  const booking = bookingCard(page, boundaryBooking.serviceName);
+  await booking.getByRole('button', { name: /Open booking details/ }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: boundaryBooking.serviceName, exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Propose a new time', exact: true })).toBeVisible();
@@ -229,6 +245,7 @@ test('an ended lesson keeps pending reschedule cleanup available without reopeni
       rescheduleRequests: requests,
     },
   }));
+  await mockBookingList(page, () => [...workspace.bookings, incomingBooking, outgoingBooking]);
   await page.route(`**/api/reschedule-requests/${incomingRequest.id}/decline`, async route => {
     requests = requests.map(request => request.id === incomingRequest.id
       ? { ...request, status: 'DECLINED' as const, respondedAt: new Date().toISOString() }
@@ -244,8 +261,8 @@ test('an ended lesson keeps pending reschedule cleanup available without reopeni
 
   await page.goto('/?tab=explore&view=bookings');
   const dialog = page.getByRole('dialog');
-  const incomingRow = page.getByRole('row').filter({ hasText: incomingBooking.serviceName });
-  await incomingRow.getByRole('button', { name: /Open booking details/ }).click();
+  const incomingCard = bookingCard(page, incomingBooking.serviceName);
+  await incomingCard.getByRole('button', { name: /Open booking details/ }).click();
 
   let requestRegion = dialog.getByRole('region', { name: 'Pending reschedule request' });
   await expect(requestRegion).toContainText('Reschedule request needs closing');
@@ -266,8 +283,8 @@ test('an ended lesson keeps pending reschedule cleanup available without reopeni
   await expect(requestRegion).toHaveCount(0);
 
   await dialog.getByRole('button', { name: 'Close dialog' }).click();
-  const outgoingRow = page.getByRole('row').filter({ hasText: outgoingBooking.serviceName });
-  await outgoingRow.getByRole('button', { name: /Open booking details/ }).click();
+  const outgoingCard = bookingCard(page, outgoingBooking.serviceName);
+  await outgoingCard.getByRole('button', { name: /Open booking details/ }).click();
   requestRegion = dialog.getByRole('region', { name: 'Pending reschedule request' });
   await expect(requestRegion).toContainText('The original class has ended, so this proposal can no longer be accepted. Withdraw the request to close it.');
   await expect(requestRegion.getByRole('button', { name: 'Accept new time', exact: true })).toHaveCount(0);
@@ -355,11 +372,12 @@ test('provider reschedule controls require the exact provider role that raised t
       rescheduleRequests: [...workspace.rescheduleRequests, coachRequest, clubRequest],
     },
   }));
+  await mockBookingList(page, () => [...workspace.bookings, coachBooking, clubBooking]);
 
   await page.goto('/?tab=explore&view=bookings');
   const dialog = page.getByRole('dialog');
-  const coachRequestRow = page.getByRole('row').filter({ hasText: coachBooking.serviceName });
-  await coachRequestRow.getByRole('button', { name: /Open booking details/ }).click();
+  const coachRequestCard = bookingCard(page, coachBooking.serviceName);
+  await coachRequestCard.getByRole('button', { name: /Open booking details/ }).click();
 
   let requestRegion = dialog.getByRole('region', { name: 'Pending reschedule request' });
   await expect(requestRegion).toContainText('The coach proposed a new time');
@@ -370,8 +388,8 @@ test('provider reschedule controls require the exact provider role that raised t
 
   viewerRole = 'COACH';
   await page.reload();
-  const clubRequestRow = page.getByRole('row').filter({ hasText: clubBooking.serviceName });
-  await clubRequestRow.getByRole('button', { name: /Open booking details/ }).click();
+  const clubRequestCard = bookingCard(page, clubBooking.serviceName);
+  await clubRequestCard.getByRole('button', { name: /Open booking details/ }).click();
 
   requestRegion = dialog.getByRole('region', { name: 'Pending reschedule request' });
   await expect(requestRegion).toContainText('Reschedule request needs closing');

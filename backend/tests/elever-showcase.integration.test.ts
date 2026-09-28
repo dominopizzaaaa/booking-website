@@ -41,13 +41,16 @@ function singaporeDate(value: Date) {
 }
 
 const applicationTables = [
-  'AccountNotification', 'CalendarBusyInterval', 'CalendarEventProjection', 'CalendarOAuthAttempt',
+  'AccountNotification', 'BusinessAuditEvent', 'BusinessPaymentAccount', 'CalendarBusyInterval', 'CalendarEventProjection', 'CalendarOAuthAttempt',
   'CalendarRevocationJob', 'CalendarSyncJob', 'CalendarConnection', 'AuthSession', 'Availability',
+  'ClubStaffAccess', 'ClubStaffInvitation',
   'ChatMessage', 'ChatReadState', 'ChatThreadMember', 'ChatThread', 'SessionProposal', 'SessionProposalResponse',
-  'AvailabilityException', 'Booking', 'Business', 'CoachInvitation', 'Instructor', 'IntegrityFlag', 'LessonPackage',
+  'AvailabilityException', 'Booking', 'BookingSeries', 'BookingSeriesMember', 'Business', 'CoachInvitation', 'Instructor', 'IntegrityFlag', 'LessonPackage',
   'LessonPackageLocation', 'LessonPackageService', 'Location', 'Membership', 'Notification', 'PackageOffer',
-  'PackageOfferLocation', 'PackageOfferService', 'Participant', 'Payment', 'PaymentIntent', 'RescheduleRequest',
-  'Service', 'ServiceInstructor', 'ServiceLocation', 'Student', 'User', 'VenueOpeningHour', 'VenueReservation', 'VenueUnit',
+  'NotificationPreference', 'OutboundDelivery', 'PackageOfferLocation', 'PackageOfferService', 'Participant',
+  'Payment', 'PaymentIntent', 'PaymentProviderEvent', 'PaymentRefund', 'PaymentSettlement', 'RescheduleRequest',
+  'Service', 'ServiceInstructor', 'ServiceLocation', 'Student', 'User', 'VenueOpeningHour', 'VenueReservation',
+  'VenueUnit', 'VenueUnitAllocation',
 ] as const;
 const snapshotTables = [...applicationTables, '_prisma_migrations'] as const;
 type ProvisionResult = SpawnSyncReturns<string>;
@@ -57,14 +60,19 @@ type MigrationHistoryRow = {
   rolledBackAt: string | null; appliedStepsCount: number;
 };
 const expectedApplicationCounts: Record<(typeof applicationTables)[number], number> = {
-  AccountNotification: 2, CalendarBusyInterval: 0, CalendarEventProjection: 0, CalendarOAuthAttempt: 0,
+  AccountNotification: 2, BusinessAuditEvent: 0, BusinessPaymentAccount: 0,
+  CalendarBusyInterval: 0, CalendarEventProjection: 0, CalendarOAuthAttempt: 0,
   CalendarRevocationJob: 0, CalendarSyncJob: 0, CalendarConnection: 0, AuthSession: 0, Availability: 14,
+  ClubStaffAccess: 0, ClubStaffInvitation: 0,
   ChatMessage: 0, ChatReadState: 0, ChatThreadMember: 0, ChatThread: 0, SessionProposal: 0, SessionProposalResponse: 0,
-  AvailabilityException: 0, Booking: 39, Business: 1, CoachInvitation: 0, Instructor: 2, IntegrityFlag: 1, LessonPackage: 2,
+  AvailabilityException: 0, Booking: 39, BookingSeries: 0, BookingSeriesMember: 0,
+  Business: 1, CoachInvitation: 0, Instructor: 2, IntegrityFlag: 1, LessonPackage: 2,
   LessonPackageLocation: 1, LessonPackageService: 3, Location: 2, Membership: 3, Notification: 4,
-  PackageOffer: 3, PackageOfferLocation: 2, PackageOfferService: 3, Participant: 138, Payment: 110,
-  PaymentIntent: 8, RescheduleRequest: 0, Service: 2, ServiceInstructor: 4, ServiceLocation: 2,
-  Student: 20, User: 23, VenueOpeningHour: 7, VenueReservation: 4, VenueUnit: 4,
+  NotificationPreference: 0, OutboundDelivery: 0, PackageOffer: 3, PackageOfferLocation: 2,
+  PackageOfferService: 3, Participant: 138, Payment: 110, PaymentIntent: 8, PaymentProviderEvent: 0,
+  PaymentRefund: 0, PaymentSettlement: 0, RescheduleRequest: 0, Service: 2, ServiceInstructor: 4,
+  ServiceLocation: 2, Student: 20, User: 23, VenueOpeningHour: 7, VenueReservation: 4,
+  VenueUnit: 4, VenueUnitAllocation: 0,
 };
 const showcaseBookingQuery = {
   include: { instructor: true, service: true, participants: { include: { student: true } } },

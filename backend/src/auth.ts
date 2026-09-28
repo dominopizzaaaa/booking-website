@@ -37,6 +37,7 @@ export async function issueSession(
   userId: string,
   res: Response,
   activeMembershipId: string | null,
+  activeStaffAccessId: string | null = null,
   previousToken?: string,
 ) {
   if (activeMembershipId) {
@@ -53,7 +54,7 @@ export async function issueSession(
   await prisma.authSession.deleteMany({ where: { expiresAt: { lt: new Date() } } });
   const token = randomBytes(32).toString('base64url');
   const expiresAt = new Date(Date.now() + config.sessionDays * 86_400_000);
-  await prisma.authSession.create({ data: { id: digest(token), userId, activeMembershipId, expiresAt } });
+  await prisma.authSession.create({ data: { id: digest(token), userId, activeMembershipId, activeStaffAccessId, expiresAt } });
   res.cookie(config.sessionCookie, token, { ...cookieOptions, expires: expiresAt });
 }
 
@@ -62,13 +63,16 @@ export const requireAuth: RequestHandler = asyncRoute(async (req, _res, next) =>
   if (typeof token !== 'string') throw new HttpError(401, 'Please sign in to continue');
   const session = await prisma.authSession.findUnique({
     where: { id: digest(token) },
-    include: { user: { include: { memberships: { include: { business: true }, orderBy: membershipOrder } } } },
+    include: { user: { include: {
+      memberships: { include: { business: true }, orderBy: membershipOrder },
+      staffAccesses: { include: { business: true }, orderBy: membershipOrder },
+    } } },
   });
   if (!session || session.expiresAt < new Date()) {
     if (session) await prisma.authSession.deleteMany({ where: { id: session.id } });
     throw new HttpError(401, 'Session expired. Please sign in again');
   }
-  const { memberships: allMemberships, ...user } = session.user;
+  const { memberships: allMemberships, staffAccesses: allStaffAccesses, ...user } = session.user;
   const memberships = allMemberships.filter(isSupportedWorkspaceMembership);
   const membership = user.accountType === 'STUDENT'
     ? null
@@ -79,12 +83,25 @@ export const requireAuth: RequestHandler = asyncRoute(async (req, _res, next) =>
     await prisma.authSession.update({ where: { id: session.id }, data: { activeMembershipId: null } });
     session.activeMembershipId = null;
   }
+  const staffAccesses = allStaffAccesses.filter(access => access.active && !access.revokedAt
+    && access.business.kind === 'CLUB' && !access.business.legacyReadOnly);
+  const staffAccess = membership ? null : staffAccesses.find(access => access.id === session.activeStaffAccessId
+    && access.userId === user.id && access.businessId === access.business.id) ?? null;
+  if (session.activeStaffAccessId && !staffAccess) {
+    await prisma.authSession.update({ where: { id: session.id }, data: { activeStaffAccessId: null } });
+    session.activeStaffAccessId = null;
+  }
+  const business = membership?.business ?? staffAccess?.business ?? null;
   (req as AccountRequest).auth = {
     user,
     session,
     membership,
-    business: membership?.business ?? null,
+    staffAccess,
+    business,
     memberships,
+    staffAccesses,
+    accessMode: staffAccess ? 'STAFF' : membership ? user.accountType === 'CLUB' ? 'CLUB_ACCOUNT' : 'COACH' : 'NONE',
+    permissions: staffAccess?.permissions ?? [],
   };
   next();
 });
@@ -93,8 +110,10 @@ export const requireWorkspace: RequestHandler = (req, _res, next) => {
   const auth = (req as AccountRequest).auth;
   if (!auth) return next(new HttpError(401, 'Please sign in to continue'));
   const { user, membership, business } = auth;
-  if (!user.passwordHash || user.accountType === 'STUDENT' || !membership || !business || !membership.active
-    || membership.userId !== user.id || membership.businessId !== business.id
+  const validMembership = Boolean(membership?.active && membership.userId === user.id && membership.businessId === business?.id);
+  const validStaff = Boolean(auth.staffAccess?.active && !auth.staffAccess.revokedAt
+    && auth.staffAccess.userId === user.id && auth.staffAccess.businessId === business?.id);
+  if (!user.passwordHash || !business || (!validMembership && !validStaff)
     || business.kind !== 'CLUB' || business.legacyReadOnly) {
     return next(new HttpError(403, 'Select a business workspace to continue'));
   }
@@ -189,7 +208,7 @@ authRouter.post('/register', registrationLimit, asyncRoute(async (req, res) => {
     });
     return { user, membershipId: membership.id };
   });
-  await issueSession(result.user.id, res, result.membershipId, req.cookies?.[config.sessionCookie]);
+  await issueSession(result.user.id, res, result.membershipId, null, req.cookies?.[config.sessionCookie]);
   res.status(201).json(await authState(result.user.id, result.membershipId));
 }));
 
@@ -213,7 +232,8 @@ authRouter.post('/login', loginLimit, asyncRoute(async (req, res) => {
     ? previousSession.activeMembershipId
     : null;
   const membership = selectedMembership(user.accountType, user.memberships, currentId);
-  await issueSession(user.id, res, membership?.id ?? null, previousToken);
+  const activeStaffAccessId = membership ? null : previousSession?.userId === user.id ? previousSession.activeStaffAccessId : null;
+  await issueSession(user.id, res, membership?.id ?? null, activeStaffAccessId, previousToken);
   res.json(await authState(user.id, membership?.id ?? null));
 }));
 
@@ -244,7 +264,7 @@ authRouter.post('/demo', rateLimit({
     tx => seedBusiness(tx, { isDemo: true, slug: `marcus-tan-${randomBytes(6).toString('hex')}` }),
     { timeout: 60_000 },
   );
-  await issueSession(result.clubAccount.id, res, result.clubMembership.id, typeof previous === 'string' ? previous : undefined);
+  await issueSession(result.clubAccount.id, res, result.clubMembership.id, null, typeof previous === 'string' ? previous : undefined);
   res.status(201).json(await authState(result.clubAccount.id, result.clubMembership.id));
 }));
 
@@ -262,7 +282,7 @@ authRouter.post('/logout', asyncRoute(async (req, res) => {
 }));
 
 authRouter.get('/me', requireAuth, asyncRoute(async (req, res) => {
-  res.json(await authState(req.auth.user.id, req.auth.membership?.id ?? null));
+  res.json(await authState(req.auth.user.id, req.auth.membership?.id ?? null, req.auth.staffAccess?.id ?? null));
 }));
 
 authRouter.patch('/me', requireAuth, asyncRoute(async (req, res) => {
@@ -270,7 +290,7 @@ authRouter.patch('/me', requireAuth, asyncRoute(async (req, res) => {
     ? editableClubAccountProfile.parse(req.body)
     : editablePersonalProfile.parse(req.body);
   await updatePersonalProfile(req.auth.user.id, input);
-  res.json(await authState(req.auth.user.id, req.auth.membership?.id ?? null));
+  res.json(await authState(req.auth.user.id, req.auth.membership?.id ?? null, req.auth.staffAccess?.id ?? null));
 }));
 
 authRouter.patch('/club-profile', requireAuth, asyncRoute(async (req, res) => {
@@ -305,9 +325,9 @@ const switchWorkspace = asyncRoute(async (req, res) => {
   if (membershipId === null) {
     await prisma.authSession.update({
       where: { id: req.auth.session.id, userId: req.auth.user.id },
-      data: { activeMembershipId: null },
+      data: { activeMembershipId: null, activeStaffAccessId: null },
     });
-    res.json(await authState(req.auth.user.id, null));
+    res.json(await authState(req.auth.user.id, null, null));
     return;
   }
   if (req.auth.user.accountType === 'STUDENT') throw new HttpError(403, 'This account cannot access business workspaces');
@@ -320,10 +340,39 @@ const switchWorkspace = asyncRoute(async (req, res) => {
   }
   await prisma.authSession.update({
     where: { id: req.auth.session.id, userId: req.auth.user.id },
-    data: { activeMembershipId: membership.id },
+    data: { activeMembershipId: membership.id, activeStaffAccessId: null },
   });
   res.json(await authState(req.auth.user.id, membership.id));
 });
 authRouter.post(['/switch-workspace', '/workspace'], requireAuth, switchWorkspace);
+
+authRouter.post('/workspace-access', requireAuth, asyncRoute(async (req, res) => {
+  const input = z.object({
+    source: z.enum(['MEMBERSHIP', 'STAFF']),
+    id: z.string().trim().min(1).max(200).nullable(),
+  }).strict().parse(req.body);
+  if (input.id === null) {
+    if (req.auth.user.accountType === 'CLUB') throw new HttpError(403, 'A club account belongs to one club and cannot leave its workspace');
+    await prisma.authSession.update({ where: { id: req.auth.session.id }, data: { activeMembershipId: null, activeStaffAccessId: null } });
+    res.json(await authState(req.auth.user.id, null, null));
+    return;
+  }
+  if (input.source === 'MEMBERSHIP') {
+    const membership = await prisma.membership.findFirst({
+      where: { id: input.id, userId: req.auth.user.id, active: true, business: { kind: 'CLUB', legacyReadOnly: false } },
+      include: { business: true },
+    });
+    if (!membership) throw new HttpError(403, 'Workspace membership is not available to this account');
+    await prisma.authSession.update({ where: { id: req.auth.session.id }, data: { activeMembershipId: membership.id, activeStaffAccessId: null } });
+    res.json(await authState(req.auth.user.id, membership.id, null));
+    return;
+  }
+  const access = await prisma.clubStaffAccess.findFirst({
+    where: { id: input.id, userId: req.auth.user.id, active: true, revokedAt: null, business: { kind: 'CLUB', legacyReadOnly: false } },
+  });
+  if (!access) throw new HttpError(403, 'Staff workspace access is not available to this account');
+  await prisma.authSession.update({ where: { id: req.auth.session.id }, data: { activeMembershipId: null, activeStaffAccessId: access.id } });
+  res.json(await authState(req.auth.user.id, null, access.id));
+}));
 
 export { authRouter };

@@ -6,6 +6,7 @@ import { notifyWorkspace } from './notifications.js';
 import { createBookingAccountAlerts } from './account-notifications.js';
 import { assertWritableClubBooking, evaluateSlot, lockInstructors, schedulingContext } from './scheduling.js';
 import { bookingInclude, bookingJson } from './serializers.js';
+import { releaseBookingUnit, replaceBookingUnit } from './venue-allocations.js';
 import { enqueueCalendarSync } from './calendar-sync.js';
 import { noteSessionMoved } from './chat-events.js';
 
@@ -309,9 +310,16 @@ export async function acceptRescheduleRequest(
       startAt: request.proposedStartAt,
       endAt: slot.endAt,
       status: (ctx.location.requiresApproval || ctx.location.type === 'RENTED') ? 'PENDING' : 'CONFIRMED',
+      venueRequirement: slot.venueUnit ? 'UNIT' : 'NONE',
+      venueApproval: (ctx.location.requiresApproval || ctx.location.type === 'RENTED') ? 'PENDING' : 'NOT_REQUIRED',
     },
     include: bookingInclude,
   });
+  if (slot.venueUnit) await replaceBookingUnit(tx, {
+    businessId: booking.businessId, locationId: booking.locationId, unitId: slot.venueUnit.id,
+    unitName: slot.venueUnit.name, bookingId: booking.id, startAt: request.proposedStartAt, endAt: slot.endAt,
+  });
+  else await releaseBookingUnit(tx, booking.id);
   await tx.rescheduleRequest.update({
     where: { id: request.id },
     data: {
@@ -379,8 +387,8 @@ export async function withdrawRescheduleRequest(
 ) {
   const request = await lockAndLoadRequest(tx, requestId);
   if (request.status !== 'PENDING') throw new HttpError(409, 'This reschedule request has already been answered');
-  if (request.requestedByRole !== requester.role) {
-    throw new HttpError(403, 'Only the side that raised a request can withdraw it');
+  if (request.requestedByRole !== requester.role || request.requestedByUserId !== requester.userId) {
+    throw new HttpError(403, 'Only the person who raised this request can withdraw it');
   }
   const booking = await tx.booking.findUniqueOrThrow({
     where: { id: request.bookingId },

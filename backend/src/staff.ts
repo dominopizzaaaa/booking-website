@@ -3,7 +3,7 @@ import type { Prisma } from '@prisma/client';
 import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { prisma } from './db.js';
-import { asyncRoute, HttpError, initials, requireClubAccount, type AuthRequest } from './http.js';
+import { asyncRoute, HttpError, initials, requireClubPermission, type AuthRequest } from './http.js';
 import { resolveRegisteredAccountIdentity } from './account-directory.js';
 
 export const staffRouter = Router();
@@ -91,12 +91,10 @@ export function isReplaceableInstructorPlaceholder(
 }
 
 function clubBusinessId(req: AuthRequest) {
-  const membership = req.auth?.membership;
-  if (!membership || req.auth?.user.accountType !== 'CLUB'
-    || req.auth.business?.kind !== 'CLUB' || membership.instructorId !== null) {
-    throw new HttpError(403, 'Only the club account can manage its coaches');
+  if (!req.auth.business || req.auth.business.kind !== 'CLUB' || req.auth.business.legacyReadOnly) {
+    throw new HttpError(403, 'Select an active club workspace to continue');
   }
-  return membership.businessId;
+  return req.auth.business.id;
 }
 
 async function validateInstructor(
@@ -241,13 +239,13 @@ coachInvitationRouter.post('/coach-invitations/accept', asyncRoute(async (req, r
   if (!invitationId) throw new HttpError(404, 'Coach invitation not found');
   const membershipId = await prisma.$transaction(async tx => {
     const accepted = await acceptInvitation(tx, invitationId, req.auth.user);
-    await tx.authSession.update({ where: { id: req.auth.session.id }, data: { activeMembershipId: accepted } });
+    await tx.authSession.update({ where: { id: req.auth.session.id }, data: { activeMembershipId: accepted, activeStaffAccessId: null } });
     return accepted;
   }, { isolationLevel: 'Serializable' });
   res.json({ membershipId });
 }));
 
-staffRouter.get('/staff', requireClubAccount, asyncRoute(async (req, res) => {
+staffRouter.get('/staff', requireClubPermission('ROSTER_VIEW'), asyncRoute(async (req, res) => {
   const staff = await prisma.membership.findMany({
     // A removed affiliation remains in the database to preserve the coach
     // identity behind historical lessons. This endpoint is the access roster,
@@ -260,7 +258,7 @@ staffRouter.get('/staff', requireClubAccount, asyncRoute(async (req, res) => {
   res.json(staff.map(staffJson));
 }));
 
-staffRouter.get('/staff/invitations', requireClubAccount, asyncRoute(async (req, res) => {
+staffRouter.get('/staff/invitations', requireClubPermission('ROSTER_VIEW'), asyncRoute(async (req, res) => {
   const invitations = await prisma.coachInvitation.findMany({
     where: { businessId: clubBusinessId(req) },
     include: { business: { select: { name: true, slug: true } } },
@@ -270,7 +268,7 @@ staffRouter.get('/staff/invitations', requireClubAccount, asyncRoute(async (req,
   res.json({ invitations: invitations.map(invitationJson) });
 }));
 
-staffRouter.post('/staff/invitations', requireClubAccount, asyncRoute(async (req, res) => {
+staffRouter.post('/staff/invitations', requireClubPermission('ROSTER_MANAGE'), asyncRoute(async (req, res) => {
   const input = createInvitationSchema.parse(req.body);
   const businessId = clubBusinessId(req);
   const rawToken = randomBytes(32).toString('base64url');
@@ -299,7 +297,7 @@ staffRouter.post('/staff/invitations', requireClubAccount, asyncRoute(async (req
   });
 }));
 
-staffRouter.delete('/staff/invitations/:invitationId', requireClubAccount, asyncRoute(async (req, res) => {
+staffRouter.delete('/staff/invitations/:invitationId', requireClubPermission('ROSTER_MANAGE'), asyncRoute(async (req, res) => {
   const invitationId = idSchema.parse(req.params.invitationId);
   const updated = await prisma.coachInvitation.updateMany({
     where: { id: invitationId, businessId: clubBusinessId(req), acceptedAt: null, revokedAt: null },
@@ -309,7 +307,7 @@ staffRouter.delete('/staff/invitations/:invitationId', requireClubAccount, async
   res.json({ ok: true });
 }));
 
-staffRouter.post('/staff', requireClubAccount, asyncRoute(async (req, res) => {
+staffRouter.post('/staff', requireClubPermission('ROSTER_MANAGE'), asyncRoute(async (req, res) => {
   const input = createStaffSchema.parse(req.body);
   const businessId = clubBusinessId(req);
   const staff = await prisma.$transaction(async tx => {
@@ -394,7 +392,7 @@ staffRouter.post('/staff', requireClubAccount, asyncRoute(async (req, res) => {
   res.status(staff.restored ? 200 : 201).json(staffJson(staff.staff));
 }));
 
-staffRouter.patch('/staff/:membershipId', requireClubAccount, asyncRoute(async (req, res) => {
+staffRouter.patch('/staff/:membershipId', requireClubPermission('ROSTER_MANAGE'), asyncRoute(async (req, res) => {
   const membershipId = idSchema.parse(req.params.membershipId);
   const input = updateStaffSchema.parse(req.body);
   const businessId = clubBusinessId(req);
@@ -460,7 +458,7 @@ staffRouter.patch('/staff/:membershipId', requireClubAccount, asyncRoute(async (
   res.json(staffJson(staff));
 }));
 
-staffRouter.delete('/staff/:membershipId', requireClubAccount, asyncRoute(async (req, res) => {
+staffRouter.delete('/staff/:membershipId', requireClubPermission('ROSTER_MANAGE'), asyncRoute(async (req, res) => {
   const membershipId = idSchema.parse(req.params.membershipId);
   const businessId = clubBusinessId(req);
   await prisma.$transaction(async tx => {

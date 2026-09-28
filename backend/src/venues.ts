@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { config, skipRateLimits } from './config.js';
-import { asyncRoute, HttpError } from './http.js';
+import { asyncRoute, HttpError, requireCoachOrClubPermission } from './http.js';
 
 export const venuesRouter = Router();
 
@@ -240,7 +240,7 @@ const searchQuery = z.object({
   q: z.string().trim().min(2).max(200),
 }).strict();
 
-venuesRouter.get('/venues/search', searchLimit, asyncRoute(async (req, res) => {
+venuesRouter.get('/venues/search', requireCoachOrClubPermission('CATALOG_MANAGE'), searchLimit, asyncRoute(async (req, res) => {
   const { q } = searchQuery.parse(req.query);
   // A pasted link is answered locally, whether or not a key is configured.
   const pasted = parseMapsLink(q);

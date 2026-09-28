@@ -1,4 +1,4 @@
-import type { LessonPackage, Location, Service } from '@/lib/types';
+import type { LessonPackage } from '@/lib/types';
 
 export type PurchasedPackageState = 'ACTIVE' | 'UNPAID' | 'EXPIRED' | 'EXHAUSTED';
 
@@ -9,7 +9,9 @@ export function purchasedPackageState(pkg: LessonPackage, now = Date.now()): Pur
   return 'ACTIVE';
 }
 
-export function purchasedPackageScopes(pkg: LessonPackage, services: Service[], locations: Location[]) {
+export function purchasedPackageScopes(
+  pkg: LessonPackage, services: Array<{ id: string; name: string }>, locations: Array<{ id: string; name: string }>,
+) {
   const classIds = pkg.serviceIds?.length ? pkg.serviceIds : pkg.serviceId ? [pkg.serviceId] : [];
   const rentalIds = pkg.rentalLocationIds ?? [];
   return {

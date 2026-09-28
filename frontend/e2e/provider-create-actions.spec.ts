@@ -85,7 +85,10 @@ async function expectNoHorizontalOverflow(page: Page, dialog?: Locator) {
 
 async function openProviderBooking(page: Page, serviceName: string, studentName: string) {
   await page.goto('/?tab=explore&view=bookings');
-  await expect(page.locator('main').getByRole('heading', { name: 'Bookings', exact: true })).toBeVisible();
+  const main = page.locator('main');
+  await expect(main.getByRole('heading', { name: 'Bookings', exact: true })).toBeVisible();
+  await main.getByRole('textbox', { name: 'Search', exact: true }).fill(serviceName);
+  await main.getByRole('button', { name: 'Apply filters', exact: true }).click();
   await page.getByRole('button', {
     name: `Open booking details for ${serviceName} with ${studentName}`,
     exact: true,
@@ -126,7 +129,7 @@ async function createBookingThroughProviderUi(page: Page, journey: ProviderJourn
       && url.searchParams.get('instructorId') === journey.instructorId
       && url.searchParams.get('date') === journey.date;
   });
-  await dialog.getByLabel('Date', { exact: true }).fill(journey.date);
+  await dialog.getByLabel('First date', { exact: true }).fill(journey.date);
   const slots = await responseJson<{ slots: Slot[] }>(await slotResponsePromise);
   const available = slots.slots.find(slot => slot.available);
   expect(available).toBeTruthy();
@@ -169,6 +172,9 @@ async function createBookingThroughProviderUi(page: Page, journey: ProviderJourn
   });
   await expect(page.getByText('Booking added to your schedule', { exact: true })).toBeVisible();
   await expect(dialog).toHaveCount(0);
+  const main = page.locator('main');
+  await main.getByRole('textbox', { name: 'Search', exact: true }).fill(journey.serviceName);
+  await main.getByRole('button', { name: 'Apply filters', exact: true }).click();
   await expect(page.getByRole('button', {
     name: `Open booking details for ${journey.serviceName} with ${journey.studentName}`,
     exact: true,

@@ -3,9 +3,10 @@ import type { Availability, AvailabilityException, Business, Student, Instructor
 import { DateTime, IANAZone } from 'luxon';
 import { z } from 'zod';
 import { prisma } from './db.js';
-import { asyncRoute, HttpError, coachScope, coachScoped, requireBusinessManager, requireClubAccount, initials, type AuthRequest } from './http.js';
+import { asyncRoute, HttpError, coachScope, coachScoped, requireClubPermission, requireCoachOrClubPermission, initials, type AuthRequest } from './http.js';
 import { bookableInstructorWhere } from './scheduling.js';
 import { packageInclude, packageJson, withoutServiceFinancials } from './serializers.js';
+import { workspaceNotificationWhere } from './notifications.js';
 
 export const crudRouter = Router();
 type Tx = Prisma.TransactionClient;
@@ -32,6 +33,7 @@ const instructorJson = (instructor: Instructor) => ({ id: instructor.id, name: i
   rescheduleNoticeHours: instructor.rescheduleNoticeHours, active: instructor.active });
 const locationJson = (location: Location) => ({ id: location.id, name: location.name, address: location.address,
   type: location.type, color: location.color, requiresApproval: location.requiresApproval,
+  classUnitSchedulingEnabled: location.classUnitSchedulingEnabled,
   travelMinutes: location.travelMinutes, notes: location.notes, source: location.source, placeId: location.placeId,
   mapsUrl: location.mapsUrl, latitude: location.latitude, longitude: location.longitude, active: location.active });
 const availabilityJson = (availability: Availability) => ({ id: availability.id, instructorId: availability.instructorId,
@@ -102,7 +104,7 @@ async function validateServiceLocations(tx: Tx, businessId: string, mappings: Se
 const mappingData = (mapping: ServiceLocationInput) => ({ price: mapping.price, duration: mapping.duration,
   instructors: { create: mapping.instructorIds.map(instructorId => ({ instructorId })) } });
 
-crudRouter.get('/services', asyncRoute(async (req, res) => {
+crudRouter.get('/services', requireCoachOrClubPermission('CATALOG_VIEW'), asyncRoute(async (req, res) => {
   const coach = coachScoped(req.auth);
   const instructorId = coach ? scopedInstructor(req) : undefined;
   const assignedLocationScope = { instructors: { some: { instructorId } } };
@@ -123,7 +125,7 @@ crudRouter.get('/services', asyncRoute(async (req, res) => {
     return coach ? withoutServiceFinancials(json) : json;
   }));
 }));
-crudRouter.post('/services', requireBusinessManager, asyncRoute(async (req, res) => {
+crudRouter.post('/services', requireClubPermission('CATALOG_MANAGE'), asyncRoute(async (req, res) => {
   const { locations, ...input } = serviceSchema.parse(req.body);
   const businessId = req.auth.business.id;
   const service = await prisma.$transaction(async tx => {
@@ -142,7 +144,7 @@ crudRouter.post('/services', requireBusinessManager, asyncRoute(async (req, res)
   });
   res.status(201).json(serviceJson(service));
 }));
-crudRouter.patch('/services/:id', requireBusinessManager, asyncRoute(async (req, res) => {
+crudRouter.patch('/services/:id', requireClubPermission('CATALOG_MANAGE'), asyncRoute(async (req, res) => {
   const { locations, ...input } = serviceSchema.partial().parse(req.body);
   const id = idSchema.parse(req.params.id);
   const businessId = req.auth.business.id;
@@ -174,7 +176,7 @@ crudRouter.patch('/services/:id', requireBusinessManager, asyncRoute(async (req,
   });
   res.json(serviceJson(service));
 }));
-crudRouter.delete('/services/:id', requireBusinessManager, asyncRoute(async (req, res) => {
+crudRouter.delete('/services/:id', requireClubPermission('CATALOG_MANAGE'), asyncRoute(async (req, res) => {
   const id = idSchema.parse(req.params.id);
   const businessId = req.auth.business.id;
   const deactivated = await prisma.$transaction(async tx => {
@@ -212,11 +214,11 @@ const instructorUpdateSchema = z.object({
 const coachSelfUpdateSchema = z.object({
   rescheduleNoticeHours: noticeHoursSchema,
 }).strict();
-crudRouter.get('/instructors', requireBusinessManager, asyncRoute(async (req, res) => {
+crudRouter.get('/instructors', requireClubPermission('ROSTER_VIEW'), asyncRoute(async (req, res) => {
   const instructors = await prisma.instructor.findMany({ where: { businessId: req.auth.business.id }, orderBy: { name: 'asc' } });
   res.json(instructors.map(instructorJson));
 }));
-crudRouter.post('/instructors', requireClubAccount, asyncRoute(async (req, res) => {
+crudRouter.post('/instructors', requireClubPermission('ROSTER_MANAGE'), asyncRoute(async (req, res) => {
   const input = instructorSchema.parse(req.body);
   const businessId = req.auth.business!.id;
   const instructor = await prisma.$transaction(async tx => {
@@ -258,7 +260,10 @@ crudRouter.post('/instructors', requireClubAccount, asyncRoute(async (req, res) 
 }));
 crudRouter.patch('/instructors/me', asyncRoute(async (req, res) => {
   const input = coachSelfUpdateSchema.parse(req.body);
-  const membership = req.auth.membership!;
+  if (!coachScoped(req.auth) || !req.auth.membership) {
+    throw new HttpError(403, 'Only a coach can update their own roster settings');
+  }
+  const membership = req.auth.membership;
   const instructorId = membership.instructorId;
   if (!instructorId) throw new HttpError(400, 'This account is not linked to a coach profile in this business');
   await requireInstructor(prisma, req.auth.business.id, instructorId);
@@ -267,7 +272,7 @@ crudRouter.patch('/instructors/me', asyncRoute(async (req, res) => {
   });
   res.json(instructorJson(instructor));
 }));
-crudRouter.patch('/instructors/:id', requireBusinessManager, asyncRoute(async (req, res) => {
+crudRouter.patch('/instructors/:id', requireClubPermission('ROSTER_MANAGE'), asyncRoute(async (req, res) => {
   // Name and email belong to the linked global account. Clubs may edit only
   // their own roster metadata and visibility.
   const input = instructorUpdateSchema.parse(req.body);
@@ -277,7 +282,7 @@ crudRouter.patch('/instructors/:id', requireBusinessManager, asyncRoute(async (r
   const instructor = await prisma.instructor.update({ where: { id, businessId }, data: input });
   res.json(instructorJson(instructor));
 }));
-crudRouter.delete('/instructors/:id', requireBusinessManager, asyncRoute(async (req, res) => {
+crudRouter.delete('/instructors/:id', requireClubPermission('ROSTER_MANAGE'), asyncRoute(async (req, res) => {
   const id = idSchema.parse(req.params.id);
   const businessId = req.auth.business.id;
   const deactivated = await prisma.$transaction(async tx => {
@@ -303,20 +308,21 @@ const locationSchema = z.object({ name: nameSchema, address: z.string().trim().m
   mapsUrl: z.string().trim().max(2000).refine(value => !value || /^https?:\/\//i.test(value), 'Use a full https link').default(''),
   latitude: z.number().min(-90).max(90).nullable().default(null),
   longitude: z.number().min(-180).max(180).nullable().default(null),
+  classUnitSchedulingEnabled: z.boolean().default(false),
   active: z.boolean().default(true) }).strict();
-crudRouter.get('/locations', requireBusinessManager, asyncRoute(async (req, res) => {
+crudRouter.get('/locations', requireCoachOrClubPermission('CATALOG_VIEW'), asyncRoute(async (req, res) => {
   const locations = await prisma.location.findMany({ where: { businessId: req.auth.business.id }, orderBy: { name: 'asc' } });
   res.json(locations.map(locationJson));
 }));
 // A coach who teaches somewhere new should not have to wait on the club's
 // office to add the venue, so creating one is open to every workspace role.
 // Editing and archiving stay with the club or the coach's own SOLO practice.
-crudRouter.post('/locations', asyncRoute(async (req, res) => {
+crudRouter.post('/locations', requireCoachOrClubPermission('CATALOG_MANAGE'), asyncRoute(async (req, res) => {
   const input = locationSchema.parse(req.body);
   const location = await prisma.location.create({ data: { ...input, businessId: req.auth.business.id } });
   res.status(201).json(locationJson(location));
 }));
-crudRouter.patch('/locations/:id', requireBusinessManager, asyncRoute(async (req, res) => {
+crudRouter.patch('/locations/:id', requireClubPermission('CATALOG_MANAGE'), asyncRoute(async (req, res) => {
   const input = locationSchema.partial().parse(req.body);
   const id = idSchema.parse(req.params.id);
   const businessId = req.auth.business.id;
@@ -334,7 +340,7 @@ crudRouter.patch('/locations/:id', requireBusinessManager, asyncRoute(async (req
   });
   res.json(locationJson(location));
 }));
-crudRouter.delete('/locations/:id', requireBusinessManager, asyncRoute(async (req, res) => {
+crudRouter.delete('/locations/:id', requireClubPermission('CATALOG_MANAGE'), asyncRoute(async (req, res) => {
   const id = idSchema.parse(req.params.id);
   const businessId = req.auth.business.id;
   const deactivated = await prisma.$transaction(async tx => {
@@ -357,7 +363,7 @@ const studentSchema = z.object({ name: nameSchema, email: emailSchema, phone: z.
   notes: studentNotesSchema.default(''), parentName: z.string().trim().max(120).default('') }).strict();
 const connectStudentSchema = z.object({ email: emailSchema, notes: studentNotesSchema.default('') }).strict();
 const linkedStudentUpdateSchema = z.object({ notes: studentNotesSchema }).strict();
-crudRouter.get('/students', asyncRoute(async (req, res) => {
+crudRouter.get('/students', requireCoachOrClubPermission('STUDENTS_VIEW'), asyncRoute(async (req, res) => {
   const businessId = req.auth.business.id;
   const instructorId = scopedInstructor(req);
   const students = await prisma.student.findMany({ where: { businessId,
@@ -365,7 +371,7 @@ crudRouter.get('/students', asyncRoute(async (req, res) => {
     include: studentInclude(businessId, instructorId), orderBy: { name: 'asc' } });
   res.json(students.map(studentJson));
 }));
-crudRouter.post('/students', requireBusinessManager, asyncRoute(async (req, res) => {
+crudRouter.post('/students', requireClubPermission('STUDENTS_MANAGE'), asyncRoute(async (req, res) => {
   const input = connectStudentSchema.parse(req.body);
   const businessId = req.auth.business!.id;
   const student = await prisma.$transaction(async tx => {
@@ -390,7 +396,7 @@ crudRouter.post('/students', requireBusinessManager, asyncRoute(async (req, res)
   }, { isolationLevel: 'Serializable' });
   res.status(201).json(studentJson(student));
 }));
-crudRouter.patch('/students/:id', requireBusinessManager, asyncRoute(async (req, res) => {
+crudRouter.patch('/students/:id', requireClubPermission('STUDENTS_MANAGE'), asyncRoute(async (req, res) => {
   const id = idSchema.parse(req.params.id);
   const businessId = req.auth.business.id;
   const student = await prisma.$transaction(async tx => {
@@ -417,7 +423,7 @@ crudRouter.patch('/students/:id', requireBusinessManager, asyncRoute(async (req,
   });
   res.json(studentJson(student));
 }));
-crudRouter.delete('/students/:id', requireBusinessManager, asyncRoute(async (req, res) => {
+crudRouter.delete('/students/:id', requireClubPermission('STUDENTS_MANAGE'), asyncRoute(async (req, res) => {
   const id = idSchema.parse(req.params.id);
   const businessId = req.auth.business.id;
   await prisma.$transaction(async tx => {
@@ -440,14 +446,18 @@ async function validatePackageReferences(tx: Tx, businessId: string, studentId?:
     throw new HttpError(404, 'Service not found or unavailable');
   }
 }
-crudRouter.get('/packages', requireBusinessManager, asyncRoute(async (req, res) => {
+crudRouter.get('/packages', requireClubPermission('PACKAGES_VIEW'), asyncRoute(async (req, res) => {
   const packages = await prisma.lessonPackage.findMany({
     where: { businessId: req.auth.business.id }, include: packageInclude, orderBy: { expiresAt: 'asc' },
   });
   res.json(packages.map(packageJson));
 }));
-crudRouter.post('/packages', requireBusinessManager, asyncRoute(async (req, res) => {
+crudRouter.post('/packages', requireClubPermission('PACKAGES_MANAGE'), asyncRoute(async (req, res) => {
   const input = packageSchema.parse(req.body);
+  if (input.paid && input.price > 0 && !req.auth.staffAccess?.permissions.includes('PAYMENTS_RECORD')
+    && req.auth.accessMode !== 'CLUB_ACCOUNT') {
+    throw new HttpError(403, 'Recording a paid package requires payments record permission');
+  }
   const businessId = req.auth.business.id;
   const pkg = await prisma.$transaction(async tx => {
     await validatePackageReferences(tx, businessId, input.studentId, input.serviceId);
@@ -461,7 +471,7 @@ crudRouter.post('/packages', requireBusinessManager, asyncRoute(async (req, res)
   });
   res.status(201).json(packageJson(pkg));
 }));
-crudRouter.patch('/packages/:id', requireBusinessManager, asyncRoute(async (req, res) => {
+crudRouter.patch('/packages/:id', requireClubPermission('PACKAGES_MANAGE'), asyncRoute(async (req, res) => {
   // usedCredits is deliberately absent; booking and cancellation transactions own the credit ledger.
   const input = packageSchema.partial().parse(req.body);
   const id = idSchema.parse(req.params.id);
@@ -501,7 +511,7 @@ crudRouter.patch('/packages/:id', requireBusinessManager, asyncRoute(async (req,
   });
   res.json(packageJson(pkg));
 }));
-crudRouter.delete('/packages/:id', requireBusinessManager, asyncRoute(async (req, res) => {
+crudRouter.delete('/packages/:id', requireClubPermission('PACKAGES_MANAGE'), asyncRoute(async (req, res) => {
   const id = idSchema.parse(req.params.id);
   const businessId = req.auth.business.id;
   await prisma.$transaction(async tx => {
@@ -520,7 +530,7 @@ const timeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use a valid ti
 const availabilitySchema = z.object({ instructorId: idSchema, locationId: idSchema, dayOfWeek: z.number().int().min(0).max(6),
   startTime: timeSchema, endTime: timeSchema }).strict().refine(input => input.startTime < input.endTime,
   { path: ['endTime'], message: 'End time must be after start time on the same day' });
-crudRouter.get('/availability', asyncRoute(async (req, res) => {
+crudRouter.get('/availability', requireCoachOrClubPermission('AVAILABILITY_MANAGE'), asyncRoute(async (req, res) => {
   const query = z.object({ instructorId: idSchema.optional(), locationId: idSchema.optional() }).strict().parse(req.query);
   const businessId = req.auth.business.id;
   const instructorId = scopedInstructor(req, query.instructorId);
@@ -530,7 +540,7 @@ crudRouter.get('/availability', asyncRoute(async (req, res) => {
     orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }, { instructorId: 'asc' }] });
   res.json(availability.map(availabilityJson));
 }));
-crudRouter.post('/availability', asyncRoute(async (req, res) => {
+crudRouter.post('/availability', requireCoachOrClubPermission('AVAILABILITY_MANAGE'), asyncRoute(async (req, res) => {
   const input = availabilitySchema.parse(req.body);
   coachScope(req, input.instructorId);
   const businessId = req.auth.business.id;
@@ -550,7 +560,7 @@ crudRouter.post('/availability', asyncRoute(async (req, res) => {
   });
   res.status(201).json(availabilityJson(availability));
 }));
-crudRouter.delete('/availability/:id', asyncRoute(async (req, res) => {
+crudRouter.delete('/availability/:id', requireCoachOrClubPermission('AVAILABILITY_MANAGE'), asyncRoute(async (req, res) => {
   const id = idSchema.parse(req.params.id);
   const businessId = req.auth.business.id;
   await prisma.$transaction(async tx => {
@@ -568,7 +578,7 @@ const exceptionSchema = z.object({ instructorId: idSchema,
     const date = DateTime.fromISO(value, { zone: 'UTC' });
     return date.isValid && date.toISODate() === value;
   }, 'Date must be a valid calendar date'), reason: z.string().trim().min(1).max(1000).default('Unavailable') }).strict();
-crudRouter.get('/exceptions', asyncRoute(async (req, res) => {
+crudRouter.get('/exceptions', requireCoachOrClubPermission('AVAILABILITY_MANAGE'), asyncRoute(async (req, res) => {
   const query = z.object({ instructorId: idSchema.optional() }).strict().parse(req.query);
   const businessId = req.auth.business.id;
   const instructorId = scopedInstructor(req, query.instructorId);
@@ -576,7 +586,7 @@ crudRouter.get('/exceptions', asyncRoute(async (req, res) => {
   const exceptions = await prisma.availabilityException.findMany({ where: { businessId, instructorId }, orderBy: [{ date: 'asc' }, { instructorId: 'asc' }] });
   res.json(exceptions.map(exceptionJson));
 }));
-crudRouter.post('/exceptions', asyncRoute(async (req, res) => {
+crudRouter.post('/exceptions', requireCoachOrClubPermission('AVAILABILITY_MANAGE'), asyncRoute(async (req, res) => {
   const input = exceptionSchema.parse(req.body);
   coachScope(req, input.instructorId);
   const businessId = req.auth.business.id;
@@ -588,7 +598,7 @@ crudRouter.post('/exceptions', asyncRoute(async (req, res) => {
   });
   res.status(201).json(exceptionJson(exception));
 }));
-crudRouter.delete('/exceptions/:id', asyncRoute(async (req, res) => {
+crudRouter.delete('/exceptions/:id', requireCoachOrClubPermission('AVAILABILITY_MANAGE'), asyncRoute(async (req, res) => {
   const id = idSchema.parse(req.params.id);
   const businessId = req.auth.business.id;
   await prisma.$transaction(async tx => {
@@ -606,7 +616,7 @@ const businessSchema = z.object({ name: nameSchema.optional(), ownerName: nameSc
   currency: z.string().trim().regex(/^[A-Za-z]{3}$/, 'Use a three-letter currency code').transform(value => value.toUpperCase()).optional(),
   color: colorSchema.optional(), tagline: z.string().trim().max(500).optional(),
   cancellationHours: z.number().int().min(0).max(720).optional() }).strict();
-crudRouter.patch('/business', requireBusinessManager, asyncRoute(async (req, res) => {
+crudRouter.patch('/business', requireClubPermission('SETTINGS_MANAGE'), asyncRoute(async (req, res) => {
   const input = businessSchema.parse(req.body);
   const businessId = req.auth.business.id;
   const business = await prisma.$transaction(async tx => {
@@ -631,8 +641,7 @@ crudRouter.patch('/business', requireBusinessManager, asyncRoute(async (req, res
 crudRouter.patch('/notifications/read', asyncRoute(async (req, res) => {
   const input = z.object({ ids: z.array(idSchema).max(1000).optional() }).strict().parse(req.body ?? {});
   const businessId = req.auth.business.id;
-  const instructorId = scopedInstructor(req);
-  const scope = { businessId, ...(instructorId ? { instructorId } : {}) };
+  const scope = workspaceNotificationWhere(req.auth);
   const count = await prisma.$transaction(async tx => {
     if (input.ids) {
       const ids = [...new Set(input.ids)];

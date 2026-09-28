@@ -359,10 +359,14 @@ describe.sequential('A lesson seen from every seat', () => {
       for (const location of service.locations) expect(location).not.toHaveProperty('price');
     }
 
-    // The club-only surfaces answer the same way however they are reached.
+    // Coaches can read the club's active venue catalogue so a venue they add
+    // remains usable, but the other administrative surfaces stay club-only.
+    const coachLocations = await request(app).get('/api/locations').set('Cookie', f.coachCookie).expect(200);
+    expect(coachLocations.body.map((location: { id: string }) => location.id)).toEqual([f.location.id]);
+    expect(coachLocations.body.every((location: { active: boolean }) => location.active)).toBe(true);
     for (const [method, path] of [
       ['get', '/staff'], ['get', '/integrity-flags'], ['get', '/instructors'],
-      ['get', '/locations'], ['get', '/packages'],
+      ['get', '/packages'],
     ] as const) {
       const response = await request(app)[method](`/api${path}`).set('Cookie', f.coachCookie);
       expect(response.status, path).toBe(403);

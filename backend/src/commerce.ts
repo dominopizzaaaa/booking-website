@@ -4,7 +4,7 @@ import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from './db.js';
 import { requireAuth, requireStudent, requireWorkspace } from './auth.js';
-import { asyncRoute, HttpError, initials, requireClubAccount } from './http.js';
+import { asyncRoute, HttpError, initials, requireClubPermission } from './http.js';
 import { notifyWorkspace } from './notifications.js';
 import { createBookingAccountAlerts } from './account-notifications.js';
 import { lockInstructors } from './scheduling.js';
@@ -158,7 +158,7 @@ async function replaceOfferScopes(
   });
 }
 
-commerceRouter.get('/package-offers', requireAuth, requireWorkspace, requireClubAccount, asyncRoute(async (req, res) => {
+commerceRouter.get('/package-offers', requireAuth, requireWorkspace, requireClubPermission('PACKAGES_VIEW'), asyncRoute(async (req, res) => {
   const offers = await prisma.packageOffer.findMany({
     where: { businessId: req.auth.business.id }, include: offerInclude,
     orderBy: [{ active: 'desc' }, { createdAt: 'desc' }, { name: 'asc' }],
@@ -166,7 +166,7 @@ commerceRouter.get('/package-offers', requireAuth, requireWorkspace, requireClub
   res.json({ offers: offers.map(offerJson) });
 }));
 
-commerceRouter.post('/package-offers', requireAuth, requireWorkspace, requireClubAccount, asyncRoute(async (req, res) => {
+commerceRouter.post('/package-offers', requireAuth, requireWorkspace, requireClubPermission('PACKAGES_MANAGE'), asyncRoute(async (req, res) => {
   const input = offerCreate.parse(req.body);
   const offer = await prisma.$transaction(async tx => {
     await validateOfferScopes(tx, req.auth.business.id, input.serviceIds, input.rentalLocationIds);
@@ -180,7 +180,7 @@ commerceRouter.post('/package-offers', requireAuth, requireWorkspace, requireClu
   res.status(201).json(offerJson(offer));
 }));
 
-commerceRouter.patch('/package-offers/:id', requireAuth, requireWorkspace, requireClubAccount, asyncRoute(async (req, res) => {
+commerceRouter.patch('/package-offers/:id', requireAuth, requireWorkspace, requireClubPermission('PACKAGES_MANAGE'), asyncRoute(async (req, res) => {
   const input = offerPatch.parse(req.body);
   const offer = await prisma.$transaction(async tx => {
     await tx.$queryRaw`SELECT id FROM "PackageOffer" WHERE id = ${req.params.id} AND "businessId" = ${req.auth.business.id} FOR UPDATE`;
@@ -222,7 +222,7 @@ commerceRouter.patch('/package-offers/:id', requireAuth, requireWorkspace, requi
   res.json(offerJson(offer));
 }));
 
-commerceRouter.delete('/package-offers/:id', requireAuth, requireWorkspace, requireClubAccount, asyncRoute(async (req, res) => {
+commerceRouter.delete('/package-offers/:id', requireAuth, requireWorkspace, requireClubPermission('PACKAGES_MANAGE'), asyncRoute(async (req, res) => {
   const result = await prisma.$transaction(async tx => {
     await tx.$queryRaw`SELECT id FROM "PackageOffer" WHERE id = ${req.params.id} AND "businessId" = ${req.auth.business.id} FOR UPDATE`;
     const offer = await tx.packageOffer.findFirst({ where: { id: req.params.id, businessId: req.auth.business.id } });

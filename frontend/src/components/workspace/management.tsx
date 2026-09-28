@@ -2,23 +2,37 @@
 
 import { useState } from 'react';
 import { Banknote, CalendarCheck2, CircleCheck, TrendingUp, Users } from 'lucide-react';
-import { isManagerWorkspace, type WorkspaceResponse } from '@/lib/types';
+import { isManagerWorkspace, type ClubPermission, type WorkspaceResponse } from '@/lib/types';
 import { addDaysKey, dateKey, money, shortDate } from '@/lib/utils';
 import { LocationsView, ServicesView, TeamView } from './management-catalog';
 import { StudentsView } from './management-students';
 import { PackagesView, PaymentsView } from './management-finance';
 import { AvailabilityView, SettingsView } from './management-operations';
 import { Empty, PageHeading, Stat, type ManagementProps } from './management-ui';
+import { AuditLog } from './audit-log';
 
 export function ManagementView({ view, data, refresh }: { view: string; data: WorkspaceResponse; refresh: () => Promise<void> }) {
+  const accessMode = data.accessMode ?? (data.user.accountType === 'CLUB' ? 'CLUB_ACCOUNT' : 'COACH');
+  const coach = accessMode === 'COACH';
+  const permitted = (...permissions: ClubPermission[]) => accessMode === 'CLUB_ACCOUNT' || permissions.some(permission => data.permissions?.includes(permission));
   if (!isManagerWorkspace(data)) {
     const sharedProps = { data, refresh };
-    if (view === 'students') return <StudentsView {...sharedProps} />;
-    if (view === 'availability') return <AvailabilityView {...sharedProps} />;
-    if (view === 'locations') return <LocationsView {...sharedProps} />;
+    if (coach && view === 'students') return <StudentsView {...sharedProps} />;
+    if (coach && view === 'availability') return <AvailabilityView {...sharedProps} />;
+    if (coach && view === 'locations') return <LocationsView {...sharedProps} />;
     return <div className="panel"><Empty title="Club management access required">Your account can view assigned students, add teaching venues, and manage your availability. Business management and financial records stay with the club.</Empty></div>;
   }
   const props = { data, refresh };
+  const allowed = view === 'services' ? permitted('CATALOG_VIEW', 'CATALOG_MANAGE')
+    : view === 'locations' ? permitted('CATALOG_VIEW', 'CATALOG_MANAGE')
+      : view === 'students' ? permitted('STUDENTS_VIEW', 'STUDENTS_MANAGE')
+        : view === 'packages' ? permitted('PACKAGES_VIEW', 'PACKAGES_MANAGE')
+          : view === 'payments' ? permitted('PAYMENTS_VIEW')
+            : view === 'insights' ? permitted('PAYMENTS_VIEW', 'AUDIT_VIEW')
+            : view === 'team' ? permitted('ROSTER_VIEW', 'ROSTER_MANAGE')
+              : view === 'settings' ? permitted('SETTINGS_MANAGE')
+                : view === 'availability' ? permitted('AVAILABILITY_MANAGE') : true;
+  if (!allowed) return <div className="panel"><Empty title="Access not granted">Your staff access does not include this part of the club workspace.</Empty></div>;
   switch (view) {
     case 'services': return <ServicesView {...props} />;
     case 'locations': return <LocationsView {...props} />;
@@ -35,6 +49,13 @@ export function ManagementView({ view, data, refresh }: { view: string; data: Wo
 
 function InsightsView({ data }: ManagementProps) {
   const [weekCount, setWeekCount] = useState(8);
+  const accessMode = data.accessMode ?? (data.user.accountType === 'CLUB' ? 'CLUB_ACCOUNT' : 'STAFF');
+  const canViewFinancialInsights = accessMode === 'CLUB_ACCOUNT' || data.permissions?.includes('PAYMENTS_VIEW');
+  const canViewAudit = accessMode === 'CLUB_ACCOUNT' || data.permissions?.includes('AUDIT_VIEW');
+  if (!canViewFinancialInsights) return <>
+    <PageHeading title="Insights" description="Review the club's immutable history of sensitive access changes." />
+    {canViewAudit && <AuditLog timezone={data.business.timezone} />}
+  </>;
   const today = dateKey();
   const dayOfWeek = new Date(`${today}T12:00:00+08:00`).getUTCDay();
   const thisMonday = addDaysKey(today, -((dayOfWeek + 6) % 7));
@@ -64,7 +85,7 @@ function InsightsView({ data }: ManagementProps) {
   }).filter(s => s.count > 0).sort((a, b) => b.count - a.count);
   const reversedWeeks = [...weeks].reverse();
   return <>
-    <PageHeading title="Insights" description="A quieter look at the bigger picture. Real lessons, real attendance, and the payments you have recorded." />
+    <PageHeading title="Insights" description={canViewAudit ? "Reporting and an immutable history of sensitive club access changes." : "A quieter look at the bigger picture. Real lessons, real attendance, and the payments you have recorded."} />
     <div className="mb-2 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e5e9e0] bg-white p-3 sm:px-4">
       <p className="text-xs text-stone-500">{shortDate(periodStart + 'T12:00:00+08:00')} – {shortDate(today + 'T12:00:00+08:00')} <span className="text-[#59675c]">· Singapore time</span></p>
       <select aria-label="Insights reporting period" value={weekCount} onChange={e => setWeekCount(Number(e.target.value))} className="text-xs max-sm:w-full sm:max-w-44"><option value="4">Last 4 weeks</option><option value="8">Last 8 weeks</option><option value="12">Last 12 weeks</option></select>
@@ -87,8 +108,9 @@ function InsightsView({ data }: ManagementProps) {
     </section>
     <section className="panel mt-5 overflow-hidden">
       <div className="panel-heading"><div><h2 className="text-[#294735]">Lessons by class</h2><p className="mt-1 text-[11px] text-stone-500">Elapsed, non-cancelled sessions within the selected period</p></div></div>
-      {services.length ? <><div className="table-wrap max-sm:hidden"><table className="data-table"><thead><tr><th>Class</th><th>Lessons</th><th>Participants</th><th>Marked present</th><th>Linked receipts</th></tr></thead><tbody>{services.map(service => <tr key={service.id}><td><span className="mr-2 inline-block h-2 w-2 rounded-full" style={{ backgroundColor: service.color }} />{service.name}</td><td>{service.count}</td><td>{service.participants}</td><td>{service.present}</td><td className="font-medium text-[#254b38]">{money(service.received)}</td></tr>)}</tbody></table></div><div className="divide-y divide-[#edf0e8] sm:hidden">{services.map(service => <article key={service.id} className="p-4"><div className="flex items-start justify-between gap-3"><h3 className="flex items-center gap-2 text-sm text-[#294735]"><span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: service.color }} />{service.name}</h3><strong className="shrink-0 text-xs text-[#254b38]">{money(service.received)}</strong></div><p className="mt-3 text-[10px] text-stone-500">{service.count} lessons · {service.participants} participants · {service.present} marked present</p></article>)}</div></> : <Empty title="Your story is still taking shape" icon={TrendingUp}>Class insights will appear once lessons have taken place. Try a longer reporting period.</Empty>}
+      {services.length ? <><div className="table-wrap max-sm:hidden"><table className="data-table"><thead><tr><th>Class</th><th>Lessons</th><th>Participants</th><th>Marked present</th><th>Linked receipts</th></tr></thead><tbody>{services.map(service => <tr key={service.id}><td><span className="mr-2 inline-block h-2 w-2 rounded-full" style={{ backgroundColor: 'color' in service ? service.color : '#94a37f' }} />{service.name}</td><td>{service.count}</td><td>{service.participants}</td><td>{service.present}</td><td className="font-medium text-[#254b38]">{money(service.received)}</td></tr>)}</tbody></table></div><div className="divide-y divide-[#edf0e8] sm:hidden">{services.map(service => <article key={service.id} className="p-4"><div className="flex items-start justify-between gap-3"><h3 className="flex items-center gap-2 text-sm text-[#294735]"><span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: 'color' in service ? service.color : '#94a37f' }} />{service.name}</h3><strong className="shrink-0 text-xs text-[#254b38]">{money(service.received)}</strong></div><p className="mt-3 text-[10px] text-stone-500">{service.count} lessons · {service.participants} participants · {service.present} marked present</p></article>)}</div></> : <Empty title="Your story is still taking shape" icon={TrendingUp}>Class insights will appear once lessons have taken place. Try a longer reporting period.</Empty>}
       <p className="border-t border-[#edf0e8] px-4 py-4 text-[10px] leading-relaxed text-[#59675c] sm:px-6">Linked receipts are payments attached directly to these lessons, regardless of receipt date. Package purchases and unallocated payments cannot be attributed to a class and are excluded from this table.</p>
     </section>
+    {canViewAudit && <div className="mt-5"><AuditLog timezone={data.business.timezone} /></div>}
   </>;
 }

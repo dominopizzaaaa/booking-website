@@ -113,11 +113,14 @@ export class TestTenants {
           where: { businessId, user: { accountType: 'CLUB' } },
           select: { userId: true },
         })).map(membership => membership.userId);
+        await tx.paymentRefund.deleteMany({ where: { businessId } });
         await tx.payment.deleteMany({ where: { businessId } });
         await tx.paymentIntent.deleteMany({ where: { businessId } });
+        await tx.venueUnitAllocation.deleteMany({ where: { businessId } });
         await tx.venueReservation.deleteMany({ where: { businessId } });
         await tx.participant.deleteMany({ where: { booking: { businessId } } });
         await tx.booking.deleteMany({ where: { businessId } });
+        await tx.bookingSeries.deleteMany({ where: { businessId } });
         await tx.lessonPackage.deleteMany({ where: { businessId } });
         await tx.student.deleteMany({ where: { businessId } });
         // Memberships, availability, assignment joins, instructors, locations,

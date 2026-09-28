@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
-import type { AuthSession, Business, Membership, User } from '@prisma/client';
+import type { AuthSession, Business, ClubStaffAccess, Membership, User } from '@prisma/client';
 
 export type MembershipWithBusiness = Membership & { business: Business };
 export type AuthContext = {
@@ -11,11 +11,15 @@ export type AuthContext = {
   membership: MembershipWithBusiness | null;
   business: Business | null;
   memberships: MembershipWithBusiness[];
+  staffAccess: (ClubStaffAccess & { business: Business }) | null;
+  staffAccesses: Array<ClubStaffAccess & { business: Business }>;
+  accessMode: 'NONE' | 'CLUB_ACCOUNT' | 'COACH' | 'STAFF';
+  permissions: readonly string[];
 };
 export type AuthRequest = Request & { auth: AuthContext };
 export type AccountRequest = AuthRequest;
 export type WorkspaceRequest = Request & {
-  auth: AuthContext & { membership: MembershipWithBusiness; business: Business };
+  auth: AuthContext & { business: Business };
 };
 
 export class HttpError extends Error {
@@ -39,24 +43,82 @@ export type AccountType = 'STUDENT' | 'COACH' | 'CLUB';
  * club affiliations; retained solo-practice rows are historical and cannot
  * reach workspace routes.
  */
-export function managesBusiness(auth: Pick<AuthContext, 'user' | 'business'>) {
+export function managesBusiness(auth: Pick<AuthContext, 'user' | 'business' | 'staffAccess'>) {
   if (!auth.business) return false;
-  return auth.user.accountType === 'CLUB' && auth.business.kind === 'CLUB'
-    && !auth.business.legacyReadOnly;
+  if (auth.business.kind !== 'CLUB' || auth.business.legacyReadOnly) return false;
+  return auth.user.accountType === 'CLUB';
 }
 
 /**
  * Whether this request should be narrowed to one coach's own schedule, hiding
  * the rest of the club's roster, students and money from them.
  */
-export function coachScoped(auth: Pick<AuthContext, 'user' | 'business'>) {
-  return auth.user.accountType === 'COACH' && auth.business?.kind === 'CLUB';
+export function coachScoped(auth: Pick<AuthContext, 'user' | 'business' | 'staffAccess'>) {
+  return !auth.staffAccess && auth.user.accountType === 'COACH' && auth.business?.kind === 'CLUB';
 }
+
+/**
+ * Write authority carries the matching read authority. Keep this graph in one
+ * place so route guards and serialized effective permissions cannot disagree.
+ * Payment and integrity use action-specific names rather than `*_MANAGE`, but
+ * their mutating actions follow the same rule.
+ */
+export const CLUB_PERMISSION_IMPLICATIONS: Readonly<Record<string, readonly string[]>> = {
+  BOOKINGS_MANAGE: ['BOOKINGS_VIEW'],
+  STUDENTS_MANAGE: ['STUDENTS_VIEW'],
+  CATALOG_MANAGE: ['CATALOG_VIEW'],
+  ROSTER_MANAGE: ['ROSTER_VIEW'],
+  PACKAGES_MANAGE: ['PACKAGES_VIEW'],
+  PAYMENTS_RECORD: ['PAYMENTS_VIEW'],
+  PAYMENTS_REVERSE: ['PAYMENTS_VIEW'],
+  PAYOUTS_RECORD: ['PAYMENTS_VIEW'],
+  INTEGRITY_REVIEW: ['INTEGRITY_VIEW'],
+  RENTALS_MANAGE: ['RENTALS_VIEW', 'CATALOG_MANAGE'],
+};
+
+export function effectiveClubPermissions(permissions: readonly string[]) {
+  const effective = new Set(permissions);
+  const pending = [...permissions];
+  for (let index = 0; index < pending.length; index += 1) {
+    for (const implied of CLUB_PERMISSION_IMPLICATIONS[pending[index]!] ?? []) {
+      if (effective.has(implied)) continue;
+      effective.add(implied);
+      pending.push(implied);
+    }
+  }
+  return [...effective];
+}
+
+export function hasClubPermission(auth: Pick<AuthContext, 'user' | 'business' | 'staffAccess'>, permission: string) {
+  if (!auth.business || auth.business.kind !== 'CLUB' || auth.business.legacyReadOnly) return false;
+  if (auth.user.accountType === 'CLUB') return true;
+  return Boolean(auth.staffAccess?.active && auth.staffAccess.businessId === auth.business.id
+    && effectiveClubPermissions(auth.staffAccess.permissions).includes(permission));
+}
+
+export const requireClubPermission = (permission: string): RequestHandler => (req, _res, next) => {
+  const auth = (req as AuthRequest).auth;
+  if (!auth?.business || !hasClubPermission(auth, permission)) {
+    return next(new HttpError(403, `This workspace requires ${permission.toLowerCase().replaceAll('_', ' ')} permission`));
+  }
+  next();
+};
+
+/** Coach self-service stays scoped to its roster row; office users need the
+ * explicit named permission. This is the common guard for shared routes. */
+export const requireCoachOrClubPermission = (permission: string): RequestHandler => (req, _res, next) => {
+  const auth = (req as AuthRequest).auth;
+  if (!auth?.business) return next(new HttpError(403, 'Select a business workspace to continue'));
+  if (!coachScoped(auth) && !hasClubPermission(auth, permission)) {
+    return next(new HttpError(403, `This workspace requires ${permission.toLowerCase().replaceAll('_', ' ')} permission`));
+  }
+  next();
+};
 
 export const requireBusinessManager: RequestHandler = (req, _res, next) => {
   const auth = (req as AuthRequest).auth;
-  if (!auth?.membership) return next(new HttpError(403, 'Select a business workspace to continue'));
-  if (!managesBusiness(auth)) return next(new HttpError(403, 'Only the club account can do this'));
+  if (!auth?.business) return next(new HttpError(403, 'Select a business workspace to continue'));
+  if (!managesBusiness(auth)) return next(new HttpError(403, 'Club management access is required'));
   next();
 };
 
@@ -66,17 +128,16 @@ export const requireBusinessManager: RequestHandler = (req, _res, next) => {
  */
 export const requireClubAccount: RequestHandler = (req, _res, next) => {
   const auth = (req as AuthRequest).auth;
-  if (!auth?.membership || !auth.business) return next(new HttpError(403, 'Select a business workspace to continue'));
-  if (auth.user.accountType !== 'CLUB' || auth.business.kind !== 'CLUB' || auth.membership.instructorId !== null) {
-    return next(new HttpError(403, 'Only the club account can manage its coaches'));
+  if (!auth?.business) return next(new HttpError(403, 'Select a business workspace to continue'));
+  if (!hasClubPermission(auth, 'ROSTER_MANAGE')) {
+    return next(new HttpError(403, 'Coach roster management permission is required'));
   }
   next();
 };
 
 export function coachScope(req: AuthRequest, instructorId: string) {
   const membership = req.auth.membership;
-  if (!membership) throw new HttpError(403, 'Select a business workspace to continue');
-  if (coachScoped(req.auth) && membership.instructorId !== instructorId) {
+  if (coachScoped(req.auth) && membership?.instructorId !== instructorId) {
     throw new HttpError(403, 'Coaches can only access their own schedule');
   }
 }

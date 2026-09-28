@@ -13,7 +13,7 @@ import { workspaceRouter } from './workspace.js';
 import { bookingsRouter } from './bookings.js';
 import { crudRouter } from './crud.js';
 import { coachInvitationRouter, staffRouter } from './staff.js';
-import { accountRouter } from './account-notifications.js';
+import { accountRouter, notificationPreferencesRouter } from './account-notifications.js';
 import { venuesRouter } from './venues.js';
 import { integrityRouter } from './integrity.js';
 import { calendarRouter } from './calendar.js';
@@ -21,14 +21,21 @@ import { accountDirectoryRouter } from './account-directory.js';
 import { commerceRouter } from './commerce.js';
 import { rentalsRouter } from './rentals.js';
 import { chatRouter } from './chat.js';
+import { clubStaffAccessRouter, clubStaffInvitationRouter } from './staff-access.js';
+import { bookingSeriesRouter } from './booking-series.js';
 import { HttpError } from './http.js';
 import { prisma } from './db.js';
 import { inspectSchema } from './schema-health.js';
+import { paymentsRouter, stripeWebhookHandler } from './payments/routes.js';
+import { auditRouter } from './audit-routes.js';
 export const app = express();
 app.disable('x-powered-by');
 if (production) app.set('trust proxy', 1);
 app.use(helmet());
 app.use(cors({ credentials: true, origin(origin, cb) { cb(null, !origin || config.origins.includes(origin)); } }));
+// Signature verification must receive the exact bytes Stripe signed. This is
+// the only endpoint that bypasses the normal JSON parser.
+app.post('/api/payments/webhooks/stripe', express.raw({ type: 'application/json', limit: '256kb' }), stripeWebhookHandler);
 app.use(express.json({ limit: '100kb' }));
 app.use(cookieParser());
 app.use('/api', rateLimit({
@@ -59,8 +66,13 @@ app.get('/api/health', async (_req, res) => {
       capabilities: {
         accountProfile: true, rescheduleRequests: true, coachAcceptance: true,
         paymentReversal: true, integrityFlags: true,
-        simulatedStripe: true, packageMarketplace: true, venueRentals: true, accountDirectory: true,
-        sessionChat: true, accountChat: true,
+        simulatedStripe: config.payments.mode === 'simulated', packageMarketplace: true, venueRentals: true, accountDirectory: true,
+        sessionChat: true, accountChat: true, namedClubStaff: true, bookingSeries: true,
+        operationalInbox: true, bookingExport: true,
+        payments: config.payments.mode === 'stripe'
+          ? (config.payments.publishableKey.startsWith('pk_live_') ? 'stripe-live' : 'stripe-test')
+          : config.payments.mode,
+        transactionalEmail: config.email.enabled ? 'configured' : 'disabled',
         venueSearch: config.googleMapsApiKey ? 'google-places' : 'maps-link',
         googleCalendar: config.googleCalendar.enabled ? 'configured' : 'disabled',
       },
@@ -72,8 +84,10 @@ app.use('/api/auth', authRouter);
 app.use('/api', adminRouter);
 app.use('/api', publicRouter);
 app.use('/api', accountDirectoryRouter);
+app.use('/api', paymentsRouter);
 // A coach can review and accept invitations before selecting a workspace.
 app.use('/api', requireAuth, coachInvitationRouter);
+app.use('/api', requireAuth, clubStaffInvitationRouter);
 // Commerce contains both global student checkout routes and club-workspace
 // management routes, so each endpoint applies its own narrower guard.
 app.use('/api', commerceRouter);
@@ -85,11 +99,12 @@ app.use('/api/calendar', requireAuth, calendarRouter);
 // Chat is account-level: people keep direct conversations and session chats
 // across clubs, while each thread applies its own membership rule.
 app.use('/api/chats', requireAuth, chatRouter);
+app.use('/api/account', requireAuth, notificationPreferencesRouter);
 app.use('/api/account', requireAuth, requireStudent, accountRouter);
 // Account-only public booking management installs its own authentication
 // middleware. Every provider route below additionally requires an active,
 // non-revoked membership selected on the session.
-app.use('/api', requireAuth, requireWorkspace, workspaceRouter, bookingsRouter, crudRouter, staffRouter, venuesRouter, integrityRouter);
+app.use('/api', requireAuth, requireWorkspace, workspaceRouter, bookingsRouter, bookingSeriesRouter, crudRouter, staffRouter, clubStaffAccessRouter, auditRouter, venuesRouter, integrityRouter);
 app.use((_req, _res, next) => next(new HttpError(404, 'Route not found')));
 const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
   if (error instanceof HttpError) { res.status(error.status).json({ error: error.message, ...error.details }); return; }

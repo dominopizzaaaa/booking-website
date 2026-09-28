@@ -63,6 +63,12 @@ describe('Google Calendar configuration', () => {
       packageScopeColumn: true,
       packageScopeTrigger: true,
       venueUnitIdentity: true,
+      namedClubStaff: true,
+      bookingSeries: true,
+      venueAllocation: true,
+      paymentProviderEvents: true,
+      outboundDelivery: true,
+      activeStripeBookingCheckoutGuard: true,
     }]);
 
     const response = await request(app).get('/api/health').expect(200);
@@ -85,6 +91,12 @@ describe('Google Calendar configuration', () => {
       packageScopeColumn: true,
       packageScopeTrigger: true,
       venueUnitIdentity: true,
+      namedClubStaff: true,
+      bookingSeries: true,
+      venueAllocation: true,
+      paymentProviderEvents: true,
+      outboundDelivery: true,
+      activeStripeBookingCheckoutGuard: true,
     }]);
 
     const response = await request(app).get('/api/health').expect(503);

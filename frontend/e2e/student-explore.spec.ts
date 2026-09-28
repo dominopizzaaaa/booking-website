@@ -109,6 +109,9 @@ const directory = [
 
 async function mockStudent(page: Page, clubs: StudentClubDirectoryEntry[] = directory) {
   await page.route('**/api/auth/me', route => route.fulfill({ json: session }));
+  await page.route('**/api/payments/capabilities', route => route.fulfill({
+    json: { mode: 'disabled', enabled: false, liveCheckout: false, simulatedCheckout: false, publishableKey: null },
+  }));
   await page.route('**/api/account/bookings*', route => route.fulfill({ json: { bookings: [knownBooking] } }));
   await page.route('**/api/account/clubs*', route => route.fulfill({ json: { clubs } }));
   await page.route('**/api/account/notifications', route => route.fulfill({ json: { notifications: [] } }));
@@ -189,6 +192,9 @@ test('Explore waits for booking history before assigning relationship categories
   let releaseBookings!: () => void;
   const bookingsReady = new Promise<void>((resolve) => { releaseBookings = resolve; });
   await page.route('**/api/auth/me', route => route.fulfill({ json: session }));
+  await page.route('**/api/payments/capabilities', route => route.fulfill({
+    json: { mode: 'disabled', enabled: false, liveCheckout: false, simulatedCheckout: false, publishableKey: null },
+  }));
   await page.route('**/api/account/clubs*', route => route.fulfill({ json: { clubs: directory } }));
   await page.route('**/api/account/bookings*', async route => {
     await bookingsReady;

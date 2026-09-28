@@ -8,14 +8,19 @@ import { CalendarConnectionCard } from '@/components/calendar-connection-card';
 import { AccountRentalDialog } from '@/components/account-rental-dialog';
 import { CourtlyLogo } from '@/components/public-booking';
 import { Button } from '@/components/ui/button';
-import { acceptCoachInvitation, api, ApiError, loadAuthSession, loadCoachInvitations, loadRentals, mutate, searchAccounts, updateAuthAccount, updateClubProfile } from '@/lib/api';
-import type { AccountDirectoryUser, AuthSession, CoachInvitation, Membership, RentalListing } from '@/lib/types';
+import { acceptClubStaffInvitation, acceptCoachInvitation, ApiError, loadAuthSession, loadClubStaffInvitations, loadCoachInvitations, loadRentals, mutate, searchAccounts, switchWorkspaceAccess, updateAuthAccount, updateClubProfile } from '@/lib/api';
+import type { AccountDirectoryUser, AuthSession, ClubStaffInvitation, ClubStaffWorkspaceAccess, CoachInvitation, Membership, RentalListing } from '@/lib/types';
 import { initials, money } from '@/lib/utils';
 
 const inputClass = '!min-h-11 !rounded-xl !border-[#dfe5dd] !px-3.5 !text-sm';
 
 function workspaceDescription(membership: Membership) {
   return membership.active && !membership.business.legacyReadOnly ? 'Club or academy' : 'Club or academy · inactive';
+}
+
+function staffAccessDescription(access: ClubStaffWorkspaceAccess) {
+  const name = access.accessLevel.toLowerCase().replaceAll('_', ' ');
+  return `${name.charAt(0).toUpperCase()}${name.slice(1)} staff access`;
 }
 
 const usernamePattern = /^[a-z0-9_]{3,30}$/;
@@ -55,8 +60,10 @@ export default function AccountPage() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [error, setError] = useState('');
   const [invitations, setInvitations] = useState<CoachInvitation[]>([]);
+  const [staffInvitations, setStaffInvitations] = useState<ClubStaffInvitation[]>([]);
   const [invitationBusy, setInvitationBusy] = useState<string | null>(null);
-  const [invitationError, setInvitationError] = useState('');
+  const [coachInvitationError, setCoachInvitationError] = useState('');
+  const [staffInvitationError, setStaffInvitationError] = useState('');
   const rentalRequestGenerationRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -64,15 +71,35 @@ export default function AccountPage() {
     setError('');
     try {
       const auth = await loadAuthSession();
-      if (auth.user.accountType === 'STUDENT') {
+      const parameters = new URLSearchParams(window.location.search);
+      const staffToken = parameters.get('staffInvite');
+      if (staffToken && auth.user.accountType === 'CLUB') {
+        setStaffInvitationError('Club accounts cannot accept named staff invitations. Sign in with a personal student or coach account.');
+      } else if (staffToken) {
+        setInvitationBusy('staff-link');
+        try {
+          await acceptClubStaffInvitation({ token: staffToken });
+          window.history.replaceState(window.history.state, '', '/account');
+          router.replace('/');
+          router.refresh();
+          return;
+        } catch (cause) {
+          setStaffInvitationError(cause instanceof Error ? cause.message : 'Unable to accept this staff invitation.');
+        } finally { setInvitationBusy(null); }
+      }
+      if (auth.user.accountType === 'STUDENT' && !(auth.staffAccesses?.length || staffToken)) {
         router.replace('/manage');
         return;
       }
       setState(auth);
+      if (auth.user.accountType !== 'CLUB') {
+        const pendingStaff = await loadClubStaffInvitations();
+        setStaffInvitations(pendingStaff.invitations);
+      }
       if (auth.user.accountType === 'COACH') {
         const pending = await loadCoachInvitations();
         setInvitations(pending.invitations);
-        const token = new URLSearchParams(window.location.search).get('invite');
+        const token = parameters.get('invite');
         if (token) {
           setInvitationBusy('link');
           try {
@@ -81,7 +108,7 @@ export default function AccountPage() {
             const refreshed = await loadAuthSession();
             setState(refreshed);
             setInvitations((await loadCoachInvitations()).invitations);
-          } catch (cause) { setInvitationError(cause instanceof Error ? cause.message : 'Unable to accept this invitation.'); }
+          } catch (cause) { setCoachInvitationError(cause instanceof Error ? cause.message : 'Unable to accept this invitation.'); }
           finally { setInvitationBusy(null); }
         }
       }
@@ -98,11 +125,22 @@ export default function AccountPage() {
 
   async function acceptInvitation(invitation: CoachInvitation) {
     if (invitationBusy) return;
-    setInvitationBusy(invitation.id); setInvitationError('');
+    setInvitationBusy(invitation.id); setCoachInvitationError('');
     try {
       await acceptCoachInvitation({ invitationId: invitation.id });
       await load();
-    } catch (cause) { setInvitationError(cause instanceof Error ? cause.message : 'Unable to accept this invitation.'); }
+    } catch (cause) { setCoachInvitationError(cause instanceof Error ? cause.message : 'Unable to accept this invitation.'); }
+    finally { setInvitationBusy(null); }
+  }
+
+  async function acceptStaffInvitation(invitation: ClubStaffInvitation) {
+    if (invitationBusy) return;
+    setInvitationBusy(`staff:${invitation.id}`); setStaffInvitationError('');
+    try {
+      await acceptClubStaffInvitation({ invitationId: invitation.id });
+      router.replace('/');
+      router.refresh();
+    } catch (cause) { setStaffInvitationError(cause instanceof Error ? cause.message : 'Unable to accept this staff invitation.'); }
     finally { setInvitationBusy(null); }
   }
 
@@ -209,11 +247,8 @@ export default function AccountPage() {
 
     setSwitching(membership.id);
     try {
-      const auth = await api<AuthSession>('/auth/switch-workspace', {
-        method: 'POST',
-        body: JSON.stringify({ membershipId: membership.id }),
-      });
-      if (!auth.membership || !auth.business) throw new Error('That workspace is not available right now.');
+      const auth = await switchWorkspaceAccess('MEMBERSHIP', membership.id);
+      if (auth.accessMode === 'NONE' || !auth.business) throw new Error('That workspace is not available right now.');
       router.replace('/');
       router.refresh();
     } catch (cause) {
@@ -223,9 +258,23 @@ export default function AccountPage() {
     }
   }
 
+  async function openStaffWorkspace(access: ClubStaffWorkspaceAccess) {
+    if (switching || !access.active || access.business.kind !== 'CLUB' || access.business.legacyReadOnly || !state) return;
+    if (state.staffAccess?.id === access.id && state.business?.id === access.businessId) {
+      router.replace('/'); router.refresh(); return;
+    }
+    setSwitching(`staff:${access.id}`); setError('');
+    try {
+      const auth = await switchWorkspaceAccess('STAFF', access.id);
+      if (auth.accessMode !== 'STAFF' || !auth.business) throw new Error('That staff workspace is not available right now.');
+      router.replace('/'); router.refresh();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to open that workspace.'); }
+    finally { setSwitching(null); }
+  }
+
   async function saveCoachProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!state || state.user.accountType !== 'COACH' || savingProfile) return;
+    if (!state || state.user.accountType === 'CLUB' || savingProfile) return;
     const form = new FormData(event.currentTarget);
     const name = String(form.get('name') || '').trim();
     const phone = String(form.get('phone') || '').trim();
@@ -299,7 +348,9 @@ export default function AccountPage() {
 
   const clubAccount = state?.user.accountType === 'CLUB';
   const coachAccount = state?.user.accountType === 'COACH';
+  const personalAccount = !!state && !clubAccount;
   const clubAffiliations = state?.memberships.filter(membership => membership.active && membership.business.kind === 'CLUB' && !membership.business.legacyReadOnly) ?? [];
+  const staffWorkspaces = state?.staffAccesses?.filter(access => access.active && access.business.kind === 'CLUB' && !access.business.legacyReadOnly) ?? [];
   const clubMembership = clubAccount
     ? state?.memberships.find(membership => membership.businessId === state.business?.id) ?? state?.memberships[0]
     : undefined;
@@ -307,7 +358,7 @@ export default function AccountPage() {
   return <main className="min-h-screen bg-[#f6f7f4] px-5 py-6 text-[#1c3029] sm:px-10 sm:py-9">
     <div className="mx-auto max-w-3xl">
       <header className="flex items-center justify-between gap-4">
-        <Link href={state?.membership ? '/' : '/account'} aria-label="Courtly home"><CourtlyLogo /></Link>
+        <Link href={state?.business && state.accessMode !== 'NONE' ? '/' : state?.user.accountType === 'STUDENT' ? '/manage' : '/account'} aria-label="Courtly home"><CourtlyLogo /></Link>
         {state && <Button variant="ghost" onClick={() => { void logout(); }}><LogOut size={15} />Sign out</Button>}
       </header>
 
@@ -317,13 +368,15 @@ export default function AccountPage() {
           : state ? <>
             <div className="text-center">
               <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl border border-[#e0e6d7] bg-[#edf2e5] text-[#758b66]">{clubAccount ? <Building2 size={25} strokeWidth={1.5} /> : <UserRound size={25} strokeWidth={1.5} />}</span>
-              <p className="mt-6 text-[10px] font-semibold uppercase tracking-[2px] text-[#95a085]">{clubAccount ? 'Club account' : 'Coach account'}</p>
+              <p className="mt-6 text-[10px] font-semibold uppercase tracking-[2px] text-[#95a085]">{clubAccount ? 'Club account' : coachAccount ? 'Coach account' : 'Student account'}</p>
               <h1 className="mt-2 !text-[32px] !font-medium !tracking-[-1px]">{clubAccount ? state.business?.name || state.user.name : `Welcome, ${state.user.name}.`}</h1>
               <p className="mx-auto mt-3 max-w-lg text-sm leading-relaxed text-stone-500">{clubAccount
                 ? 'This login belongs to the club and opens this club alone. Update the workspace profile or continue to the club dashboard.'
-                : clubAffiliations.length
-                  ? 'Your coach account travels with you. Choose a club or update your personal profile.'
-                  : 'Your coach account is ready. A club adds you to its roster using your account email.'}</p>
+                : clubAffiliations.length || staffWorkspaces.length
+                  ? `Your ${coachAccount ? 'coach' : 'student'} account stays personal. Choose a club role or update your profile.`
+                  : coachAccount
+                    ? 'Your coach account is ready. A club adds you to its roster using your account email.'
+                    : 'Your student account is ready. Return to your player app or accept a club staff invitation.'}</p>
             </div>
 
             <div className="mt-8 space-y-5">
@@ -345,7 +398,7 @@ export default function AccountPage() {
                   <div><label htmlFor="club-profile-cancellation">Cancellation notice (hours)</label><input id="club-profile-cancellation" name="cancellationHours" className={inputClass} type="number" defaultValue={state.business.cancellationHours} min={0} max={720} step={1} required disabled={savingProfile} /></div>
                   <p className="sm:col-span-2 text-[10px] leading-relaxed text-stone-500">This edits the existing club workspace. The sign-in email remains {state.user.email}.</p>
                   <div className="flex justify-end gap-2 sm:col-span-2"><Button type="button" variant="ghost" onClick={() => setEditingProfile(false)} disabled={savingProfile}><X size={14} />Cancel</Button><Button type="submit" disabled={savingProfile}>{savingProfile && <Loader2 size={14} className="animate-spin" />}Save club profile</Button></div>
-                </form> : editingProfile && coachAccount ? <form className="mt-5 grid gap-4 sm:grid-cols-2" onSubmit={saveCoachProfile}>
+                </form> : editingProfile && personalAccount ? <form className="mt-5 grid gap-4 sm:grid-cols-2" onSubmit={saveCoachProfile}>
                   <div><label htmlFor="coach-profile-name">Full name</label><input id="coach-profile-name" name="name" className={inputClass} defaultValue={state.user.name} minLength={2} maxLength={120} autoComplete="name" required disabled={savingProfile} /></div>
                   <div><label htmlFor="coach-profile-phone">Phone <span className="font-normal text-stone-400">(optional)</span></label><input id="coach-profile-phone" name="phone" className={inputClass} type="tel" defaultValue={state.user.phone || ''} maxLength={40} autoComplete="tel" disabled={savingProfile} /></div>
                   <div><label htmlFor="coach-profile-username">Username</label><input id="coach-profile-username" name="username" className={inputClass} defaultValue={state.user.username || ''} minLength={3} maxLength={30} pattern="[a-z0-9_]{3,30}" autoComplete="username" required disabled={savingProfile} /></div>
@@ -361,22 +414,24 @@ export default function AccountPage() {
                 </div>}
               </section>
 
-              {coachAccount && (invitationBusy === 'link' || invitations.length > 0 || invitationError) && <section className="rounded-2xl border border-[#dbe5d4] bg-[#f2f6ee] p-5 shadow-sm sm:p-6" aria-labelledby="coach-invitations-heading"><div className="flex items-start gap-3"><Building2 size={19} className="mt-0.5 shrink-0 text-[#66805a]" /><div><h2 id="coach-invitations-heading" className="text-base text-[#405941]">Club invitations</h2><p className="mt-1 text-xs leading-relaxed text-stone-500">Joining gives you access to that club’s assigned schedule, students, venues, and availability tools. The club continues to manage class prices and payments.</p></div></div>{invitationBusy === 'link' && <p role="status" className="mt-4 flex items-center gap-2 text-xs text-stone-500"><Loader2 size={14} className="animate-spin" />Checking your invitation…</p>}{invitationError && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-3 text-xs text-red-700">{invitationError}</p>}<ul className="mt-4 space-y-2">{invitations.map(invitation => <li key={invitation.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#dce5d6] bg-white p-4"><div><p className="text-sm font-semibold text-[#344b39]">{invitation.business.name}</p><p className="mt-1 text-xs text-stone-500">Coach access · {invitation.rescheduleNoticeHours}-hour reschedule notice</p></div><Button type="button" disabled={!!invitationBusy} onClick={() => void acceptInvitation(invitation)}>{invitationBusy === invitation.id && <Loader2 size={14} className="animate-spin" />}Accept and open</Button></li>)}</ul></section>}
+              {coachAccount && (invitationBusy === 'link' || invitations.length > 0 || coachInvitationError) && <section className="rounded-2xl border border-[#dbe5d4] bg-[#f2f6ee] p-5 shadow-sm sm:p-6" aria-labelledby="coach-invitations-heading"><div className="flex items-start gap-3"><Building2 size={19} className="mt-0.5 shrink-0 text-[#66805a]" /><div><h2 id="coach-invitations-heading" className="text-base text-[#405941]">Club invitations</h2><p className="mt-1 text-xs leading-relaxed text-stone-500">Joining gives you access to that club’s assigned schedule, students, venues, and availability tools. The club continues to manage class prices and payments.</p></div></div>{invitationBusy === 'link' && <p role="status" className="mt-4 flex items-center gap-2 text-xs text-stone-500"><Loader2 size={14} className="animate-spin" />Checking your invitation…</p>}{coachInvitationError && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-3 text-xs text-red-700">{coachInvitationError}</p>}<ul className="mt-4 space-y-2">{invitations.map(invitation => <li key={invitation.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#dce5d6] bg-white p-4"><div><p className="text-sm font-semibold text-[#344b39]">{invitation.business.name}</p><p className="mt-1 text-xs text-stone-500">Coach access · {invitation.rescheduleNoticeHours}-hour reschedule notice</p></div><Button type="button" disabled={!!invitationBusy} onClick={() => void acceptInvitation(invitation)}>{invitationBusy === invitation.id && <Loader2 size={14} className="animate-spin" />}Accept and open</Button></li>)}</ul></section>}
+
+              {(staffInvitationError || (personalAccount && (invitationBusy === 'staff-link' || staffInvitations.length > 0))) && <section className="rounded-2xl border border-[#dbe5d4] bg-[#f2f6ee] p-5 shadow-sm sm:p-6" aria-labelledby="staff-invitations-heading"><div className="flex items-start gap-3"><ShieldCheck size={19} className="mt-0.5 shrink-0 text-[#66805a]" /><div><h2 id="staff-invitations-heading" className="text-base text-[#405941]">Staff invitations</h2><p className="mt-1 text-xs leading-relaxed text-stone-500">Named staff access lets a person help run a specific club with assigned permissions. Accepting it does not change that person’s account type or coach affiliations.</p></div></div>{invitationBusy === 'staff-link' && <p role="status" className="mt-4 flex items-center gap-2 text-xs text-stone-500"><Loader2 size={14} className="animate-spin" />Checking your staff invitation…</p>}{staffInvitationError && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-3 text-xs text-red-700">{staffInvitationError}</p>}<ul className="mt-4 space-y-2">{staffInvitations.map(invitation => <li key={invitation.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#dce5d6] bg-white p-4"><div><p className="text-sm font-semibold text-[#344b39]">{invitation.business.name}</p><p className="mt-1 text-xs text-stone-500">{invitation.accessLevel.toLowerCase().replaceAll('_', ' ')} staff access · {invitation.permissions.length} permission{invitation.permissions.length === 1 ? '' : 's'}</p></div><Button type="button" disabled={!!invitationBusy} onClick={() => void acceptStaffInvitation(invitation)}>{invitationBusy === `staff:${invitation.id}` && <Loader2 size={14} className="animate-spin" />}Accept and open</Button></li>)}</ul></section>}
 
               <CalendarConnectionCard accountType={state.user.accountType} returnTo="/account" />
 
               <section className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-workspaces-heading">
-                <div className="flex items-start gap-3"><ShieldCheck size={18} className="mt-0.5 shrink-0 text-[#6f865f]" /><div><h2 id="account-workspaces-heading" className="text-sm text-[#405941]">{clubAccount ? 'Your club workspace' : 'Your coaching workspaces'}</h2><p className="mt-1 text-[11px] leading-relaxed text-stone-500">{clubAccount ? 'A club account has one club and never switches to another.' : `Clubs add your coach account using ${state.user.email}. Your password always remains yours.`}</p></div></div>
+                <div className="flex items-start gap-3"><ShieldCheck size={18} className="mt-0.5 shrink-0 text-[#6f865f]" /><div><h2 id="account-workspaces-heading" className="text-sm text-[#405941]">{clubAccount ? 'Your club workspace' : 'Your workspace access'}</h2><p className="mt-1 text-[11px] leading-relaxed text-stone-500">{clubAccount ? 'A club account has one club and never switches to another.' : `Clubs can add ${state.user.email} as ${coachAccount ? 'a coach or ' : ''}a named staff member. Your password and account type always remain yours.`}</p></div></div>
 
                 <div className="mt-5 space-y-3">
                   {clubAccount && clubMembership ? <button type="button" disabled={!clubMembership.active} onClick={() => { void openWorkspace(clubMembership); }} className="flex min-h-[72px] w-full items-center gap-3 rounded-xl border border-[#cbd9bf] bg-[#f8faf5] p-3.5 text-left transition hover:bg-[#f2f6ed] disabled:cursor-not-allowed disabled:opacity-55"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#e7efe0] text-xs font-semibold text-[#617851]">{initials(clubMembership.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-[#344b39]">{clubMembership.business.name}</span><span className="mt-1 block text-[10px] text-stone-500">{clubMembership.active ? 'Club workspace' : 'Club workspace · inactive'}</span></span><ArrowRight size={16} className="text-stone-400" /></button>
-                    : coachAccount ? clubAffiliations.map(membership => <button key={membership.id} type="button" disabled={!!switching || !membership.active} onClick={() => { void openWorkspace(membership); }} className="flex min-h-[72px] w-full items-center gap-3 rounded-xl border border-[#e2e7dd] p-3.5 text-left transition hover:border-[#cbd9bf] hover:bg-[#f8faf5] disabled:cursor-not-allowed disabled:opacity-55"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#edf2e6] text-xs font-semibold text-[#617851]">{initials(membership.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-[#344b39]">{membership.business.name}</span><span className="mt-1 block text-xs text-stone-500">{workspaceDescription(membership)}</span></span>{switching === membership.id ? <Loader2 size={17} className="animate-spin text-[#71865f]" /> : membership.id === state.membership?.id ? <span className="flex items-center gap-1 text-xs font-semibold text-[#66805a]"><Check size={13} />Selected</span> : <ArrowRight size={16} className="text-stone-400" />}</button>) : null}
+                    : personalAccount ? <>{clubAffiliations.map(membership => <button key={`membership:${membership.id}`} type="button" disabled={!!switching || !membership.active} onClick={() => { void openWorkspace(membership); }} className="flex min-h-[72px] w-full items-center gap-3 rounded-xl border border-[#e2e7dd] p-3.5 text-left transition hover:border-[#cbd9bf] hover:bg-[#f8faf5] disabled:cursor-not-allowed disabled:opacity-55"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#edf2e6] text-xs font-semibold text-[#617851]">{initials(membership.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-[#344b39]">{membership.business.name}</span><span className="mt-1 block text-xs text-stone-500">{workspaceDescription(membership)} · Coach</span></span>{switching === membership.id ? <Loader2 size={17} className="animate-spin text-[#71865f]" /> : state.accessMode === 'COACH' && membership.id === state.membership?.id ? <span className="flex items-center gap-1 text-xs font-semibold text-[#66805a]"><Check size={13} />Selected</span> : <ArrowRight size={16} className="text-stone-400" />}</button>)}{staffWorkspaces.map(access => <button key={`staff:${access.id}`} type="button" disabled={!!switching || !access.active} onClick={() => { void openStaffWorkspace(access); }} className="flex min-h-[72px] w-full items-center gap-3 rounded-xl border border-[#e2e7dd] p-3.5 text-left transition hover:border-[#cbd9bf] hover:bg-[#f8faf5] disabled:cursor-not-allowed disabled:opacity-55"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#e8eef3] text-xs font-semibold text-[#526b78]">{initials(access.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-[#344b39]">{access.business.name}</span><span className="mt-1 block text-xs text-stone-500">{staffAccessDescription(access)}</span></span>{switching === `staff:${access.id}` ? <Loader2 size={17} className="animate-spin text-[#71865f]" /> : state.accessMode === 'STAFF' && access.id === state.staffAccess?.id ? <span className="flex items-center gap-1 text-xs font-semibold text-[#66805a]"><Check size={13} />Selected</span> : <ArrowRight size={16} className="text-stone-400" />}</button>)}</> : null}
 
-                  {coachAccount && !clubAffiliations.length && <div className="py-5 text-center"><span className="mx-auto grid h-11 w-11 place-items-center rounded-full bg-[#f0f3ec] text-[#809174]"><Building2 size={19} /></span><h3 className="mt-4 text-sm">No club access yet</h3><p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-stone-500">Ask a club to invite {state.user.email}. Invitations appear above; you choose whether to join, and your account remains yours.</p></div>}
+                  {personalAccount && !clubAffiliations.length && !staffWorkspaces.length && <div className="py-5 text-center"><span className="mx-auto grid h-11 w-11 place-items-center rounded-full bg-[#f0f3ec] text-[#809174]"><Building2 size={19} /></span><h3 className="mt-4 text-sm">No club access yet</h3><p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-stone-500">Ask a club to invite {state.user.email}. Invitations appear above; you choose whether to join, and your account remains yours.</p></div>}
                   {clubAccount && !clubMembership && <p className="rounded-xl bg-[#fff6f1] p-4 text-xs leading-relaxed text-[#a16a55]">This club login is not connected to its workspace. Please contact support.</p>}
                 </div>
 
-                <div className="mt-5 flex flex-wrap justify-center gap-2 border-t border-[#edf0e8] pt-5"><Button variant="outline" disabled={loading || !!switching} onClick={() => { void load(); }}><RefreshCw size={14} />Refresh access</Button>{state.membership && clubAffiliations.some(item => item.id === state.membership?.id) && <Button disabled={!!switching} onClick={() => { const selected = clubAffiliations.find(item => item.id === state.membership?.id); if (selected) void openWorkspace(selected); }}>Open current workspace<ArrowRight size={14} /></Button>}</div>
+                <div className="mt-5 flex flex-wrap justify-center gap-2 border-t border-[#edf0e8] pt-5"><Button variant="outline" disabled={loading || !!switching} onClick={() => { void load(); }}><RefreshCw size={14} />Refresh access</Button>{state.business && state.accessMode !== 'NONE' && <Button disabled={!!switching} onClick={() => { router.replace('/'); router.refresh(); }}>Open current workspace<ArrowRight size={14} /></Button>}{state.user.accountType === 'STUDENT' && <Button variant="outline" asChild><Link href="/manage">Open player app<ArrowRight size={14} /></Link></Button>}</div>
               </section>
 
               {coachAccount && <section className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-people-heading">

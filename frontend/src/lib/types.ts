@@ -8,15 +8,47 @@ export type AccountUser = { id: string; name: string; username?: string; email: 
 export type WorkspaceUser = AccountUser & { instructorId: string | null };
 /** A membership is an affiliation; permissions come from the account and business kinds. */
 export type Membership = { id: string; userId: string; businessId: string; instructorId: string | null; active: boolean; createdAt: string; business: Business };
-export type AuthSession = { user: AccountUser; membership: Membership | null; business: Business | null; memberships: Membership[] };
+export type WorkspaceAccessMode = 'NONE' | 'CLUB_ACCOUNT' | 'COACH' | 'STAFF';
 export type CoachInvitation = {
   id: string; email: string; rescheduleNoticeHours: number; expiresAt: string; acceptedAt: string | null;
   revokedAt: string | null; createdAt: string; status: 'PENDING' | 'ACCEPTED' | 'REVOKED' | 'EXPIRED';
   business: Pick<Business, 'name' | 'slug'>;
 };
+export type ClubPermission =
+  | 'BOOKINGS_VIEW' | 'BOOKINGS_MANAGE' | 'STUDENTS_VIEW' | 'STUDENTS_MANAGE'
+  | 'CATALOG_VIEW' | 'CATALOG_MANAGE' | 'AVAILABILITY_MANAGE' | 'ROSTER_VIEW'
+  | 'ROSTER_MANAGE' | 'PACKAGES_VIEW' | 'PACKAGES_MANAGE' | 'PAYMENTS_VIEW'
+  | 'PAYMENTS_RECORD' | 'PAYMENTS_REVERSE' | 'PAYOUTS_RECORD' | 'INTEGRITY_VIEW'
+  | 'INTEGRITY_REVIEW' | 'RENTALS_VIEW' | 'RENTALS_MANAGE' | 'SETTINGS_MANAGE'
+  | 'STAFF_MANAGE' | 'AUDIT_VIEW';
+export type ClubAccessLevel = 'ADMINISTRATOR' | 'OPERATIONS' | 'FRONT_DESK' | 'FINANCE' | 'SAFEGUARDING' | 'READ_ONLY' | 'CUSTOM';
+export type ClubStaffAccess = {
+  id: string; businessId: string; userId: string; name: string; username: string; email: string;
+  accountType: Exclude<AccountType, 'CLUB'>; sports: string[]; accessLevel: ClubAccessLevel;
+  permissions: ClubPermission[]; active: boolean; invitedByUserId: string; revokedAt: string | null;
+  revokedByUserId: string | null; createdAt: string; updatedAt: string;
+};
+export type ClubStaffInvitation = {
+  id: string; businessId: string; email: string; accessLevel: ClubAccessLevel; permissions: ClubPermission[];
+  invitedByUserId: string; expiresAt: string; acceptedAt: string | null; acceptedByUserId: string | null;
+  revokedAt: string | null; revokedByUserId: string | null; createdAt: string;
+  business: Pick<Business, 'name' | 'slug'>; status: 'PENDING' | 'ACCEPTED' | 'REVOKED' | 'EXPIRED';
+};
+export type ClubStaffAccessInput = { accessLevel: Exclude<ClubAccessLevel, 'CUSTOM'>; permissions?: never }
+  | { accessLevel: 'CUSTOM'; permissions: ClubPermission[] };
+export type ClubStaffWorkspaceAccess = {
+  id: string; userId: string; businessId: string; accessLevel: ClubAccessLevel; permissions: ClubPermission[];
+  active: boolean; createdAt: string; business: Business;
+};
+/** Staff access augments a personal account; it never changes its account type or coach memberships. */
+export type AuthSession = {
+  user: AccountUser; membership: Membership | null; business: Business | null; memberships: Membership[];
+  staffAccess?: ClubStaffWorkspaceAccess | null; staffAccesses?: ClubStaffWorkspaceAccess[]; accessMode?: WorkspaceAccessMode;
+  permissions?: ClubPermission[];
+};
 export type Instructor = { id: string; name: string; initials: string; color: string; email: string; specialty: string; rescheduleNoticeHours: number; active: boolean };
 export type WorkspaceInstructor = Instructor & { accountLinkAvailable: boolean };
-export type Location = { id: string; name: string; address: string; type: 'FACILITY' | 'RENTED' | 'HOME' | 'ONLINE'; color: string; requiresApproval: boolean; travelMinutes: number; notes: string; source: VenueSource; placeId: string; mapsUrl: string; latitude: number | null; longitude: number | null; active: boolean };
+export type Location = { id: string; name: string; address: string; type: 'FACILITY' | 'RENTED' | 'HOME' | 'ONLINE'; color: string; requiresApproval: boolean; classUnitSchedulingEnabled?: boolean; travelMinutes: number; notes: string; source: VenueSource; placeId: string; mapsUrl: string; latitude: number | null; longitude: number | null; active: boolean };
 export type VenueSource = 'MANUAL' | 'GOOGLE_MAPS';
 export type VenueCandidate = { placeId: string; name: string; address: string; mapsUrl: string; latitude: number | null; longitude: number | null; source: VenueSource };
 export type VenueSearchResult = { configured: boolean; results: VenueCandidate[] };
@@ -29,6 +61,16 @@ export type CalendarConnectionStatus = {
   state: CalendarConnectionState; connected: boolean; email: string | null; calendarName: string | null;
   syncEnabled: boolean; busyCheckEnabled: boolean; connectedAt: string | null;
   lastSyncedAt: string | null; lastBusyAt: string | null; busyCacheExpiresAt: string | null; error: string | null;
+};
+export type NotificationPreferences = {
+  emailTransactionalEnabled: boolean;
+  emailReminderEnabled: boolean;
+  emailActionNeededEnabled: boolean;
+};
+export type NotificationPreferencesResponse = {
+  emailAvailable: boolean;
+  preferences: NotificationPreferences;
+  updatedAt?: string;
 };
 export type PublicInstructor = Pick<Instructor, 'id' | 'name' | 'initials' | 'color' | 'specialty' | 'active'>;
 export type PublicLocation = Pick<Location, 'id' | 'name' | 'address' | 'type' | 'color' | 'requiresApproval' | 'active'> & { mapsUrl?: string };
@@ -72,7 +114,7 @@ export type IntegrityFlag = {
   flaggedSessionAt: string | null; flaggedServiceName: string | null;
 };
 export type PaymentKind = 'STUDENT_TO_CLUB' | 'STUDENT_TO_COACH' | 'CLUB_TO_COACH';
-type PaymentBase = { id: string; bookingId: string | null; packageId: string | null; amount: number; method: 'CASH' | 'BANK_TRANSFER' | 'SIMULATED_STRIPE' | 'OTHER'; note: string; paidAt: string; reversedAt: string | null; reversedReason: string };
+type PaymentBase = { id: string; bookingId: string | null; packageId: string | null; amount: number; method: 'CASH' | 'BANK_TRANSFER' | 'STRIPE' | 'SIMULATED_STRIPE' | 'OTHER'; note: string; paidAt: string; reversedAt: string | null; reversedReason: string };
 export type Payment = PaymentBase & (
   | { kind: 'STUDENT_TO_CLUB' | 'STUDENT_TO_COACH'; studentId: string; studentName: string; instructorId: null; instructorName: null }
   | { kind: 'CLUB_TO_COACH'; studentId: null; studentName: null; instructorId: string; instructorName: string }
@@ -80,34 +122,95 @@ export type Payment = PaymentBase & (
 /** Shared alert vocabulary; see backend/src/notifications.ts. */
 export type NotificationType = 'BOOKING' | 'PAYMENT' | 'PAYOUT' | 'RESCHEDULE' | 'CANCELLATION' | 'PENDING_ACTION' | 'INTEGRITY' | 'ATTENDANCE' | 'NOTICE';
 export type Notification = { id: string; type: NotificationType; bookingId: string | null; integrityFlagId: string | null; title: string; message: string; read: boolean; actionNeeded: boolean; createdAt: string };
-type WorkspaceCollections<TService extends Service | CoachScopedService, TBooking extends Booking | CoachScopedBooking> = { business: Business; user: WorkspaceUser; membership: Membership; memberships: Membership[]; clubAccount: boolean; instructors: WorkspaceInstructor[]; locations: Location[]; services: TService[]; availability: Availability[]; exceptions: AvailabilityException[]; students: Student[]; packages: LessonPackage[]; bookings: TBooking[]; payments: Payment[]; notifications: Notification[]; rescheduleRequests: RescheduleRequest[]; integrityFlags: IntegrityFlag[] };
+type WorkspaceCollections<
+  TService extends Service | CoachScopedService,
+  TBooking extends Booking | CoachScopedBooking,
+> = {
+  business: Business; user: WorkspaceUser; membership: Membership | null; memberships: Membership[]; clubAccount: boolean;
+  staffAccess?: ClubStaffWorkspaceAccess | null; staffAccesses?: ClubStaffWorkspaceAccess[];
+  accessMode?: WorkspaceAccessMode; permissions?: ClubPermission[];
+  /** Named staff may receive scheduling-only projections at runtime. Fields outside their permissions are omitted. */
+  instructors: WorkspaceInstructor[]; locations: Location[]; services: TService[]; availability: Availability[];
+  exceptions: AvailabilityException[]; students: Student[]; packages: LessonPackage[]; bookings: TBooking[];
+  bookingWindow?: { from: string; to: string; truncated: boolean };
+  packageScopes?: {
+    services: Array<Pick<Service, 'id' | 'name' | 'active'>>;
+    rentalLocations: Array<Pick<Location, 'id' | 'name' | 'active'> & { rentalEnabled: boolean }>;
+  };
+  payments: Payment[]; notifications: Notification[]; rescheduleRequests: RescheduleRequest[]; integrityFlags: IntegrityFlag[];
+};
 export type FullWorkspace = WorkspaceCollections<Service, Booking>;
-export type ClubWorkspace = FullWorkspace & { business: Business & { kind: 'CLUB' }; user: WorkspaceUser & { accountType: 'CLUB' }; clubAccount: true };
+export type ClubWorkspace = FullWorkspace & { business: Business & { kind: 'CLUB' }; user: WorkspaceUser & { accountType: 'CLUB' }; membership: Membership; clubAccount: true };
 /** Historical wire shape only. Legacy solo practices can still appear during a rolling deploy, but the current UI must not open them. */
-export type SoloWorkspace = FullWorkspace & { business: Business & { kind: 'SOLO' }; user: WorkspaceUser & { accountType: 'COACH' }; clubAccount: false };
-export type ManagerWorkspace = ClubWorkspace;
-export type CoachClubWorkspace = Omit<WorkspaceCollections<CoachScopedService, CoachScopedBooking>, 'packages' | 'payments' | 'integrityFlags'> & { business: Business & { kind: 'CLUB' }; user: WorkspaceUser & { accountType: 'COACH' }; clubAccount: false; packages: never[]; payments: never[]; integrityFlags: never[] };
+export type SoloWorkspace = FullWorkspace & { business: Business & { kind: 'SOLO' }; user: WorkspaceUser & { accountType: 'COACH' }; membership: Membership; clubAccount: false };
+export type StaffWorkspace = FullWorkspace & {
+  business: Business & { kind: 'CLUB' }; user: WorkspaceUser & { accountType: 'STUDENT' | 'COACH' };
+  membership: null; staffAccess: ClubStaffWorkspaceAccess; accessMode: 'STAFF'; clubAccount: false;
+};
+export type ManagerWorkspace = ClubWorkspace | StaffWorkspace;
+export type CoachClubWorkspace = Omit<WorkspaceCollections<CoachScopedService, CoachScopedBooking>, 'packages' | 'payments' | 'integrityFlags'> & { business: Business & { kind: 'CLUB' }; user: WorkspaceUser & { accountType: 'COACH' }; membership: Membership; clubAccount: false; packages: never[]; payments: never[]; integrityFlags: never[] };
 export type WorkspaceResponse = ManagerWorkspace | CoachClubWorkspace;
 /** Accept this only at the API boundary while an older server may still return a removed SOLO workspace. */
 export type WorkspaceWireResponse = WorkspaceResponse | SoloWorkspace;
 export type WorkspaceBooking = WorkspaceResponse['bookings'][number];
 export type WorkspaceService = WorkspaceResponse['services'][number];
+/** Runtime projection for staff whose booking access does not include catalog, roster, or payment data. */
+export type BookingWorkspaceInstructor = Pick<WorkspaceInstructor, 'id' | 'name' | 'active'>;
+export type BookingWorkspaceLocation = Pick<Location, 'id' | 'name' | 'type' | 'requiresApproval' | 'travelMinutes' | 'active'>;
+export type BookingWorkspaceService = Pick<Service, 'id' | 'name' | 'type' | 'duration' | 'capacity' | 'active'> & {
+  price?: number;
+  locations: Array<Omit<ServiceLocation, 'price'> & { price?: number }>;
+};
+export type BookingListFilters = {
+  from?: string; to?: string; status?: Status; instructorId?: string; locationId?: string; serviceId?: string;
+  q?: string; cursor?: string; limit?: number; sort?: 'asc' | 'desc';
+};
+export type BookingListResult = { bookings: WorkspaceBooking[]; nextCursor: string | null };
+export type AuditActor = {
+  name: string; accountType: string; accessKind: string; accessLevel: string | null; permissions: string[];
+};
+export type AuditAccessSnapshot = { accessLevel?: string; permissions?: string[] };
+export type AuditEvent = {
+  id: string; actor: AuditActor; action: string; resource: { type: string; id: string | null };
+  summary: string; metadata: AuditAccessSnapshot & { before?: AuditAccessSnapshot; after?: AuditAccessSnapshot };
+  createdAt: string;
+};
+export type AuditEventListResult = { events: AuditEvent[]; nextCursor: string | null };
+export type OperationsInboxCategory = 'coach' | 'venue' | 'attendance' | 'reschedule' | 'payment' | 'rental';
+export type OperationsInboxItem = {
+  id: string; category: OperationsInboxCategory; severity: 'urgent' | 'attention' | 'info'; sortAt: string;
+  title: string; detail: string; entityType: 'booking' | 'rescheduleRequest' | 'participant' | 'rentalReservation';
+  entityId: string; destination: { view: string; params: Record<string, string> };
+};
+export type OperationsInboxResult = {
+  items: OperationsInboxItem[]; nextCursor: string | null;
+  counts: Record<'all' | OperationsInboxCategory, number>;
+};
 
 export function isCoachClubWorkspace(workspace: WorkspaceWireResponse): workspace is CoachClubWorkspace {
-  return workspace.user.accountType === 'COACH' && workspace.business.kind === 'CLUB';
+  return workspace.user.accountType === 'COACH' && workspace.business.kind === 'CLUB' && workspace.accessMode !== 'STAFF';
 }
 export function isWorkspaceResponse(workspace: WorkspaceWireResponse): workspace is WorkspaceResponse {
   return workspace.business.kind === 'CLUB' && !workspace.business.legacyReadOnly
-    && (workspace.user.accountType === 'CLUB' || workspace.user.accountType === 'COACH');
+    && (workspace.user.accountType === 'CLUB' || workspace.user.accountType === 'COACH' || workspace.accessMode === 'STAFF');
 }
 export function isManagerWorkspace(workspace: WorkspaceWireResponse): workspace is ManagerWorkspace {
-  return workspace.user.accountType === 'CLUB'
+  return (workspace.user.accountType === 'CLUB' || workspace.accessMode === 'STAFF')
     && workspace.business.kind === 'CLUB'
     && !workspace.business.legacyReadOnly;
 }
 export type Slot = { startAt: string; endAt: string; available: boolean; placesRemaining: number; reason?: string };
 export type PublicBusiness = { business: PublicBookingBusiness; instructors: PublicInstructor[]; locations: PublicLocation[]; services: Service[] };
 export type BookingInput = { serviceId: string; instructorId?: string; locationId: string; startAt: string; studentId: string; repeatWeeks?: number; packageId?: string; notes?: string; address?: string };
+export type BookingSeriesParticipantInput = { studentId: string; packageId?: string };
+export type BookingSeriesInput = {
+  serviceId: string; instructorId: string; locationId: string; name?: string; occurrenceStartAts: string[];
+  participants: BookingSeriesParticipantInput[]; notes?: string; address?: string;
+};
+export type BookingSeriesResult = {
+  series: { id: string; name: string; occurrenceCount: number; memberCount: number };
+  bookings: WorkspaceBooking[];
+};
 export type PublicBookingInput = { serviceId: string; instructorId: string; locationId: string; startAt: string; student?: { phone?: string; parentName?: string }; repeatWeeks?: number; packageId?: string; notes?: string; address?: string };
 export type BookingResult = { bookings: Booking[]; conflicts?: { date: string; reason: string }[] };
 export type ProviderBookingResult = { bookings: WorkspaceBooking[]; conflicts?: { date: string; reason: string }[] };
@@ -153,14 +256,20 @@ export type AccountPackage = {
   serviceNames?: string[]; rentalLocationNames?: string[];
 };
 export type SimulatedPaymentOutcome = 'SUCCEEDED' | 'FAILED';
-export type PaymentIntentStatus = 'REQUIRES_CONFIRMATION' | SimulatedPaymentOutcome | 'CANCELLED' | 'REFUNDED';
+export type PaymentIntentStatus = 'REQUIRES_CONFIRMATION' | 'PROCESSING' | SimulatedPaymentOutcome | 'CANCELLED' | 'REFUNDED';
 export type CheckoutInput = { idempotencyKey: string; simulatedOutcome: SimulatedPaymentOutcome };
+export type PaymentCapabilities = {
+  mode: 'disabled' | 'stripe' | 'simulated'; enabled: boolean; liveCheckout: boolean; simulatedCheckout: boolean;
+  publishableKey: string | null;
+};
+export type LiveCheckoutInput = { kind: 'PACKAGE' | 'BOOKING'; targetId: string; idempotencyKey: string };
 export type PaymentIntent = {
   id: string; kind?: 'PACKAGE' | 'BOOKING' | 'RENTAL'; amount: number; currency: string; status: PaymentIntentStatus;
   provider?: string; providerReference?: string; idempotencyKey?: string; failureCode?: string | null;
   packageOfferId?: string | null; packageId?: string | null; participantId?: string | null; reservationId?: string | null; createdAt: string; updatedAt?: string;
-  confirmedAt?: string | null; failedAt?: string | null;
+  confirmedAt?: string | null; failedAt?: string | null; clientSecret?: string | null;
 };
+export type LiveCheckoutResult = { paymentIntent: PaymentIntent; connectedAccountId: string };
 export type CheckoutParticipant = { id: string; bookingId: string; paid: boolean };
 export type CheckoutResult = { paymentIntent: PaymentIntent; package: AccountPackage | null; participant: CheckoutParticipant | null };
 
@@ -177,10 +286,10 @@ export type RentalDetail = RentalListing & {
 };
 export type RentalSlot = { unitId: string; unitName: string; startAt: string; endAt: string; price: number };
 export type RentalSlotsResult = { date: string; duration: number; timezone: string; slots: RentalSlot[] };
-export type RentalReservationStatus = 'CONFIRMED' | 'PENDING' | 'CANCELLED';
+export type RentalReservationStatus = 'CONFIRMED' | 'PENDING' | 'CANCELLED' | 'COMPLETED';
 export type RentalPaymentStatus = 'UNPAID' | 'PAID' | 'PACKAGE' | 'REFUNDED';
 export type RentalReservation = {
-  id: string; businessName: string; locationId: string; locationName: string; unitId: string; unitName: string;
+  id: string; businessName: string; renterName: string; locationId: string; locationName: string; unitId: string; unitName: string;
   startAt: string; endAt: string; duration: number; price: number; status: RentalReservationStatus;
   paymentStatus: RentalPaymentStatus; packageId: string | null; creditConsumed: boolean; currency: string; timezone: string;
   cancellationDeadline: string; cancellable: boolean;
@@ -192,6 +301,11 @@ export type RentalReservationInput = {
 export type RentalReservationResult =
   | { reservation: RentalReservation; paymentIntent: PaymentIntent & { status: 'SUCCEEDED' | 'REFUNDED' } }
   | { reservation: null; paymentIntent: PaymentIntent & { status: 'FAILED' } };
+export type RentalReservationFilters = {
+  from?: string; to?: string; status?: RentalReservationStatus; paymentStatus?: RentalPaymentStatus;
+  locationId?: string; unitId?: string; q?: string; cursor?: string; limit?: number;
+};
+export type RentalReservationListResult = { reservations: RentalReservation[]; nextCursor: string | null };
 export type RentalConfigValues = {
   sport: string; rules: string; amenities: string[]; unitLabel: string; price: number;
   startInterval: number; minDuration: number; durationIncrement: number; maxDuration: number; noticeHours: number;

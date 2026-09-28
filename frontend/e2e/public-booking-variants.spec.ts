@@ -11,6 +11,7 @@ import {
 import type {
   AuthSession,
   Booking,
+  BookingListResult,
   Location,
   ManagerWorkspace,
   PublicBusiness,
@@ -446,8 +447,10 @@ test('a student joins an existing group while a full group stays unavailable', a
   expect(result.bookings[0].id).toBe(setup.groupBookingId);
   await expect(page.getByRole('heading', { name: 'You’re on the calendar.', exact: true })).toBeVisible();
 
-  const providerBookings = await responseJson<Booking[]>(await provider.get('/api/bookings'));
-  const joined = providerBookings.find(candidate => candidate.id === setup.groupBookingId);
+  const providerBookings = await responseJson<BookingListResult>(await provider.get('/api/bookings', {
+    params: { q: setup.groupBookingId },
+  }));
+  const joined = providerBookings.bookings.find(candidate => candidate.id === setup.groupBookingId);
   expect(joined?.participants.map(participant => participant.email)).toEqual(expect.arrayContaining([setup.studentEmail]));
   expect(joined?.participants).toHaveLength(2);
   await expectNoHorizontalOverflow(page);
@@ -546,8 +549,14 @@ test('a recurring conflict is atomic and sends the student back to choose anothe
   const conflictAlert = page.getByRole('alert').filter({ hasText: 'No bookings were created' });
   await expect(conflictAlert).toContainText('Coach already has a session or preparation buffer');
   const requestedStarts = new Set(Array.from({ length: 4 }, (_, index) => addWeeks(setup.recurringStartAt, index)));
-  const providerBookings = await responseJson<Booking[]>(await provider.get('/api/bookings'));
-  const partialBookings = providerBookings.filter(candidate =>
+  const providerBookings = await responseJson<BookingListResult>(await provider.get('/api/bookings', {
+    params: {
+      from: setup.recurringStartAt,
+      to: addWeeks(setup.recurringStartAt, 4),
+      q: setup.studentName,
+    },
+  }));
+  const partialBookings = providerBookings.bookings.filter(candidate =>
     requestedStarts.has(candidate.startAt)
       && candidate.participants.some(participant => participant.email === setup.studentEmail),
   );

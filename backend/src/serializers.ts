@@ -1,10 +1,11 @@
-import type { Business, Membership, Prisma, User } from '@prisma/client';
+import type { Business, ClubStaffAccess, Membership, Prisma, User } from '@prisma/client';
 import { prisma } from './db.js';
-import type { AccountType } from './http.js';
+import { effectiveClubPermissions, type AccountType } from './http.js';
 
 export const bookingInclude = { service: true, instructor: true, location: true, participants: { include: { student: true } } } satisfies Prisma.BookingInclude;
 export type FullBooking = Prisma.BookingGetPayload<{ include: typeof bookingInclude }>;
 export type MembershipWithBusiness = Membership & { business: Business };
+export type StaffAccessWithBusiness = ClubStaffAccess & { business: Business };
 export type { AccountType } from './http.js';
 
 export const publicBusiness = (b: Business) => ({
@@ -31,13 +32,18 @@ export const userJson = (user: User) => ({
   phone: user.phone, parentName: user.parentName,
   accountType: user.accountType as AccountType,
 });
-export const workspaceUserJson = (user: User, membership: Pick<Membership, 'instructorId'>) => ({
-  ...userJson(user), instructorId: membership.instructorId,
+export const workspaceUserJson = (user: User, membership: Pick<Membership, 'instructorId'> | null) => ({
+  ...userJson(user), instructorId: membership?.instructorId ?? null,
 });
 export const membershipJson = (membership: MembershipWithBusiness) => ({
   id: membership.id, userId: membership.userId, businessId: membership.businessId,
   instructorId: membership.instructorId, active: membership.active, createdAt: membership.createdAt.toISOString(),
   business: publicBusiness(membership.business),
+});
+export const staffAccessJson = (access: StaffAccessWithBusiness) => ({
+  id: access.id, userId: access.userId, businessId: access.businessId, accessLevel: access.accessLevel,
+  permissions: access.permissions, active: access.active, createdAt: access.createdAt.toISOString(),
+  business: publicBusiness(access.business),
 });
 
 /**
@@ -58,18 +64,27 @@ export type AuthState = {
   membership: ReturnType<typeof membershipJson> | null;
   business: ReturnType<typeof publicBusiness> | null;
   memberships: ReturnType<typeof membershipJson>[];
+  staffAccess: ReturnType<typeof staffAccessJson> | null;
+  staffAccesses: ReturnType<typeof staffAccessJson>[];
+  accessMode: 'NONE' | 'CLUB_ACCOUNT' | 'COACH' | 'STAFF';
+  permissions: string[];
 };
 
 /**
  * Build the canonical account/session response. Undefined selects the first active
  * membership; null intentionally represents no selected workspace.
  */
-export async function authState(userId: string, activeMembershipId?: string | null): Promise<AuthState> {
+export async function authState(
+  userId: string, activeMembershipId?: string | null, activeStaffAccessId?: string | null,
+): Promise<AuthState> {
   const account = await prisma.user.findUniqueOrThrow({
     where: { id: userId },
-    include: { memberships: { include: { business: true }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] } },
+    include: {
+      memberships: { include: { business: true }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
+      staffAccesses: { include: { business: true }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
+    },
   });
-  const { memberships: allMemberships, ...user } = account;
+  const { memberships: allMemberships, staffAccesses: allStaffAccesses, ...user } = account;
   // Retained SOLO and read-only legacy businesses remain historical records,
   // but cannot re-enter the active account or workspace experience.
   const memberships = allMemberships.filter(isSupportedWorkspaceMembership);
@@ -80,11 +95,22 @@ export async function authState(userId: string, activeMembershipId?: string | nu
         && candidate.businessId === candidate.business.id) ?? null
       : memberships.find(candidate => candidate.id === activeMembershipId && isAccessibleWorkspaceMembership(candidate)
         && candidate.userId === account.id && candidate.businessId === candidate.business.id) ?? null;
+  const staffAccesses = allStaffAccesses.filter(access => access.active && !access.revokedAt
+    && access.business.kind === 'CLUB' && !access.business.legacyReadOnly);
+  const selectedStaff = selected || activeStaffAccessId === null ? null
+    : activeStaffAccessId === undefined
+      ? null
+      : staffAccesses.find(candidate => candidate.id === activeStaffAccessId && candidate.userId === account.id) ?? null;
+  const business = selected?.business ?? selectedStaff?.business ?? null;
   return {
     user: userJson(user),
     membership: selected ? membershipJson(selected) : null,
-    business: selected ? publicBusiness(selected.business) : null,
+    staffAccess: selectedStaff ? staffAccessJson(selectedStaff) : null,
+    business: business ? publicBusiness(business) : null,
     memberships: memberships.map(membershipJson),
+    staffAccesses: staffAccesses.map(staffAccessJson),
+    accessMode: selectedStaff ? 'STAFF' : selected ? account.accountType === 'CLUB' ? 'CLUB_ACCOUNT' : 'COACH' : 'NONE',
+    permissions: effectiveClubPermissions(selectedStaff?.permissions ?? []),
   };
 }
 
@@ -97,6 +123,32 @@ export const serviceJson = (s: any) => ({
     instructorIds: l.instructors.map((i: any) => i.instructorId),
   })),
 });
+
+/** Scheduling references used by booking filters and booking creation. These
+ * intentionally exclude roster identity, venue metadata, and catalog copy. */
+export const bookingInstructorJson = (instructor: any, includeAvailability = false) => ({
+  id: instructor.id, name: instructor.name, active: instructor.active,
+  ...(includeAvailability ? { rescheduleNoticeHours: instructor.rescheduleNoticeHours } : {}),
+});
+
+export const bookingLocationJson = (location: any) => ({
+  id: location.id, name: location.name, type: location.type, requiresApproval: location.requiresApproval,
+  travelMinutes: location.travelMinutes, active: location.active,
+});
+
+export function bookingServiceJson(service: any, includeFinancials: boolean) {
+  const minimal = {
+    id: service.id, name: service.name, type: service.type, duration: service.duration,
+    capacity: service.capacity, active: service.active,
+    locations: service.locations.map((location: any) => ({
+      locationId: location.locationId, duration: location.duration,
+      instructorIds: location.instructors.map((instructor: any) => instructor.instructorId),
+      ...(includeFinancials ? { price: location.price } : {}),
+    })),
+  };
+  return includeFinancials ? { ...minimal, price: service.price } : minimal;
+}
+
 type ServiceFinancials = { price: unknown; locations: Array<{ price: unknown }> };
 type ServiceWithoutFinancials<T extends ServiceFinancials> = Omit<T, 'price' | 'locations'> & {
   locations: Array<Omit<T['locations'][number], 'price'>>;

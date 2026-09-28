@@ -63,10 +63,13 @@ function isStudentDestination(destination: string | null) {
 }
 
 function destinationFor(state: AuthSession, requested: string | null) {
+  // Staff invitation links must reach the account acceptance screen before
+  // any existing coach membership or the student's default app takes over.
+  if (requested?.startsWith('/account?staffInvite=')) return requested;
   // Booking and management return paths belong to student self-service. A
   // coach or club must still land in the account/workspace it can operate.
   if (state.user.accountType === 'STUDENT') return requested ?? '/manage';
-  if (state.membership?.business.kind === 'CLUB' && !state.membership.business.legacyReadOnly && state.business?.kind === 'CLUB') return '/';
+  if (state.business?.kind === 'CLUB' && !state.business.legacyReadOnly && state.accessMode !== 'NONE') return '/';
   return '/account';
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addCalendarWeeks, addDaysKey, cn, coversWeeklyOccurrences, dateKey, endOfDateKey, initials, money, shortDate, time } from '../src/lib/utils';
+import { addCalendarWeeks, addDaysKey, cn, coversWeeklyOccurrences, dateKey, endOfDateKey, initials, money, shortDate, shortDateKey, time } from '../src/lib/utils';
 
 // Money is integer minor units everywhere in Courtly. These assertions exist
 // because a float slipping into this helper is invisible until a receipt is
@@ -38,6 +38,10 @@ describe('date helpers', () => {
     expect(time('2026-03-01T02:00:00.000Z')).toBe('10:00 AM');
     expect(time('2026-03-01T02:00:00.000Z', 'UTC')).toBe('2:00 AM');
     expect(shortDate('2026-03-01T02:00:00.000Z')).toBe('Sun, 1 Mar');
+  });
+
+  it('formats a civil calendar date without shifting it across timezones', () => {
+    expect(shortDateKey('2026-01-01')).toBe('Thu, 1 Jan');
   });
 
   it('accepts a Date as readily as an ISO string', () => {

@@ -4,7 +4,10 @@ import { DateTime } from 'luxon';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from './db.js';
-import { HttpError, initials, type AccountRequest } from './http.js';
+import { hasClubPermission, HttpError, initials, type AccountRequest } from './http.js';
+import { isVenueAllocationConflict, lockVenueUnits, releaseRentalUnit, reserveRentalUnit } from './venue-allocations.js';
+import { executePreparedRefund, prepareProviderRefund, type RefundPreparation } from './payments/refunds.js';
+import { calendarDateBoundary } from './booking-query.js';
 
 export const rentalsRouter = Router();
 
@@ -66,6 +69,7 @@ const locationFields = {
     .refine(value => !value || /^https?:\/\//iu.test(value), 'Use a full https link').default(''),
   latitude: z.number().min(-90).max(90).nullable().default(null),
   longitude: z.number().min(-180).max(180).nullable().default(null),
+  classUnitSchedulingEnabled: z.boolean().default(false),
   active: z.boolean().default(true),
 };
 const compositeRentalInput = z.object({
@@ -75,7 +79,15 @@ const compositeRentalInput = z.object({
     z.object({ enabled: z.literal(false) }).strict(),
     z.object({ enabled: z.literal(true), ...rentalFields }).strict(),
   ]),
-}).strict();
+}).strict().superRefine((input, context) => {
+  if (input.location.classUnitSchedulingEnabled
+    && (!input.rental.enabled || !input.rental.units.some(unit => unit.active))) {
+    context.addIssue({
+      code: 'custom', path: ['location', 'classUnitSchedulingEnabled'],
+      message: 'Class unit scheduling requires rental to be enabled with at least one active unit',
+    });
+  }
+});
 const createRentalInput = z.object({ locationId: idSchema, ...rentalFields }).strict();
 const updateRentalInput = z.object({
   sport: rentalFields.sport.optional(), rules: rentalFields.rules.optional(), amenities: amenitiesSchema.optional(),
@@ -99,6 +111,7 @@ const reservationInclude = {
   business: { select: { name: true, currency: true, timezone: true } },
   location: { select: { name: true, rentalCancellationHours: true } },
   unit: { select: { name: true } },
+  user: { select: { name: true } },
 } satisfies Prisma.VenueReservationInclude;
 type RentalReservation = Prisma.VenueReservationGetPayload<{ include: typeof reservationInclude }>;
 type PaymentIntent = Prisma.PaymentIntentGetPayload<Record<string, never>>;
@@ -170,7 +183,7 @@ function reservationJson(reservation: RentalReservation, now = new Date()) {
     reservation.startAt.getTime() - snapshot.cancellationHours * 3_600_000,
   );
   return {
-    id: reservation.id, businessName: reservation.business.name,
+    id: reservation.id, businessName: reservation.business.name, renterName: reservation.user.name,
     locationId: reservation.locationId, locationName: reservation.location.name,
     unitId: reservation.unitId, unitName: snapshot.unitName, startAt: reservation.startAt.toISOString(),
     endAt: reservation.endAt.toISOString(), duration: reservation.duration, price: reservation.price,
@@ -187,16 +200,16 @@ function isPublished(location: RentalLocation) {
     && location.business.kind === 'CLUB' && !location.business.isDemo && !location.business.legacyReadOnly;
 }
 
-function isOwningClub(req: AccountRequest, businessId: string) {
-  const { user, membership, business } = req.auth;
-  return user.accountType === 'CLUB' && !!user.passwordHash && !!membership && membership.active
-    && membership.userId === user.id && membership.businessId === businessId
-    && membership.instructorId === null && business?.id === businessId && business.kind === 'CLUB';
+function canManageClubRentals(req: AccountRequest, businessId: string, permission: 'RENTALS_VIEW' | 'RENTALS_MANAGE') {
+  const { user, business } = req.auth;
+  return Boolean(user.passwordHash && business?.id === businessId && hasClubPermission(req.auth, permission));
 }
 
-function clubBusinessId(req: AccountRequest) {
+function clubBusinessId(req: AccountRequest, permission: 'RENTALS_VIEW' | 'RENTALS_MANAGE' = 'RENTALS_MANAGE') {
   const business = req.auth.business;
-  if (!business || !isOwningClub(req, business.id)) throw new HttpError(403, 'Only the club account can manage venue rentals');
+  if (!business || !canManageClubRentals(req, business.id, permission)) {
+    throw new HttpError(403, `This workspace requires ${permission.toLowerCase().replaceAll('_', ' ')} permission`);
+  }
   if (business.legacyReadOnly) throw new HttpError(403, 'This legacy workspace is read-only');
   return business.id;
 }
@@ -276,12 +289,6 @@ async function replaceOpeningHours(
   })) });
 }
 
-async function lockVenueUnits(tx: Tx, unitIds: string[]) {
-  for (const unitId of [...new Set(unitIds)].sort()) {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`venue-unit:${unitId}`}, 0))`;
-  }
-}
-
 async function configuredLocation(db: Db, locationId: string) {
   return db.location.findUnique({ where: { id: locationId }, include: rentalInclude });
 }
@@ -308,7 +315,8 @@ function compositeCreateMatches(location: RentalLocation, input: z.infer<typeof 
     && location.color === core.color && location.requiresApproval === core.requiresApproval
     && location.travelMinutes === core.travelMinutes && location.notes === core.notes && location.source === core.source
     && location.placeId === core.placeId && location.mapsUrl === core.mapsUrl && location.latitude === core.latitude
-    && location.longitude === core.longitude && location.active === core.active;
+    && location.longitude === core.longitude && location.classUnitSchedulingEnabled === core.classUnitSchedulingEnabled
+    && location.active === core.active;
   if (!sameCore || location.rentalEnabled !== input.rental.enabled) return false;
   if (!input.rental.enabled) return !location.venueUnits.length && !location.openingHours.length;
   const units = location.venueUnits.map(unit => ({ name: unit.name, active: unit.active }))
@@ -439,10 +447,64 @@ rentalsRouter.get('/rentals/reservations/mine', accountRoute(async (req, res) =>
   res.json({ reservations: reservations.map(reservation => reservationJson(reservation)) });
 }));
 
+const reservationDate = z.preprocess(value => Array.isArray(value) ? value[0] : value, z.string().trim().min(1).optional());
+const reservationListQuery = z.object({
+  from: reservationDate,
+  to: reservationDate,
+  status: z.preprocess(value => Array.isArray(value) ? value[0] : value, z.enum(['PENDING', 'CONFIRMED', 'CANCELLED', 'COMPLETED']).optional()),
+  paymentStatus: z.preprocess(value => Array.isArray(value) ? value[0] : value, z.enum(['UNPAID', 'PAID', 'PACKAGE', 'REFUNDED']).optional()),
+  locationId: z.preprocess(value => Array.isArray(value) ? value[0] : value, idSchema.optional()),
+  unitId: z.preprocess(value => Array.isArray(value) ? value[0] : value, idSchema.optional()),
+  q: z.preprocess(value => Array.isArray(value) ? value[0] : value, z.string().trim().max(200).optional()),
+  cursor: z.preprocess(value => Array.isArray(value) ? value[0] : value, z.string().min(1).optional()),
+  limit: z.preprocess(value => Array.isArray(value) ? value[0] : value, z.coerce.number().int().min(1).max(100).default(30)),
+}).passthrough();
+
+function reservationCursor(value?: string) {
+  if (!value) return null;
+  try {
+    const cursor = z.object({ startAt: z.string().datetime(), id: z.string().min(1) }).strict()
+      .parse(JSON.parse(Buffer.from(value, 'base64url').toString('utf8')));
+    return { startAt: new Date(cursor.startAt), id: cursor.id };
+  } catch {
+    throw new HttpError(400, 'Invalid rental reservation cursor');
+  }
+}
+
+rentalsRouter.get('/rental-reservations', accountRoute(async (req, res) => {
+  const businessId = clubBusinessId(req, 'RENTALS_VIEW');
+  const parsed = reservationListQuery.parse(req.query);
+  const query = {
+    ...parsed,
+    from: calendarDateBoundary(parsed.from, req.auth.business!.timezone),
+    to: calendarDateBoundary(parsed.to, req.auth.business!.timezone, true),
+  };
+  if (query.from && query.to && query.from >= query.to) throw new HttpError(400, 'The end date must be after the start date');
+  const cursor = reservationCursor(query.cursor);
+  const reservations = await prisma.venueReservation.findMany({
+    where: {
+      businessId, locationId: query.locationId, unitId: query.unitId, status: query.status, paymentStatus: query.paymentStatus,
+      startAt: query.from || query.to ? { gte: query.from, lt: query.to } : undefined,
+      ...(cursor ? { OR: [{ startAt: { lt: cursor.startAt } }, { startAt: cursor.startAt, id: { lt: cursor.id } }] } : {}),
+      ...(query.q ? { AND: [{ OR: [
+        { id: { contains: query.q, mode: 'insensitive' } },
+        { location: { name: { contains: query.q, mode: 'insensitive' } } },
+        { unit: { name: { contains: query.q, mode: 'insensitive' } } },
+        { user: { name: { contains: query.q, mode: 'insensitive' } } },
+        { user: { email: { contains: query.q, mode: 'insensitive' } } },
+      ] }] } : {}),
+    },
+    include: reservationInclude, orderBy: [{ startAt: 'desc' }, { id: 'desc' }], take: query.limit + 1,
+  });
+  const page = reservations.slice(0, query.limit);
+  res.json({ reservations: page.map(reservation => reservationJson(reservation)), nextCursor: reservations.length > query.limit && page.length
+    ? Buffer.from(JSON.stringify({ startAt: page.at(-1)!.startAt.toISOString(), id: page.at(-1)!.id }), 'utf8').toString('base64url') : null });
+}));
+
 rentalsRouter.get('/rentals/:id', accountRoute(async (req, res) => {
   const location = await configuredLocation(prisma, idSchema.parse(req.params.id));
   if (!location) throw new HttpError(404, 'Rental venue not found');
-  const manager = isOwningClub(req, location.businessId);
+  const manager = canManageClubRentals(req, location.businessId, 'RENTALS_VIEW');
   if (!manager && !isPublished(location)) throw new HttpError(404, 'Rental venue not found');
   res.json({ rental: rentalDetail(location, manager) });
 }));
@@ -535,8 +597,8 @@ rentalsRouter.get('/rentals/:id/slots', accountRoute(async (req, res) => {
     return;
   }
   const units = location.venueUnits.filter(unit => unit.active);
-  const reservations = units.length ? await prisma.venueReservation.findMany({ where: {
-    unitId: { in: units.map(unit => unit.id) }, status: { in: ['PENDING', 'CONFIRMED'] },
+  const allocations = units.length ? await prisma.venueUnitAllocation.findMany({ where: {
+    unitId: { in: units.map(unit => unit.id) }, status: 'ACTIVE',
     startAt: { lt: day.plus({ days: 1 }).toJSDate() }, endAt: { gt: day.toJSDate() },
   } }) : [];
   const hours = location.openingHours.filter(hour => hour.dayOfWeek === day.weekday % 7);
@@ -557,7 +619,7 @@ rentalsRouter.get('/rentals/:id/slots', accountRoute(async (req, res) => {
         const endAt = new Date(startAt.getTime() + query.duration * 60_000);
         if (!openingContains(location, startAt, query.duration)) continue;
         if (startAt.getTime() < now.getTime() + location.rentalNoticeHours * 3_600_000) continue;
-        if (reservations.some(reservation => reservation.unitId === unit.id && overlaps(reservation, startAt, endAt))) continue;
+        if (allocations.some(allocation => allocation.unitId === unit.id && overlaps(allocation, startAt, endAt))) continue;
         const key = `${unit.id}:${startAt.toISOString()}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -706,6 +768,11 @@ async function eligiblePackage(tx: Tx, packageId: string, userId: string, locati
     include: { rentalLocations: { where: { locationId: location.id }, select: { locationId: true } } },
   });
   if (!pkg) throw new HttpError(404, 'Rental package not found');
+  const refundInProgress = await tx.paymentRefund.findFirst({
+    where: { payment: { packageId: pkg.id }, status: { in: ['PENDING', 'SUCCEEDED'] } },
+    select: { id: true },
+  });
+  if (refundInProgress) throw new HttpError(409, 'This rental package is being refunded and cannot be used');
   if (!pkg.paid) throw new HttpError(409, 'This rental package has not been paid');
   if (pkg.expiresAt < startAt) throw new HttpError(409, 'This rental package expires before the selected time');
   if (!pkg.rentalLocations.length) throw new HttpError(409, 'This package does not cover the selected rental venue');
@@ -740,8 +807,8 @@ async function createReservation(req: AccountRequest, locationId: string, input:
     if (!unit) throw new HttpError(404, 'Rental unit not found at this venue');
     assertBookingWindow(location, input.startAt, input.duration);
     const endAt = new Date(input.startAt.getTime() + input.duration * 60_000);
-    const conflict = await tx.venueReservation.findFirst({ where: {
-      unitId: unit.id, status: { in: ['PENDING', 'CONFIRMED'] }, startAt: { lt: endAt }, endAt: { gt: input.startAt },
+    const conflict = await tx.venueUnitAllocation.findFirst({ where: {
+      unitId: unit.id, status: 'ACTIVE', startAt: { lt: endAt }, endAt: { gt: input.startAt },
     }, select: { id: true } });
     if (conflict) throw new HttpError(409, 'This rental unit was just reserved. Choose another time');
     const amount = rentalAmount(location, input.duration);
@@ -776,6 +843,10 @@ async function createReservation(req: AccountRequest, locationId: string, input:
       paymentStatus: pkg ? 'PACKAGE' : 'PAID', packageId: pkg?.id ?? null, creditConsumed: !!pkg,
       notes: JSON.stringify({ cancellationHours: location.rentalCancellationHours, unitName: unit.name }),
     }, include: reservationInclude });
+    await reserveRentalUnit(tx, {
+      businessId: location.businessId, locationId: location.id, unitId: unit.id, unitName: unit.name,
+      reservationId: reservation.id, startAt: input.startAt, endAt,
+    });
     const intent = await tx.paymentIntent.create({ data: {
       userId: req.auth.user.id, businessId: location.businessId, kind: 'RENTAL', reservationId: reservation.id,
       amount: pkg ? 0 : amount, currency: location.business.currency, status: 'SUCCEEDED', providerReference,
@@ -800,7 +871,8 @@ function isReservationConflict(error: unknown) {
   const detail = error instanceof Prisma.PrismaClientKnownRequestError
     ? `${error.message} ${JSON.stringify(error.meta ?? {})}`
     : error instanceof Error ? error.message : '';
-  return /VenueReservation_active_unit_overlap|23P01|exclusion constraint/u.test(detail);
+  return /VenueReservation_active_unit_overlap|23P01|exclusion constraint/u.test(detail)
+    || isVenueAllocationConflict(error);
 }
 
 rentalsRouter.post('/rentals/:id/reservations', accountRoute(async (req, res) => {
@@ -820,7 +892,7 @@ rentalsRouter.post('/rentals/:id/reservations', accountRoute(async (req, res) =>
 
 rentalsRouter.post('/rentals/reservations/:id/cancel', accountRoute(async (req, res) => {
   z.object({}).strict().parse(req.body ?? {});
-  const reservation = await prisma.$transaction(async tx => {
+  const result = await prisma.$transaction(async tx => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`venue-reservation:${req.params.id}`}, 0))`;
     const current = await tx.venueReservation.findFirst({
       where: { id: idSchema.parse(req.params.id), userId: req.auth.user.id }, include: reservationInclude,
@@ -829,6 +901,20 @@ rentalsRouter.post('/rentals/reservations/:id/cancel', accountRoute(async (req, 
     if (current.status === 'CANCELLED' || current.cancelledAt) throw new HttpError(409, 'This rental reservation is already cancelled');
     const deadline = current.startAt.getTime() - reservationSnapshot(current).cancellationHours * 3_600_000;
     if (Date.now() > deadline) throw new HttpError(409, 'The cancellation window for this rental has closed');
+    const intents = await tx.paymentIntent.findMany({
+      where: { reservationId: current.id, businessId: current.businessId }, include: { payment: true },
+    });
+    const liveIntent = intents.find(intent => intent.provider === 'STRIPE' && intent.status === 'SUCCEEDED');
+    if (liveIntent) {
+      if (current.packageId || current.creditConsumed || intents.length !== 1) {
+        throw new HttpError(409, 'This live rental payment cannot be refunded safely');
+      }
+      const prepared = await prepareProviderRefund(tx, {
+        intent: liveIntent, paymentId: liveIntent.payment?.id ?? null,
+        reason: 'Rental reservation cancelled', requestedByUserId: req.auth.user.id,
+      });
+      return { kind: 'PROVIDER' as const, prepared };
+    }
 
     if (current.packageId && current.creditConsumed) {
       await tx.$queryRaw`SELECT id FROM "LessonPackage" WHERE id = ${current.packageId} FOR UPDATE`;
@@ -838,9 +924,6 @@ rentalsRouter.post('/rentals/reservations/:id/cancel', accountRoute(async (req, 
       });
       if (!restored.count) throw new HttpError(409, 'The rental package credit could not be restored safely');
     }
-    const intents = await tx.paymentIntent.findMany({
-      where: { reservationId: current.id, businessId: current.businessId }, include: { payment: true },
-    });
     const now = new Date();
     for (const intent of intents) {
       if (intent.payment && !intent.payment.reversedAt) {
@@ -857,9 +940,24 @@ rentalsRouter.post('/rentals/reservations/:id/cancel', accountRoute(async (req, 
         await tx.paymentIntent.update({ where: { id: intent.id }, data: { status: 'REFUNDED' } });
       }
     }
-    return tx.venueReservation.update({ where: { id: current.id }, data: {
+    const cancelled = await tx.venueReservation.update({ where: { id: current.id }, data: {
       status: 'CANCELLED', paymentStatus: 'REFUNDED', creditConsumed: false, cancelledAt: now,
     }, include: reservationInclude });
+    await releaseRentalUnit(tx, current.id);
+    return { kind: 'LOCAL' as const, reservation: cancelled };
   }, { timeout: 30_000 });
-  res.json({ reservation: reservationJson(reservation) });
+  if (result.kind === 'PROVIDER') {
+    const providerResult = await executePreparedRefund(result.prepared as RefundPreparation);
+    const reservation = await prisma.venueReservation.findUniqueOrThrow({
+      where: { id: idSchema.parse(req.params.id) }, include: reservationInclude,
+    });
+    const body = {
+      reservation: reservationJson(reservation), refundId: providerResult.refundId,
+      refundStatus: providerResult.status,
+    };
+    if (providerResult.status === 'PENDING') { res.status(202).json(body); return; }
+    res.json(body);
+    return;
+  }
+  res.json({ reservation: reservationJson(result.reservation) });
 }));

@@ -2,6 +2,8 @@
 
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js';
+import { loadStripe } from '@stripe/stripe-js';
 import {
   ArrowRight,
   Bell,
@@ -45,6 +47,7 @@ import {
 } from 'react';
 import { CourtlyLogo } from '@/components/public-booking';
 import { CalendarConnectionCard } from '@/components/calendar-connection-card';
+import { NotificationPreferencesCard } from '@/components/notification-preferences';
 import { AccountRentalHistory } from '@/components/account-rental-dialog';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import {
@@ -54,6 +57,7 @@ import {
   cancelAccountBooking,
   checkoutBookingParticipant,
   checkoutPackageOffer,
+  createLiveCheckoutIntent,
   createRentalReservation,
   declineAccountReschedule,
   loadAccountPackages,
@@ -61,6 +65,8 @@ import {
   loadAccountClubs,
   loadAccountBookings,
   loadAuthSession,
+  loadLiveCheckoutIntent,
+  loadPaymentCapabilities,
   loadRental,
   loadRentals,
   loadRentalSlots,
@@ -81,6 +87,8 @@ import type {
   AuthSession,
   PackageOffer,
   PackageOfferBusiness,
+  PaymentCapabilities,
+  PaymentIntent,
   PublicBookingBusiness,
   PublicLocation,
   RentalDetail,
@@ -97,7 +105,12 @@ type BookingDialogMode = 'details' | 'cancel' | 'reschedule';
 type BookingFilter = 'all' | 'upcoming' | 'completed' | 'cancelled';
 type ClubRelationshipFilter = 'all' | 'known' | 'discover';
 type ExploreSegment = 'classes' | 'rentals';
+type PaymentUiMode = 'loading' | 'live' | 'simulated' | 'disabled';
 type Conflict = { date: string; reason: string };
+type LiveCheckoutSession = {
+  localIntentId: string; clientSecret: string; connectedAccountId: string; amount: number; currency: string;
+  kind: 'PACKAGE' | 'BOOKING'; targetId: string; label: string; clubName: string; retrySignature: string;
+};
 type StudentNotification = {
   id: string;
   type?: string;
@@ -756,6 +769,173 @@ function forgetDefinitiveCheckoutFailure(attempts: Map<string, string>, signatur
   if (error instanceof ApiError && error.status < 500) attempts.delete(signature);
 }
 
+const stripeAccounts = new Map<string, ReturnType<typeof loadStripe>>();
+
+function connectedStripe(publishableKey: string, connectedAccountId: string) {
+  const key = `${publishableKey}:${connectedAccountId}`;
+  const existing = stripeAccounts.get(key);
+  if (existing) return existing;
+  const stripe = loadStripe(publishableKey, { stripeAccount: connectedAccountId });
+  stripeAccounts.set(key, stripe);
+  return stripe;
+}
+
+async function waitForCheckout(intentId: string) {
+  let latest: PaymentIntent | null = null;
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    try {
+      latest = (await loadLiveCheckoutIntent(intentId)).paymentIntent;
+      if (latest.status !== 'REQUIRES_CONFIRMATION') return latest;
+    } catch (error) {
+      if (error instanceof ApiError && error.status < 500) throw error;
+      if (attempt === 23) throw error;
+    }
+    await new Promise(resolve => window.setTimeout(resolve, 750));
+  }
+  return latest;
+}
+
+function LivePaymentForm({ checkout, onBusyChange, onSettled, onDefinitiveFailure }: {
+  checkout: LiveCheckoutSession; onBusyChange: (busy: boolean) => void;
+  onSettled: () => Promise<PaymentIntent | null>; onDefinitiveFailure: () => void;
+}) {
+  const stripe = useStripe();
+  const elements = useElements();
+  const [message, setMessage] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [finished, setFinished] = useState(false);
+  const [ready, setReady] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!stripe || !elements || submitting || finished) return;
+    setSubmitting(true);
+    onBusyChange(true);
+    setMessage('');
+    try {
+      const submitted = await elements.submit();
+      if (submitted.error) {
+        setMessage(submitted.error.message || 'Check your payment details and try again.');
+        return;
+      }
+      const returnUrl = new URL('/manage', window.location.origin);
+      returnUrl.searchParams.set('tab', 'home');
+      returnUrl.searchParams.set('checkout_intent', checkout.localIntentId);
+      const result = await stripe.confirmPayment({
+        elements,
+        confirmParams: { return_url: returnUrl.toString() },
+        redirect: 'if_required',
+      });
+      if (result.error) {
+        if (result.error.type === 'card_error') {
+          setFinished(true);
+          onDefinitiveFailure();
+          setMessage(result.error.message || 'The card was declined. Close this window and try again.');
+        } else {
+          setMessage(result.error.message || 'Check your payment details and try again.');
+        }
+        return;
+      }
+      if (result.paymentIntent?.status === 'requires_payment_method') {
+        setFinished(true);
+        onDefinitiveFailure();
+        setMessage('The payment was not completed. Close this window and try again.');
+        return;
+      }
+      if (result.paymentIntent?.status === 'canceled') {
+        setFinished(true);
+        onDefinitiveFailure();
+        setMessage('The payment was not completed. Close this window and try again.');
+        return;
+      }
+      setMessage('Stripe accepted the payment. Waiting for Courtly to confirm it…');
+      const settled = await onSettled();
+      if (settled?.status === 'FAILED' || settled?.status === 'CANCELLED') {
+        setFinished(true);
+        onDefinitiveFailure();
+        setMessage('The payment was not completed. Close this window and try again.');
+      } else if (settled?.status !== 'SUCCEEDED') {
+        setFinished(true);
+        setMessage('Your payment is still processing. You can close this window; Courtly will show it once confirmed.');
+      }
+    } catch (error) {
+      setMessage(messageOf(error));
+    } finally {
+      setSubmitting(false);
+      onBusyChange(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit}>
+      <PaymentElement
+        options={{ layout: 'tabs' }}
+        onReady={() => setReady(true)}
+        onLoadError={() => {
+          setFinished(true);
+          setMessage('The secure payment form could not load. Please close this window and try again.');
+        }}
+      />
+      {message && <p role={finished ? 'alert' : 'status'} className={cn('mt-4 text-xs leading-relaxed', finished ? 'text-[#8b4d3c]' : 'text-[#59675c]')}>{message}</p>}
+      <button type="submit" className={cn(primaryButton, 'mt-5 w-full')} disabled={!stripe || !elements || !ready || submitting || finished}>
+        {submitting ? <LoaderCircle size={15} className="animate-spin" /> : <ShieldCheck size={15} />}
+        {submitting ? 'Confirming payment…' : `Pay ${money(checkout.amount, checkout.currency)}`}
+      </button>
+      <p className="mt-3 text-center text-[10px] leading-relaxed text-[#667568]">
+        Secure payment by Stripe. Courtly sends the total and currency; your payment details go directly to Stripe.
+      </p>
+    </form>
+  );
+}
+
+function LiveCheckoutDialog({ checkout, publishableKey, testMode, busy, onBusyChange, onClose, onSettled, onDefinitiveFailure }: {
+  checkout: LiveCheckoutSession | null; publishableKey: string; testMode: boolean; busy: boolean;
+  onBusyChange: (busy: boolean) => void; onClose: () => void; onSettled: () => Promise<PaymentIntent | null>; onDefinitiveFailure: () => void;
+}) {
+  const stripe = useMemo(() => checkout
+    ? connectedStripe(publishableKey, checkout.connectedAccountId)
+    : null, [checkout, publishableKey]);
+  if (!checkout || !stripe) return null;
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open && !busy) onClose(); }}>
+      <DialogContent
+        className="max-w-lg"
+        onEscapeKeyDown={(event) => { if (busy) event.preventDefault(); }}
+        onPointerDownOutside={(event) => { if (busy) event.preventDefault(); }}
+      >
+        <DialogTitle className="text-xl font-semibold tracking-tight text-[#20382d]">Pay {checkout.clubName}</DialogTitle>
+        <DialogDescription className="mt-2 text-xs leading-relaxed text-[#59675c]">
+          {checkout.label} · {money(checkout.amount, checkout.currency)}
+        </DialogDescription>
+        {testMode && (
+          <p className="mt-4 rounded-xl border border-[#eee5ce] bg-[#fcf8ec] p-3 text-xs leading-relaxed text-[#70582e]">
+            Stripe test mode — use test payment details. No real card will be charged.
+          </p>
+        )}
+        <div className="mt-6">
+          <Elements
+            stripe={stripe}
+            options={{
+              clientSecret: checkout.clientSecret,
+              appearance: {
+                theme: 'stripe',
+                variables: { colorPrimary: '#174c3c', colorText: '#20382d', borderRadius: '12px' },
+              },
+            }}
+          >
+            <LivePaymentForm
+              checkout={checkout}
+              onBusyChange={onBusyChange}
+              onSettled={onSettled}
+              onDefinitiveFailure={onDefinitiveFailure}
+            />
+          </Elements>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function statusClass(state: string) {
   if (state === 'Cancelled') return 'bg-[#f8e8e3] text-[#8b4d3c]';
   if (state === 'Awaiting confirmation' || state === 'Awaiting coach') return 'bg-[#f8eed3] text-[#70582e]';
@@ -1065,6 +1245,10 @@ type BookingDialogProps = {
   performRescheduleRequest: () => void;
   respondToRequest: (accept: boolean) => void;
   payForBooking: () => void;
+  paymentMode: PaymentUiMode;
+  stripeTestMode: boolean;
+  paymentUnavailableReason: string;
+  retryPaymentCapabilities: () => void;
   paymentOutcome: 'SUCCEEDED' | 'FAILED';
   setPaymentOutcome: (value: 'SUCCEEDED' | 'FAILED') => void;
   retrySlots: () => void;
@@ -1100,6 +1284,10 @@ function BookingDialog({
   performRescheduleRequest,
   respondToRequest,
   payForBooking,
+  paymentMode,
+  stripeTestMode,
+  paymentUnavailableReason,
+  retryPaymentCapabilities,
   paymentOutcome,
   setPaymentOutcome,
   retrySlots,
@@ -1288,26 +1476,47 @@ function BookingDialog({
                 <h3 className="flex items-center gap-2 text-sm font-semibold text-[#3d5a41]">
                   <WalletCards size={16} /> Pay online
                 </h3>
-                <p className="mt-2 text-xs leading-relaxed text-[#59675c]">
-                  Demo checkout only — this simulates a successful Stripe card payment and does not charge a real card.
-                </p>
-                <label htmlFor={`booking-payment-outcome-${item.participant.id}`} className="mt-4 block text-xs font-semibold text-[#465e4c]">
-                  Demo payment result
-                </label>
-                <select
-                  id={`booking-payment-outcome-${item.participant.id}`}
-                  className={cn(field, 'mt-2 w-full bg-white')}
-                  value={paymentOutcome}
-                  disabled={busy}
-                  onChange={(event) => setPaymentOutcome(event.target.value as 'SUCCEEDED' | 'FAILED')}
-                >
-                  <option value="SUCCEEDED">Simulate success</option>
-                  <option value="FAILED">Simulate declined card</option>
-                </select>
-                <button type="button" className={cn(primaryButton, 'mt-4')} disabled={busy} onClick={payForBooking}>
-                  {busy ? <LoaderCircle size={15} className="animate-spin" /> : <ShieldCheck size={15} />}
-                  Pay {money(item.participant.price ?? item.booking.price, item.business.currency)} with simulated Stripe
-                </button>
+                {paymentMode === 'simulated' ? (
+                  <>
+                    <p className="mt-2 text-xs leading-relaxed text-[#59675c]">
+                      Development/demo checkout only — this simulates Stripe and does not charge a real card.
+                    </p>
+                    <label htmlFor={`booking-payment-outcome-${item.participant.id}`} className="mt-4 block text-xs font-semibold text-[#465e4c]">
+                      Simulated payment result
+                    </label>
+                    <select
+                      id={`booking-payment-outcome-${item.participant.id}`}
+                      className={cn(field, 'mt-2 w-full bg-white')}
+                      value={paymentOutcome}
+                      disabled={busy}
+                      onChange={(event) => setPaymentOutcome(event.target.value as 'SUCCEEDED' | 'FAILED')}
+                    >
+                      <option value="SUCCEEDED">Simulate success</option>
+                      <option value="FAILED">Simulate declined card</option>
+                    </select>
+                  </>
+                ) : (
+                  <p className="mt-2 text-xs leading-relaxed text-[#59675c]">
+                    {paymentMode === 'live'
+                      ? stripeTestMode
+                        ? 'Stripe test checkout is enabled. Use test payment details; no real card will be charged.'
+                        : `Continue to Stripe to pay ${item.business.name}. The final total is calculated securely by Courtly.`
+                      : paymentMode === 'loading' ? 'Checking secure payment availability…' : paymentUnavailableReason}
+                  </p>
+                )}
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button type="button" className={primaryButton} disabled={busy || paymentMode === 'loading' || paymentMode === 'disabled'} onClick={payForBooking}>
+                    {busy || paymentMode === 'loading' ? <LoaderCircle size={15} className="animate-spin" /> : <ShieldCheck size={15} />}
+                    {paymentMode === 'simulated'
+                      ? `Simulate ${money(item.participant.price ?? item.booking.price, item.business.currency)} payment`
+                      : 'Continue to secure payment'}
+                  </button>
+                  {paymentMode === 'disabled' && (
+                    <button type="button" className={secondaryButton} disabled={busy} onClick={retryPaymentCapabilities}>
+                      <RefreshCw size={14} /> Check again
+                    </button>
+                  )}
+                </div>
               </section>
             )}
 
@@ -1523,11 +1732,13 @@ function AlertDialog({
 }
 
 function PackageOffersDialog({
-  club, offers, loading, error, notice, busyId, paymentOutcome, onPaymentOutcome, onBuy, onClose,
+  club, offers, loading, error, notice, busyId, paymentMode, stripeTestMode, paymentUnavailableReason, paymentOutcome,
+  onPaymentOutcome, onBuy, onRetryPaymentCapabilities, onClose,
 }: {
   club: { business: PackageOfferBusiness } | null; offers: PackageOffer[]; loading: boolean; error: string; notice: string; busyId: string | null;
+  paymentMode: PaymentUiMode; stripeTestMode: boolean; paymentUnavailableReason: string;
   paymentOutcome: 'SUCCEEDED' | 'FAILED'; onPaymentOutcome: (value: 'SUCCEEDED' | 'FAILED') => void;
-  onBuy: (offer: PackageOffer) => void; onClose: () => void;
+  onBuy: (offer: PackageOffer) => void; onRetryPaymentCapabilities: () => void; onClose: () => void;
 }) {
   if (!club) return null;
   return (
@@ -1537,7 +1748,13 @@ function PackageOffersDialog({
           Packages from {club.business.name}
         </DialogTitle>
         <DialogDescription className="mt-2 text-xs leading-relaxed text-[#59675c]">
-          Buy credits for eligible classes and venue rentals. Checkout is a Stripe simulation for this release; no real card is charged.
+          {paymentMode === 'live'
+            ? stripeTestMode
+              ? 'Stripe test checkout is enabled. Use test payment details; no real card will be charged.'
+              : 'Buy credits for eligible classes and venue rentals through secure Stripe checkout.'
+            : paymentMode === 'simulated'
+              ? 'Buy credits for eligible classes and venue rentals. Development/demo checkout is simulated and no real card is charged.'
+              : paymentMode === 'loading' ? 'Checking secure payment availability…' : paymentUnavailableReason}
         </DialogDescription>
         {notice && <div role="status" className="mt-5 rounded-xl border border-[#d8e4cb] bg-[#edf5e4] p-4 text-sm text-[#4f6847]">{notice}</div>}
         {error && <div className="mt-5"><ErrorNotice message={error} /></div>}
@@ -1551,11 +1768,20 @@ function PackageOffersDialog({
           </p>
         ) : (
           <>
-            <label htmlFor="package-checkout-outcome" className="mt-5 block text-xs font-semibold text-[#465e4c]">Demo payment result</label>
-            <select id="package-checkout-outcome" className={cn(field, 'mt-2 w-full bg-white')} value={paymentOutcome} disabled={!!busyId} onChange={(event) => onPaymentOutcome(event.target.value as 'SUCCEEDED' | 'FAILED')}>
-              <option value="SUCCEEDED">Simulate success</option>
-              <option value="FAILED">Simulate declined card</option>
-            </select>
+            {paymentMode === 'simulated' && (
+              <>
+                <label htmlFor="package-checkout-outcome" className="mt-5 block text-xs font-semibold text-[#465e4c]">Simulated payment result</label>
+                <select id="package-checkout-outcome" className={cn(field, 'mt-2 w-full bg-white')} value={paymentOutcome} disabled={!!busyId} onChange={(event) => onPaymentOutcome(event.target.value as 'SUCCEEDED' | 'FAILED')}>
+                  <option value="SUCCEEDED">Simulate success</option>
+                  <option value="FAILED">Simulate declined card</option>
+                </select>
+              </>
+            )}
+            {paymentMode === 'disabled' && (
+              <button type="button" className={cn(secondaryButton, 'mt-4')} onClick={onRetryPaymentCapabilities}>
+                <RefreshCw size={14} /> Check payment availability again
+              </button>
+            )}
             <div className="mt-5 max-h-[55vh] space-y-3 overflow-y-auto pr-1">
               {offers.map((offer) => (
                 <article key={offer.id} className="rounded-xl border border-[#e4e9df] p-4">
@@ -1570,9 +1796,9 @@ function PackageOffersDialog({
                   <p className="mt-2 text-[11px] leading-relaxed text-[#59675c]">
                     Eligible for {[...offer.services.map((service) => service.name), ...offer.rentalLocations.map((location) => location.name)].join(', ')}
                   </p>
-                  <button type="button" className={cn(primaryButton, 'mt-4 w-full')} disabled={!!busyId} onClick={() => onBuy(offer)}>
-                    {busyId === offer.id ? <LoaderCircle size={15} className="animate-spin" /> : <WalletCards size={15} />}
-                    Buy with simulated Stripe
+                  <button type="button" className={cn(primaryButton, 'mt-4 w-full')} disabled={!!busyId || paymentMode === 'loading' || paymentMode === 'disabled'} onClick={() => onBuy(offer)}>
+                    {busyId === offer.id || paymentMode === 'loading' ? <LoaderCircle size={15} className="animate-spin" /> : <WalletCards size={15} />}
+                    {paymentMode === 'simulated' ? 'Buy with simulated Stripe' : 'Continue to secure payment'}
                   </button>
                 </article>
               ))}
@@ -1646,15 +1872,15 @@ function RentalDialog({
                   <>
                     <label htmlFor="rental-package" className="mt-4 block text-xs font-semibold text-[#465e4c]">Payment option</label>
                     <select id="rental-package" value={selectedPackageId} onChange={(event) => onPackage(event.target.value)} className={cn(field, 'mt-2 w-full bg-white')}>
-                      <option value="">Simulated Stripe card</option>
+                      <option value="">Simulated rental checkout</option>
                       {packages.map((pkg) => <option key={pkg.id} value={pkg.id}>Use {pkg.name} ({pkg.remainingCredits} credits left)</option>)}
                     </select>
                   </>
                 )}
                 {selectedSlot.price > 0 && !selectedPackageId && (
                   <>
-                    <p className="mt-3 text-xs leading-relaxed text-[#59675c]">Demo checkout only — no real card is charged.</p>
-                    <label htmlFor="rental-payment-outcome" className="mt-3 block text-xs font-semibold text-[#465e4c]">Demo payment result</label>
+                    <p className="mt-3 text-xs leading-relaxed text-[#59675c]"><strong>Simulated rental checkout:</strong> venue rentals do not use live Stripe yet, so no real card is charged.</p>
+                    <label htmlFor="rental-payment-outcome" className="mt-3 block text-xs font-semibold text-[#465e4c]">Simulated payment result</label>
                     <select id="rental-payment-outcome" value={paymentOutcome} onChange={(event) => onPaymentOutcome(event.target.value as 'SUCCEEDED' | 'FAILED')} className={cn(field, 'mt-2 w-full bg-white')}><option value="SUCCEEDED">Simulate success</option><option value="FAILED">Simulate declined card</option></select>
                   </>
                 )}
@@ -1873,6 +2099,12 @@ export function StudentApp({ slug }: { slug?: string }) {
   const [offerBusyId, setOfferBusyId] = useState<string | null>(null);
   const [offerNotice, setOfferNotice] = useState('');
   const [offerPaymentOutcome, setOfferPaymentOutcome] = useState<'SUCCEEDED' | 'FAILED'>('SUCCEEDED');
+  const [paymentCapabilities, setPaymentCapabilities] = useState<PaymentCapabilities | null>(null);
+  const [paymentCapabilitiesLoading, setPaymentCapabilitiesLoading] = useState(false);
+  const [paymentCapabilitiesError, setPaymentCapabilitiesError] = useState('');
+  const [liveCheckout, setLiveCheckout] = useState<LiveCheckoutSession | null>(null);
+  const [liveCheckoutBusy, setLiveCheckoutBusy] = useState(false);
+  const [checkoutReturnStatus, setCheckoutReturnStatus] = useState<{ message: string; error: boolean } | null>(null);
   const [peopleQuery, setPeopleQuery] = useState('');
   const [people, setPeople] = useState<AccountDirectoryUser[]>([]);
   const [peopleLoading, setPeopleLoading] = useState(false);
@@ -1920,6 +2152,7 @@ export function StudentApp({ slug }: { slug?: string }) {
   const rentalCheckoutKeysRef = useRef(new Map<string, string>());
   const offersRequestRef = useRef(0);
   const packagesRequestRef = useRef(0);
+  const checkoutReturnHandledRef = useRef<string | null>(null);
   const chatOpenedFromListRef = useRef(false);
   const { unreadThreads: chatUnread, beginUnreadRequest, commitUnreadNow } = useChatUnread(isStudentSession(session));
 
@@ -2061,6 +2294,24 @@ export function StudentApp({ slug }: { slug?: string }) {
     }
   }, [router]);
 
+  const refreshPaymentCapabilities = useCallback(async () => {
+    setPaymentCapabilitiesLoading(true);
+    setPaymentCapabilitiesError('');
+    try {
+      const value = await loadPaymentCapabilities();
+      if (value.liveCheckout && !value.publishableKey) {
+        throw new Error('Secure card checkout is not configured correctly.');
+      }
+      setPaymentCapabilities(value);
+    } catch (error) {
+      setPaymentCapabilities(null);
+      if (error instanceof ApiError && error.status === 401) router.replace(loginHrefRef.current);
+      else setPaymentCapabilitiesError(messageOf(error));
+    } finally {
+      setPaymentCapabilitiesLoading(false);
+    }
+  }, [router]);
+
   const refreshRentals = useCallback(async () => {
     setRentalsLoading(true);
     setRentalsError('');
@@ -2125,8 +2376,37 @@ export function StudentApp({ slug }: { slug?: string }) {
     void refreshClubDirectory();
     void refreshNotifications();
     void refreshPackages();
+    void refreshPaymentCapabilities();
     void refreshRentals();
-  }, [session, refreshBookings, refreshClubDirectory, refreshNotifications, refreshPackages, refreshRentals]);
+  }, [session, refreshBookings, refreshClubDirectory, refreshNotifications, refreshPackages, refreshPaymentCapabilities, refreshRentals]);
+
+  useEffect(() => {
+    if (!isStudentSession(session)) return;
+    const intentId = searchParams.get('checkout_intent');
+    if (!intentId || checkoutReturnHandledRef.current === intentId) return;
+    checkoutReturnHandledRef.current = intentId;
+    const clean = new URLSearchParams(searchParams.toString());
+    clean.delete('checkout_intent');
+    clean.delete('payment_intent');
+    clean.delete('payment_intent_client_secret');
+    clean.delete('redirect_status');
+    router.replace(`/manage${clean.size ? `?${clean}` : ''}`, { scroll: false });
+    setCheckoutReturnStatus({ message: 'Stripe returned your payment. Waiting for Courtly to confirm it…', error: false });
+    void waitForCheckout(intentId)
+      .then((intent) => {
+        if (intent?.status === 'SUCCEEDED') {
+          setCheckoutReturnStatus({ message: 'Payment confirmed. Your Courtly account is up to date.', error: false });
+          void refreshBookings();
+          void refreshPackages();
+          void refreshNotifications();
+        } else if (intent?.status === 'FAILED' || intent?.status === 'CANCELLED' || intent?.status === 'REFUNDED') {
+          setCheckoutReturnStatus({ message: 'The payment was not completed. No Courtly purchase was recorded.', error: true });
+        } else {
+          setCheckoutReturnStatus({ message: 'Your payment is still processing. Courtly will show it once confirmation arrives.', error: false });
+        }
+      })
+      .catch((error) => setCheckoutReturnStatus({ message: `We could not check the payment yet. ${messageOf(error)}`, error: true }));
+  }, [refreshBookings, refreshNotifications, refreshPackages, router, searchParams, session]);
 
   useEffect(() => {
     function updateClock() {
@@ -2270,6 +2550,15 @@ export function StudentApp({ slug }: { slug?: string }) {
   const actionBooking = openBookingId
     ? bookings.find((item) => item.booking.id === openBookingId)
     : undefined;
+  const paymentMode: PaymentUiMode = paymentCapabilitiesLoading && !paymentCapabilities
+    ? 'loading'
+    : paymentCapabilities?.liveCheckout && paymentCapabilities.publishableKey
+      ? 'live'
+      : paymentCapabilities?.simulatedCheckout ? 'simulated' : 'disabled';
+  const paymentUnavailableReason = paymentCapabilitiesError
+    ? `Payment availability could not be checked. ${paymentCapabilitiesError}`
+    : 'Online payment is not enabled for this Courtly deployment.';
+  const stripeTestMode = paymentCapabilities?.publishableKey?.startsWith('pk_test_') ?? false;
 
   useEffect(() => {
     if (!openRentalId) return;
@@ -2519,9 +2808,64 @@ export function StudentApp({ slug }: { slug?: string }) {
     );
   }
 
+  function completeLiveCheckout(checkout: LiveCheckoutSession) {
+    const attempts = checkout.kind === 'PACKAGE' ? packageCheckoutKeysRef.current : bookingCheckoutKeysRef.current;
+    attempts.delete(checkout.retrySignature);
+    setLiveCheckout(null);
+    if (checkout.kind === 'PACKAGE') {
+      setOfferNotice(`${checkout.label} is now in My Packages. Stripe payment confirmed.`);
+      void refreshPackages();
+    } else {
+      setBookings((current) => current.map((item) => item.participant.id === checkout.targetId
+        ? {
+            ...item, participant: { ...item.participant, paid: true },
+            booking: {
+              ...item.booking, participants: item.booking.participants.map((participant) =>
+                participant.id === checkout.targetId ? { ...participant, paid: true } : participant),
+            },
+          } : item));
+      setNotice(`Stripe payment confirmed. Paid to ${checkout.clubName}.`);
+      void refreshBookings();
+    }
+    void refreshNotifications();
+  }
+
   function payForBooking() {
     if (!actionBooking || actionBusy) return;
     const participantId = actionBooking.participant.id;
+    if (paymentMode === 'live') {
+      const signature = JSON.stringify([participantId, 'stripe']);
+      const idempotencyKey = activeCheckoutKey(bookingCheckoutKeysRef.current, 'booking', participantId, signature);
+      setActionBusy(true);
+      setActionError('');
+      void createLiveCheckoutIntent({ kind: 'BOOKING', targetId: participantId, idempotencyKey })
+        .then(({ paymentIntent, connectedAccountId }) => {
+          const clientSecret = paymentIntent.clientSecret;
+          const checkout: LiveCheckoutSession = {
+            localIntentId: paymentIntent.id, clientSecret: clientSecret ?? '', connectedAccountId,
+            amount: paymentIntent.amount, currency: paymentIntent.currency, kind: 'BOOKING', targetId: participantId,
+            label: actionBooking.booking.serviceName, clubName: actionBooking.business.name, retrySignature: signature,
+          };
+          if (paymentIntent.status === 'SUCCEEDED') {
+            completeLiveCheckout(checkout);
+            return;
+          }
+          if (paymentIntent.status === 'FAILED' || paymentIntent.status === 'CANCELLED' || paymentIntent.status === 'REFUNDED') {
+            bookingCheckoutKeysRef.current.delete(signature);
+            throw new Error('This payment attempt is closed. Please try again.');
+          }
+          if (!clientSecret || !connectedAccountId) throw new Error('Secure checkout could not be initialized.');
+          setLiveCheckout(checkout);
+        })
+        .catch((error) => {
+          forgetDefinitiveCheckoutFailure(bookingCheckoutKeysRef.current, signature, error);
+          if (error instanceof ApiError && error.status === 401) router.replace(loginHrefRef.current);
+          else setActionError(messageOf(error));
+        })
+        .finally(() => setActionBusy(false));
+      return;
+    }
+    if (paymentMode !== 'simulated') return;
     const outcome = bookingPaymentOutcome;
     const signature = JSON.stringify([participantId, outcome]);
     const idempotencyKey = activeCheckoutKey(bookingCheckoutKeysRef.current, 'booking', participantId, signature);
@@ -2587,6 +2931,40 @@ export function StudentApp({ slug }: { slug?: string }) {
 
   function buyPackage(offer: PackageOffer) {
     if (offerBusyId) return;
+    if (paymentMode === 'live') {
+      const signature = JSON.stringify([offer.id, 'stripe']);
+      const idempotencyKey = activeCheckoutKey(packageCheckoutKeysRef.current, 'package', offer.id, signature);
+      setOfferBusyId(offer.id);
+      setOffersError('');
+      setOfferNotice('');
+      void createLiveCheckoutIntent({ kind: 'PACKAGE', targetId: offer.id, idempotencyKey })
+        .then(({ paymentIntent, connectedAccountId }) => {
+          const clientSecret = paymentIntent.clientSecret;
+          const checkout: LiveCheckoutSession = {
+            localIntentId: paymentIntent.id, clientSecret: clientSecret ?? '', connectedAccountId,
+            amount: paymentIntent.amount, currency: paymentIntent.currency, kind: 'PACKAGE', targetId: offer.id,
+            label: offer.name, clubName: offersClub?.business.name ?? 'the club', retrySignature: signature,
+          };
+          if (paymentIntent.status === 'SUCCEEDED') {
+            completeLiveCheckout(checkout);
+            return;
+          }
+          if (paymentIntent.status === 'FAILED' || paymentIntent.status === 'CANCELLED' || paymentIntent.status === 'REFUNDED') {
+            packageCheckoutKeysRef.current.delete(signature);
+            throw new Error('This payment attempt is closed. Please try again.');
+          }
+          if (!clientSecret || !connectedAccountId) throw new Error('Secure checkout could not be initialized.');
+          setLiveCheckout(checkout);
+        })
+        .catch((error) => {
+          forgetDefinitiveCheckoutFailure(packageCheckoutKeysRef.current, signature, error);
+          if (error instanceof ApiError && error.status === 401) router.replace(loginHrefRef.current);
+          else setOffersError(messageOf(error));
+        })
+        .finally(() => setOfferBusyId(null));
+      return;
+    }
+    if (paymentMode !== 'simulated') return;
     const signature = JSON.stringify([offer.id, offerPaymentOutcome]);
     const idempotencyKey = activeCheckoutKey(packageCheckoutKeysRef.current, 'package', offer.id, signature);
     setOfferBusyId(offer.id);
@@ -2611,6 +2989,21 @@ export function StudentApp({ slug }: { slug?: string }) {
         setOffersError(messageOf(error));
       })
       .finally(() => setOfferBusyId(null));
+  }
+
+  function forgetLiveCheckoutAttempt(checkout = liveCheckout) {
+    if (!checkout) return;
+    const attempts = checkout.kind === 'PACKAGE' ? packageCheckoutKeysRef.current : bookingCheckoutKeysRef.current;
+    attempts.delete(checkout.retrySignature);
+  }
+
+  async function settleLiveCheckout() {
+    if (!liveCheckout) return null;
+    const checkout = liveCheckout;
+    const intent = await waitForCheckout(checkout.localIntentId);
+    if (intent?.status !== 'SUCCEEDED') return intent;
+    completeLiveCheckout(checkout);
+    return intent;
   }
 
   function findRentalForPackage(pkg: AccountPackage) {
@@ -2848,6 +3241,10 @@ export function StudentApp({ slug }: { slug?: string }) {
     performRescheduleRequest,
     respondToRequest,
     payForBooking,
+    paymentMode,
+    stripeTestMode,
+    paymentUnavailableReason,
+    retryPaymentCapabilities: () => void refreshPaymentCapabilities(),
     paymentOutcome: bookingPaymentOutcome,
     setPaymentOutcome: setBookingPaymentOutcome,
     retrySlots: () => setSlotsVersion((value) => value + 1),
@@ -2961,6 +3358,19 @@ export function StudentApp({ slug }: { slug?: string }) {
         )}
       >
         {bookingNavigationStatus && <p role="status" className="sr-only">{bookingNavigationStatus}</p>}
+        {checkoutReturnStatus && (
+          <div
+            role={checkoutReturnStatus.error ? 'alert' : 'status'}
+            className={cn(
+              'mb-6 rounded-xl border p-4 text-sm',
+              checkoutReturnStatus.error
+                ? 'border-[#ecd5cc] bg-[#fbefeb] text-[#8b4d3c]'
+                : 'border-[#d8e4cb] bg-[#edf5e4] text-[#4f6847]',
+            )}
+          >
+            {checkoutReturnStatus.message}
+          </div>
+        )}
         {bookingsError && (
           <div className="mb-6 space-y-3">
             <ErrorNotice message={bookingsError} />
@@ -3956,6 +4366,7 @@ export function StudentApp({ slug }: { slug?: string }) {
               returnTo="/manage?tab=profile"
               className="mt-6"
             />
+            <NotificationPreferencesCard className="mt-6" />
 
             <section id="student-packages" className="mt-9 scroll-mt-24" aria-labelledby="student-packages-heading">
               <div className="flex flex-wrap items-end justify-between gap-3">
@@ -4049,18 +4460,32 @@ export function StudentApp({ slug }: { slug?: string }) {
           </section>
         )}
       </main>
-      <BookingDialog item={actionBooking ?? null} {...bookingDialogProps} />
+      <BookingDialog item={liveCheckout ? null : actionBooking ?? null} {...bookingDialogProps} />
       <PackageOffersDialog
-        club={offersClub}
+        club={liveCheckout ? null : offersClub}
         offers={packageOffers}
         loading={offersLoading}
         error={offersError}
         notice={offerNotice}
         busyId={offerBusyId}
+        paymentMode={paymentMode}
+        stripeTestMode={stripeTestMode}
+        paymentUnavailableReason={paymentUnavailableReason}
         paymentOutcome={offerPaymentOutcome}
         onPaymentOutcome={setOfferPaymentOutcome}
         onBuy={buyPackage}
+        onRetryPaymentCapabilities={() => void refreshPaymentCapabilities()}
         onClose={closePackageOffers}
+      />
+      <LiveCheckoutDialog
+        checkout={liveCheckout}
+        publishableKey={paymentCapabilities?.publishableKey ?? ''}
+        testMode={stripeTestMode}
+        busy={liveCheckoutBusy}
+        onBusyChange={setLiveCheckoutBusy}
+        onClose={() => setLiveCheckout(null)}
+        onSettled={settleLiveCheckout}
+        onDefinitiveFailure={() => forgetLiveCheckoutAttempt()}
       />
       <RentalDialog
         open={!!openRentalId}

@@ -2,7 +2,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import request from 'supertest';
 import { app } from '../src/app.js';
 import { config } from '../src/config.js';
-import { createStudent, prisma, TestTenants, verifyTestDatabase } from './fixtures.js';
+import { createStudent, inputFor, prisma, TestTenants, verifyTestDatabase } from './fixtures.js';
+import { createBookings } from '../src/scheduling.js';
 
 // The admin console is gated by a single ADMIN_PASSWORD held only in the host
 // environment. config.adminPassword is read at request time, so the suite sets
@@ -174,6 +175,56 @@ describe.sequential('Platform admin console', () => {
     await tenants.cleanup();
     expect(await prisma.user.count({ where: { id: f.coachUser.id } })).toBe(0);
     expect(await prisma.calendarConnection.count({ where: { id: portableCalendar.id } })).toBe(0);
+  });
+
+  it('deletes provider reconciliation and immutable audit history only with its whole business', async () => {
+    const f = await tenants.fixture();
+    const student = await createStudent(f, { name: 'Teardown payment student' });
+    const booking = (await createBookings(f.business.id, inputFor(f, {
+      studentId: student.id, student: undefined,
+    }))).bookings[0]!;
+    const participant = await prisma.participant.findFirstOrThrow({
+      where: { bookingId: booking.id, studentId: student.id },
+    });
+    const result = await prisma.$transaction(async tx => {
+      const intent = await tx.paymentIntent.create({ data: {
+        userId: student.userId!, businessId: f.business.id, kind: 'BOOKING',
+        participantId: participant.id, amount: participant.price, currency: f.business.currency,
+        status: 'SUCCEEDED', provider: 'STRIPE', providerAccountReference: 'acct_admin_teardown',
+        providerReference: `pi-admin-${f.business.id}`, idempotencyKey: `admin-${f.business.id}`,
+        checkoutSnapshot: { kind: 'BOOKING', bookingId: booking.id, studentId: student.id },
+        confirmedAt: new Date(),
+      } });
+      const payment = await tx.payment.create({ data: {
+        businessId: f.business.id, studentId: student.id, bookingId: booking.id,
+        paymentIntentId: intent.id, kind: 'STUDENT_TO_CLUB', amount: participant.price,
+        method: 'STRIPE',
+      } });
+      const refund = await tx.paymentRefund.create({ data: {
+        businessId: f.business.id, paymentIntentId: intent.id, paymentId: payment.id,
+        amount: participant.price, status: 'PENDING', reason: 'Teardown fixture',
+      } });
+      const settlement = await tx.paymentSettlement.create({ data: {
+        paymentIntentId: intent.id, gross: participant.price, fee: 100, net: participant.price - 100,
+        currency: f.business.currency,
+      } });
+      const audit = await tx.businessAuditEvent.create({ data: {
+        businessId: f.business.id, actorUserId: f.user.id, actorName: f.user.name,
+        actorEmail: f.user.email, actorAccountType: 'CLUB', actorAccessKind: 'CLUB',
+        actorPermissionsSnapshot: [], action: 'PAYMENT_RECORDED', resourceType: 'PAYMENT',
+        resourceId: payment.id, summary: 'Recorded a payment.', metadata: {},
+      } });
+      return { intent, payment, refund, settlement, audit };
+    });
+    const cookie = await signIn();
+
+    await request(app).delete(`/api/admin/businesses/${f.business.id}`).set('Cookie', cookie).expect(200);
+
+    expect(await prisma.paymentRefund.count({ where: { id: result.refund.id } })).toBe(0);
+    expect(await prisma.paymentSettlement.count({ where: { id: result.settlement.id } })).toBe(0);
+    expect(await prisma.payment.count({ where: { id: result.payment.id } })).toBe(0);
+    expect(await prisma.paymentIntent.count({ where: { id: result.intent.id } })).toBe(0);
+    expect(await prisma.businessAuditEvent.count({ where: { id: result.audit.id } })).toBe(0);
   });
 
   it('preserves a disposable account and its pending calendar cleanup when deleting a business', async () => {

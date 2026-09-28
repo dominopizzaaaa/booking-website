@@ -144,6 +144,7 @@ const rentalDetail: RentalDetail = {
 const reservation: RentalReservation = {
   id: 'coach-reservation',
   businessName: rental.club.name,
+  renterName: 'Alex Morgan',
   locationId: rental.locationId,
   locationName: rental.name,
   unitId: 'court-alpha',

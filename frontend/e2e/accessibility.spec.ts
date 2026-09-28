@@ -306,6 +306,12 @@ async function mockAdmin(page: Page) {
 }
 
 async function mockStudent(page: Page) {
+  await page.route('**/api/payments/capabilities', route => route.fulfill({
+    json: {
+      mode: 'simulated', enabled: true, liveCheckout: false,
+      simulatedCheckout: true, publishableKey: null,
+    },
+  }));
   await page.route('**/api/auth/me', route => route.fulfill({ json: studentSession }));
   await page.route('**/api/account/clubs*', route => route.fulfill({
     json: {
@@ -341,6 +347,15 @@ async function mockStudent(page: Page) {
 
 async function mockProvider(page: Page) {
   await page.route('**/api/workspace', route => route.fulfill({ json: providerWorkspace }));
+  await page.route(/\/api\/bookings(?:\?.*)?$/, route => route.fulfill({
+    json: { bookings: providerWorkspace.bookings, nextCursor: null },
+  }));
+  await page.route(/\/api\/operations\/inbox(?:\?.*)?$/, route => route.fulfill({
+    json: {
+      items: [], nextCursor: null,
+      counts: { all: 0, coach: 0, venue: 0, attendance: 0, reschedule: 0, payment: 0, rental: 0 },
+    },
+  }));
 }
 
 async function freezeClock(page: Page) {
@@ -411,6 +426,12 @@ test.describe('automated WCAG checks', () => {
   });
 
   test('authenticated student profile has no detectable WCAG A or AA violations', async ({ page }) => {
+    await page.route('**/api/payments/capabilities', route => route.fulfill({
+      json: {
+        mode: 'simulated', enabled: true, liveCheckout: false,
+        simulatedCheckout: true, publishableKey: null,
+      },
+    }));
     await page.route('**/api/auth/me', route => route.fulfill({ json: studentSession }));
     await page.route('**/api/account/clubs*', route => route.fulfill({ json: { clubs: [] } }));
     await page.route('**/api/account/bookings*', route => route.fulfill({ json: { bookings: [] } }));

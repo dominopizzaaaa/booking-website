@@ -8,80 +8,94 @@ datasource db {
 }
 
 model Business {
-  id                   String                  @id @default(cuid())
-  name                 String
-  slug                 String                  @unique
-  ownerName            String
-  email                String
-  timezone             String                  @default("Asia/Singapore")
-  currency             String                  @default("SGD")
-  color                String                  @default("sage")
-  tagline              String                  @default("Good coaching. Great possibilities.")
-  cancellationHours    Int                     @default(24)
+  id                    String                  @id @default(cuid())
+  name                  String
+  slug                  String                  @unique
+  ownerName             String
+  email                 String
+  timezone              String                  @default("Asia/Singapore")
+  currency              String                  @default("SGD")
+  color                 String                  @default("sage")
+  tagline               String                  @default("Good coaching. Great possibilities.")
+  cancellationHours     Int                     @default(24)
   /// "CLUB" routes every new lesson payment through the club before it reaches
   /// a coach. "SOLO" survives only on retained historical records. The value
   /// was snapshotted onto each Booking as paymentRoute.
-  kind                 String                  @default("CLUB")
+  kind                  String                  @default("CLUB")
   /// Practices that predate the marketplace remain visible for history but
   /// cannot accept new commercial activity. This never rewrites kind or a
   /// booking's contractual paymentRoute.
-  legacyReadOnly       Boolean                 @default(false)
-  isDemo               Boolean                 @default(false)
-  createdAt            DateTime                @default(now())
-  memberships          Membership[]
-  instructors          Instructor[]
-  locations            Location[]
-  services             Service[]
-  availability         Availability[]
-  exceptions           AvailabilityException[]
-  students             Student[]
-  packages             LessonPackage[]
-  bookings             Booking[]
-  payments             Payment[]
-  notifications        Notification[]
-  accountNotifications AccountNotification[]
-  rescheduleRequests   RescheduleRequest[]
-  integrityFlags       IntegrityFlag[]
-  venueUnits           VenueUnit[]
-  venueOpeningHours    VenueOpeningHour[]
-  venueReservations    VenueReservation[]
-  packageOffers        PackageOffer[]
-  paymentIntents       PaymentIntent[]
-  chatThreads          ChatThread[]
-  sessionProposals     SessionProposal[]
-  coachInvitations     CoachInvitation[]
+  legacyReadOnly        Boolean                 @default(false)
+  isDemo                Boolean                 @default(false)
+  createdAt             DateTime                @default(now())
+  memberships           Membership[]
+  instructors           Instructor[]
+  locations             Location[]
+  services              Service[]
+  availability          Availability[]
+  exceptions            AvailabilityException[]
+  students              Student[]
+  packages              LessonPackage[]
+  bookings              Booking[]
+  payments              Payment[]
+  notifications         Notification[]
+  accountNotifications  AccountNotification[]
+  rescheduleRequests    RescheduleRequest[]
+  integrityFlags        IntegrityFlag[]
+  venueUnits            VenueUnit[]
+  venueOpeningHours     VenueOpeningHour[]
+  venueReservations     VenueReservation[]
+  packageOffers         PackageOffer[]
+  paymentIntents        PaymentIntent[]
+  chatThreads           ChatThread[]
+  sessionProposals      SessionProposal[]
+  coachInvitations      CoachInvitation[]
+  staffAccesses         ClubStaffAccess[]
+  staffInvitations      ClubStaffInvitation[]
+  auditEvents           BusinessAuditEvent[]
+  bookingSeries         BookingSeries[]
+  venueUnitAllocations  VenueUnitAllocation[]
+  outboundDeliveries    OutboundDelivery[]
+  paymentAccount        BusinessPaymentAccount?
+  paymentProviderEvents PaymentProviderEvent[]
+  paymentRefunds        PaymentRefund[]
 
   @@index([kind, isDemo, slug])
 }
 
 model User {
-  id                    String                 @id @default(cuid())
-  name                  String
-  email                 String                 @unique
+  id                     String                  @id @default(cuid())
+  name                   String
+  email                  String                  @unique
   /// Public account handle. SQL enforces canonical lowercase ASCII
   /// [a-z0-9_] content and the 3-30 character boundary.
-  username              String                 @unique
-  sports                String[]               @default([])
-  passwordHash          String?
+  username               String                  @unique
+  sports                 String[]                @default([])
+  passwordHash           String?
   /// The only role vocabulary in Courtly. "STUDENT" books lessons, "COACH"
   /// teaches them, "CLUB" is a club or academy rather than a person. This one
   /// value decides both the profile someone sees and what they may do, so
   /// there is deliberately no second role stored per membership.
-  accountType           String                 @default("STUDENT")
-  phone                 String                 @default("")
-  parentName            String                 @default("")
-  memberships           Membership[]
-  sessions              AuthSession[]
-  students              Student[]
-  accountNotifications  AccountNotification[]
-  calendarConnection    CalendarConnection?
-  calendarOAuthAttempts CalendarOAuthAttempt[]
-  venueReservations     VenueReservation[]
-  paymentIntents        PaymentIntent[]
-  chatThreadMemberships ChatThreadMember[]     @relation("ChatThreadMemberUser")
-  chatMembersAdded      ChatThreadMember[]     @relation("ChatThreadMemberAddedBy")
-  acceptedCoachInvites  CoachInvitation[]       @relation("CoachInvitationAcceptedBy")
-  createdAt             DateTime               @default(now())
+  accountType            String                  @default("STUDENT")
+  phone                  String                  @default("")
+  parentName             String                  @default("")
+  memberships            Membership[]
+  sessions               AuthSession[]
+  students               Student[]
+  accountNotifications   AccountNotification[]
+  calendarConnection     CalendarConnection?
+  calendarOAuthAttempts  CalendarOAuthAttempt[]
+  venueReservations      VenueReservation[]
+  paymentIntents         PaymentIntent[]
+  chatThreadMemberships  ChatThreadMember[]      @relation("ChatThreadMemberUser")
+  chatMembersAdded       ChatThreadMember[]      @relation("ChatThreadMemberAddedBy")
+  acceptedCoachInvites   CoachInvitation[]       @relation("CoachInvitationAcceptedBy")
+  staffAccesses          ClubStaffAccess[]
+  acceptedStaffInvites   ClubStaffInvitation[]   @relation("ClubStaffInvitationAcceptedBy")
+  notificationPreference NotificationPreference?
+  outboundDeliveries     OutboundDelivery[]
+  paymentRefundRequests  PaymentRefund[]         @relation("PaymentRefundRequestedBy")
+  createdAt              DateTime                @default(now())
 }
 
 /// Which businesses an account belongs to. A coach has one row per club that
@@ -135,6 +149,8 @@ model AuthSession {
   user                  User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
   activeMembershipId    String?
   activeMembership      Membership?            @relation(fields: [activeMembershipId], references: [id], onDelete: SetNull)
+  activeStaffAccessId   String?
+  activeStaffAccess     ClubStaffAccess?       @relation(fields: [activeStaffAccessId], references: [id], onDelete: SetNull)
   expiresAt             DateTime
   createdAt             DateTime               @default(now())
   calendarOAuthAttempts CalendarOAuthAttempt[]
@@ -142,6 +158,79 @@ model AuthSession {
   @@index([expiresAt])
   @@index([userId])
   @@index([activeMembershipId])
+  @@index([activeStaffAccessId])
+}
+
+/// A named person's explicit, least-privilege authority to operate one club.
+/// This stays separate from Membership, which remains an affiliation.
+model ClubStaffAccess {
+  id              String        @id @default(cuid())
+  businessId      String
+  business        Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessLevel     String
+  permissions     String[]
+  active          Boolean       @default(true)
+  invitedByUserId String?
+  revokedAt       DateTime?
+  revokedByUserId String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  sessions        AuthSession[]
+
+  @@unique([businessId, userId])
+  @@index([userId, active])
+  @@index([businessId, active])
+}
+
+/// Email-bound invitation for named operational access. Acceptance never
+/// changes account type and never creates an Instructor.
+model ClubStaffInvitation {
+  id               String    @id @default(cuid())
+  businessId       String
+  business         Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  email            String
+  tokenHash        String    @unique
+  accessLevel      String
+  permissions      String[]
+  invitedByUserId  String
+  expiresAt        DateTime
+  acceptedAt       DateTime?
+  acceptedByUserId String?
+  acceptedBy       User?     @relation("ClubStaffInvitationAcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+  revokedAt        DateTime?
+  revokedByUserId  String?
+  createdAt        DateTime  @default(now())
+
+  @@index([businessId, email])
+  @@index([email, expiresAt])
+}
+
+/// Immutable actor snapshots for sensitive club mutations.
+model BusinessAuditEvent {
+  id                       String   @id @default(cuid())
+  businessId               String
+  business                 Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  actorUserId              String?
+  actorName                String
+  actorEmail               String
+  actorAccountType         String
+  actorAccessKind          String
+  actorStaffAccessId       String?
+  actorAccessLevel         String?
+  actorPermissionsSnapshot String[]
+  action                   String
+  resourceType             String
+  resourceId               String?
+  summary                  String
+  metadata                 Json
+  requestId                String?
+  createdAt                DateTime @default(now())
+
+  @@index([businessId, createdAt])
+  @@index([businessId, resourceType, resourceId])
+  @@index([actorUserId, createdAt])
 }
 
 model Instructor {
@@ -174,50 +263,54 @@ model Instructor {
 }
 
 model Location {
-  id                      String                  @id @default(cuid())
+  id                         String                  @id @default(cuid())
   /// Tenant ownership is immutable after creation at the database boundary.
-  businessId              String
-  business                Business                @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  name                    String
-  address                 String                  @default("")
-  type                    String                  @default("FACILITY")
-  color                   String                  @default("sage")
-  requiresApproval        Boolean                 @default(false)
-  travelMinutes           Int                     @default(20)
-  notes                   String                  @default("")
+  businessId                 String
+  business                   Business                @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name                       String
+  address                    String                  @default("")
+  type                       String                  @default("FACILITY")
+  color                      String                  @default("sage")
+  requiresApproval           Boolean                 @default(false)
+  travelMinutes              Int                     @default(20)
+  notes                      String                  @default("")
   /// Venue provenance. A coach or club can look a venue up on Google Maps
   /// instead of typing an address, so the place identity is stored alongside
   /// the free-text address rather than replacing it.
-  source                  String                  @default("MANUAL")
-  placeId                 String                  @default("")
-  mapsUrl                 String                  @default("")
-  latitude                Float?
-  longitude               Float?
-  active                  Boolean                 @default(true)
+  source                     String                  @default("MANUAL")
+  placeId                    String                  @default("")
+  mapsUrl                    String                  @default("")
+  latitude                   Float?
+  longitude                  Float?
+  active                     Boolean                 @default(true)
   /// Rental configuration is catalog state. Reservations snapshot duration
   /// and price, so later edits never rewrite an existing rental contract.
-  sport                   String                  @default("")
-  rentalEnabled           Boolean                 @default(false)
-  rentalUnitLabel         String                  @default("Court")
-  rentalPrice             Int                     @default(0)
-  rentalStartInterval     Int                     @default(60)
-  rentalMinDuration       Int                     @default(60)
-  rentalBookingIncrement  Int                     @default(60)
-  rentalMaxDuration       Int                     @default(180)
-  rentalNoticeHours       Int                     @default(2)
-  rentalAdvanceDays       Int                     @default(60)
-  rentalCancellationHours Int                     @default(24)
-  rules                   String                  @default("")
-  amenities               String                  @default("")
-  services                ServiceLocation[]
-  availability            Availability[]
-  bookings                Booking[]
-  venueUnits              VenueUnit[]
-  openingHours            VenueOpeningHour[]
-  reservations            VenueReservation[]
-  packageOfferLocations   PackageOfferLocation[]
-  lessonPackageLocations  LessonPackageLocation[]
-  sessionProposals        SessionProposal[]
+  sport                      String                  @default("")
+  rentalEnabled              Boolean                 @default(false)
+  rentalUnitLabel            String                  @default("Court")
+  rentalPrice                Int                     @default(0)
+  rentalStartInterval        Int                     @default(60)
+  rentalMinDuration          Int                     @default(60)
+  rentalBookingIncrement     Int                     @default(60)
+  rentalMaxDuration          Int                     @default(180)
+  rentalNoticeHours          Int                     @default(2)
+  rentalAdvanceDays          Int                     @default(60)
+  rentalCancellationHours    Int                     @default(24)
+  /// When enabled, coached classes reserve one active VenueUnit. This stays
+  /// independent from whether inventory is offered for public rental.
+  classUnitSchedulingEnabled Boolean                 @default(false)
+  rules                      String                  @default("")
+  amenities                  String                  @default("")
+  services                   ServiceLocation[]
+  availability               Availability[]
+  bookings                   Booking[]
+  venueUnits                 VenueUnit[]
+  openingHours               VenueOpeningHour[]
+  reservations               VenueReservation[]
+  packageOfferLocations      PackageOfferLocation[]
+  lessonPackageLocations     LessonPackageLocation[]
+  sessionProposals           SessionProposal[]
+  venueUnitAllocations       VenueUnitAllocation[]
 
   // Composite target for tenant-bound scheduling relations.
   @@unique([id, businessId])
@@ -227,15 +320,16 @@ model Location {
 /// One independently reservable court, pitch or other resource at a rental
 /// location. The composite location relation prevents cross-club inventory.
 model VenueUnit {
-  id           String             @id @default(cuid())
+  id           String                @id @default(cuid())
   businessId   String
-  business     Business           @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  business     Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
   locationId   String
-  location     Location           @relation(fields: [locationId, businessId], references: [id, businessId], onDelete: Cascade, onUpdate: NoAction)
+  location     Location              @relation(fields: [locationId, businessId], references: [id, businessId], onDelete: Cascade, onUpdate: NoAction)
   name         String
-  active       Boolean            @default(true)
-  createdAt    DateTime           @default(now())
+  active       Boolean               @default(true)
+  createdAt    DateTime              @default(now())
   reservations VenueReservation[]
+  allocations  VenueUnitAllocation[]
 
   @@unique([id, businessId])
   @@unique([id, locationId, businessId])
@@ -264,29 +358,30 @@ model VenueOpeningHour {
 /// A student's reservation of one venue unit. Duration, price and payment
 /// state are contractual snapshots; cancelled rows remain for audit history.
 model VenueReservation {
-  id             String          @id @default(cuid())
+  id             String                @id @default(cuid())
   businessId     String
-  business       Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  business       Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
   locationId     String
-  location       Location        @relation(fields: [locationId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  location       Location              @relation(fields: [locationId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   unitId         String
-  unit           VenueUnit       @relation(fields: [unitId, locationId, businessId], references: [id, locationId, businessId], onDelete: Restrict, onUpdate: NoAction)
+  unit           VenueUnit             @relation(fields: [unitId, locationId, businessId], references: [id, locationId, businessId], onDelete: Restrict, onUpdate: NoAction)
   userId         String
-  user           User            @relation(fields: [userId], references: [id], onDelete: Restrict)
+  user           User                  @relation(fields: [userId], references: [id], onDelete: Restrict)
   startAt        DateTime
   endAt          DateTime
   duration       Int
   /// Integer minor units (cents), snapshotted when the reservation is made.
   price          Int
-  status         String          @default("CONFIRMED")
-  paymentStatus  String          @default("UNPAID")
+  status         String                @default("CONFIRMED")
+  paymentStatus  String                @default("UNPAID")
   packageId      String?
-  package        LessonPackage?  @relation(fields: [packageId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
-  creditConsumed Boolean         @default(false)
-  notes          String          @default("")
-  createdAt      DateTime        @default(now())
+  package        LessonPackage?        @relation(fields: [packageId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  creditConsumed Boolean               @default(false)
+  notes          String                @default("")
+  createdAt      DateTime              @default(now())
   cancelledAt    DateTime?
   paymentIntents PaymentIntent[]
+  allocations    VenueUnitAllocation[]
 
   @@unique([id, businessId])
   @@index([businessId, startAt])
@@ -434,22 +529,23 @@ model AvailabilityException {
 /// A student's record inside one club: what that club knows about them.
 /// Their identity as a person lives on User.
 model Student {
-  id           String          @id @default(cuid())
+  id            String                @id @default(cuid())
   /// Tenant ownership is immutable after creation at the database boundary.
-  businessId   String
-  business     Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  userId       String?
-  user         User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
-  name         String
-  email        String
-  phone        String          @default("")
-  initials     String
-  notes        String          @default("")
-  parentName   String          @default("")
-  createdAt    DateTime        @default(now())
-  participants Participant[]
-  packages     LessonPackage[]
-  payments     Payment[]
+  businessId    String
+  business      Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  userId        String?
+  user          User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  name          String
+  email         String
+  phone         String                @default("")
+  initials      String
+  notes         String                @default("")
+  parentName    String                @default("")
+  createdAt     DateTime              @default(now())
+  participants  Participant[]
+  packages      LessonPackage[]
+  payments      Payment[]
+  seriesMembers BookingSeriesMember[]
 
   // Supports the database-level composite FK that keeps a payment's student
   // party inside the payment's business.
@@ -555,6 +651,12 @@ model Booking {
   createdByUserId      String?
   createdByRole        String                    @default("STUDENT")
   recurringId          String?
+  seriesId             String?
+  seriesPosition       Int?
+  series               BookingSeries?            @relation(fields: [seriesId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  /// Immutable resource policy selected when the booking is created.
+  venueRequirement     String                    @default("NONE")
+  venueApproval        String                    @default("NOT_REQUIRED")
   /// Monotonic source revision used to coalesce asynchronous calendar work.
   /// Every calendar-relevant mutation increments this value in the same
   /// transaction that queues its synchronization job.
@@ -569,13 +671,79 @@ model Booking {
   calendarSyncJob      CalendarSyncJob?
   chatThread           ChatThread?
   proposalResponses    SessionProposalResponse[]
+  venueUnitAllocations VenueUnitAllocation[]
+  outboundDeliveries   OutboundDelivery[]
 
   // Supports the database-level composite FK that keeps a payment's optional
   // booking inside the same business.
   @@unique([id, businessId])
+  @@unique([seriesId, seriesPosition])
   @@index([businessId, startAt])
   @@index([instructorId, startAt, endAt])
   @@index([businessId, coachAcceptance])
+  @@index([businessId, seriesId, startAt])
+}
+
+/// A finite, explicit set of bookings created together. Individual bookings
+/// and participants remain authoritative for lifecycle and money.
+model BookingSeries {
+  id              String                @id @default(cuid())
+  businessId      String
+  business        Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name            String                @default("")
+  createdByRole   String
+  createdByUserId String?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  bookings        Booking[]
+  members         BookingSeriesMember[]
+
+  @@unique([id, businessId])
+  @@index([businessId, createdAt])
+}
+
+/// The future roster template for a series. Per-occurrence participation is
+/// represented by Participant so attendance and payments remain exact.
+model BookingSeriesMember {
+  id         String        @id @default(cuid())
+  businessId String
+  seriesId   String
+  series     BookingSeries @relation(fields: [seriesId, businessId], references: [id, businessId], onDelete: Cascade, onUpdate: NoAction)
+  studentId  String
+  student    Student       @relation(fields: [studentId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  active     Boolean       @default(true)
+  joinedAt   DateTime      @default(now())
+  removedAt  DateTime?
+
+  @@unique([seriesId, studentId])
+  @@index([businessId, studentId])
+}
+
+/// Canonical occupancy ledger shared by coached classes and rentals. Released
+/// rows remain as operational history.
+model VenueUnitAllocation {
+  id            String            @id @default(cuid())
+  businessId    String
+  business      Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  locationId    String
+  location      Location          @relation(fields: [locationId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  unitId        String
+  unit          VenueUnit         @relation(fields: [unitId, locationId, businessId], references: [id, locationId, businessId], onDelete: Restrict, onUpdate: NoAction)
+  bookingId     String?
+  booking       Booking?          @relation(fields: [bookingId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  reservationId String?
+  reservation   VenueReservation? @relation(fields: [reservationId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  startAt       DateTime
+  endAt         DateTime
+  status        String            @default("ACTIVE")
+  source        String
+  unitName      String
+  createdAt     DateTime          @default(now())
+  releasedAt    DateTime?
+
+  @@index([unitId, startAt, endAt])
+  @@index([bookingId])
+  @@index([reservationId])
 }
 
 /// One Google Calendar grant belongs to one global person, independently of
@@ -734,45 +902,48 @@ model Participant {
 }
 
 model Payment {
-  id               String         @id @default(cuid())
+  id               String          @id @default(cuid())
   businessId       String
-  business         Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  business         Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
   /// Present only when this is money received from a student. Coach payouts
   /// have no student party. Including businessId in the relation prevents a
   /// ledger row from naming a student owned by another tenant.
   studentId        String?
-  student          Student?       @relation(fields: [studentId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  student          Student?        @relation(fields: [studentId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   bookingId        String?
   /// A student receipt may target this booking only when the named student is
   /// one of its participants. A payment cannot target a booking and package.
-  booking          Booking?       @relation(fields: [bookingId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  booking          Booking?        @relation(fields: [bookingId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   packageId        String?
   /// A package receipt must name the same student who owns the package.
-  package          LessonPackage? @relation(fields: [packageId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  package          LessonPackage?  @relation(fields: [packageId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   /// Which leg of the money path this record represents. Club lessons are
   /// STUDENT_TO_CLUB followed by CLUB_TO_COACH; a solo coach's own student
   /// pays STUDENT_TO_COACH.
-  kind             String         @default("STUDENT_TO_CLUB")
+  kind             String          @default("STUDENT_TO_CLUB")
   /// Set only for a CLUB_TO_COACH payout. Restrict deletion so an auditable
   /// payout can never silently lose the coach it names, and include businessId
   /// so the payee must be on this tenant's roster.
   instructorId     String?
-  instructor       Instructor?    @relation(fields: [instructorId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  instructor       Instructor?     @relation(fields: [instructorId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   /// Integer minor units (cents).
   amount           Int
-  method           String         @default("BANK_TRANSFER")
-  note             String         @default("")
-  paidAt           DateTime       @default(now())
+  method           String          @default("BANK_TRANSFER")
+  note             String          @default("")
+  paidAt           DateTime        @default(now())
   /// A recorded payment is reversed rather than deleted so the correction
   /// stays auditable. Reversed rows are excluded from every balance.
   reversedAt       DateTime?
   reversedByUserId String?
-  reversedReason   String         @default("")
+  recordedByUserId String?
+  reversedReason   String          @default("")
   /// The successful simulated checkout that produced this ledger row. Offline
   /// payments remain null, and uniqueness keeps one ledger result per intent.
-  paymentIntentId  String?        @unique
-  paymentIntent    PaymentIntent? @relation(fields: [paymentIntentId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  paymentIntentId  String?         @unique
+  paymentIntent    PaymentIntent?  @relation(fields: [paymentIntentId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  refunds          PaymentRefund[]
 
+  @@unique([id, businessId])
   @@unique([paymentIntentId, businessId])
   @@index([businessId])
   @@index([instructorId])
@@ -783,37 +954,45 @@ model Payment {
 /// Idempotent simulated checkout state. The subject columns identify what the
 /// customer is buying; packageId and payment are results created on success.
 model PaymentIntent {
-  id                String            @id @default(cuid())
-  userId            String
-  user              User              @relation(fields: [userId], references: [id], onDelete: Restrict)
-  businessId        String
-  business          Business          @relation(fields: [businessId], references: [id], onDelete: Restrict)
+  id                       String             @id @default(cuid())
+  userId                   String
+  user                     User               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  businessId               String
+  business                 Business           @relation(fields: [businessId], references: [id], onDelete: Restrict)
   /// "PACKAGE", "BOOKING" or "RENTAL". SQL enforces its matching
   /// target shape, including reservation-less failed rental attempts.
-  kind              String
-  packageOfferId    String?
-  packageOffer      PackageOffer?     @relation(fields: [packageOfferId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
-  participantId     String?
-  participant       Participant?      @relation(fields: [participantId], references: [id], onDelete: Restrict)
-  reservationId     String?
-  reservation       VenueReservation? @relation(fields: [reservationId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  kind                     String
+  packageOfferId           String?
+  packageOffer             PackageOffer?      @relation(fields: [packageOfferId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  participantId            String?
+  participant              Participant?       @relation(fields: [participantId], references: [id], onDelete: Restrict)
+  reservationId            String?
+  reservation              VenueReservation?  @relation(fields: [reservationId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   /// Purchased package entitlement produced by a successful package intent.
-  packageId         String?
-  package           LessonPackage?    @relation(fields: [packageId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  packageId                String?
+  package                  LessonPackage?     @relation(fields: [packageId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   /// Integer minor units (cents).
-  amount            Int
-  currency          String            @default("SGD")
-  status            String            @default("REQUIRES_CONFIRMATION")
-  provider          String            @default("SIMULATED_STRIPE")
-  providerReference String            @unique
-  idempotencyKey    String
-  createdAt         DateTime          @default(now())
-  confirmedAt       DateTime?
-  failedAt          DateTime?
-  payment           Payment?
+  amount                   Int
+  currency                 String             @default("SGD")
+  status                   String             @default("REQUIRES_CONFIRMATION")
+  provider                 String             @default("SIMULATED_STRIPE")
+  providerAccountReference String             @default("")
+  providerReference        String?
+  checkoutSnapshot         Json?
+  idempotencyKey           String
+  expiresAt                DateTime?
+  failureCode              String?
+  lastProviderEventAt      DateTime?
+  createdAt                DateTime           @default(now())
+  confirmedAt              DateTime?
+  failedAt                 DateTime?
+  payment                  Payment?
+  refunds                  PaymentRefund[]
+  settlement               PaymentSettlement?
 
   @@unique([id, businessId])
   @@unique([userId, idempotencyKey])
+  @@unique([provider, providerAccountReference, providerReference])
   @@index([businessId, status, createdAt])
   @@index([packageOfferId])
   @@index([participantId])
@@ -821,22 +1000,103 @@ model PaymentIntent {
   @@index([packageId])
 }
 
+model BusinessPaymentAccount {
+  id                 String    @id @default(cuid())
+  businessId         String    @unique
+  business           Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  provider           String    @default("STRIPE")
+  providerAccountId  String    @unique
+  onboardingState    String    @default("PENDING")
+  chargesEnabled     Boolean   @default(false)
+  payoutsEnabled     Boolean   @default(false)
+  detailsSubmitted   Boolean   @default(false)
+  settlementCurrency String
+  lastSyncedAt       DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+}
+
+model PaymentProviderEvent {
+  id                       String    @id @default(cuid())
+  businessId               String?
+  business                 Business? @relation(fields: [businessId], references: [id], onDelete: SetNull)
+  provider                 String
+  providerAccountReference String    @default("")
+  providerEventId          String
+  eventType                String
+  payloadHash              String
+  providerCreatedAt        DateTime?
+  receivedAt               DateTime  @default(now())
+  processedAt              DateTime?
+  attempts                 Int       @default(0)
+  availableAt              DateTime  @default(now())
+  leasedUntil              DateTime?
+  leaseToken               String?
+  lastErrorCode            String?
+
+  @@unique([provider, providerAccountReference, providerEventId])
+  @@index([processedAt, availableAt, leasedUntil])
+}
+
+model PaymentRefund {
+  id                String        @id @default(cuid())
+  businessId        String
+  business          Business      @relation(fields: [businessId], references: [id], onDelete: Restrict)
+  paymentIntentId   String
+  paymentIntent     PaymentIntent @relation(fields: [paymentIntentId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  paymentId         String?
+  payment           Payment?      @relation(fields: [paymentId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  amount            Int
+  status            String        @default("PENDING")
+  reason            String
+  providerRefundId  String?       @unique
+  requestedByUserId String?
+  requestedBy       User?         @relation("PaymentRefundRequestedBy", fields: [requestedByUserId], references: [id], onDelete: SetNull)
+  failureCode       String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  succeededAt       DateTime?
+
+  @@index([businessId, status, createdAt])
+  @@index([paymentIntentId])
+}
+
+model PaymentSettlement {
+  id                   String        @id @default(cuid())
+  paymentIntentId      String        @unique
+  paymentIntent        PaymentIntent @relation(fields: [paymentIntentId], references: [id], onDelete: Restrict)
+  providerChargeId     String?       @unique
+  balanceTransactionId String?       @unique
+  gross                Int
+  fee                  Int
+  net                  Int
+  currency             String
+  availableOn          DateTime?
+  payoutId             String?
+  payoutStatus         String?
+  reconciliationStatus String        @default("PENDING")
+  lastCheckedAt        DateTime?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+}
+
 model Notification {
-  id              String         @id @default(cuid())
-  businessId      String
-  business        Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  instructorId    String?
+  id                 String             @id @default(cuid())
+  businessId         String
+  business           Business           @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  instructorId       String?
   /// Drives the icon and grouping in the workspace alerts view. See
   /// notificationTypes in backend/src/notifications.ts for the vocabulary.
-  type            String         @default("NOTICE")
-  bookingId       String?
-  integrityFlagId String?
-  integrityFlag   IntegrityFlag? @relation(fields: [integrityFlagId], references: [id], onDelete: SetNull)
-  title           String
-  message         String
-  read            Boolean        @default(false)
-  actionNeeded    Boolean        @default(false)
-  createdAt       DateTime       @default(now())
+  type               String             @default("NOTICE")
+  bookingId          String?
+  integrityFlagId    String?
+  integrityFlag      IntegrityFlag?     @relation(fields: [integrityFlagId], references: [id], onDelete: SetNull)
+  title              String
+  message            String
+  read               Boolean            @default(false)
+  actionNeeded       Boolean            @default(false)
+  createdAt          DateTime           @default(now())
+  outboundDeliveries OutboundDelivery[]
 
   @@index([businessId])
   @@index([businessId, read])
@@ -847,22 +1107,77 @@ model Notification {
 // workspace notifications. An account can therefore only read its own alerts,
 // while deleting a business or booking preserves the historical alert text.
 model AccountNotification {
-  id           String    @id @default(cuid())
-  userId       String
-  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  businessId   String?
-  business     Business? @relation(fields: [businessId], references: [id], onDelete: SetNull)
-  bookingId    String?
-  booking      Booking?  @relation(fields: [bookingId], references: [id], onDelete: SetNull)
-  type         String
-  title        String
-  message      String
-  read         Boolean   @default(false)
-  actionNeeded Boolean   @default(false)
-  createdAt    DateTime  @default(now())
+  id                 String             @id @default(cuid())
+  userId             String
+  user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  businessId         String?
+  business           Business?          @relation(fields: [businessId], references: [id], onDelete: SetNull)
+  bookingId          String?
+  booking            Booking?           @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  type               String
+  title              String
+  message            String
+  read               Boolean            @default(false)
+  actionNeeded       Boolean            @default(false)
+  createdAt          DateTime           @default(now())
+  outboundDeliveries OutboundDelivery[]
 
   @@index([userId, createdAt])
   @@index([businessId])
+  @@index([bookingId])
+}
+
+model NotificationPreference {
+  userId                    String    @id
+  user                      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailTransactionalEnabled Boolean   @default(true)
+  emailReminderEnabled      Boolean   @default(true)
+  emailActionNeededEnabled  Boolean   @default(true)
+  emailMarketingEnabled     Boolean   @default(false)
+  emailSuppressedAt         DateTime?
+  emailSuppressionReason    String?
+  updatedAt                 DateTime  @updatedAt
+}
+
+model OutboundDelivery {
+  id                    String               @id @default(cuid())
+  channel               String               @default("EMAIL")
+  eventType             String
+  eventVersion          Int                  @default(1)
+  dedupeKey             String
+  recipientKey          String
+  recipientUserId       String?
+  recipientUser         User?                @relation(fields: [recipientUserId], references: [id], onDelete: SetNull)
+  recipientEmail        String
+  recipientName         String
+  businessId            String?
+  business              Business?            @relation(fields: [businessId], references: [id], onDelete: SetNull)
+  bookingId             String?
+  booking               Booking?             @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  notificationId        String?
+  notification          Notification?        @relation(fields: [notificationId], references: [id], onDelete: SetNull)
+  accountNotificationId String?
+  accountNotification   AccountNotification? @relation(fields: [accountNotificationId], references: [id], onDelete: SetNull)
+  template              String
+  payload               Json
+  status                String               @default("QUEUED")
+  attempts              Int                  @default(0)
+  availableAt           DateTime             @default(now())
+  leasedUntil           DateTime?
+  leaseToken            String?
+  providerMessageId     String?
+  acceptedAt            DateTime?
+  deliveredAt           DateTime?
+  failedAt              DateTime?
+  lastErrorCode         String?
+  lastErrorAt           DateTime?
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+
+  @@unique([channel, dedupeKey, recipientKey])
+  @@index([status, availableAt, leasedUntil])
+  @@index([recipientUserId, createdAt])
+  @@index([businessId, createdAt])
   @@index([bookingId])
 }
 
@@ -879,7 +1194,7 @@ model RescheduleRequest {
   /// "STUDENT", "COACH" or "CLUB". Who asked for the change.
   /// New or retargeted rows require a requester account with live authority:
   /// STUDENT requires an active participantId, while provider roles forbid one
-  /// and require an active matching affiliation. Historical null requesters,
+  /// and require an active matching affiliation or named staff grant. Historical null requesters,
   /// later cancellation and later affiliation deactivation remain preserved.
   requestedByRole   String
   requestedByUserId String?

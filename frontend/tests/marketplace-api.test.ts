@@ -3,6 +3,7 @@ import {
   cancelRentalReservation,
   checkoutBookingParticipant,
   checkoutPackageOffer,
+  createLiveCheckoutIntent,
   createPackageOffer,
   createRentalReservation,
   deletePackageOffer,
@@ -11,6 +12,8 @@ import {
   loadAuthSession,
   loadRental,
   loadRentals,
+  loadLiveCheckoutIntent,
+  loadPaymentCapabilities,
   loadRentalSlots,
   normalizeAuthSession,
   registerStudentAccount,
@@ -138,6 +141,28 @@ describe('package marketplace requests', () => {
     respond(result);
     await checkoutBookingParticipant('part 1', values);
     expect(calls[0]).toMatchObject({ url: '/api/account/bookings/part%201/checkout', init: { method: 'POST', body: JSON.stringify(values) } });
+  });
+
+  it('creates and polls live checkout without accepting a client-supplied price', async () => {
+    const values = { kind: 'PACKAGE' as const, targetId: 'offer/1', idempotencyKey: 'live-checkout-key' };
+    respond({ paymentIntent: { id: 'intent/1', status: 'REQUIRES_CONFIRMATION' }, connectedAccountId: 'acct_1' });
+    await createLiveCheckoutIntent(values);
+    expect(calls[0]).toMatchObject({
+      url: '/api/payments/checkout-intents',
+      init: { method: 'POST', body: JSON.stringify(values) },
+    });
+    expect(calls[0].init.body).not.toContain('amount');
+
+    respond({ paymentIntent: { id: 'intent/1', status: 'SUCCEEDED' } });
+    await loadLiveCheckoutIntent('intent/1');
+    expect(calls[0].url).toBe('/api/payments/checkout-intents/intent%2F1');
+  });
+
+  it('loads the authenticated payment mode and publishable key', async () => {
+    const capabilities = { mode: 'stripe', enabled: true, liveCheckout: true, simulatedCheckout: false, publishableKey: 'pk_test_public' };
+    respond(capabilities);
+    await expect(loadPaymentCapabilities()).resolves.toEqual(capabilities);
+    expect(calls[0].url).toBe('/api/payments/capabilities');
   });
 });
 
