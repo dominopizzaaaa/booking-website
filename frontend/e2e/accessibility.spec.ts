@@ -467,7 +467,7 @@ test.describe('automated WCAG checks', () => {
     await page.getByRole('button', { name: 'Keep my booking', exact: true }).click();
     await page.getByRole('button', { name: 'Reschedule session', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Find a better time', exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: /^10:00 AM/ })).toBeVisible();
+    await expect(page.getByRole('radio', { name: /^10:00 AM/ })).toBeVisible();
     await expectNoWcagViolations(page);
   });
 

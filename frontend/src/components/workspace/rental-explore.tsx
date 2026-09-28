@@ -17,26 +17,8 @@ import { AccountRentalHistory } from '@/components/account-rental-dialog';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { createRentalReservation, loadRental, loadRentals, loadRentalSlots } from '@/lib/api';
-import type { RentalDetail, RentalListing, RentalReservation, RentalSlot, WorkspaceResponse } from '@/lib/types';
+import type { RentalDetail, RentalListing, RentalReservation, RentalSlot } from '@/lib/types';
 import { dateKey, money, shortDate, time } from '@/lib/utils';
-
-type RentalExploreProps = {
-  data: WorkspaceResponse;
-  onNavigate: (view: string) => void;
-};
-
-const managementLinks = [
-  { id: 'calendar', label: 'Calendar' },
-  { id: 'bookings', label: 'Bookings' },
-  { id: 'students', label: 'Students' },
-  { id: 'services', label: 'Classes', managerOnly: true },
-  { id: 'locations', label: 'Locations' },
-  { id: 'team', label: 'My coaches', managerOnly: true },
-  { id: 'availability', label: 'Availability' },
-  { id: 'packages', label: 'Packages', managerOnly: true },
-  { id: 'payments', label: 'Payments', managerOnly: true },
-  { id: 'insights', label: 'Insights', managerOnly: true },
-] as const;
 
 function durationOptions(rental: RentalDetail) {
   const values: number[] = [];
@@ -58,7 +40,7 @@ function requestId() {
 type RentalFilters = { query: string; sport: string };
 const emptyFilters: RentalFilters = { query: '', sport: '' };
 
-export function RentalExplore({ data, onNavigate }: RentalExploreProps) {
+export function RentalExplore() {
   const [rentals, setRentals] = useState<RentalListing[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -72,8 +54,6 @@ export function RentalExplore({ data, onNavigate }: RentalExploreProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [historyRefreshToken, setHistoryRefreshToken] = useState(0);
   const requestGeneration = useRef(0);
-  const isManager = data.user.accountType === 'CLUB';
-  const links = managementLinks.filter(link => isManager || !('managerOnly' in link && link.managerOnly));
 
   const load = useCallback(async (filters: RentalFilters, cursor?: string) => {
     const generation = ++requestGeneration.current;
@@ -165,11 +145,6 @@ export function RentalExplore({ data, onNavigate }: RentalExploreProps) {
     </div>}
 
     <AccountRentalHistory refreshToken={historyRefreshToken} />
-
-    <section className="mt-7 rounded-2xl border border-[#dfe6d9] bg-[#f7f9f4] p-5" aria-labelledby="workspace-manage-title">
-      <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-end"><div><p className="eyebrow mb-1">YOUR WORKSPACE</p><h2 id="workspace-manage-title" className="text-base text-[#294735]">Manage</h2><p className="mt-1 text-[11px] text-stone-500">Your schedule, {isManager ? 'catalog, team, and finances' : 'students, locations, and availability'}.</p></div></div>
-      <div className="mt-4 flex gap-2 overflow-x-auto pb-1">{links.map(link => <button key={link.id} type="button" onClick={() => onNavigate(link.id)} className="flex min-h-11 shrink-0 items-center gap-2 rounded-lg border border-[#dfe6d9] bg-white px-3 text-[11px] font-semibold text-[#405744] hover:bg-[#f0f4eb]">{link.label}<ArrowRight size={12} /></button>)}</div>
-    </section>
 
     <RentalDialog
       rentalId={selectedId}
@@ -284,7 +259,7 @@ function RentalDialog({ rentalId, onClose, onReserved }: { rentalId: string | nu
           <div><label htmlFor="rental-date">Date</label><input id="rental-date" type="date" min={dateKey(new Date(), rental.timezone)} max={addCalendarDays(dateKey(new Date(), rental.timezone), rental.advanceDays)} value={date} onChange={event => setDate(event.target.value)} /></div>
           <div><label htmlFor="rental-duration">Duration</label><select id="rental-duration" value={duration} onChange={event => setDuration(Number(event.target.value))}>{durationOptions(rental).map(value => <option value={value} key={value}>{value} minutes</option>)}</select></div>
         </div>
-        <div aria-busy={slotsLoading}><h3 className="text-xs font-semibold text-[#344b39]">Available times</h3><p role="status" aria-live="polite" className="sr-only">{slotStatus}</p>{slotsLoading ? <p className="mt-3 flex items-center gap-2 text-xs text-stone-500"><Loader2 size={14} className="animate-spin" />Checking every {rental.unitLabel.toLowerCase()}…</p> : slots.length ? <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">{slots.map(candidate => { const selected = slot?.unitId === candidate.unitId && slot.startAt === candidate.startAt; return <button key={`${candidate.unitId}:${candidate.startAt}`} type="button" aria-pressed={selected} onClick={() => setSlot(candidate)} className={`min-h-14 rounded-lg border p-2 text-left text-[11px] ${selected ? 'border-[#214e3e] bg-[#214e3e] text-white' : 'border-[#dfe5df] hover:bg-[#f5f7f2]'}`}><span className="block font-semibold">{time(candidate.startAt, rental.timezone)}</span><span className={`mt-1 block text-[9px] ${selected ? 'text-white/75' : 'text-stone-500'}`}>{candidate.unitName} · {candidate.price === 0 ? 'Free' : money(candidate.price, rental.currency)}</span></button>; })}</div> : <p className="mt-3 rounded-lg bg-stone-50 p-4 text-xs text-stone-500">No times are available for this date and duration.</p>}</div>
+        <div aria-busy={slotsLoading}><h3 id="workspace-rental-times" className="text-sm font-semibold text-[#344b39]">Available times</h3><p role="status" aria-live="polite" className="sr-only">{slotStatus}</p>{slotsLoading ? <p className="mt-3 flex items-center gap-2 text-sm text-stone-500"><Loader2 size={14} className="animate-spin" />Checking every {rental.unitLabel.toLowerCase()}…</p> : slots.length ? <div role="radiogroup" aria-labelledby="workspace-rental-times" className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">{slots.map(candidate => { const selected = slot?.unitId === candidate.unitId && slot.startAt === candidate.startAt; return <button key={`${candidate.unitId}:${candidate.startAt}`} type="button" role="radio" aria-checked={selected} onClick={() => setSlot(candidate)} className={`min-h-14 rounded-lg border p-2 text-left text-sm ${selected ? 'border-[#214e3e] bg-[#214e3e] text-white' : 'border-[#dfe5df] hover:bg-[#f5f7f2]'}`}><span className="block font-semibold">{time(candidate.startAt, rental.timezone)}</span><span className={`mt-1 block text-xs ${selected ? 'text-white/80' : 'text-stone-500'}`}>{candidate.unitName} · {candidate.price === 0 ? 'Free' : money(candidate.price, rental.currency)}</span></button>; })}</div> : <p className="mt-3 rounded-lg bg-stone-50 p-4 text-sm text-stone-500">No times are available for this date and duration.</p>}</div>
         {rental.rules && <details className="rounded-xl border border-[#e4e8e0] p-4 text-xs"><summary className="cursor-pointer font-semibold text-[#344b39]">Venue rules</summary><p className="mt-3 whitespace-pre-line leading-relaxed text-stone-500">{rental.rules}</p></details>}
         {error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-xs text-red-700">{error}</p>}
         <div className="flex flex-col-reverse items-stretch justify-between gap-3 border-t border-[#edf0e8] pt-4 sm:flex-row sm:items-center"><p className="text-[10px] leading-relaxed text-stone-500">{slot?.price === 0 ? 'This reservation is free; no payment is needed.' : 'Payment is simulated; no real card is charged.'} Cancellation closes {rental.cancellationHours} hours before the reservation.</p><Button type="button" disabled={!slot || reserving} onClick={() => void reserve()}>{reserving ? <Loader2 size={14} className="animate-spin" /> : slot?.price === 0 ? <Check size={14} /> : <CreditCard size={14} />}{slot ? slot.price === 0 ? 'Reserve for free' : `Reserve · ${money(slot.price, rental.currency)}` : 'Choose a time'}</Button></div>

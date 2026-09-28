@@ -342,12 +342,12 @@ test('an unaffiliated coach can reserve a rental from Account', async ({ page })
   await dialog.getByLabel('Date', { exact: true }).fill(selectedDate);
   await dialog.getByLabel('Duration', { exact: true }).selectOption('90');
 
-  const slot = dialog.getByRole('button', { name: /10:00 AM.*Court Alpha.*\$52\.50/ });
+  const slot = dialog.getByRole('radio', { name: /10:00 AM.*Court Alpha.*\$52\.50/ });
   await expect(slot).toBeVisible();
   await expect(dialog.getByRole('status')).toHaveText('1 available time loaded.');
   await expect.poll(() => requests.slotQueries).toContainEqual({ date: selectedDate, duration: '90' });
   await slot.click();
-  await expect(slot).toHaveAttribute('aria-pressed', 'true');
+  await expect(slot).toHaveAttribute('aria-checked', 'true');
   await expect(dialog).toContainText('Payment is simulated; no real card is charged.');
   await expectNoHorizontalOverflow(page);
 
@@ -389,7 +389,7 @@ test('account rental retry rotates the checkout key after a definitive failure',
   const dialog = page.getByRole('dialog', { name: rental.name, exact: true });
   await dialog.getByLabel('Date', { exact: true }).fill(selectedDate);
   await dialog.getByLabel('Duration', { exact: true }).selectOption('90');
-  await dialog.getByRole('button', { name: /10:00 AM.*Court Alpha.*\$52\.50/ }).click();
+  await dialog.getByRole('radio', { name: /10:00 AM.*Court Alpha.*\$52\.50/ }).click();
   await dialog.getByRole('button', { name: 'Reserve · $52.50', exact: true }).click();
   await expect(dialog.getByRole('alert')).toContainText('payment did not complete');
   await dialog.getByRole('button', { name: 'Reserve · $52.50', exact: true }).click();
@@ -407,7 +407,7 @@ test('account free rental checkout never presents a card payment or refund', asy
   const dialog = page.getByRole('dialog', { name: rental.name, exact: true });
   await dialog.getByLabel('Date', { exact: true }).fill(selectedDate);
   await dialog.getByLabel('Duration', { exact: true }).selectOption('90');
-  await dialog.getByRole('button', { name: /10:00 AM.*Court Alpha.*Free/ }).click();
+  await dialog.getByRole('radio', { name: /10:00 AM.*Court Alpha.*Free/ }).click();
   await expect(dialog).toContainText('This reservation is free; no payment or package credit is needed.');
   await expect(dialog).not.toContainText('Payment is simulated');
   await dialog.getByRole('button', { name: 'Reserve for free', exact: true }).click();

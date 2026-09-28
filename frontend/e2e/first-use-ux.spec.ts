@@ -39,16 +39,43 @@ test('signup account choices stay label-only while retaining the username field'
   }
 });
 
-test('standalone student signup requires an explicit account type and offers a working booking-link action', async ({ page }, testInfo) => {
+test('standalone student signup requires an explicit account type and opens the complete club directory', async ({ page }, testInfo) => {
   test.setTimeout(90_000);
+  const run = `${projectId(testInfo.project.name)}-${Date.now()}`;
   const studentEmail = uniqueEmail('standalone-student', testInfo.project.name);
-  const demo = await page.request.post('/api/auth/demo', { data: {} });
-  expect(demo.ok()).toBeTruthy();
+  const coachEmail = `first-book-coach-${run}@example.test`;
+  const clubEmail = `first-book-club-${run}@example.test`;
+  const coachRegistration = await page.request.post('/api/auth/register', {
+    data: { accountType: 'COACH', name: 'First Book Coach', username: `fbc_${run.replace(/-/g, '_').slice(-26)}`, email: coachEmail, password },
+  });
+  expect(coachRegistration.ok(), await coachRegistration.text()).toBeTruthy();
+  expect((await page.request.post('/api/auth/logout', { data: {} })).ok()).toBeTruthy();
 
-  const workspaceResponse = await page.request.get('/api/workspace');
-  expect(workspaceResponse.ok()).toBeTruthy();
-  const workspace = await workspaceResponse.json() as { business: { slug: string } };
-  const publicResponse = await page.request.get(`/api/public/${workspace.business.slug}`);
+  const clubName = `First Booking Club ${run}`;
+  const clubRegistration = await page.request.post('/api/auth/register', {
+    data: { accountType: 'CLUB', businessName: clubName, name: 'First Booking Operator', username: `fbl_${run.replace(/-/g, '_').slice(-26)}`, email: clubEmail, password },
+  });
+  expect(clubRegistration.ok(), await clubRegistration.text()).toBeTruthy();
+  const clubAuth = await clubRegistration.json() as { business: { slug: string } };
+  const rosterResponse = await page.request.post('/api/staff', { data: { email: coachEmail } });
+  expect(rosterResponse.ok(), await rosterResponse.text()).toBeTruthy();
+  const roster = await rosterResponse.json() as { instructorId: string };
+  const locationResponse = await page.request.post('/api/locations', {
+    data: { name: 'First Booking Court', address: '1 Discovery Lane', type: 'FACILITY', requiresApproval: false },
+  });
+  expect(locationResponse.ok(), await locationResponse.text()).toBeTruthy();
+  const location = await locationResponse.json() as { id: string };
+  const serviceResponse = await page.request.post('/api/services', {
+    data: {
+      name: 'First Booking Tennis', description: 'A public class for first-time discovery.', category: 'Tennis',
+      type: 'PRIVATE', duration: 60, price: 8_000, capacity: 1, bufferMinutes: 0, noticeHours: 0,
+      color: 'sage', active: true,
+      locations: [{ locationId: location.id, price: 8_000, duration: 60, instructorIds: [roster.instructorId] }],
+    },
+  });
+  expect(serviceResponse.ok(), await serviceResponse.text()).toBeTruthy();
+
+  const publicResponse = await page.request.get(`/api/public/${clubAuth.business.slug}`);
   expect(publicResponse.ok()).toBeTruthy();
   const publicBusiness = await publicResponse.json() as {
     business: { name: string; slug: string };
@@ -57,9 +84,9 @@ test('standalone student signup requires an explicit account type and offers a w
   const service = publicBusiness.services.find(candidate => candidate.active && candidate.locations.length > 0);
   expect(service).toBeTruthy();
 
-  // Release the demo club session before exercising standalone student signup.
-  const demoLogout = await page.request.post('/api/auth/logout', { data: {} });
-  expect(demoLogout.ok()).toBeTruthy();
+  // Release the club session before exercising standalone student signup.
+  const clubLogout = await page.request.post('/api/auth/logout', { data: {} });
+  expect(clubLogout.ok()).toBeTruthy();
   const accountTypes = page.getByRole('group', { name: 'I’m joining Courtly as', exact: true });
 
   await page.goto('/signup');
@@ -84,19 +111,16 @@ test('standalone student signup requires an explicit account type and offers a w
   await expect(page).toHaveURL(url => url.pathname === '/manage' && url.search === '');
   await expect(page.getByRole('heading', { name: 'My bookings', exact: true })).toBeVisible();
 
-  const bookingLink = page.getByLabel('Club booking link or slug', { exact: true });
-  const openBookingPage = page.getByRole('button', { name: 'Open booking page', exact: true });
-  await expect(bookingLink).toHaveAttribute('placeholder', 'https://courtly.example/book/your-club');
-  await expect(openBookingPage).toBeEnabled();
-
-  await bookingLink.fill('https://evil.example/not-a-booking-link');
-  await openBookingPage.click();
-  await expect(page.getByText('Enter a Courtly booking link or club slug.', { exact: true })).toBeVisible();
-  await expect(bookingLink).toHaveAttribute('aria-invalid', 'true');
-  await expect(page).toHaveURL(url => url.pathname === '/manage');
-
-  await bookingLink.fill(publicBusiness.business.slug);
-  await openBookingPage.click();
+  await page.getByRole('navigation', { name: 'Student navigation' }).getByRole('button', { name: 'Book', exact: true }).click();
+  await expect(page).toHaveURL(url => url.pathname === '/manage' && url.searchParams.get('tab') === 'book');
+  await expect(page.getByRole('heading', { name: 'Book a session', exact: true })).toBeVisible();
+  await expect(page.getByRole('status')).toContainText(/club.*found/i);
+  const clubChoice = page.getByRole('radio', { name: new RegExp(escapeRegExp(publicBusiness.business.name)) });
+  await expect(clubChoice).toBeVisible();
+  await clubChoice.focus();
+  await clubChoice.press('Space');
+  await expect(clubChoice).toBeChecked();
+  await page.getByRole('link', { name: `Continue to ${publicBusiness.business.name}`, exact: true }).click();
   await expect(page).toHaveURL(url => url.pathname === `/book/${publicBusiness.business.slug}`);
   await expect(page.getByRole('heading', { name: 'Good days start with a class.', exact: true })).toBeVisible();
   await expect(page.getByText(publicBusiness.business.name, { exact: true }).first()).toBeVisible();
@@ -104,14 +128,6 @@ test('standalone student signup requires an explicit account type and offers a w
   await expect(bookableService).toBeVisible();
   await expect(bookableService).toBeEnabled();
 
-  await page.goto('/manage');
-  await expect(page.getByRole('heading', { name: 'My bookings', exact: true })).toBeVisible();
-  const fullBookingUrl = new URL(`/book/${publicBusiness.business.slug}`, page.url()).toString();
-  await page.getByLabel('Club booking link or slug', { exact: true }).fill(fullBookingUrl);
-  await page.getByRole('button', { name: 'Open booking page', exact: true }).click();
-  await expect(page).toHaveURL(url => url.pathname === `/book/${publicBusiness.business.slug}`);
-  await expect(page.getByRole('heading', { name: 'Good days start with a class.', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: new RegExp(escapeRegExp(service!.name)) })).toBeEnabled();
 });
 
 test('safe booking and manage destinations survive auth mode changes while an external next is dropped', async ({ page }, testInfo) => {
@@ -194,9 +210,9 @@ test('a demo club account can open a booking from Explore with the keyboard', as
   await explore.focus();
   await expect(explore).toBeFocused();
   await explore.press('Enter');
-  await expect(page.getByRole('heading', { name: 'Explore training grounds', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
 
-  const openBookings = page.getByRole('button', { name: 'Bookings', exact: true });
+  const openBookings = page.getByRole('button', { name: 'Open Bookings', exact: true });
   await expect(openBookings).toBeVisible();
   await openBookings.evaluate(element => element.focus());
   await expect(openBookings).toBeFocused();

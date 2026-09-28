@@ -12,7 +12,7 @@ import { publicRouter } from './public.js';
 import { workspaceRouter } from './workspace.js';
 import { bookingsRouter } from './bookings.js';
 import { crudRouter } from './crud.js';
-import { staffRouter } from './staff.js';
+import { coachInvitationRouter, staffRouter } from './staff.js';
 import { accountRouter } from './account-notifications.js';
 import { venuesRouter } from './venues.js';
 import { integrityRouter } from './integrity.js';
@@ -23,6 +23,7 @@ import { rentalsRouter } from './rentals.js';
 import { chatRouter } from './chat.js';
 import { HttpError } from './http.js';
 import { prisma } from './db.js';
+import { inspectSchema } from './schema-health.js';
 export const app = express();
 app.disable('x-powered-by');
 if (production) app.set('trust proxy', 1);
@@ -47,23 +48,32 @@ app.use('/api', (req, res, next) => {
   next();
 });
 app.get('/api/health', async (_req, res) => {
-  try { await prisma.$queryRaw`SELECT 1`; res.json({
-    ok: true, service: 'courtly', database: 'connected', accountModel: 'student-coach-club-affiliations',
-    capabilities: {
-      accountProfile: true, rescheduleRequests: true, coachAcceptance: true,
-      paymentReversal: true, integrityFlags: true,
-      simulatedStripe: true, packageMarketplace: true, venueRentals: true, accountDirectory: true,
-      sessionChat: true, accountChat: true,
-      venueSearch: config.googleMapsApiKey ? 'google-places' : 'maps-link',
-      googleCalendar: config.googleCalendar.enabled ? 'configured' : 'disabled',
-    },
-  }); }
+  try {
+    const schema = await inspectSchema(prisma);
+    if (!schema.ready) {
+      res.status(503).json({ error: 'Database schema is out of date. Run pending migrations.', schema: 'out-of-date' });
+      return;
+    }
+    res.json({
+      ok: true, service: 'courtly', database: 'connected', schema: 'ready', accountModel: 'student-coach-club-affiliations',
+      capabilities: {
+        accountProfile: true, rescheduleRequests: true, coachAcceptance: true,
+        paymentReversal: true, integrityFlags: true,
+        simulatedStripe: true, packageMarketplace: true, venueRentals: true, accountDirectory: true,
+        sessionChat: true, accountChat: true,
+        venueSearch: config.googleMapsApiKey ? 'google-places' : 'maps-link',
+        googleCalendar: config.googleCalendar.enabled ? 'configured' : 'disabled',
+      },
+    });
+  }
   catch { res.status(503).json({ error: 'Database is unavailable' }); }
 });
 app.use('/api/auth', authRouter);
 app.use('/api', adminRouter);
 app.use('/api', publicRouter);
 app.use('/api', accountDirectoryRouter);
+// A coach can review and accept invitations before selecting a workspace.
+app.use('/api', requireAuth, coachInvitationRouter);
 // Commerce contains both global student checkout routes and club-workspace
 // management routes, so each endpoint applies its own narrower guard.
 app.use('/api', commerceRouter);

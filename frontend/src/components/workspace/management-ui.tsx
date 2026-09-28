@@ -58,6 +58,33 @@ export function Editor({ title, description, children, onClose, onSubmit, refres
   return <Dialog open onOpenChange={open => { if (!open && !busy) onClose(); }}><DialogContent className={cn('p-0 max-sm:top-auto max-sm:bottom-0 max-sm:max-h-[92dvh] max-sm:w-full max-sm:translate-y-0 max-sm:rounded-b-none', wide && 'max-w-2xl')} onEscapeKeyDown={event => { if (busy) event.preventDefault(); }} onPointerDownOutside={event => { if (busy) event.preventDefault(); }}><div className="px-5 pt-5 sm:px-6 sm:pt-6"><DialogTitle className="pr-8 text-xl font-semibold tracking-tight text-[#173f2f]">{title}</DialogTitle><DialogDescription className="mt-2 text-xs leading-relaxed text-stone-500">{description}</DialogDescription></div><form onSubmit={submit} className="mt-5"><div className="px-5 sm:px-6"><fieldset disabled={busy} className="min-w-0 space-y-5">{children}</fieldset>{error && <p role="alert" aria-live="polite" className="mt-4 rounded-lg bg-red-50 p-3 text-xs leading-relaxed text-red-700">{error}</p>}</div><div className="sticky bottom-0 mt-6 flex justify-end gap-2 border-t border-[#e7ebe2] bg-white/95 px-5 py-4 backdrop-blur sm:px-6"><Button type="button" variant="outline" onClick={onClose} disabled={busy} className="max-sm:flex-1">Cancel</Button><Button type="submit" disabled={busy || disabled} className="max-sm:flex-1">{busy && <Loader2 size={15} className="animate-spin" />}{busy ? 'Saving…' : submitLabel}</Button></div></form></DialogContent></Dialog>;
 }
 
+export function ConfirmActionDialog({ open, title, description, confirmLabel, onClose, onConfirm, busy = false, destructive = false, inputLabel, inputValue = '', onInputChange, inputRequired = false }: {
+  open: boolean;
+  title: string;
+  description: string;
+  confirmLabel: string;
+  onClose: () => void;
+  onConfirm: () => void;
+  busy?: boolean;
+  destructive?: boolean;
+  inputLabel?: string;
+  inputValue?: string;
+  onInputChange?: (value: string) => void;
+  inputRequired?: boolean;
+}) {
+  return <Dialog open={open} onOpenChange={next => { if (!next && !busy) onClose(); }}>
+    <DialogContent className="max-w-md" onEscapeKeyDown={event => { if (busy) event.preventDefault(); }} onPointerDownOutside={event => { if (busy) event.preventDefault(); }}>
+      <DialogTitle className="text-xl font-semibold tracking-tight text-[#173f2f]">{title}</DialogTitle>
+      <DialogDescription className="mt-2 text-sm leading-relaxed text-[#59675c]">{description}</DialogDescription>
+      {inputLabel && <div className="mt-5"><label htmlFor="confirm-action-note" className="text-sm font-medium text-[#405941]">{inputLabel}{!inputRequired && <span className="font-normal text-[#59675c]"> (optional)</span>}</label><textarea id="confirm-action-note" rows={3} required={inputRequired} value={inputValue} onChange={event => onInputChange?.(event.target.value)} className="mt-2" /></div>}
+      <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <Button type="button" variant="outline" disabled={busy} onClick={onClose}>Keep as is</Button>
+        <Button type="button" variant={destructive ? 'destructive' : 'default'} disabled={busy || (inputRequired && !inputValue.trim())} onClick={onConfirm}>{busy && <Loader2 size={14} className="animate-spin" />}{confirmLabel}</Button>
+      </div>
+    </DialogContent>
+  </Dialog>;
+}
+
 export function Stat({ label, value, detail, icon: Icon }: { label: string; value: ReactNode; detail: string; icon: LucideIcon }) {
   return <article className="stat-card flex min-h-36 flex-col"><div className="flex items-start justify-between gap-2"><p className="text-[11px] font-medium leading-snug text-[#69766c]">{label}</p><span className="stat-icon shrink-0"><Icon size={15} /></span></div><div className="stat-value text-[#254b38]">{value}</div><p className="mt-auto text-[10px] leading-relaxed text-[#59675c]">{detail}</p></article>;
 }

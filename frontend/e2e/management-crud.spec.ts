@@ -303,8 +303,10 @@ test('club management mutations persist across the responsive workspace', async 
   await expectNoHorizontalOverflow(page);
 
   responsePromise = mutationResponse(page, 'DELETE', `/api/availability/${availability.id}`);
-  page.once('dialog', confirmation => void confirmation.accept());
   await page.getByRole('button', { name: removeAvailabilityName, exact: true }).click();
+  const removeHoursDialog = page.getByRole('dialog', { name: 'Remove weekly availability?' });
+  await expect(removeHoursDialog).toContainText('Existing bookings will not be cancelled.');
+  await removeHoursDialog.getByRole('button', { name: 'Remove hours', exact: true }).click();
   response = await responsePromise;
   await responseJson<{ ok: true }>(response);
   await expect(page.getByRole('button', { name: removeAvailabilityName, exact: true })).toHaveCount(0);

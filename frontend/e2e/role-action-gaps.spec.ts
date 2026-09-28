@@ -192,15 +192,10 @@ test('an assigned coach can decline a package lesson and every affected role see
     response.request().method() === 'POST'
       && new URL(response.url()).pathname === `/api/bookings/${booking.id}/decline`,
   );
-  const confirmationPromise = page.waitForEvent('dialog');
-  const declineClick = bookingDialog.getByRole('button', { name: 'Cannot teach this', exact: true }).click();
-  const confirmation = await confirmationPromise;
-  expect(confirmation.type()).toBe('confirm');
-  expect(confirmation.message()).toBe(
-    'Decline this class? The slot is released, any package credit is returned, and the club is asked to reassign it.',
-  );
-  await confirmation.accept();
-  await declineClick;
+  await bookingDialog.getByRole('button', { name: 'Cannot teach this', exact: true }).click();
+  const declineRegion = bookingDialog.getByRole('region', { name: 'Decline this class?' });
+  await expect(declineRegion).toContainText('package credit returned');
+  await declineRegion.getByRole('button', { name: 'Decline class', exact: true }).click();
 
   const declineResponse = await declineResponsePromise;
   const declined = await declineResponse.json() as CoachScopedBooking;
@@ -368,13 +363,10 @@ test('a club reviews an integrity flag entirely from its alert', async ({ page }
       && new URL(request.url()).pathname === `/api/integrity-flags/${flag.id}`
       && request.postDataJSON().status === 'UPHELD',
   );
-  const promptPromise = page.waitForEvent('dialog');
-  const upholdClick = alertDialog.getByRole('button', { name: 'Uphold', exact: true }).click();
-  const prompt = await promptPromise;
-  expect(prompt.type()).toBe('prompt');
-  expect(prompt.message()).toBe('Uphold this review. What did you conclude?');
-  await prompt.accept(decisionNote);
-  await upholdClick;
+  await alertDialog.getByRole('button', { name: 'Uphold', exact: true }).click();
+  const upholdRegion = alertDialog.getByRole('region', { name: 'Uphold this review?' });
+  await upholdRegion.getByLabel('Conclusion').fill(decisionNote);
+  await upholdRegion.getByRole('button', { name: 'Uphold review', exact: true }).click();
   expect((await upholdRequest).postDataJSON()).toEqual({ status: 'UPHELD', note: decisionNote });
 
   await expect(page.getByText('Flag marked upheld', { exact: true })).toBeVisible();
@@ -419,6 +411,7 @@ test('the account page saves a coach profile and keeps the new details after rel
     }
     await route.fulfill({ json: session });
   });
+  await page.route('**/api/coach-invitations', route => route.fulfill({ json: { invitations: [] } }));
 
   await page.goto('/account');
   await expect(page.getByRole('heading', { name: 'Welcome, Morgan Coach.', exact: true })).toBeVisible();
@@ -479,6 +472,7 @@ test('an unaffiliated coach can search public account profiles from the account 
   let requestedQuery = '';
 
   await page.route('**/api/auth/me', route => route.fulfill({ json: session }));
+  await page.route('**/api/coach-invitations', route => route.fulfill({ json: { invitations: [] } }));
   await page.route('**/api/rentals', route => route.fulfill({ json: { rentals: [], nextCursor: null } }));
   await page.route('**/api/calendar/connection', route => route.fulfill({
     json: { configured: false, eligible: true, provider: null, state: 'DISCONNECTED', connected: false, email: null, calendarName: null, syncEnabled: false, busyCheckEnabled: false, connectedAt: null, lastSyncedAt: null, lastBusyAt: null, busyCacheExpiresAt: null, error: null },

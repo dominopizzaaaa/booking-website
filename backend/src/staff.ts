@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import type { Prisma } from '@prisma/client';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { prisma } from './db.js';
 import { asyncRoute, HttpError, initials, requireClubAccount, type AuthRequest } from './http.js';
 import { resolveRegisteredAccountIdentity } from './account-directory.js';
 
 export const staffRouter = Router();
+export const coachInvitationRouter = Router();
 
 const idSchema = z.string().trim().min(1).max(200);
 const instructorIdSchema = idSchema.nullable().optional();
@@ -32,6 +33,16 @@ const createStaffSchema = z.union([queryCreateStaffSchema, legacyCreateStaffSche
 const updateStaffSchema = z.object({
   instructorId: instructorIdSchema,
 }).strict();
+const createInvitationSchema = z.object({
+  email: z.string().trim().max(254).email().transform(value => value.toLowerCase()),
+  rescheduleNoticeHours: z.number().int().min(0).max(720).default(24),
+}).strict();
+const invitationAcceptSchema = z.union([
+  z.object({ invitationId: idSchema }).strict(),
+  z.object({ token: z.string().min(20).max(200) }).strict(),
+]);
+const inviteDigest = (token: string) => createHash('sha256').update(token).digest('hex');
+const invitationLifetimeMs = 7 * 24 * 60 * 60 * 1000;
 
 // Select identity fields explicitly so password hashes never enter a staff response.
 const staffSelect = {
@@ -143,6 +154,99 @@ const newInstructor = (
   ...(rescheduleNoticeHours === undefined ? {} : { rescheduleNoticeHours }),
 });
 
+const invitationJson = (invitation: {
+  id: string; email: string; rescheduleNoticeHours: number; expiresAt: Date; acceptedAt: Date | null;
+  revokedAt: Date | null; createdAt: Date; business: { name: string; slug: string };
+}) => ({
+  id: invitation.id, email: invitation.email, rescheduleNoticeHours: invitation.rescheduleNoticeHours,
+  expiresAt: invitation.expiresAt.toISOString(), acceptedAt: invitation.acceptedAt?.toISOString() ?? null,
+  revokedAt: invitation.revokedAt?.toISOString() ?? null, createdAt: invitation.createdAt.toISOString(),
+  business: invitation.business,
+  status: invitation.acceptedAt ? 'ACCEPTED' : invitation.revokedAt ? 'REVOKED'
+    : invitation.expiresAt <= new Date() ? 'EXPIRED' : 'PENDING',
+});
+
+async function acceptInvitation(
+  tx: Prisma.TransactionClient,
+  invitationId: string,
+  user: { id: string; name: string; email: string; accountType: string },
+) {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`courtly:coach-invitation:${invitationId}`}, 0))`;
+  const invitation = await tx.coachInvitation.findUnique({
+    where: { id: invitationId },
+    include: { business: { select: { name: true, slug: true, kind: true, legacyReadOnly: true } } },
+  });
+  if (!invitation || invitation.revokedAt || invitation.acceptedAt || invitation.expiresAt <= new Date()) {
+    throw new HttpError(409, 'This coach invitation is no longer available');
+  }
+  if (user.accountType !== 'COACH') throw new HttpError(403, 'Sign in with a coach account to accept this invitation');
+  if (user.email.toLowerCase() !== invitation.email) {
+    throw new HttpError(403, `This invitation was sent to ${invitation.email}. Sign in with that coach account to accept it.`);
+  }
+  if (invitation.business.kind !== 'CLUB' || invitation.business.legacyReadOnly) {
+    throw new HttpError(409, 'This club is no longer accepting coach invitations');
+  }
+
+  const existing = await tx.membership.findUnique({
+    where: { userId_businessId: { userId: user.id, businessId: invitation.businessId } },
+    select: { id: true, active: true, instructorId: true },
+  });
+  if (existing?.active) throw new HttpError(409, 'Your coach account already has access to this club');
+
+  let membershipId: string;
+  if (existing) {
+    if (!existing.instructorId) throw new HttpError(409, 'This former affiliation cannot be restored automatically. Ask the club to reconnect it.');
+    await tx.membership.update({ where: { id: existing.id }, data: { active: true } });
+    const activated = await tx.instructor.updateMany({
+      where: { id: existing.instructorId, businessId: invitation.businessId },
+      data: { active: true, name: user.name, email: user.email, initials: initials(user.name), rescheduleNoticeHours: invitation.rescheduleNoticeHours },
+    });
+    if (activated.count !== 1) throw new HttpError(409, 'This former affiliation cannot be restored automatically. Ask the club to reconnect it.');
+    membershipId = existing.id;
+  } else {
+    const membership = await tx.membership.create({
+      data: {
+        user: { connect: { id: user.id } },
+        business: { connect: { id: invitation.businessId } },
+        instructor: { create: newInstructor(invitation.businessId, user, invitation.rescheduleNoticeHours) },
+      },
+      select: { id: true },
+    });
+    membershipId = membership.id;
+  }
+  await tx.coachInvitation.update({
+    where: { id: invitation.id },
+    data: { acceptedAt: new Date(), acceptedByUserId: user.id },
+  });
+  return membershipId;
+}
+
+coachInvitationRouter.get('/coach-invitations', asyncRoute(async (req, res) => {
+  if (req.auth.user.accountType !== 'COACH') throw new HttpError(403, 'Coach invitations are available only to coach accounts');
+  const invitations = await prisma.coachInvitation.findMany({
+    where: { email: req.auth.user.email.toLowerCase(), acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } },
+    include: { business: { select: { name: true, slug: true } } },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+  });
+  res.json({ invitations: invitations.map(invitationJson) });
+}));
+
+coachInvitationRouter.post('/coach-invitations/accept', asyncRoute(async (req, res) => {
+  const input = invitationAcceptSchema.parse(req.body);
+  const invitationId = 'invitationId' in input
+    ? input.invitationId
+    : (await prisma.coachInvitation.findUnique({
+      where: { tokenHash: inviteDigest(input.token) }, select: { id: true },
+    }))?.id;
+  if (!invitationId) throw new HttpError(404, 'Coach invitation not found');
+  const membershipId = await prisma.$transaction(async tx => {
+    const accepted = await acceptInvitation(tx, invitationId, req.auth.user);
+    await tx.authSession.update({ where: { id: req.auth.session.id }, data: { activeMembershipId: accepted } });
+    return accepted;
+  }, { isolationLevel: 'Serializable' });
+  res.json({ membershipId });
+}));
+
 staffRouter.get('/staff', requireClubAccount, asyncRoute(async (req, res) => {
   const staff = await prisma.membership.findMany({
     // A removed affiliation remains in the database to preserve the coach
@@ -154,6 +258,55 @@ staffRouter.get('/staff', requireClubAccount, asyncRoute(async (req, res) => {
     orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
   });
   res.json(staff.map(staffJson));
+}));
+
+staffRouter.get('/staff/invitations', requireClubAccount, asyncRoute(async (req, res) => {
+  const invitations = await prisma.coachInvitation.findMany({
+    where: { businessId: clubBusinessId(req) },
+    include: { business: { select: { name: true, slug: true } } },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    take: 30,
+  });
+  res.json({ invitations: invitations.map(invitationJson) });
+}));
+
+staffRouter.post('/staff/invitations', requireClubAccount, asyncRoute(async (req, res) => {
+  const input = createInvitationSchema.parse(req.body);
+  const businessId = clubBusinessId(req);
+  const rawToken = randomBytes(32).toString('base64url');
+  const invitation = await prisma.$transaction(async tx => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`courtly:coach-invite:${businessId}:${input.email}`}, 0))`;
+    const activeMembership = await tx.membership.findFirst({
+      where: { businessId, active: true, user: { email: input.email } }, select: { id: true },
+    });
+    if (activeMembership) throw new HttpError(409, 'This coach already has access to the club');
+    await tx.coachInvitation.updateMany({
+      where: { businessId, email: input.email, acceptedAt: null, revokedAt: null }, data: { revokedAt: new Date() },
+    });
+    return tx.coachInvitation.create({
+      data: {
+        businessId, email: input.email, tokenHash: inviteDigest(rawToken),
+        rescheduleNoticeHours: input.rescheduleNoticeHours,
+        expiresAt: new Date(Date.now() + invitationLifetimeMs),
+      },
+      include: { business: { select: { name: true, slug: true } } },
+    });
+  }, { isolationLevel: 'Serializable' });
+  const destination = `/account?invite=${encodeURIComponent(rawToken)}`;
+  res.status(201).json({
+    invitation: invitationJson(invitation),
+    invitePath: `/signup?${new URLSearchParams({ next: destination }).toString()}`,
+  });
+}));
+
+staffRouter.delete('/staff/invitations/:invitationId', requireClubAccount, asyncRoute(async (req, res) => {
+  const invitationId = idSchema.parse(req.params.invitationId);
+  const updated = await prisma.coachInvitation.updateMany({
+    where: { id: invitationId, businessId: clubBusinessId(req), acceptedAt: null, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+  if (updated.count !== 1) throw new HttpError(404, 'Pending invitation not found');
+  res.json({ ok: true });
 }));
 
 staffRouter.post('/staff', requireClubAccount, asyncRoute(async (req, res) => {

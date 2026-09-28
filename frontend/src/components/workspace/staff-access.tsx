@@ -1,12 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Link2, Loader2, LockKeyhole, Pencil, Plus, ShieldCheck, Unlink } from 'lucide-react';
+import { Copy, Link2, Loader2, LockKeyhole, MailPlus, Pencil, Plus, ShieldCheck, Unlink } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
-import { api, mutate } from '@/lib/api';
-import type { AccountType } from '@/lib/types';
+import { api, createStaffInvitation, loadStaffInvitations, mutate, revokeStaffInvitation } from '@/lib/api';
+import type { AccountType, CoachInvitation } from '@/lib/types';
 import { initials } from '@/lib/utils';
 import { Editor, Empty, Field, errorMessage, numeric, text, type ManagementProps } from './management-ui';
 
@@ -30,14 +30,20 @@ function ClubStaffAccess({ data, refresh }: ManagementProps) {
   const [staff, setStaff] = useState<StaffUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [invitations, setInvitations] = useState<CoachInvitation[]>([]);
   const [editing, setEditing] = useState<StaffUser | null | undefined>();
+  const [inviting, setInviting] = useState(false);
+  const [inviteLink, setInviteLink] = useState('');
   const [removing, setRemoving] = useState<StaffUser | null>(null);
   const loadStaff = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     setError('');
     try {
-      const users = await api<StaffUser[]>('/staff', { signal });
-      if (!signal?.aborted) setStaff(users);
+      const [users, pending] = await Promise.all([
+        api<StaffUser[]>('/staff', { signal }),
+        loadStaffInvitations(),
+      ]);
+      if (!signal?.aborted) { setStaff(users); setInvitations(pending.invitations); }
     } catch (cause) {
       if (!signal?.aborted) setError(errorMessage(cause));
       throw cause;
@@ -55,11 +61,11 @@ function ClubStaffAccess({ data, refresh }: ManagementProps) {
   return <section className="mt-10 border-t border-[#e6eae3] pt-8" aria-labelledby="staff-access-heading">
     <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
       <div><p className="eyebrow mb-2">Club controls</p><h2 id="staff-access-heading" className="text-xl">Coach access</h2><p className="mt-2 max-w-xl text-xs leading-relaxed text-stone-500">Connect a coach who already has their own Courtly coach account.</p></div>
-      <Button onClick={() => setEditing(null)} disabled={loading || !!error} className="max-sm:w-full"><Plus size={15} />Add coach</Button>
+      <div className="flex flex-wrap gap-2 max-sm:w-full"><Button variant="outline" onClick={() => { setInviteLink(''); setInviting(true); }} disabled={loading || !!error} className="max-sm:flex-1"><MailPlus size={15} />Invite coach</Button><Button onClick={() => setEditing(null)} disabled={loading || !!error} className="max-sm:flex-1"><Plus size={15} />Add account</Button></div>
     </div>
     <div className="mb-5 flex items-start gap-3 rounded-xl border border-[#e3e9db] bg-[#eff3e9] p-4">
       <ShieldCheck size={18} className="mt-0.5 shrink-0 text-[#6d7d62]" />
-      <div className="space-y-1.5 text-xs leading-relaxed text-[#5c7054]"><p><strong className="font-semibold">Accounts stay personal.</strong> Ask the coach to register first, then find their account by username, email, or exact name. You never create or handle their password.</p><p>Removing access only unlinks this club. Their account, other club memberships, coach profile, and booking history remain intact.</p></div>
+      <div className="space-y-1.5 text-xs leading-relaxed text-[#5c7054]"><p><strong className="font-semibold">Accounts stay personal.</strong> Invite a coach by email, or add an account that already exists. You never create or handle their password.</p><p>The coach chooses when to join. Removing access only unlinks this club; their account, other affiliations, profile, and booking history remain intact.</p></div>
     </div>
     <div className="panel overflow-hidden" aria-busy={loading}>
       {loading ? <p role="status" className="flex items-center justify-center gap-2 p-8 text-xs text-stone-500"><Loader2 size={16} className="animate-spin" />Loading staff access…</p> : error ? <div className="space-y-3 p-5"><p role="alert" className="text-xs text-red-700">{error}</p><Button variant="outline" size="sm" onClick={() => { void loadStaff().catch(() => {}); }}>Try again</Button></div> : staff.length ? <ul className="divide-y divide-[#edf0e8]">
@@ -76,9 +82,28 @@ function ClubStaffAccess({ data, refresh }: ManagementProps) {
         })}
       </ul> : <Empty title="No coaches yet" icon={ShieldCheck}>Add a registered Courtly coach account when someone joins your roster.</Empty>}
     </div>
+    {invitations.some(invitation => invitation.status === 'PENDING') && <section className="mt-5 rounded-xl border border-[#e4e9df] bg-white p-4" aria-labelledby="pending-coach-invitations"><h3 id="pending-coach-invitations" className="text-sm text-[#344b39]">Pending invitations</h3><ul className="mt-3 divide-y divide-[#edf0e8]">{invitations.filter(invitation => invitation.status === 'PENDING').map(invitation => <li key={invitation.id} className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0 last:pb-0"><div><p className="text-xs font-semibold text-[#344b39]">{invitation.email}</p><p className="mt-1 text-[11px] text-stone-500">Expires {new Date(invitation.expiresAt).toLocaleDateString()}</p></div><Button type="button" variant="ghost" size="sm" onClick={() => void revokeStaffInvitation(invitation.id).then(refreshAccess).catch(cause => toast.error(errorMessage(cause)))}>Revoke</Button></li>)}</ul></section>}
     {editing !== undefined && <StaffEditor staffUser={editing} staff={staff} data={data} refresh={refreshAccess} onSaved={user => setStaff(previous => editing ? previous.map(item => item.id === user.id ? user : item) : [...previous, user])} onClose={() => setEditing(undefined)} />}
+    {inviting && <InviteCoach inviteLink={inviteLink} onInviteLink={setInviteLink} refresh={refreshAccess} onClose={() => setInviting(false)} />}
     {removing && <RemoveStaff staffUser={removing} refresh={refreshAccess} onRemoved={() => setStaff(previous => previous.filter(user => user.id !== removing.id))} onClose={() => setRemoving(null)} />}
   </section>;
+}
+
+function InviteCoach({ inviteLink, onInviteLink, refresh, onClose }: { inviteLink: string; onInviteLink: (value: string) => void; refresh: () => Promise<void>; onClose: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true); setError('');
+    try {
+      const form = new FormData(event.currentTarget);
+      const result = await createStaffInvitation({ email: text(form, 'invite-email'), rescheduleNoticeHours: numeric(form, 'invite-reschedule-hours') });
+      onInviteLink(`${window.location.origin}${result.invitePath}`);
+      await refresh();
+    } catch (cause) { setError(errorMessage(cause)); } finally { setBusy(false); }
+  }
+  return <Dialog open onOpenChange={open => { if (!open && !busy) onClose(); }}><DialogContent className="max-w-lg"><DialogTitle className="text-xl font-semibold tracking-tight">Invite a coach</DialogTitle><DialogDescription className="mt-2 text-xs leading-relaxed text-stone-500">Create an email-bound link that expires in seven days. Send it using your usual email or messaging app; the coach signs up or signs in and chooses whether to join.</DialogDescription>{inviteLink ? <div className="mt-5 space-y-4"><div role="status" className="rounded-xl border border-[#d9e5d1] bg-[#f1f6ec] p-4 text-xs text-[#486344]"><p className="font-semibold">Invitation ready</p><p className="mt-2 break-all leading-relaxed">{inviteLink}</p></div><div className="flex flex-wrap justify-end gap-2"><Button type="button" variant="outline" onClick={() => void navigator.clipboard.writeText(inviteLink).then(() => toast.success('Invitation link copied'))}><Copy size={14} />Copy link</Button><Button type="button" onClick={onClose}>Done</Button></div></div> : <form className="mt-5 space-y-4" onSubmit={submit}><div><label htmlFor="coach-invite-email">Coach email</label><input id="coach-invite-email" name="invite-email" type="email" autoComplete="email" required maxLength={254} placeholder="coach@example.com" disabled={busy} /></div><div><label htmlFor="coach-invite-notice">Reschedule notice (hours)</label><input id="coach-invite-notice" name="invite-reschedule-hours" type="number" min={0} max={720} step={1} defaultValue={24} required disabled={busy} /><p className="mt-1.5 text-[11px] text-stone-500">How far ahead students must request a different session time.</p></div>{error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-xs text-red-700">{error}</p>}<div className="flex justify-end gap-2 pt-2"><Button type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button><Button type="submit" disabled={busy}>{busy && <Loader2 size={14} className="animate-spin" />}Create invite link</Button></div></form>}</DialogContent></Dialog>;
 }
 
 function StaffEditor({ staffUser, staff, data, refresh, onSaved, onClose }: ManagementProps & { staffUser: StaffUser | null; staff: StaffUser[]; onSaved: (user: StaffUser) => void; onClose: () => void }) {

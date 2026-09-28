@@ -9,6 +9,11 @@ export type WorkspaceUser = AccountUser & { instructorId: string | null };
 /** A membership is an affiliation; permissions come from the account and business kinds. */
 export type Membership = { id: string; userId: string; businessId: string; instructorId: string | null; active: boolean; createdAt: string; business: Business };
 export type AuthSession = { user: AccountUser; membership: Membership | null; business: Business | null; memberships: Membership[] };
+export type CoachInvitation = {
+  id: string; email: string; rescheduleNoticeHours: number; expiresAt: string; acceptedAt: string | null;
+  revokedAt: string | null; createdAt: string; status: 'PENDING' | 'ACCEPTED' | 'REVOKED' | 'EXPIRED';
+  business: Pick<Business, 'name' | 'slug'>;
+};
 export type Instructor = { id: string; name: string; initials: string; color: string; email: string; specialty: string; rescheduleNoticeHours: number; active: boolean };
 export type WorkspaceInstructor = Instructor & { accountLinkAvailable: boolean };
 export type Location = { id: string; name: string; address: string; type: 'FACILITY' | 'RENTED' | 'HOME' | 'ONLINE'; color: string; requiresApproval: boolean; travelMinutes: number; notes: string; source: VenueSource; placeId: string; mapsUrl: string; latitude: number | null; longitude: number | null; active: boolean };

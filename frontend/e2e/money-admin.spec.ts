@@ -216,17 +216,15 @@ test('a club receipt can be reversed without erasing its ledger trail or mixing 
   await expect(page.locator('main').getByRole('heading', { name: 'Payments', exact: true })).toBeVisible();
   receiptRecord = financeRecord(page, receiptNote);
   const reason = 'E2E correction keeps the audit record';
-  const promptPromise = page.waitForEvent('dialog');
-  const undoClick = receiptRecord.getByRole('button', { name: 'Undo', exact: true }).click();
-  const prompt = await promptPromise;
-  expect(prompt.type()).toBe('prompt');
-  expect(prompt.message()).toBe('Reverse this payment? Say briefly why, for the ledger.');
+  await receiptRecord.getByRole('button', { name: 'Undo', exact: true }).click();
+  const reversalDialog = page.getByRole('dialog', { name: 'Reverse this payment?' });
+  await expect(reversalDialog).toBeVisible();
+  await reversalDialog.getByLabel('Reason for reversal').fill(reason);
   const reversalResponsePromise = page.waitForResponse(response =>
     response.request().method() === 'DELETE'
       && new URL(response.url()).pathname === `/api/payments/${payment.id}`,
   );
-  await prompt.accept(reason);
-  await undoClick;
+  await reversalDialog.getByRole('button', { name: 'Reverse payment', exact: true }).click();
   const reversalResponse = await reversalResponsePromise;
   const reversal = await responseJson<{ ok: true; payment: Payment }>(reversalResponse);
   expect(reversalResponse.request().postDataJSON()).toEqual({ reason });
@@ -319,17 +317,15 @@ test('a club receipt can be reversed without erasing its ledger trail or mixing 
   await expect(payoutRecord).toContainText(formatMoney(payoutAmount));
 
   const payoutReason = 'E2E payout correction keeps the audit record';
-  const payoutPromptPromise = page.waitForEvent('dialog');
-  const payoutUndoClick = payoutRecord.getByRole('button', { name: 'Undo', exact: true }).click();
-  const payoutPrompt = await payoutPromptPromise;
-  expect(payoutPrompt.type()).toBe('prompt');
-  expect(payoutPrompt.message()).toBe('Reverse this payment? Say briefly why, for the ledger.');
+  await payoutRecord.getByRole('button', { name: 'Undo', exact: true }).click();
+  const payoutReversalDialog = page.getByRole('dialog', { name: 'Reverse this payment?' });
+  await expect(payoutReversalDialog).toBeVisible();
+  await payoutReversalDialog.getByLabel('Reason for reversal').fill(payoutReason);
   const payoutReversalResponsePromise = page.waitForResponse(response =>
     response.request().method() === 'DELETE'
       && new URL(response.url()).pathname === `/api/payments/${payout.id}`,
   );
-  await payoutPrompt.accept(payoutReason);
-  await payoutUndoClick;
+  await payoutReversalDialog.getByRole('button', { name: 'Reverse payment', exact: true }).click();
   const payoutReversalResponse = await payoutReversalResponsePromise;
   const payoutReversal = await responseJson<{ ok: true; payment: Payment }>(payoutReversalResponse);
   expect(payoutReversalResponse.request().postDataJSON()).toEqual({ reason: payoutReason });

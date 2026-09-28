@@ -48,8 +48,8 @@ async function visibleWorkspaceNavigation(page: Page): Promise<Locator> {
 async function openWorkspaceView(page: Page, label: string) {
   const navigation = await visibleWorkspaceNavigation(page);
   await navigation.getByRole('button', { name: 'Explore', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Explore training grounds', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: label, exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: `Open ${label}`, exact: true }).click();
 }
 
 async function expectWorkspaceHomeUrl(page: Page) {
@@ -105,7 +105,7 @@ test('student creates an account, books, views history, and cancels', async ({ p
   await page.getByRole('button', { name: new RegExp(escapeRegExp(coach.name)) }).click();
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await page.getByLabel('Choose a date').fill(date);
-  await page.getByRole('button', { name: /^\d{1,2}:\d{2} [AP]M/ }).first().click();
+  await page.getByRole('radio', { name: /^\d{1,2}:\d{2} [AP]M/ }).first().click();
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
 
   const studentName = 'Jamie Browser Test';
@@ -528,7 +528,7 @@ test('self-registered coach is linked to a club by its club account', async ({ p
     has: page.getByRole('heading', { name: 'Coach access', exact: true }),
   });
   await expect(coachAccess.getByRole('heading', { name: 'Coach access' })).toBeVisible();
-  await coachAccess.getByRole('button', { name: 'Add coach', exact: true }).click();
+  await coachAccess.getByRole('button', { name: 'Add account', exact: true }).click();
   const coachAccessDialog = page.getByRole('dialog');
   await expect(coachAccessDialog.getByRole('heading', { name: 'Add coach access', exact: true })).toBeVisible();
   await coachAccessDialog
@@ -637,9 +637,9 @@ test('self-registered coach is linked to a club by its club account', async ({ p
   await expect(page.locator('main').getByRole('button', { name: 'Booking page', exact: true })).toHaveCount(0);
   await expect(page.locator('main').getByText('Your booking page', { exact: true })).toHaveCount(0);
   await coachNavigation.getByRole('button', { name: 'Explore', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Explore training grounds', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
   for (const label of ['Calendar', 'Bookings', 'Students', 'Locations', 'Availability']) {
-    await expect(page.getByRole('button', { name: label, exact: true })).toBeEnabled();
+    await expect(page.getByRole('button', { name: `Open ${label}`, exact: true })).toBeEnabled();
   }
   for (const label of ['Classes', 'My coaches', 'Packages', 'Payments', 'Insights', 'Integrity']) {
     await expect(page.getByRole('button', { name: label, exact: true })).toHaveCount(0);
@@ -647,7 +647,7 @@ test('self-registered coach is linked to a club by its club account', async ({ p
 
   // A coach can discover a venue before the club assigns it to a service. It
   // remains visible after refresh, but existing venue settings stay read-only.
-  await page.getByRole('button', { name: 'Locations', exact: true }).click();
+  await page.getByRole('button', { name: 'Open Locations', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Locations', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Add location', exact: true }).click();
   const locationDialog = page.getByRole('dialog');
@@ -661,7 +661,7 @@ test('self-registered coach is linked to a club by its club account', async ({ p
   await expect(page.getByRole('heading', { name: 'Coach Discovery Court', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: /Edit location/ })).toHaveCount(0);
   await page.goto('/?tab=explore');
-  await expect(page.getByRole('heading', { name: 'Explore training grounds', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
 
   for (const label of ['Home', 'Explore', 'Book', 'Profile']) {
     await expect(coachNavigation.getByRole('button', { name: label, exact: true })).toBeVisible();
@@ -680,7 +680,7 @@ test('self-registered coach is linked to a club by its club account', async ({ p
   await coachBookingDialog.getByRole('button', { name: 'Close dialog' }).click();
 
   await page.goto('/?tab=explore&view=payments');
-  await expect(page.getByRole('heading', { name: 'Explore training grounds', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/\?tab=explore$/);
   await expect(page.locator('main')).not.toContainText('A clear picture of money');
 

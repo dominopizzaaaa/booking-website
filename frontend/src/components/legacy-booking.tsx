@@ -414,12 +414,13 @@ function DateSlots({
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+          <div role="radiogroup" aria-label="Available start times" className="grid grid-cols-3 gap-2 sm:grid-cols-4">
             {available.map((candidate) => (
               <button
                 key={candidate.startAt}
                 type="button"
-                aria-pressed={selected === candidate.startAt}
+                role="radio"
+                aria-checked={selected === candidate.startAt}
                 onClick={() => onSelect(candidate)}
                 className={cn(
                   'flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-xl border px-1.5 py-3 text-sm font-semibold transition sm:px-2',

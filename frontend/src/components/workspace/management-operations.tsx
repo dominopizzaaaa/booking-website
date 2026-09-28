@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { mutate } from "@/lib/api";
 import { dateKey, shortDate } from "@/lib/utils";
 import {
+  ConfirmActionDialog,
   Editor,
   Empty,
   Field,
@@ -181,6 +182,7 @@ export function AvailabilityView({ data, refresh }: WorkspaceProps) {
         "";
   const [editor, setEditor] = useState<"weekly" | "exception">();
   const [showPast, setShowPast] = useState(false);
+  const [removing, setRemoving] = useState<{ kind: 'weekly' | 'exception'; id: string; title: string; description: string } | null>(null);
   const { busy, run } = useManagementAction(refresh);
   const businessDate = dateKey(undefined, data.business.timezone);
   const rows = data.availability.filter((a) => a.instructorId === instructorId);
@@ -305,19 +307,7 @@ export function AvailabilityView({ data, refresh }: WorkspaceProps) {
                               size="icon"
                               disabled={busy}
                               aria-label={`Remove ${weekdays[day]} ${localTime(row.startTime)} availability`}
-                              onClick={() => {
-                                if (
-                                  window.confirm(
-                                    `Remove ${weekdays[day]} ${localTime(row.startTime)}–${localTime(row.endTime)} weekly availability? Existing bookings will not be cancelled.`,
-                                  )
-                                )
-                                  void run(
-                                    `/availability/${row.id}`,
-                                    "DELETE",
-                                    undefined,
-                                    "Weekly hours removed",
-                                  );
-                              }}
+                              onClick={() => setRemoving({ kind: 'weekly', id: row.id, title: 'Remove weekly availability?', description: `${weekdays[day]} ${localTime(row.startTime)}–${localTime(row.endTime)} will no longer be offered. Existing bookings will not be cancelled.` })}
                             >
                               <Trash2 size={13} />
                             </Button>
@@ -390,22 +380,7 @@ export function AvailabilityView({ data, refresh }: WorkspaceProps) {
                     variant="ghost"
                     disabled={busy}
                     aria-label={`Remove blocked date ${dateKey(exception.date)}`}
-                    onClick={() => {
-                      if (
-                        window.confirm(
-                          `Unblock ${shortDate(
-                            `${exception.date}T12:00:00Z`,
-                            "UTC",
-                          )}? New bookings may become available on this date.`,
-                        )
-                      )
-                        void run(
-                          `/exceptions/${exception.id}`,
-                          "DELETE",
-                          undefined,
-                          "Date unblocked",
-                        );
-                    }}
+                    onClick={() => setRemoving({ kind: 'exception', id: exception.id, title: 'Unblock this date?', description: `New bookings may become available on ${shortDate(`${exception.date}T12:00:00Z`, 'UTC')}. Existing bookings are unchanged.` })}
                   >
                     <Trash2 size={13} />
                   </Button>
@@ -428,6 +403,7 @@ export function AvailabilityView({ data, refresh }: WorkspaceProps) {
           </label>
         </section>
       </div>
+      <ConfirmActionDialog open={!!removing} title={removing?.title ?? ''} description={removing?.description ?? ''} confirmLabel={removing?.kind === 'weekly' ? 'Remove hours' : 'Unblock date'} destructive busy={busy} onClose={() => setRemoving(null)} onConfirm={() => { if (!removing) return; const target = removing; void run(target.kind === 'weekly' ? `/availability/${target.id}` : `/exceptions/${target.id}`, 'DELETE', undefined, target.kind === 'weekly' ? 'Weekly hours removed' : 'Date unblocked').then(() => setRemoving(null)); }} />
       {editor === "weekly" && (
         <Editor
           title="Add weekly hours"

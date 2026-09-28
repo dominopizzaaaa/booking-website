@@ -248,7 +248,7 @@ test('an eligible legacy booking loads slots and reschedules successfully', asyn
   await page.goto(`/manage/${token}`);
   await page.getByRole('button', { name: 'Reschedule session', exact: true }).click();
   await page.getByLabel('Choose a date').fill('2026-09-27');
-  const newTime = page.getByRole('button', { name: /^10:00 AM/ });
+  const newTime = page.getByRole('radio', { name: /^10:00 AM/ });
   await expect(newTime).toBeVisible();
   await newTime.click();
   await expect(page.getByText('New time: Sun, 27 Sep, 10:00 AM. Your current time remains reserved until this succeeds.')).toBeVisible();

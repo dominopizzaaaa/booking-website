@@ -659,13 +659,16 @@ function DateSlots({
           </button>
         ))}
       </div>
-      <div className="border-t border-[#eef0eb] pt-5">
+      <div className="border-t border-[#eef0eb] pt-5" aria-busy={loading}>
         <div className="!mb-4 flex flex-wrap items-center justify-between gap-2">
           <h3 className="!text-sm">Available start times</h3>
           <span className="flex items-center gap-1 text-[11px] text-[#82907e]">
             <Clock3 size={12} /> {timezone.replaceAll("_", " ")}
           </span>
         </div>
+        <p role="status" aria-live="polite" className="sr-only">
+          {loading ? 'Checking availability.' : error ? 'Available times could not be loaded.' : available.length === 1 ? '1 available time loaded.' : available.length + ' available times loaded.'}
+        </p>
         {loading ? (
           <div
             role="status"
@@ -707,12 +710,13 @@ function DateSlots({
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+          <div role="radiogroup" aria-label="Available start times" className="grid grid-cols-3 gap-2 sm:grid-cols-4">
             {available.map((slot) => (
               <button
                 key={slot.startAt}
                 type="button"
-                aria-pressed={selected === slot.startAt}
+                role="radio"
+                aria-checked={selected === slot.startAt}
                 onClick={() => onSelect(slot)}
                 className={cn(
                   "flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-xl border px-1.5 py-3 text-sm font-semibold transition sm:px-2",

@@ -49,6 +49,7 @@ model Business {
   paymentIntents       PaymentIntent[]
   chatThreads          ChatThread[]
   sessionProposals     SessionProposal[]
+  coachInvitations     CoachInvitation[]
 
   @@index([kind, isDemo, slug])
 }
@@ -79,6 +80,7 @@ model User {
   paymentIntents        PaymentIntent[]
   chatThreadMemberships ChatThreadMember[]     @relation("ChatThreadMemberUser")
   chatMembersAdded      ChatThreadMember[]     @relation("ChatThreadMemberAddedBy")
+  acceptedCoachInvites  CoachInvitation[]       @relation("CoachInvitationAcceptedBy")
   createdAt             DateTime               @default(now())
 }
 
@@ -104,6 +106,27 @@ model Membership {
 
   @@unique([userId, businessId])
   @@index([businessId])
+}
+
+/// A club-issued, email-bound invitation. The raw token is shown once; only
+/// its digest is retained. Acceptance creates the normal Membership and
+/// Instructor records, so all ongoing permissions still come from them.
+model CoachInvitation {
+  id                    String    @id @default(cuid())
+  businessId            String
+  business              Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  email                 String
+  tokenHash             String    @unique
+  rescheduleNoticeHours Int       @default(24)
+  expiresAt             DateTime
+  acceptedAt            DateTime?
+  acceptedByUserId      String?
+  acceptedBy            User?     @relation("CoachInvitationAcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+  revokedAt             DateTime?
+  createdAt             DateTime  @default(now())
+
+  @@index([businessId, createdAt])
+  @@index([email, expiresAt])
 }
 
 model AuthSession {

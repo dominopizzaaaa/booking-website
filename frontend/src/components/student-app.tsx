@@ -1383,13 +1383,14 @@ function BookingDialog({
               }}
               className={cn(field, 'mt-2 max-w-xs')}
             />
-            <div className="mt-5 border-t border-[#edf0e8] pt-5">
+            <div className="mt-5 border-t border-[#edf0e8] pt-5" aria-busy={slotsLoading}>
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <h4 className="text-sm font-semibold text-[#344b3a]">Available start times</h4>
                 <span className="inline-flex items-center gap-1 text-[10px] text-[#59675c]">
                   <Clock3 size={12} /> {item.business.timezone.replaceAll('_', ' ')}
                 </span>
               </div>
+              <p role="status" aria-live="polite" className="sr-only">{slotsLoading ? 'Checking availability.' : slotsError ? 'Available times could not be loaded.' : availableSlots.length === 1 ? '1 available time loaded.' : availableSlots.length + ' available times loaded.'}</p>
               {slotsLoading ? (
                 <div role="status" className="flex min-h-24 items-center justify-center gap-2 text-xs text-[#59675c]">
                   <LoaderCircle size={16} className="animate-spin" /> Checking availability…
@@ -1402,12 +1403,13 @@ function BookingDialog({
                   </button>
                 </div>
               ) : availableSlots.length ? (
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                <div role="radiogroup" aria-label="Available start times" className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                   {availableSlots.map((candidate) => (
                     <button
                       key={candidate.startAt}
                       type="button"
-                      aria-pressed={selectedSlot?.startAt === candidate.startAt}
+                      role="radio"
+                      aria-checked={selectedSlot?.startAt === candidate.startAt}
                       onClick={() => setSelectedSlot(candidate)}
                       className={cn(
                         'min-h-12 rounded-xl border px-3 py-2 text-sm font-medium transition',
@@ -1626,13 +1628,14 @@ function RentalDialog({
                 </select>
               </div>
             </div>
-            <section aria-labelledby="rental-times-heading" className="mt-5 border-t border-[#edf0e8] pt-5">
+            <section aria-labelledby="rental-times-heading" aria-busy={slotsLoading} className="mt-5 border-t border-[#edf0e8] pt-5">
               <h3 id="rental-times-heading" className="text-sm font-semibold text-[#344b3a]">Available start times</h3>
+              <p role="status" aria-live="polite" className="sr-only">{slotsLoading ? 'Checking availability.' : slots.length === 1 ? '1 available time loaded.' : slots.length + ' available times loaded.'}</p>
               {slotsLoading ? (
                 <p role="status" className="mt-4 flex items-center gap-2 text-xs text-[#59675c]"><LoaderCircle size={15} className="animate-spin" /> Checking availability…</p>
               ) : slots.length ? (
-                <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  {slots.map((slot) => <button key={`${slot.unitId}-${slot.startAt}`} type="button" aria-pressed={selectedSlot?.unitId === slot.unitId && selectedSlot.startAt === slot.startAt} onClick={() => onSlot(slot)} className={cn('min-h-12 rounded-xl border px-3 py-2 text-sm font-medium', selectedSlot?.unitId === slot.unitId && selectedSlot.startAt === slot.startAt ? 'border-[#174c3c] bg-[#174c3c] text-white' : 'border-[#dfe5dc] bg-white text-[#49604f]')}>{time(slot.startAt, rental.timezone)}</button>)}
+                <div role="radiogroup" aria-labelledby="rental-times-heading" className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {slots.map((slot) => <button key={`${slot.unitId}-${slot.startAt}`} type="button" role="radio" aria-checked={selectedSlot?.unitId === slot.unitId && selectedSlot.startAt === slot.startAt} onClick={() => onSlot(slot)} className={cn('min-h-12 rounded-xl border px-3 py-2 text-sm font-medium', selectedSlot?.unitId === slot.unitId && selectedSlot.startAt === slot.startAt ? 'border-[#174c3c] bg-[#174c3c] text-white' : 'border-[#dfe5dc] bg-white text-[#49604f]')}>{time(slot.startAt, rental.timezone)}</button>)}
                 </div>
               ) : <p className="mt-3 rounded-xl border border-dashed border-[#dfe5dc] p-5 text-center text-xs text-[#59675c]">No available times for this date and duration.</p>}
             </section>
@@ -2159,6 +2162,14 @@ export function StudentApp({ slug }: { slug?: string }) {
     () => directoryClubs(clubDirectory, clubs, !!clubDirectoryError),
     [clubDirectory, clubDirectoryError, clubs],
   );
+  // Book keeps a previously used or explicitly linked club available even
+  // when it is intentionally excluded from public discovery (for example a
+  // private demo workspace). The directory remains the source for all other
+  // first-time choices.
+  const bookClubs = useMemo(
+    () => directoryClubs(clubDirectory, clubs, true),
+    [clubDirectory, clubs],
+  );
   const clubSports = useMemo(() => {
     const labels = new Map<string, string>();
     for (const sport of clubDirectory.flatMap((club) => club.sports)) {
@@ -2295,9 +2306,9 @@ export function StudentApp({ slug }: { slug?: string }) {
   }, [rentalDate, rentalDetail, rentalDuration, rentalSlotsVersion, rentalUnitId]);
 
   useEffect(() => {
-    if (selectedClubSlug && clubs.some((club) => club.business.slug === selectedClubSlug)) return;
-    setSelectedClubSlug(clubs[0]?.business.slug ?? '');
-  }, [clubs, selectedClubSlug]);
+    if (selectedClubSlug && bookClubs.some((club) => club.business.slug === selectedClubSlug)) return;
+    setSelectedClubSlug(bookClubs[0]?.business.slug ?? '');
+  }, [bookClubs, selectedClubSlug]);
 
   useEffect(() => {
     if (dialogMode !== 'reschedule' || !actionBooking || !rescheduleDate) return;
@@ -2911,8 +2922,8 @@ export function StudentApp({ slug }: { slug?: string }) {
     );
   }
 
-  const selectedClub = clubs.find((club) => club.business.slug === selectedClubSlug);
-  const linkedSlugIsNew = !!slug && !clubs.some((club) => club.business.slug === slug);
+  const selectedClub = bookClubs.find((club) => club.business.slug === selectedClubSlug);
+  const linkedSlugIsNew = !!slug && !bookClubs.some((club) => club.business.slug === slug);
   const filteredHistory = bookings
     .filter((item) => {
       if (historyFilter === 'upcoming') return isUpcoming(item, nowMs);
@@ -2927,6 +2938,9 @@ export function StudentApp({ slug }: { slug?: string }) {
 
   return (
     <div className="student-shell min-h-screen overflow-x-clip bg-[#f6f7f4] pb-32 text-[#1c3029] sm:pb-36">
+      <a href="#student-main" className="fixed left-3 top-3 z-[70] -translate-y-24 rounded-lg bg-[#174c3c] px-4 py-3 text-sm font-semibold text-white shadow-lg transition focus:translate-y-0">
+        Skip to main content
+      </a>
       <AppHeader
         userName={session.user.name}
         activeTab={activeTab}
@@ -2936,7 +2950,9 @@ export function StudentApp({ slug }: { slug?: string }) {
         onOpenAlerts={() => selectTab('alerts')}
         wide={activeTab === 'chat'}
       />
+      <BottomNavigation activeTab={activeTab} onChange={selectTab} unread={chatUnread} />
       <main
+        id="student-main"
         ref={mainRef}
         tabIndex={-1}
         className={cn(
@@ -2944,7 +2960,7 @@ export function StudentApp({ slug }: { slug?: string }) {
           activeTab === 'chat' ? 'max-w-5xl' : 'max-w-3xl',
         )}
       >
-        <p role="status" className="sr-only">{bookingNavigationStatus}</p>
+        {bookingNavigationStatus && <p role="status" className="sr-only">{bookingNavigationStatus}</p>}
         {bookingsError && (
           <div className="mb-6 space-y-3">
             <ErrorNotice message={bookingsError} />
@@ -3475,7 +3491,14 @@ export function StudentApp({ slug }: { slug?: string }) {
               Book a session
             </h1>
             <p className="mt-2 max-w-xl text-sm leading-relaxed text-[#59675c]">
-              Choose a club from your booking history, then continue to its live availability.
+              Choose any available club, then continue to its live classes, coaches, and times.
+            </p>
+            <p role="status" aria-live="polite" className="sr-only">
+              {exploreLoading
+                ? 'Loading bookable clubs.'
+                : clubDirectoryError && bookClubs.length === 0
+                  ? 'The club directory could not be loaded.'
+                  : `${bookClubs.length} bookable club${bookClubs.length === 1 ? '' : 's'} found.`}
             </p>
             {linkedSlugIsNew && (
               <div className="mt-6 flex flex-col gap-3 rounded-2xl border border-[#dfe7d8] bg-[#f0f5ea] p-5 sm:flex-row sm:items-center sm:justify-between">
@@ -3488,34 +3511,28 @@ export function StudentApp({ slug }: { slug?: string }) {
                 </Link>
               </div>
             )}
-            {bookingsLoading ? (
-              <LoadingScreen text="Preparing your clubs…" />
-            ) : clubs.length === 0 ? (
+            {exploreLoading ? (
+              <LoadingScreen text="Finding clubs you can book…" />
+            ) : clubDirectoryError && bookClubs.length === 0 ? (
               <div className="mt-8">
                 <EmptyState
-                  icon={<Plus size={23} />}
-                  title={slug ? 'Choose a session with this club' : 'Open your club’s booking page'}
+                  icon={<RefreshCw size={23} />}
+                  title="Club directory unavailable"
                   action={
-                    slug ? (
-                      <Link href={`/book/${encodeURIComponent(slug)}`} className={primaryButton}>
-                        Continue to booking <ArrowRight size={15} />
-                      </Link>
-                    ) : (
-                      <BookingLinkForm id="student-book-booking-link" />
-                    )
+                    <div className="space-y-4"><button type="button" className={secondaryButton} onClick={() => void refreshClubDirectory()}><RefreshCw size={14} />Try directory again</button><BookingLinkForm id="student-book-booking-link" /></div>
                   }
                 >
-                  {slug
-                    ? 'Open the club’s live availability and choose the session you want.'
-                    : 'Paste the booking link your club sent you to see its live availability.'}
+                  {clubDirectoryError} You can still open a booking link a club shared with you.
                 </EmptyState>
               </div>
+            ) : bookClubs.length === 0 ? (
+              <div className="mt-8"><EmptyState icon={<Compass size={23} />} title="No clubs are bookable yet">Clubs appear here as soon as they publish a class with a coach, venue, and availability.</EmptyState></div>
             ) : (
               <div className="mt-8">
                 <fieldset>
-                  <legend className="mb-3 text-xs font-semibold text-[#566b5a]">Choose a club</legend>
+                  <legend className="mb-3 text-xs font-semibold text-[#566b5a]">Choose from {bookClubs.length} bookable club{bookClubs.length === 1 ? '' : 's'}</legend>
                   <div className="space-y-3">
-                    {clubs.map((club) => {
+                    {bookClubs.map((club) => {
                       const selected = selectedClubSlug === club.business.slug;
                       return (
                         <label
@@ -3538,9 +3555,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                           <ClubAvatar club={club} size="small" />
                           <span className="min-w-0 flex-1">
                             <span className="block text-sm font-semibold text-[#304a39]">{club.business.name}</span>
-                            <span className="mt-1 block text-xs text-[#59675c]">
-                              {club.bookingCount} past or upcoming booking{club.bookingCount === 1 ? '' : 's'}
-                            </span>
+                            <span className="mt-1 block text-xs text-[#59675c]">{club.directory ? `${club.directory.sports.join(', ') || 'Multi-sport'} · ${club.directory.serviceCount} class${club.directory.serviceCount === 1 ? '' : 'es'} · from ${money(club.directory.priceFrom, club.business.currency)}` : `${club.known?.bookingCount ?? 0} past or upcoming booking${club.known?.bookingCount === 1 ? '' : 's'}`}</span>
                           </span>
                           <span
                             className={cn(
@@ -4078,7 +4093,6 @@ export function StudentApp({ slug }: { slug?: string }) {
         onClose={() => setOpenAlertId(null)}
         onOpenBooking={openAlertBooking}
       />
-      <BottomNavigation activeTab={activeTab} onChange={selectTab} unread={chatUnread} />
     </div>
   );
 }

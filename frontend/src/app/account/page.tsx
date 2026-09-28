@@ -8,8 +8,8 @@ import { CalendarConnectionCard } from '@/components/calendar-connection-card';
 import { AccountRentalDialog } from '@/components/account-rental-dialog';
 import { CourtlyLogo } from '@/components/public-booking';
 import { Button } from '@/components/ui/button';
-import { api, ApiError, loadAuthSession, loadRentals, mutate, searchAccounts, updateAuthAccount, updateClubProfile } from '@/lib/api';
-import type { AccountDirectoryUser, AuthSession, Membership, RentalListing } from '@/lib/types';
+import { acceptCoachInvitation, api, ApiError, loadAuthSession, loadCoachInvitations, loadRentals, mutate, searchAccounts, updateAuthAccount, updateClubProfile } from '@/lib/api';
+import type { AccountDirectoryUser, AuthSession, CoachInvitation, Membership, RentalListing } from '@/lib/types';
 import { initials, money } from '@/lib/utils';
 
 const inputClass = '!min-h-11 !rounded-xl !border-[#dfe5dd] !px-3.5 !text-sm';
@@ -54,6 +54,9 @@ export default function AccountPage() {
   const [editingProfile, setEditingProfile] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [error, setError] = useState('');
+  const [invitations, setInvitations] = useState<CoachInvitation[]>([]);
+  const [invitationBusy, setInvitationBusy] = useState<string | null>(null);
+  const [invitationError, setInvitationError] = useState('');
   const rentalRequestGenerationRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -66,6 +69,22 @@ export default function AccountPage() {
         return;
       }
       setState(auth);
+      if (auth.user.accountType === 'COACH') {
+        const pending = await loadCoachInvitations();
+        setInvitations(pending.invitations);
+        const token = new URLSearchParams(window.location.search).get('invite');
+        if (token) {
+          setInvitationBusy('link');
+          try {
+            await acceptCoachInvitation({ token });
+            window.history.replaceState(window.history.state, '', '/account');
+            const refreshed = await loadAuthSession();
+            setState(refreshed);
+            setInvitations((await loadCoachInvitations()).invitations);
+          } catch (cause) { setInvitationError(cause instanceof Error ? cause.message : 'Unable to accept this invitation.'); }
+          finally { setInvitationBusy(null); }
+        }
+      }
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 401) {
         router.replace('/login');
@@ -76,6 +95,16 @@ export default function AccountPage() {
       setLoading(false);
     }
   }, [router]);
+
+  async function acceptInvitation(invitation: CoachInvitation) {
+    if (invitationBusy) return;
+    setInvitationBusy(invitation.id); setInvitationError('');
+    try {
+      await acceptCoachInvitation({ invitationId: invitation.id });
+      await load();
+    } catch (cause) { setInvitationError(cause instanceof Error ? cause.message : 'Unable to accept this invitation.'); }
+    finally { setInvitationBusy(null); }
+  }
 
   useEffect(() => { void load(); }, [load]);
   const loadRentalFirstPage = useCallback(async (sport: string) => {
@@ -332,6 +361,8 @@ export default function AccountPage() {
                 </div>}
               </section>
 
+              {coachAccount && (invitationBusy === 'link' || invitations.length > 0 || invitationError) && <section className="rounded-2xl border border-[#dbe5d4] bg-[#f2f6ee] p-5 shadow-sm sm:p-6" aria-labelledby="coach-invitations-heading"><div className="flex items-start gap-3"><Building2 size={19} className="mt-0.5 shrink-0 text-[#66805a]" /><div><h2 id="coach-invitations-heading" className="text-base text-[#405941]">Club invitations</h2><p className="mt-1 text-xs leading-relaxed text-stone-500">Joining gives you access to that club’s assigned schedule, students, venues, and availability tools. The club continues to manage class prices and payments.</p></div></div>{invitationBusy === 'link' && <p role="status" className="mt-4 flex items-center gap-2 text-xs text-stone-500"><Loader2 size={14} className="animate-spin" />Checking your invitation…</p>}{invitationError && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-3 text-xs text-red-700">{invitationError}</p>}<ul className="mt-4 space-y-2">{invitations.map(invitation => <li key={invitation.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#dce5d6] bg-white p-4"><div><p className="text-sm font-semibold text-[#344b39]">{invitation.business.name}</p><p className="mt-1 text-xs text-stone-500">Coach access · {invitation.rescheduleNoticeHours}-hour reschedule notice</p></div><Button type="button" disabled={!!invitationBusy} onClick={() => void acceptInvitation(invitation)}>{invitationBusy === invitation.id && <Loader2 size={14} className="animate-spin" />}Accept and open</Button></li>)}</ul></section>}
+
               <CalendarConnectionCard accountType={state.user.accountType} returnTo="/account" />
 
               <section className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-workspaces-heading">
@@ -341,7 +372,7 @@ export default function AccountPage() {
                   {clubAccount && clubMembership ? <button type="button" disabled={!clubMembership.active} onClick={() => { void openWorkspace(clubMembership); }} className="flex min-h-[72px] w-full items-center gap-3 rounded-xl border border-[#cbd9bf] bg-[#f8faf5] p-3.5 text-left transition hover:bg-[#f2f6ed] disabled:cursor-not-allowed disabled:opacity-55"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#e7efe0] text-xs font-semibold text-[#617851]">{initials(clubMembership.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-[#344b39]">{clubMembership.business.name}</span><span className="mt-1 block text-[10px] text-stone-500">{clubMembership.active ? 'Club workspace' : 'Club workspace · inactive'}</span></span><ArrowRight size={16} className="text-stone-400" /></button>
                     : coachAccount ? clubAffiliations.map(membership => <button key={membership.id} type="button" disabled={!!switching || !membership.active} onClick={() => { void openWorkspace(membership); }} className="flex min-h-[72px] w-full items-center gap-3 rounded-xl border border-[#e2e7dd] p-3.5 text-left transition hover:border-[#cbd9bf] hover:bg-[#f8faf5] disabled:cursor-not-allowed disabled:opacity-55"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#edf2e6] text-xs font-semibold text-[#617851]">{initials(membership.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-[#344b39]">{membership.business.name}</span><span className="mt-1 block text-xs text-stone-500">{workspaceDescription(membership)}</span></span>{switching === membership.id ? <Loader2 size={17} className="animate-spin text-[#71865f]" /> : membership.id === state.membership?.id ? <span className="flex items-center gap-1 text-xs font-semibold text-[#66805a]"><Check size={13} />Selected</span> : <ArrowRight size={16} className="text-stone-400" />}</button>) : null}
 
-                  {coachAccount && !clubAffiliations.length && <div className="py-5 text-center"><span className="mx-auto grid h-11 w-11 place-items-center rounded-full bg-[#f0f3ec] text-[#809174]"><Building2 size={19} /></span><h3 className="mt-4 text-sm">No club access yet</h3><p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-stone-500">Share your account email with a club or academy. Once it adds you to its roster, return here and refresh.</p></div>}
+                  {coachAccount && !clubAffiliations.length && <div className="py-5 text-center"><span className="mx-auto grid h-11 w-11 place-items-center rounded-full bg-[#f0f3ec] text-[#809174]"><Building2 size={19} /></span><h3 className="mt-4 text-sm">No club access yet</h3><p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-stone-500">Ask a club to invite {state.user.email}. Invitations appear above; you choose whether to join, and your account remains yours.</p></div>}
                   {clubAccount && !clubMembership && <p className="rounded-xl bg-[#fff6f1] p-4 text-xs leading-relaxed text-[#a16a55]">This club login is not connected to its workspace. Please contact support.</p>}
                 </div>
 

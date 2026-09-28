@@ -58,13 +58,41 @@ describe('Google Calendar configuration', () => {
     Object.assign(process.env, environment);
     vi.resetModules();
     const [{ app }, { prisma }] = await Promise.all([import('../src/app.js'), import('../src/db.js')]);
-    const query = vi.spyOn(prisma, '$queryRaw').mockResolvedValueOnce([{ '?column?': 1 }]);
+    const query = vi.spyOn(prisma, '$queryRawUnsafe').mockResolvedValueOnce([{
+      coachInvitations: true,
+      packageScopeColumn: true,
+      packageScopeTrigger: true,
+      venueUnitIdentity: true,
+    }]);
 
     const response = await request(app).get('/api/health').expect(200);
 
     expect(response.body.capabilities.googleCalendar).toBe(capability);
+    expect(response.body.schema).toBe('ready');
     expect(JSON.stringify(response.body)).not.toContain('calendar-client-secret');
     expect(JSON.stringify(response.body)).not.toContain(validCalendarEnvironment.CALENDAR_TOKEN_ENCRYPTION_KEYS);
+    query.mockRestore();
+  });
+
+  it('reports schema drift as a service-unavailable health response', async () => {
+    for (const name of testEnvironment) delete process.env[name];
+    process.env.DATABASE_URL = 'postgresql://test:test@127.0.0.1:5432/test';
+    Object.assign(process.env, validCalendarEnvironment);
+    vi.resetModules();
+    const [{ app }, { prisma }] = await Promise.all([import('../src/app.js'), import('../src/db.js')]);
+    const query = vi.spyOn(prisma, '$queryRawUnsafe').mockResolvedValueOnce([{
+      coachInvitations: false,
+      packageScopeColumn: true,
+      packageScopeTrigger: true,
+      venueUnitIdentity: true,
+    }]);
+
+    const response = await request(app).get('/api/health').expect(503);
+
+    expect(response.body).toEqual({
+      error: 'Database schema is out of date. Run pending migrations.',
+      schema: 'out-of-date',
+    });
     query.mockRestore();
   });
 

@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 3.2.0** · Last updated 2026-09-28
+**Version 3.3.0** · Last updated 2026-09-28
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -188,6 +188,11 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
   unambiguous exact name. Apply a supplied `Instructor.rescheduleNoticeHours`
   inside the same transaction when creating, claiming, or restoring the roster
   entry; omitted values preserve the database default or retained setting.
+- A club may instead create a seven-day, email-bound `CoachInvitation` and
+  share its one-time signup link. Store only the SHA-256 token digest. A coach
+  accepts before choosing a workspace; acceptance creates or restores the same
+  standard `Membership` + `Instructor` affiliation and selects it for the
+  current session. A replaced pending invitation is revoked, not deleted.
 - A coach working in a club may create a teaching venue, including through the
   Google Maps finder, and sees the club's active venues so a new one remains
   visible after saving. Editing, archiving, and service assignment remain with
@@ -199,6 +204,10 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
   sport labels come from those services' `category` values. Keep the directory
   response public-safe and use booking history only to distinguish "Your clubs"
   from clubs the student has not booked with yet.
+- Student Book uses that same complete club directory; a first-time student
+  does not need booking history or a pasted club URL. Provider Explore is the
+  grouped workspace tool hub, with owned-venue discovery under the named
+  **Rent a court** destination.
 
 ### Package offers and simulated checkout
 
@@ -670,6 +679,17 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 3.3.0 — 2026-09-28
+
+Reworked first-use navigation and activation across all three account types.
+Provider Explore is now the grouped operations hub with a named Rent a court
+destination, Student Book uses the full public club directory, and clubs can
+issue expiring one-time invitations that coaches accept into the normal roster
+affiliation. Startup and health checks now detect the repaired marketplace and
+invitation schema before traffic is served. Auth validation, student navigation
+order, slot selection/loading announcements, and destructive confirmations
+were hardened for keyboard and assistive-technology users.
 
 ### 3.2.0 — 2026-09-28
 

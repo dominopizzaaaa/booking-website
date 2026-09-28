@@ -178,6 +178,52 @@ describe.sequential('A lesson seen from every seat', () => {
     expect(studentHistory.body.bookings[0].booking.instructorName).toBe(coachAccount.name);
   });
 
+  it('lets a club invite a coach who accepts into the exact roster workspace', async () => {
+    const coachAccount = await newCoachAccount('Invited Journey Coach');
+    const { cookie: coachCookie } = await createSession(f, coachAccount.id);
+
+    const created = await asClub('post', '/staff/invitations').send({
+      email: coachAccount.email.toUpperCase(),
+      rescheduleNoticeHours: 36,
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.invitation).toMatchObject({
+      email: coachAccount.email,
+      rescheduleNoticeHours: 36,
+      status: 'PENDING',
+      business: { name: f.business.name, slug: f.business.slug },
+    });
+    expect(created.body.invitePath).toMatch(/^\/signup\?next=/);
+    const destination = new URLSearchParams(created.body.invitePath.split('?')[1]).get('next');
+    const token = new URLSearchParams(destination!.split('?')[1]).get('invite');
+    expect(token).toBeTruthy();
+    const stored = await prisma.coachInvitation.findUniqueOrThrow({ where: { id: created.body.invitation.id } });
+    expect(stored.tokenHash).not.toBe(token);
+
+    const pending = await request(app).get('/api/coach-invitations').set('Cookie', coachCookie);
+    expect(pending.status).toBe(200);
+    expect(pending.body.invitations).toHaveLength(1);
+
+    const accepted = await request(app).post('/api/coach-invitations/accept')
+      .set('Cookie', coachCookie).send({ token });
+    expect(accepted.status).toBe(200);
+    const membership = await prisma.membership.findUniqueOrThrow({
+      where: { id: accepted.body.membershipId }, include: { instructor: true },
+    });
+    expect(membership).toMatchObject({ userId: coachAccount.id, businessId: f.business.id, active: true });
+    expect(membership.instructor).toMatchObject({
+      active: true, name: coachAccount.name, email: coachAccount.email, rescheduleNoticeHours: 36,
+    });
+    expect((await prisma.authSession.findFirstOrThrow({ where: { userId: coachAccount.id } })).activeMembershipId)
+      .toBe(membership.id);
+
+    const board = await request(app).get('/api/workspace').set('Cookie', coachCookie);
+    expect(board.status).toBe(200);
+    expect(board.body.business.id).toBe(f.business.id);
+    expect((await request(app).get('/api/coach-invitations').set('Cookie', coachCookie)).body.invitations).toEqual([]);
+    expect((await request(app).post('/api/coach-invitations/accept').set('Cookie', coachCookie).send({ token })).status).toBe(409);
+  });
+
   it('lets a student negotiate a new time that only moves once the club agrees', async () => {
     const { account, student, cookie: studentCookie } = await studentWithAccount('Negotiating Student');
     const created = await asClub('post', '/bookings').send({

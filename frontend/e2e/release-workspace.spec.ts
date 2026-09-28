@@ -294,6 +294,7 @@ function requestPath(request: Request) {
 
 async function mockWorkspace(page: Page, accountType: 'CLUB' | 'COACH') {
   await page.route('**/api/workspace', route => fulfillJson(route, workspace(accountType)));
+  await page.route('**/api/staff/invitations', route => fulfillJson(route, { invitations: [] }));
 }
 
 async function mockMarketplace(page: Page, options: { initialReservations?: Array<typeof reservation> } = {}) {
@@ -452,7 +453,7 @@ test('coach navigation opens a private-only booking form and books as the curren
   await expect(dialog.getByText(otherCoachPrivateService.name, { exact: true })).toHaveCount(0);
 
   await dialog.getByLabel('Registered student', { exact: true }).selectOption(student.id);
-  await dialog.getByRole('button', { name: '10:00 AM', exact: true }).click();
+  await dialog.getByRole('radio', { name: '10:00 AM', exact: true }).click();
 
   const bookingResponse = responseFor(page, 'POST', '/api/bookings');
   await dialog.getByRole('button', { name: 'Add booking', exact: true }).click();
@@ -501,12 +502,11 @@ test('club catalog calls lessons Classes and submits only roster-owned coach det
   });
 
   await page.goto('/?tab=explore');
-  const manage = page.getByRole('region', { name: 'Manage' });
-  await expect(page.getByRole('heading', { name: 'Explore training grounds', exact: true })).toBeVisible();
-  await expect(manage.getByRole('button', { name: 'Classes', exact: true })).toBeVisible();
-  await expect(manage.getByRole('button', { name: 'Services', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Open Classes', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Open Services', exact: true })).toHaveCount(0);
 
-  await manage.getByRole('button', { name: 'Classes', exact: true }).click();
+  await page.getByRole('button', { name: 'Open Classes', exact: true }).click();
   await expect(page.locator('main').getByRole('heading', { name: 'Classes', exact: true })).toBeVisible();
   await expect(page.locator('main')).not.toContainText('Services');
 
@@ -537,7 +537,7 @@ test('club catalog calls lessons Classes and submits only roster-owned coach det
   await expect(dialog).toHaveCount(0);
 
   const coachAccess = page.getByRole('region', { name: 'Coach access', exact: true });
-  await coachAccess.getByRole('button', { name: 'Add coach', exact: true }).click();
+  await coachAccess.getByRole('button', { name: 'Add account', exact: true }).click();
   const addDialog = page.getByRole('dialog', { name: 'Add coach access' });
   await expect(addDialog).toContainText('Use an exact username or email, or an unambiguous exact name.');
   await addDialog.getByRole('searchbox').fill('jordan.coach@example.test');
@@ -694,7 +694,7 @@ test('club booking offers only packages whose immutable scopes cover the selecte
 
   const dialog = page.getByRole('dialog', { name: 'Add a booking' });
   await dialog.getByLabel('Registered student', { exact: true }).selectOption(student.id);
-  await dialog.getByRole('button', { name: '10:00 AM', exact: true }).click();
+  await dialog.getByRole('radio', { name: '10:00 AM', exact: true }).click();
   const packageSelect = dialog.getByLabel('Package credits', { exact: true });
   await expect(packageSelect.locator('option')).toHaveText([
     'Pay per class',
@@ -705,7 +705,7 @@ test('club booking offers only packages whose immutable scopes cover the selecte
   await dialog.getByLabel('Repeat', { exact: true }).selectOption('4');
   await expect(packageSelect.locator('option')).toHaveText(['Pay per class', 'Private class pass · 4 credits left']);
   await dialog.getByLabel('Class', { exact: true }).selectOption(groupService.id);
-  await dialog.getByRole('button', { name: '10:00 AM', exact: true }).click();
+  await dialog.getByRole('radio', { name: '10:00 AM', exact: true }).click();
   await expect(packageSelect.locator('option')).toHaveText(['Pay per class', 'Group class pass · 4 credits left']);
 });
 
@@ -808,7 +808,7 @@ test('public booking can drop a preselected package that expires before the fina
   await page.getByRole('button', { name: new RegExp(instructor.name) }).click();
   await visibleAction('Continue').click();
   await page.getByLabel('Choose a date', { exact: true }).fill('2026-09-26');
-  await page.getByRole('button', { name: /^10:00 AM/ }).click();
+  await page.getByRole('radio', { name: /^10:00 AM/ }).click();
   await visibleAction('Continue').click();
   await page.getByRole('button', { name: /^4 weeks/ }).click();
 
@@ -991,9 +991,7 @@ test('package offers submit both class and rental eligibility scopes', async ({ 
   });
 
   await page.goto('/?tab=explore');
-  const manage = page.getByRole('region', { name: 'Manage' });
-  await expect(manage.getByRole('button', { name: 'Packages', exact: true })).toBeVisible();
-  await manage.getByRole('button', { name: 'Packages', exact: true }).click();
+  await page.getByRole('button', { name: 'Open Packages', exact: true }).click();
   await expect(page.locator('main').getByRole('heading', { name: 'Package offers', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Create offer', exact: true }).first().click();
 
@@ -1029,6 +1027,8 @@ test('rental marketplace loads details and submits the selected slot reservation
   const requests = await mockMarketplace(page);
 
   await page.goto('/?tab=explore');
+  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Open Rent a court', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Explore training grounds', exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: rental.name, exact: true })).toBeVisible();
   await page.getByRole('button', { name: `View times for ${rental.name}`, exact: true }).click();
@@ -1038,8 +1038,8 @@ test('rental marketplace loads details and submits the selected slot reservation
   await expect(dialog.getByLabel('Duration', { exact: true })).toHaveValue('60');
   await expect(dialog.getByRole('heading', { name: 'Available times', exact: true })).toBeVisible();
   await expect(dialog).toContainText('Payment is simulated; no real card is charged.');
-  await expect(dialog.getByRole('button', { name: /Court 1.*\$45/ })).toBeVisible();
-  await dialog.getByRole('button', { name: /Court 1.*\$45/ }).click();
+  await expect(dialog.getByRole('radio', { name: /11:00 AM.*Court 1.*\$45/ })).toBeVisible();
+  await dialog.getByRole('radio', { name: /11:00 AM.*Court 1.*\$45/ }).click();
 
   const reservationResponse = responseFor(page, 'POST', `/api/rentals/${rental.id}/reservations`);
   await dialog.getByRole('button', { name: /Reserve.*\$45/ }).click();
@@ -1081,6 +1081,7 @@ test('an affiliated coach can view and cancel account-wide rental history from w
   const requests = await mockMarketplace(page, { initialReservations: [otherClubReservation] });
 
   await page.goto('/?tab=explore');
+  await page.getByRole('button', { name: 'Open Rent a court', exact: true }).click();
   const history = page.getByRole('region', { name: 'My rental reservations', exact: true });
   await expect(history).toContainText(otherClubReservation.locationName);
   await expect(history).toContainText(otherClubReservation.businessName);
@@ -1112,9 +1113,10 @@ test('workspace rental retry rotates the checkout key after a definitive failure
   });
 
   await page.goto('/?tab=explore');
+  await page.getByRole('button', { name: 'Open Rent a court', exact: true }).click();
   await page.getByRole('button', { name: `View times for ${rental.name}`, exact: true }).click();
   const dialog = page.getByRole('dialog', { name: rental.name });
-  await dialog.getByRole('button', { name: /Court 1.*\$45/ }).click();
+  await dialog.getByRole('radio', { name: /11:00 AM.*Court 1.*\$45/ }).click();
   await dialog.getByRole('button', { name: /Reserve.*\$45/ }).click();
   await expect(dialog.getByRole('alert')).toContainText('payment did not complete');
   await dialog.getByRole('button', { name: /Reserve.*\$45/ }).click();
@@ -1187,7 +1189,7 @@ test('integrity reviews live in Alerts and expose their evidence and actions the
   }));
 
   await page.goto('/?tab=explore');
-  await expect(page.getByRole('heading', { name: 'Explore training grounds', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: /Integrity/ })).toHaveCount(0);
 
   await page.goto('/?tab=profile');
