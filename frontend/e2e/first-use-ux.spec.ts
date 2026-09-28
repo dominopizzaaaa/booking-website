@@ -110,6 +110,16 @@ test('standalone student signup requires an explicit account type and opens the 
 
   await expect(page).toHaveURL(url => url.pathname === '/manage' && url.search === '');
   await expect(page.getByRole('heading', { name: 'My bookings', exact: true })).toBeVisible();
+  const tour = page.locator('.driver-popover.courtly-tour');
+  await expect(tour.getByRole('heading', { name: 'Welcome to Courtly, First' })).toBeVisible();
+  await expect(tour.getByText('Step 1 of 6', { exact: true })).toBeVisible();
+  for (let step = 2; step <= 6; step += 1) {
+    await tour.getByRole('button', { name: 'Next', exact: true }).click();
+    await expect(tour.getByText(`Step ${step} of 6`, { exact: true })).toBeVisible();
+  }
+  await expect(tour.getByRole('heading', { name: 'You’re ready to play' })).toBeVisible();
+  await tour.getByRole('button', { name: 'Finish', exact: true }).click();
+  await expect(tour).toHaveCount(0);
 
   await page.getByRole('navigation', { name: 'Student navigation' }).getByRole('button', { name: 'Book', exact: true }).click();
   await expect(page).toHaveURL(url => url.pathname === '/manage' && url.searchParams.get('tab') === 'book');
@@ -189,12 +199,39 @@ test('a new club account sees setup guidance without premature sharing controls'
   await page.getByRole('button', { name: 'Create your workspace', exact: true }).click();
 
   await expect(page).toHaveURL(url => url.pathname === '/');
+  const tour = page.locator('.driver-popover.courtly-tour');
+  await expect(tour.getByRole('heading', { name: /Welcome to First Use Club/ })).toBeVisible();
+  await expect(tour.getByText(/Step 1 of/)).toBeVisible();
+  const next = tour.getByRole('button', { name: 'Next', exact: true });
+  await expect(next).toBeFocused();
+  await next.press('Enter');
+  await expect(tour.getByText(/Step 2 of/)).toBeVisible();
+  await expect(page.locator('[data-tour="workspace-home"]')).toHaveClass(/driver-active-element/);
+  const back = tour.getByRole('button', { name: 'Back', exact: true });
+  await expect(back).toBeEnabled();
+  await back.click();
+  await expect(tour.getByText(/Step 1 of/)).toBeVisible();
+  await tour.getByRole('button', { name: 'Next', exact: true }).press('Enter');
+  await expect(tour.getByText(/Step 2 of/)).toBeVisible();
+  for (let step = 3; step <= 9; step += 1) {
+    await tour.getByRole('button', { name: 'Next', exact: true }).click();
+    await expect(tour.getByText(new RegExp(`Step ${step} of`))).toBeVisible();
+  }
+  await expect(tour.getByRole('heading', { name: 'You’re ready to play' })).toBeVisible();
+  await tour.getByRole('button', { name: 'Finish', exact: true }).click();
+  await expect(tour).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'A few small steps. A whole new rhythm.', exact: true })).toBeVisible();
   await expect(page.getByText(/Complete the steps in order./)).toBeVisible();
   await expect(page.getByRole('button', { name: '1. Add an active location', exact: true })).toBeEnabled();
   await expect(page.getByText('Finish setup before sharing this page.', { exact: true })).toBeVisible();
   await expect(page.getByText(/Ready to share/i)).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Copy link', exact: true })).toHaveCount(0);
+
+  const navigation = await visibleWorkspaceNavigation(page);
+  await navigation.getByRole('button', { name: 'Profile', exact: true }).click();
+  await page.getByRole('button', { name: 'Take the tour', exact: true }).click();
+  await expect(tour.getByRole('heading', { name: /Welcome to First Use Club/ })).toBeVisible();
+  await tour.getByRole('button', { name: 'Close product tour' }).click();
 });
 
 test('a demo club account can open a booking from Explore with the keyboard', async ({ page }) => {

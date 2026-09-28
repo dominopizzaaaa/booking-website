@@ -17,6 +17,7 @@ import {
   Compass,
   ExternalLink,
   Home,
+  HelpCircle,
   Info,
   LoaderCircle,
   LogOut,
@@ -78,6 +79,7 @@ import {
 } from '@/lib/api';
 import { alertAppearance, alertPageSize, sortAlerts } from '@/lib/alerts';
 import { alertsButtonLabel, chatBadge, chatTabLabel } from '@/lib/chat';
+import { destroyProductTour, startProductTour, type ProductTourContext } from '@/lib/product-tour';
 import { ChatInbox } from '@/components/chat/chat-inbox';
 import { useChatUnread } from '@/components/chat/use-chat-unread';
 import type {
@@ -720,7 +722,7 @@ function HomePackageSummary({
   loading: boolean; error: string; packages: AccountPackage[]; onOpen: () => void;
 }) {
   return (
-    <section aria-labelledby="home-packages-heading" className={cn(panel, 'mt-7 p-5')}>
+    <section data-tour="student-packages" aria-labelledby="home-packages-heading" className={cn(panel, 'mt-7 p-5')}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">Credits across clubs</p>
@@ -1947,6 +1949,7 @@ function AppHeader({
         <div className="flex items-center gap-2">
           <span className="hidden text-[11px] font-medium text-[#59675c] sm:inline">{title}</span>
           <button
+            data-tour="student-alerts"
             type="button"
             aria-label={alertsButtonLabel(alertsUnread)}
             aria-current={alertsActive ? 'page' : undefined}
@@ -1993,6 +1996,7 @@ function BottomNavigation({
 }) {
   return (
     <nav
+      data-tour="student-navigation"
       aria-label="Student navigation"
       className="student-bottom-nav fixed inset-x-0 bottom-0 z-50 mx-auto w-full max-w-3xl border-x border-t border-[#dfe5dc] bg-white/95 pb-[max(0.35rem,env(safe-area-inset-bottom))] shadow-[0_-12px_35px_rgba(25,55,40,0.08)] backdrop-blur-xl sm:bottom-4 sm:rounded-2xl sm:border sm:px-2 sm:pb-1"
     >
@@ -2145,6 +2149,7 @@ export function StudentApp({ slug }: { slug?: string }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const successNoticeRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLElement>(null);
+  const replayTourRef = useRef(false);
   const previousTabRouteRef = useRef(requestedTab);
   const pendingBookingIdRef = useRef<string | null>(null);
   const bookingCheckoutKeysRef = useRef(new Map<string, string>());
@@ -2198,6 +2203,23 @@ export function StudentApp({ slug }: { slug?: string }) {
   useEffect(() => {
     if (activeTab !== 'alerts') setAlertsStatus('');
   }, [activeTab]);
+
+  useEffect(() => {
+    if (!session || !isStudentSession(session) || activeTab !== 'home' || !bookingsReady) return;
+    const studentSession = session;
+    const context: ProductTourContext = {
+      kind: 'student',
+      userId: studentSession.user.id,
+      firstName: studentSession.user.name.split(' ')[0],
+    };
+    const force = replayTourRef.current;
+    replayTourRef.current = false;
+    const timer = window.setTimeout(() => { void startProductTour(context, { force }); }, 300);
+    return () => {
+      window.clearTimeout(timer);
+      destroyProductTour();
+    };
+  }, [activeTab, bookingsReady, session]);
 
   useEffect(() => {
     const bookingId = pendingBookingIdRef.current;
@@ -2634,6 +2656,19 @@ export function StudentApp({ slug }: { slug?: string }) {
       router.push(tabHref(tab), { scroll: false });
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+  function replayProductTour() {
+    replayTourRef.current = true;
+    if (activeTab === 'home') {
+      replayTourRef.current = false;
+      void startProductTour({
+        kind: 'student',
+        userId: session!.user.id,
+        firstName: session!.user.name.split(' ')[0],
+      }, { force: true });
+    } else {
+      selectTab('home');
+    }
   }
   function openAlertBooking(bookingId: string) {
     setNotice('');
@@ -3381,7 +3416,7 @@ export function StudentApp({ slug }: { slug?: string }) {
         )}
 
         {activeTab === 'home' && (
-          <section id="student-home-panel" aria-label="Home" className="student-tab-panel student-tab-home">
+          <section id="student-home-panel" data-tour="student-home" aria-label="Home" className="student-tab-panel student-tab-home">
             <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#59675c]">
@@ -3400,7 +3435,7 @@ export function StudentApp({ slug }: { slug?: string }) {
             </div>
 
             {clubs.length > 0 && (
-              <div className="-mx-4 mt-7 flex gap-4 overflow-x-auto px-4 pb-2 sm:mx-0 sm:px-0" aria-label="Your clubs">
+              <div data-tour="student-clubs" className="-mx-4 mt-7 flex gap-4 overflow-x-auto px-4 pb-2 sm:mx-0 sm:px-0" aria-label="Your clubs">
                 {clubs.map((club) => (
                   <button
                     key={club.business.slug}
@@ -3454,7 +3489,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                 </EmptyState>
               </div>
             ) : (
-              <div className="mt-8 space-y-10">
+              <div data-tour="student-bookings" className="mt-8 space-y-10">
                 {current.length > 0 && (
                   <section aria-labelledby="current-bookings">
                     <div className="mb-4 flex items-end justify-between gap-4">
@@ -4440,6 +4475,14 @@ export function StudentApp({ slug }: { slug?: string }) {
             </section>
 
             <section className={cn(panel, 'mt-9 p-5')}>
+              <div className="flex items-start gap-3 border-b border-[#edf0e8] pb-5">
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#edf3e7] text-[#4f6847]"><HelpCircle size={17} /></span>
+                <div className="min-w-0 flex-1"><h2 className="text-sm font-semibold text-[#3f4c42]">Help &amp; support</h2><p className="mt-1 text-xs leading-relaxed text-[#59675c]">Take another guided look at the player app whenever you need it.</p></div>
+              </div>
+              <button data-tour="student-tour-replay" type="button" className={cn(secondaryButton, 'mt-5 w-full')} onClick={replayProductTour}><HelpCircle size={15} />Take the tour</button>
+            </section>
+
+            <section className={cn(panel, 'mt-5 p-5')}>
               <div className="flex items-start gap-3">
                 <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#f2eee9] text-[#6f5738]">
                   <LogOut size={17} />

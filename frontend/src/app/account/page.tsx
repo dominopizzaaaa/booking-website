@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowRight, Building2, Check, Compass, Loader2, LogOut, MapPin, Pencil, RefreshCw, Search, ShieldCheck, UserRound, UsersRound, X } from 'lucide-react';
+import { ArrowRight, Building2, Check, Compass, HelpCircle, Loader2, LogOut, MapPin, Pencil, RefreshCw, Search, ShieldCheck, UserRound, UsersRound, X } from 'lucide-react';
 import { CalendarConnectionCard } from '@/components/calendar-connection-card';
 import { AccountRentalDialog } from '@/components/account-rental-dialog';
 import { CourtlyLogo } from '@/components/public-booking';
@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import { acceptClubStaffInvitation, acceptCoachInvitation, ApiError, loadAuthSession, loadClubStaffInvitations, loadCoachInvitations, loadRentals, mutate, searchAccounts, switchWorkspaceAccess, updateAuthAccount, updateClubProfile } from '@/lib/api';
 import type { AccountDirectoryUser, AuthSession, ClubStaffInvitation, ClubStaffWorkspaceAccess, CoachInvitation, Membership, RentalListing } from '@/lib/types';
 import { initials, money } from '@/lib/utils';
+import { destroyProductTour, startProductTour } from '@/lib/product-tour';
 
 const inputClass = '!min-h-11 !rounded-xl !border-[#dfe5dd] !px-3.5 !text-sm';
 
@@ -65,6 +66,7 @@ export default function AccountPage() {
   const [coachInvitationError, setCoachInvitationError] = useState('');
   const [staffInvitationError, setStaffInvitationError] = useState('');
   const rentalRequestGenerationRef = useRef(0);
+  const replayTourRef = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -355,11 +357,37 @@ export default function AccountPage() {
     ? state?.memberships.find(membership => membership.businessId === state.business?.id) ?? state?.memberships[0]
     : undefined;
 
+  useEffect(() => {
+    if (loading || state?.user.accountType !== 'COACH') return;
+    const force = replayTourRef.current;
+    replayTourRef.current = false;
+    const timer = window.setTimeout(() => {
+      void startProductTour({
+        kind: 'coach-account',
+        userId: state.user.id,
+        firstName: state.user.name.split(' ')[0],
+      }, { force });
+    }, 300);
+    return () => {
+      window.clearTimeout(timer);
+      destroyProductTour();
+    };
+  }, [loading, state?.user.id]);
+
+  function replayProductTour() {
+    if (!state) return;
+    void startProductTour({
+      kind: 'coach-account',
+      userId: state.user.id,
+      firstName: state.user.name.split(' ')[0],
+    }, { force: true });
+  }
+
   return <main className="min-h-screen bg-[#f6f7f4] px-5 py-6 text-[#1c3029] sm:px-10 sm:py-9">
     <div className="mx-auto max-w-3xl">
       <header className="flex items-center justify-between gap-4">
         <Link href={state?.business && state.accessMode !== 'NONE' ? '/' : state?.user.accountType === 'STUDENT' ? '/manage' : '/account'} aria-label="Courtly home"><CourtlyLogo /></Link>
-        {state && <Button variant="ghost" onClick={() => { void logout(); }}><LogOut size={15} />Sign out</Button>}
+        {state && <div className="flex items-center gap-1">{coachAccount && <Button variant="ghost" onClick={replayProductTour}><HelpCircle size={15} />Take the tour</Button>}<Button variant="ghost" onClick={() => { void logout(); }}><LogOut size={15} />Sign out</Button></div>}
       </header>
 
       <section className="mx-auto mt-12 max-w-2xl sm:mt-20">
@@ -381,7 +409,7 @@ export default function AccountPage() {
 
             <div className="mt-8 space-y-5">
               {error && <p role="alert" className="rounded-xl bg-red-50 p-3 text-xs text-red-700">{error}</p>}
-              <section className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-profile-heading">
+              <section data-tour="account-profile" className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-profile-heading">
                 <div className="flex items-start justify-between gap-3">
                   <div><p className="text-[10px] font-semibold uppercase tracking-[1.5px] text-[#95a085]">{clubAccount ? 'Club account' : 'Personal profile'}</p><h2 id="account-profile-heading" className="mt-1 text-lg text-[#2f4938]">{clubAccount ? 'Club profile' : state.user.name}</h2></div>
                   {!editingProfile && <Button variant="outline" size="sm" onClick={() => { setEditingProfile(true); setError(''); }}><Pencil size={13} />{clubAccount ? 'Edit club profile' : 'Edit personal profile'}</Button>}
@@ -420,7 +448,7 @@ export default function AccountPage() {
 
               <CalendarConnectionCard accountType={state.user.accountType} returnTo="/account" />
 
-              <section className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-workspaces-heading">
+              <section data-tour="account-workspaces" className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-workspaces-heading">
                 <div className="flex items-start gap-3"><ShieldCheck size={18} className="mt-0.5 shrink-0 text-[#6f865f]" /><div><h2 id="account-workspaces-heading" className="text-sm text-[#405941]">{clubAccount ? 'Your club workspace' : 'Your workspace access'}</h2><p className="mt-1 text-[11px] leading-relaxed text-stone-500">{clubAccount ? 'A club account has one club and never switches to another.' : `Clubs can add ${state.user.email} as ${coachAccount ? 'a coach or ' : ''}a named staff member. Your password and account type always remain yours.`}</p></div></div>
 
                 <div className="mt-5 space-y-3">
@@ -434,7 +462,7 @@ export default function AccountPage() {
                 <div className="mt-5 flex flex-wrap justify-center gap-2 border-t border-[#edf0e8] pt-5"><Button variant="outline" disabled={loading || !!switching} onClick={() => { void load(); }}><RefreshCw size={14} />Refresh access</Button>{state.business && state.accessMode !== 'NONE' && <Button disabled={!!switching} onClick={() => { router.replace('/'); router.refresh(); }}>Open current workspace<ArrowRight size={14} /></Button>}{state.user.accountType === 'STUDENT' && <Button variant="outline" asChild><Link href="/manage">Open player app<ArrowRight size={14} /></Link></Button>}</div>
               </section>
 
-              {coachAccount && <section className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-people-heading">
+              {coachAccount && <section data-tour="account-people" className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-people-heading">
                 <div className="flex items-start gap-3"><UsersRound size={19} className="mt-0.5 shrink-0 text-[#6f865f]" /><div><h2 id="account-people-heading" className="text-base text-[#405941]">Find people on Courtly</h2><p className="mt-1 text-xs leading-relaxed text-stone-500">Search players, coaches, and clubs by name, username, or exact email address. Results show public profile details only.</p></div></div>
                 <form className="mt-5 flex flex-col gap-2 sm:flex-row" onSubmit={submitPeopleSearch}>
                   <label htmlFor="account-people-search" className="sr-only">Search all Courtly accounts</label>
@@ -446,7 +474,7 @@ export default function AccountPage() {
                 {people.length > 0 && <ul aria-label="Account search results" className="mt-4 grid gap-2 sm:grid-cols-2">{people.map(person => <li key={person.username} className="min-w-0 rounded-xl border border-[#e4e9df] bg-[#fafbf8] p-3"><div className="flex items-start gap-2.5"><span aria-hidden="true" className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[#e8efe0] text-[11px] font-bold text-[#4f6847]">{initials(person.name)}</span><div className="min-w-0"><p className="truncate text-sm font-semibold text-[#304b39]">{person.name}</p><p className="truncate text-xs text-stone-500">@{person.username} · {person.accountType.toLowerCase()}</p>{person.sports.length > 0 && <p className="truncate text-[11px] text-stone-500">{person.sports.join(', ')}</p>}</div></div></li>)}</ul>}
               </section>}
 
-              {coachAccount && <section className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-rentals-heading">
+              {coachAccount && <section data-tour="account-rentals" className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-rentals-heading">
                 <div className="flex items-start gap-3"><Compass size={19} className="mt-0.5 shrink-0 text-[#6f865f]" /><div><h2 id="account-rentals-heading" className="text-base text-[#405941]">Explore rental venues</h2><p className="mt-1 text-xs leading-relaxed text-stone-500">Find a court or training space even before a club hires you.</p></div></div>
                 <form role="search" aria-label="Filter rental venues" className="mt-5 flex flex-col gap-2 sm:flex-row sm:items-end" onSubmit={submitRentalFilters}>
                   <div className="min-w-0 flex-1"><label htmlFor="account-rental-sport" className="text-xs font-semibold text-[#405941]">Filter rental venues by sport</label><input id="account-rental-sport" type="search" className={`${inputClass} mt-1.5 w-full`} value={rentalSport} onChange={event => setRentalSport(event.target.value)} placeholder="Tennis, badminton, padel…" /></div>
