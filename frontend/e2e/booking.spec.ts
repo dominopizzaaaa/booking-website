@@ -131,6 +131,7 @@ test('student creates an account, books, views history, and cancels', async ({ p
   await page.getByRole('link', { name: 'My bookings', exact: true }).click();
   await expectStudentManageUrl(page, workspace.business.slug);
   await expect(page.getByRole('heading', { name: 'My bookings' })).toBeVisible();
+  await page.getByRole('button', { name: 'Close product tour' }).click();
   const studentNavigation = page.getByRole('navigation', { name: 'Student navigation' });
   await expect(studentNavigation.getByRole('button')).toHaveCount(5);
   await expect(studentNavigation.getByRole('button', { name: 'Home', exact: true })).toHaveAttribute('aria-current', 'page');
@@ -458,6 +459,7 @@ test('club sign-up creates an empty affiliation and sign-in restores it', async 
   await page.getByLabel(/^Password/i).fill(password);
   await page.getByRole('button', { name: 'Create your workspace' }).click();
   await expect(page.getByRole('heading', { name: /Your day, in a good place/ })).toBeVisible();
+  await page.getByRole('button', { name: 'Close product tour' }).click();
   await expect(page.getByText('A few small steps. A whole new rhythm.')).toBeVisible();
   const navigation = await visibleWorkspaceNavigation(page);
   await expect(navigation.getByRole('button')).toHaveCount(5);
@@ -497,6 +499,7 @@ test('self-registered coach is linked to a club by its club account', async ({ p
   await page.getByLabel(/^Password/i).fill(password);
   await page.getByRole('button', { name: 'Create coach account' }).click();
   await expect(page).toHaveURL(/\/account$/);
+  await page.getByRole('button', { name: 'Close product tour' }).click();
   await expect(page.getByRole('heading', { name: 'Welcome, Casey Coach.' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'No club access yet' })).toBeVisible();
   await page.getByRole('button', { name: 'Sign out' }).click();

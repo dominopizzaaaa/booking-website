@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 3.5.5** · Last updated 2026-09-28
+**Version 3.6.0** · Last updated 2026-09-28
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -110,6 +110,7 @@ frontend/          Next.js App Router (TypeScript, Tailwind)
     api.ts         Every API call lives here, typed
     alerts.ts      Alert icon/tone vocabulary shared by both apps
     chat.ts        Chat list/thread wording and grouping helpers
+    product-tour.ts  Versioned Driver.js tours, first-run persistence, visible anchors
     utils.ts       cn, money, dates, initials()
   src/components/
     calendar-connection-card.tsx  Shared student/coach personal integration UI
@@ -627,6 +628,12 @@ duplicated into either alert store.
   second. Anything a person does with a rendered page belongs in
   `frontend/e2e`, where it runs at all three viewports. Do not reach for a
   browser to test a function, and do not assert layout or focus from Vitest.
+- Product tours are versioned per account and role context in
+  `frontend/src/lib/product-tour.ts`. New signups set a session hint, unseen
+  tour versions launch after their destination shell is ready, and Profile
+  keeps a replay action. Add stable `data-tour` hooks to semantic containers,
+  resolve the visible duplicate at runtime, and keep missing anchors skippable
+  so permission- and data-dependent UI never strands the tour.
 - Margin utilities on `p`, `h1`, `h2` and `h3` need the `!` modifier
   (`!mt-2`): the unlayered reset in `globals.css` outranks Tailwind's layered
   utilities, so a plain `mt-2` on those elements computes to zero.

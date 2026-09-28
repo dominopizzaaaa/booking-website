@@ -149,6 +149,7 @@ test.describe('every screen fits the screen it is on', () => {
 
     await expect(page).toHaveURL(url => url.pathname === '/manage');
     await expect(page.getByRole('heading', { name: 'My bookings', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Close product tour' }).click();
     await checkScreen(page, isPhone);
 
     const studentNavigation = page.getByRole('navigation', { name: 'Student navigation' });

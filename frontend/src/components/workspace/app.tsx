@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { ApiError, loadAuthSession, loadBooking, loadWorkspace, mutate, openBookingChat, searchAccounts, switchWorkspaceAccess } from '@/lib/api';
 import { alertsButtonLabel, chatBadge, chatTabLabel } from '@/lib/chat';
+import { destroyProductTour, startProductTour, type ProductTourContext } from '@/lib/product-tour';
 import type { AccountDirectoryUser, ClubPermission, ClubStaffWorkspaceAccess, Membership, WorkspaceResponse } from '@/lib/types';
 import { cn, initials, shortDate } from '@/lib/utils';
 import { ChatInbox } from '@/components/chat/chat-inbox';
@@ -94,6 +95,16 @@ function accessMode(data: WorkspaceResponse) {
   return data.accessMode ?? (data.user.accountType === 'CLUB' ? 'CLUB_ACCOUNT' : 'COACH');
 }
 
+function workspaceTourContext(data: WorkspaceResponse): ProductTourContext {
+  const mode = accessMode(data);
+  return {
+    kind: mode === 'COACH' ? 'workspace-coach' : mode === 'STAFF' ? 'workspace-staff' : 'workspace-club',
+    userId: data.user.id,
+    firstName: data.user.name.split(' ')[0],
+    businessName: data.business.name,
+  };
+}
+
 function canAccessWorkspaceView(data: WorkspaceResponse, view: string) {
   if (accessMode(data) !== 'STAFF') {
     return !isExploreView(view) || canAccessExploreView({ accountType: data.user.accountType, businessKind: data.business.kind }, view);
@@ -115,8 +126,8 @@ const staffToolDescriptions: Partial<Record<string, string>> = {
 function StaffLanding({ data, onNavigate, home }: { data: WorkspaceResponse; onNavigate: (view: string) => void; home: boolean }) {
   const tools = Object.keys(staffViewPermissions).filter(view => view !== 'settings' && canAccessWorkspaceView(data, view));
   return <section className="mx-auto max-w-5xl" aria-labelledby="staff-workspace-title">
-    <header className="section-heading"><div><p className="eyebrow">Named staff access</p><h1 id="staff-workspace-title" className="mt-2">{home ? `Welcome, ${data.user.name.split(' ')[0]}.` : 'Your club tools'}</h1><p className="mt-2 max-w-2xl text-xs leading-relaxed text-stone-500">You are working in {data.business.name} as named staff. The tools below reflect the permissions assigned by the club.</p></div></header>
-    {tools.length ? <div className="workspace-explore-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{tools.map(tool => <button key={tool} type="button" className="workspace-explore-card group min-h-32 rounded-2xl border border-[#e2e8df] bg-white p-5 text-left transition hover:-translate-y-0.5 hover:border-[#cbd8c5] hover:shadow-sm" onClick={() => onNavigate(tool)}><span className="grid h-9 w-9 place-items-center rounded-xl bg-[#edf2e7] text-[#66805a]"><Compass size={17} /></span><span className="mt-4 block text-sm font-semibold text-[#294735]">{viewTitles[tool] ?? tool}</span><span className="mt-2 block text-[11px] leading-relaxed text-stone-500">{staffToolDescriptions[tool]}</span></button>)}</div> : <div className="rounded-2xl border border-[#e2e8df] bg-white p-6 text-sm text-stone-500">This role does not currently include any workspace tools. Ask the club account to review your staff access.</div>}
+    <header data-tour="workspace-home" className="section-heading"><div><p className="eyebrow">Named staff access</p><h1 id="staff-workspace-title" className="mt-2">{home ? `Welcome, ${data.user.name.split(' ')[0]}.` : 'Your club tools'}</h1><p className="mt-2 max-w-2xl text-xs leading-relaxed text-stone-500">You are working in {data.business.name} as named staff. The tools below reflect the permissions assigned by the club.</p></div></header>
+    <div data-tour="workspace-staff-tools">{tools.length ? <div className="workspace-explore-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{tools.map(tool => <button key={tool} type="button" className="workspace-explore-card group min-h-32 rounded-2xl border border-[#e2e8df] bg-white p-5 text-left transition hover:-translate-y-0.5 hover:border-[#cbd8c5] hover:shadow-sm" onClick={() => onNavigate(tool)}><span className="grid h-9 w-9 place-items-center rounded-xl bg-[#edf2e7] text-[#66805a]"><Compass size={17} /></span><span className="mt-4 block text-sm font-semibold text-[#294735]">{viewTitles[tool] ?? tool}</span><span className="mt-2 block text-[11px] leading-relaxed text-stone-500">{staffToolDescriptions[tool]}</span></button>)}</div> : <div className="rounded-2xl border border-[#e2e8df] bg-white p-6 text-sm text-stone-500">This role does not currently include any workspace tools. Ask the club account to review your staff access.</div>}</div>
   </section>;
 }
 
@@ -174,7 +185,6 @@ export default function WorkspaceApp() {
   const [accountSearchLoading, setAccountSearchLoading] = useState(false);
   const [accountSearchError, setAccountSearchError] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
-  const [helpOpen, setHelpOpen] = useState(false);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [switchingAccessId, setSwitchingAccessId] = useState<string | null>(null);
@@ -183,6 +193,7 @@ export default function WorkspaceApp() {
   const initialized = useRef(false);
   const routedBusinessId = useRef<string | null>(null);
   const mainRef = useRef<HTMLElement>(null);
+  const replayTourRef = useRef(false);
   const { unreadThreads: chatUnread, beginUnreadRequest, commitUnreadNow } = useChatUnread(!!data);
 
   const refresh = useCallback(async () => {
@@ -247,7 +258,6 @@ export default function WorkspaceApp() {
       setSearchOpen(false);
       setSearch('');
       setCreateOpen(false);
-      setHelpOpen(false);
       setProfileEditorOpen(false);
       setWorkspaceOpen(false);
       if (window.location.pathname !== '/') return;
@@ -294,6 +304,19 @@ export default function WorkspaceApp() {
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
   }, []);
+
+  useEffect(() => {
+    if (!data || view !== 'overview') return;
+    const force = replayTourRef.current;
+    replayTourRef.current = false;
+    const timer = window.setTimeout(() => {
+      void startProductTour(workspaceTourContext(data), { force });
+    }, 300);
+    return () => {
+      window.clearTimeout(timer);
+      destroyProductTour();
+    };
+  }, [data?.business.id, data?.user.id, view]);
 
   useEffect(() => {
     const query = search.trim();
@@ -433,7 +456,6 @@ export default function WorkspaceApp() {
       setSearch('');
       setSearchOpen(false);
       setCreateOpen(false);
-      setHelpOpen(false);
       setProfileEditorOpen(false);
       await refresh();
       toast.success(`Switched to ${auth.business.name}`);
@@ -486,19 +508,16 @@ export default function WorkspaceApp() {
   const primaryTab = primaryTabForView(view);
   const searchResults = search.trim().length > 0 ? data.students.filter(student => `${student.name} ${student.email}`.toLowerCase().includes(search.toLowerCase())).slice(0, 5) : [];
   const bookingResults = search.trim().length > 0 ? data.bookings.filter(booking => `${booking.serviceName} ${booking.locationName} ${booking.participants.map(participant => participant.name).join(' ')}`.toLowerCase().includes(search.toLowerCase())).slice(0, 5) : [];
-  const helpSteps = isCoach
-    ? [
-        ['1', 'Review your schedule', 'Use Calendar and Bookings to see your assigned lessons, times, students, and venue status.'],
-        ['2', 'Know your students', 'Open Students to review the players assigned to you and the context you need for each lesson.'],
-        ['3', 'Set your availability', 'Shape your weekly teaching hours and block dates when you are away.'],
-        ['4', 'Record attendance', 'Open a booking after the lesson to mark each student as attended or a no-show.'],
-      ]
-    : [
-        ['1', 'Make yourself at home', 'Add the places your coaches teach, then create your classes. Set duration, pricing, and coaches for each location.'],
-        ['2', 'Give your week some shape', 'Set location-specific working hours in Availability. Travel buffers protect time between venues; blocked dates keep your days off clear.'],
-        ['3', 'Let the bookings come to you', 'Share your booking link. Students see only available slots. Recurring lessons are checked together, so conflicts never silently slip through.'],
-        ['4', 'Keep the real world in the loop', 'A pending class holds coach time, but does not reserve a court. Secure an external venue separately, then confirm it. Students can review the club’s available payment options from My bookings.'],
-      ];
+  function replayProductTour() {
+    if (!data) return;
+    replayTourRef.current = true;
+    if (view === 'overview') {
+      replayTourRef.current = false;
+      void startProductTour(workspaceTourContext(data), { force: true });
+    } else {
+      navigate('overview');
+    }
+  }
 
   const primaryNavigation = [
     { id: 'home' as const, label: 'Home', icon: House, action: () => navigate('overview') },
@@ -515,9 +534,9 @@ export default function WorkspaceApp() {
       {clubAccount
         ? <div className="workspace-switch text-left"><span className="business-avatar">{initials(data.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-[11px] font-semibold">{data.business.name}</span><span className="mt-1 block text-[9px] text-[#59675c]">{data.business.isDemo ? 'Demo workspace' : 'Club account'}</span></span></div>
         : <button className="workspace-switch text-left" aria-haspopup="dialog" onClick={() => setWorkspaceOpen(true)}><span className="business-avatar">{initials(data.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-[11px] font-semibold">{data.business.name}</span><span className="mt-1 block text-[9px] text-[#59675c]">{data.business.isDemo ? 'Demo workspace' : workspaceAccessCount > 1 ? `${workspaceAccessCount} workspace roles` : isStaff ? 'Staff workspace' : 'Coach workspace'}</span></span><ChevronsUpDown size={12} className="text-[#59675c]" /></button>}
-      <nav className="workspace-primary-nav workspace-primary-nav-desktop mt-5 flex-1" aria-label="Primary">
+      <nav data-tour="workspace-navigation" className="workspace-primary-nav workspace-primary-nav-desktop mt-5 flex-1" aria-label="Primary">
         {primaryNavigation.slice(0, 2).map(item => <button key={item.id} type="button" className={`nav-link workspace-primary-tab workspace-primary-tab-${item.id} ${primaryTab === item.id ? 'active' : ''}`} aria-current={primaryTab === item.id ? 'page' : undefined} onClick={item.action}><item.icon size={18} strokeWidth={1.65} /><span>{item.label}</span></button>)}
-        {canCreateBooking && <button type="button" className="nav-link workspace-primary-tab workspace-primary-tab-create" aria-haspopup="dialog" aria-expanded={isCoach ? bookingOpen : createOpen} onClick={() => isCoach ? setBookingOpen(true) : setCreateOpen(true)}><Plus size={19} strokeWidth={1.8} /><span>{isCoach ? 'Book' : 'Create'}</span></button>}
+        {canCreateBooking && <button data-tour="workspace-create" type="button" className="nav-link workspace-primary-tab workspace-primary-tab-create" aria-haspopup="dialog" aria-expanded={isCoach ? bookingOpen : createOpen} onClick={() => isCoach ? setBookingOpen(true) : setCreateOpen(true)}><Plus size={19} strokeWidth={1.8} /><span>{isCoach ? 'Book' : 'Create'}</span></button>}
         {primaryNavigation.slice(2).map(item => <button key={item.id} type="button" className={`nav-link workspace-primary-tab workspace-primary-tab-${item.id} ${primaryTab === item.id ? 'active' : ''}`} aria-current={primaryTab === item.id ? 'page' : undefined} aria-label={item.id === 'chat' ? chatTabLabel(chatUnread) : undefined} onClick={item.action}><item.icon size={18} strokeWidth={1.65} /><span>{item.label}</span>{item.id === 'chat' && chatUnread > 0 && <span className="nav-count workspace-tab-badge !bg-[#b3483a] !text-white" aria-hidden="true">{chatBadge(chatUnread)}</span>}</button>)}
       </nav>
       <div className="sidebar-bottom">
@@ -560,16 +579,16 @@ export default function WorkspaceApp() {
                 : 'Message students and clubs, or use + in a schedulable conversation to propose a session.',
             }}
           />
-          : view === 'profile' ? <ProfileView data={data} onEditProfile={() => setProfileEditorOpen(true)} onSwitchWorkspace={() => setWorkspaceOpen(true)} onBusinessSettings={() => navigate('settings')} onHelp={() => setHelpOpen(true)} onSignOut={() => void signOut()} onNavigate={navigate} />
+          : view === 'profile' ? <ProfileView data={data} onEditProfile={() => setProfileEditorOpen(true)} onSwitchWorkspace={() => setWorkspaceOpen(true)} onBusinessSettings={() => navigate('settings')} onHelp={replayProductTour} onSignOut={() => void signOut()} onNavigate={navigate} />
           : view === 'calendar' || view === 'bookings' ? <CalendarView key={`${data.business.id}:${view}`} data={data} onNew={() => setBookingOpen(true)} onBooking={bookingId => void openBookingById(bookingId)} listOnly={view === 'bookings'} />
           : <ManagementView key={`${data.business.id}:${view}`} view={view} data={data} refresh={refresh} />}
       </main>
     </div>
 
-    <nav className="mobile-bottom workspace-primary-nav workspace-primary-nav-mobile" aria-label="Mobile navigation">
+    <nav data-tour="workspace-navigation" className="mobile-bottom workspace-primary-nav workspace-primary-nav-mobile" aria-label="Mobile navigation">
       <button type="button" className={`workspace-primary-tab workspace-primary-tab-home ${primaryTab === 'home' ? 'active' : ''}`} aria-current={primaryTab === 'home' ? 'page' : undefined} onClick={() => navigate('overview')}><House size={20} strokeWidth={1.7} /><span>Home</span></button>
       <button type="button" className={`workspace-primary-tab workspace-primary-tab-explore ${primaryTab === 'explore' ? 'active' : ''}`} aria-current={primaryTab === 'explore' ? 'page' : undefined} onClick={() => navigate('explore')}><Compass size={20} strokeWidth={1.7} /><span>Explore</span></button>
-      {canCreateBooking && <button type="button" className="mobile-bottom-new workspace-primary-tab workspace-primary-tab-create" aria-label={isCoach ? 'Book' : 'Create'} aria-haspopup="dialog" aria-expanded={isCoach ? bookingOpen : createOpen} onClick={() => isCoach ? setBookingOpen(true) : setCreateOpen(true)}><span className="mobile-bottom-new-icon"><Plus size={23} strokeWidth={2} /></span><span>{isCoach ? 'Book' : 'Create'}</span></button>}
+      {canCreateBooking && <button data-tour="workspace-create" type="button" className="mobile-bottom-new workspace-primary-tab workspace-primary-tab-create" aria-label={isCoach ? 'Book' : 'Create'} aria-haspopup="dialog" aria-expanded={isCoach ? bookingOpen : createOpen} onClick={() => isCoach ? setBookingOpen(true) : setCreateOpen(true)}><span className="mobile-bottom-new-icon"><Plus size={23} strokeWidth={2} /></span><span>{isCoach ? 'Book' : 'Create'}</span></button>}
       <button type="button" className={`workspace-primary-tab workspace-primary-tab-chat relative ${primaryTab === 'chat' ? 'active' : ''}`} aria-current={primaryTab === 'chat' ? 'page' : undefined} aria-label={chatTabLabel(chatUnread)} onClick={() => navigate('chat')}><MessageCircle size={20} strokeWidth={1.7} aria-hidden="true" /><span>Chat</span>{chatUnread > 0 && <span className="workspace-tab-badge absolute right-[24%] top-1.5 grid h-4 min-w-4 place-items-center rounded-full border-2 border-white bg-[#b3483a] px-0.5 text-[8px] font-bold leading-none text-white" aria-hidden="true">{chatBadge(chatUnread)}</span>}</button>
       <button type="button" className={`workspace-primary-tab workspace-primary-tab-profile ${primaryTab === 'profile' ? 'active' : ''}`} aria-current={primaryTab === 'profile' ? 'page' : undefined} onClick={() => navigate('profile')}><UserRound size={20} strokeWidth={1.7} /><span>Profile</span></button>
     </nav>
@@ -580,8 +599,6 @@ export default function WorkspaceApp() {
     <PersonalProfileDialog open={profileEditorOpen} onOpenChange={setProfileEditorOpen} user={data.user} refresh={refresh} />
 
     <Dialog open={searchOpen} onOpenChange={setSearchOpen}><DialogContent><DialogTitle className="text-lg font-semibold">Search workspace</DialogTitle><DialogDescription className="mt-2 text-xs text-stone-400">Search Courtly people by name, username, or exact email, alongside local students and bookings.</DialogDescription><div className="relative mt-5"><Search className="absolute left-3 top-3 text-stone-400" size={17} /><input aria-label="Search people, students, and bookings" autoFocus value={search} onChange={event => setSearch(event.target.value)} placeholder="Name, username, exact email, or booking…" className="!pl-10" /></div><div className="mt-4 max-h-80 space-y-1 overflow-y-auto" aria-live="polite" aria-busy={accountSearchLoading}>{accountResults.map(account => <div key={account.username} className="flex w-full items-center gap-3 rounded-lg p-3 text-left"><UserRound size={16} className="shrink-0 text-stone-400" /><span className="min-w-0 flex-1 text-xs"><span className="block truncate">{account.name}</span><span className="mt-1 block truncate text-[10px] text-stone-400">@{account.username}{account.sports.length ? ` · ${account.sports.join(', ')}` : ''}</span></span><span className="text-[9px] font-semibold uppercase tracking-wide text-stone-400">{account.accountType.toLowerCase()}</span></div>)}{searchResults.map(student => <button key={student.id} className="flex w-full items-center gap-3 rounded-lg p-3 text-left hover:bg-stone-50" onClick={() => { navigate('students'); setSearchOpen(false); }}><Users size={16} className="text-stone-400" /><span className="text-xs">{student.name}<span className="mt-1 block text-[10px] text-stone-400">Local student · {student.email}</span></span></button>)}{bookingResults.map(booking => <button key={booking.id} className="flex w-full items-center gap-3 rounded-lg p-3 text-left hover:bg-stone-50" onClick={() => { setSelectedBookingId(booking.id); setSearchOpen(false); }}><CalendarDays size={16} className="text-stone-400" /><span className="text-xs">{booking.serviceName}<span className="mt-1 block text-[10px] text-stone-400">{booking.locationName} · {shortDate(booking.startAt)}</span></span></button>)}{accountSearchLoading && <p className="flex items-center justify-center gap-2 py-3 text-xs text-stone-400"><Loader2 size={14} className="animate-spin" />Searching people…</p>}{accountSearchError && <p role="alert" className="rounded-lg bg-red-50 p-3 text-xs text-red-700">{accountSearchError}</p>}{search && !accountSearchLoading && !accountResults.length && !bookingResults.length && !searchResults.length && <p className="py-7 text-center text-xs text-stone-400">No matches just yet. Try another search.</p>}{!search && <p className="py-5 text-center text-xs text-stone-400">Tip: press Ctrl/Command+K to search from anywhere.</p>}</div></DialogContent></Dialog>
-
-    <Dialog open={helpOpen} onOpenChange={setHelpOpen}><DialogContent><DialogTitle className="text-lg font-semibold">{isCoach ? 'Help with your coaching workspace' : 'A little help to get going'}</DialogTitle><DialogDescription className="mt-2 text-xs text-stone-400">{isCoach ? 'Your schedule, students, availability, and attendance—all in one place.' : 'Less admin. More time doing what you love.'}</DialogDescription><div className="mt-6 space-y-5 text-xs leading-relaxed">{helpSteps.map(([number, heading, body]) => <div className="flex gap-3" key={number}><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#edf2e5] text-[#7e926c]">{number}</span><div><h3>{heading}</h3><p className="mt-1 text-stone-500">{body}</p></div></div>)}</div></DialogContent></Dialog>
 
     <Dialog open={workspaceOpen && !clubAccount} onOpenChange={open => { if (!switchingAccessId) setWorkspaceOpen(open); }}><DialogContent onEscapeKeyDown={event => { if (switchingAccessId) event.preventDefault(); }} onPointerDownOutside={event => { if (switchingAccessId) event.preventDefault(); }}><DialogTitle className="text-lg font-semibold">Switch workspace</DialogTitle><DialogDescription className="mt-2 text-xs leading-relaxed text-stone-500">Choose a coach affiliation or named staff role. Switching roles never changes your personal account type.</DialogDescription><div className="mt-5 space-y-2">
       {clubMemberships.map(membership => { const current = mode === 'COACH' && membership.id === data.membership?.id; const key = `MEMBERSHIP:${membership.id}`; return <button key={key} type="button" disabled={!!switchingAccessId || current} aria-current={current ? 'true' : undefined} onClick={() => void switchWorkspace('MEMBERSHIP', membership)} className={`flex min-h-16 w-full items-center gap-3 rounded-xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-55 ${current ? 'border-[#cbd9bf] bg-[#f0f5e9]' : 'border-[#e3e8df] hover:bg-[#f8faf6]'}`}><span className="business-avatar shrink-0">{initials(membership.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-semibold text-[#344b39]">{membership.business.name}</span><span className="mt-1 block text-[10px] text-stone-500">Coach affiliation</span></span>{switchingAccessId === key ? <Loader2 size={16} className="shrink-0 animate-spin text-[#69805e]" /> : current ? <span className="flex items-center gap-1 text-[10px] font-semibold text-[#66805a]"><Check size={13} />Current</span> : null}</button>; })}

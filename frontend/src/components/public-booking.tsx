@@ -59,6 +59,7 @@ import type {
   Service,
   Slot,
 } from "@/lib/types";
+import { markProductTourPending } from "@/lib/product-tour";
 import { cn, coversWeeklyOccurrences, dateKey, money, shortDate, time } from "@/lib/utils";
 
 const button =
@@ -232,6 +233,7 @@ function StudentAccountAccess({
                 ? { parentName: values.parentName.trim() }
                 : {}),
             });
+      if (mode === "register") markProductTourPending(session.user.id);
       onAuthenticated(session);
     } catch (err) {
       setError(messageOf(err));

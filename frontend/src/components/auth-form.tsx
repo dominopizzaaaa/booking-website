@@ -8,6 +8,7 @@ import { api, loginAccount, registerAccount } from '@/lib/api';
 import { CourtlyLogo } from '@/components/public-booking';
 import type { AccountType, AuthSession } from '@/lib/types';
 import { cn } from '@/lib/utils';
+import { markProductTourPending } from '@/lib/product-tour';
 
 const accountOptions: Array<{ value: AccountType; label: string }> = [
   { value: 'CLUB', label: 'Club or academy' },
@@ -131,6 +132,7 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
       const result = signup
         ? await registerAccount({ accountType: accountType!, ...(accountType === 'CLUB' ? { businessName: values.businessName.trim() } : {}), name: values.name.trim(), username, sports: sports!, email: values.email.trim(), password: values.password })
         : await loginAccount({ email: values.email.trim(), password: values.password });
+      if (signup) markProductTourPending(result.user.id);
       router.replace(destinationFor(result, redirect?.destination ?? null)); router.refresh();
     } catch (err) { setError(err instanceof Error ? err.message : 'We couldn’t sign you in. Please try again.'); setErrorField(null); setBusy(null); }
   }
