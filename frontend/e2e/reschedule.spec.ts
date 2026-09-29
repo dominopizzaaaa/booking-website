@@ -3,6 +3,7 @@ import type {
   AccountBooking,
   ManagerWorkspace,
 } from '../src/lib/types';
+import { currentLegalAcceptance } from './legal-acceptance';
 
 const password = 'TestingOnly!2026';
 const timezone = 'Asia/Singapore';
@@ -133,7 +134,7 @@ async function createJourney(page: Page, projectName: string, label: string): Pr
   const studentEmail = `${runId}@example.test`;
 
   await responseJson(await page.request.post('/api/auth/register', {
-    data: { accountType: 'STUDENT', name: studentName, username: `rs_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: studentEmail, password, dateOfBirth: '1990-01-01' },
+    data: { accountType: 'STUDENT', name: studentName, username: `rs_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: studentEmail, password, dateOfBirth: '1990-01-01', ...currentLegalAcceptance },
   }));
   await logout(page);
 

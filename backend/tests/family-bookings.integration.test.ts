@@ -24,7 +24,7 @@ describe.sequential('guardian-authorized child bookings', () => {
     const user = await createAccount(fixture, { name, accountType });
     await prisma.user.update({
       where: { id: user.id },
-      data: { dateOfBirth: new Date('1990-01-01T00:00:00.000Z') },
+      data: { dateOfBirth: new Date('1990-01-01T00:00:00.000Z'), emailVerifiedAt: new Date() },
     });
     return { user: await prisma.user.findUniqueOrThrow({ where: { id: user.id } }), ...(await createSession(fixture, user.id)) };
   }

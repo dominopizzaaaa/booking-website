@@ -18,7 +18,14 @@ export type AccountCapabilities = {
 };
 /** New commerce belongs to clubs; SOLO remains only as a historical wire value. */
 export type BusinessKind = 'CLUB' | 'SOLO';
-export type Business = { id: string; name: string; slug: string; ownerName: string; email: string; timezone: string; currency: string; color: string; tagline: string; cancellationHours: number; kind: BusinessKind; isDemo: boolean; legacyReadOnly?: boolean };
+export type GstRegistrationStatus = 'NOT_DECLARED' | 'NOT_REGISTERED' | 'REGISTERED';
+export type Business = {
+  id: string; name: string; slug: string; ownerName: string; email: string; timezone: string; currency: string;
+  color: string; tagline: string; cancellationHours: number; kind: BusinessKind; isDemo: boolean; legacyReadOnly?: boolean;
+  /** Optional only while older workspace payloads and retained fixtures roll forward. */
+  legalName?: string; registrationNumber?: string | null; supportEmail?: string; supportAddress?: string;
+  gstRegistrationStatus?: GstRegistrationStatus; gstRegistrationNumber?: string | null; pricesIncludeGst?: boolean | null;
+};
 /** username and sports are optional only while old fixtures or servers roll forward. */
 export type AccountUser = {
   id: string; name: string; username?: string; email: string | null; accountType: AccountType; sports?: string[]; phone?: string; parentName?: string;
@@ -26,6 +33,12 @@ export type AccountUser = {
   accountStatus?: AccountStatus | null; profileVisibility?: ProfileVisibility | null;
   ageBand?: AgeBand | null; needsAgeReview?: boolean; requiredAction?: AccountRequiredAction | null;
   capabilities?: AccountCapabilities;
+  emailVerified?: boolean;
+  signupEvidence?: {
+    termsVersion: string | null; termsAcceptedAt: string | null;
+    privacyPolicyVersion: string | null; privacyNoticeAcknowledgedAt: string | null;
+    policySetHash?: string | null;
+  };
 };
 export type WorkspaceUser = Omit<AccountUser, 'email'> & { email: string; instructorId: string | null };
 /** A membership is an affiliation; permissions come from the account and business kinds. */
@@ -42,7 +55,7 @@ export type ClubPermission =
   | 'ROSTER_MANAGE' | 'PACKAGES_VIEW' | 'PACKAGES_MANAGE' | 'PAYMENTS_VIEW'
   | 'PAYMENTS_RECORD' | 'PAYMENTS_REVERSE' | 'PAYOUTS_RECORD' | 'INTEGRITY_VIEW'
   | 'INTEGRITY_REVIEW' | 'RENTALS_VIEW' | 'RENTALS_MANAGE' | 'SETTINGS_MANAGE'
-  | 'STAFF_MANAGE' | 'AUDIT_VIEW';
+  | 'STAFF_MANAGE' | 'AUDIT_VIEW' | 'SAFEGUARDING_VIEW' | 'SAFEGUARDING_REVIEW';
 export type ClubAccessLevel = 'ADMINISTRATOR' | 'OPERATIONS' | 'FRONT_DESK' | 'FINANCE' | 'SAFEGUARDING' | 'READ_ONLY' | 'CUSTOM';
 export type ClubStaffAccess = {
   id: string; businessId: string; userId: string; name: string; username: string; email: string;
@@ -106,8 +119,42 @@ export function isFamilyConsentRenewalChild(child: FamilyChildEntry): child is F
   return child.access === 'CONSENT_RENEWAL';
 }
 export type FamilyResponse = {
-  guardian: { eligible: boolean; reason: AccountRequiredAction | null };
+  guardian: { eligible: boolean; emailVerified?: boolean; reason: AccountRequiredAction | null };
   children: FamilyChildEntry[]; privacyPolicyVersion: string; handoverAvailable: boolean;
+};
+export type PrivacyRequestType = 'ACCESS' | 'CORRECTION' | 'DELETION' | 'CONSENT_WITHDRAWAL' | 'RESTRICTION' | 'OBJECTION';
+export type PrivacyRequestStatus = 'RECEIVED' | 'IDENTITY_VERIFICATION' | 'IN_REVIEW' | 'WAITING_FOR_SUBJECT' | 'COMPLETED' | 'PARTIALLY_COMPLETED' | 'REFUSED' | 'CANCELLED';
+export type PrivacyRequestDecision = 'FULFILLED' | 'PARTIALLY_FULFILLED' | 'REFUSED' | 'WITHDRAWN_BY_SUBJECT';
+export type PrivacyRequest = {
+  id: string; type: PrivacyRequestType; status: PrivacyRequestStatus; details: string;
+  correctionFields: Record<string, string> | null; submittedAt: string; acknowledgementDueAt: string;
+  responseDueAt: string; overdue: boolean; acknowledgedAt: string | null; identityVerifiedAt: string | null;
+  delayNoticeAt: string | null; delayReason: string | null; estimatedResponseAt: string | null;
+  decision: PrivacyRequestDecision | null; decisionReason: string | null; completedAt: string | null;
+  cancelledAt: string | null; updatedAt: string; legalHold?: boolean; legalHoldReason?: string | null;
+};
+export type PrivacyRequestInput = {
+  type: PrivacyRequestType; details?: string; correctionFields?: Record<string, string>;
+  acknowledgeConsequences?: true;
+};
+export type PrivacyRequestPage<T = PrivacyRequest> = { requests: T[]; nextCursor: string | null };
+export type PrivacyRequestEvent = {
+  id: string; action: string; actorKind: 'SUBJECT' | 'GUARDIAN' | 'OPERATOR' | 'SYSTEM';
+  actorNameSnapshot: string; actorEmailSnapshot: string;
+  fromStatus: PrivacyRequestStatus | null; toStatus: PrivacyRequestStatus | null; note: string;
+  metadata: { externalAuditReference?: string; identityVerified?: boolean; delayNotified?: boolean; legalHold?: boolean; decision?: PrivacyRequestDecision | null } | null;
+  createdAt: string;
+};
+export type PrivacyRequestEventPage = { events: PrivacyRequestEvent[]; nextCursor: string | null };
+export type AdminPrivacyRequest = PrivacyRequest & {
+  legalHold: boolean; legalHoldReason: string | null;
+  subject: { name: string; username: string; email: string | null; emailVerifiedAt: string | null };
+};
+export type PrivacyOperatorStatus = Exclude<PrivacyRequestStatus, 'CANCELLED'>;
+export type PrivacyOperatorUpdate = {
+  status: PrivacyOperatorStatus; note: string; externalAuditReference: string; identityVerified?: boolean;
+  delayReason?: string; estimatedResponseAt?: string; legalHold?: boolean; legalHoldReason?: string;
+  decision?: PrivacyRequestDecision; decisionReason?: string;
 };
 /** Privacy-minimal child projection used only to choose who a guardian is booking for. */
 export type FamilyBookingChild = { id: string; displayName: string; username: string };
@@ -337,12 +384,44 @@ export type AccountPackage = {
 };
 export type SimulatedPaymentOutcome = 'SUCCEEDED' | 'FAILED';
 export type PaymentIntentStatus = 'REQUIRES_CONFIRMATION' | 'PROCESSING' | SimulatedPaymentOutcome | 'CANCELLED' | 'REFUNDED';
-export type CheckoutInput = { idempotencyKey: string; simulatedOutcome: SimulatedPaymentOutcome };
+export type CheckoutKind = 'PACKAGE' | 'BOOKING' | 'RENTAL';
+export type CheckoutPolicyKind = 'TERMS' | 'CANCELLATION_REFUNDS' | 'PACKAGE_TERMS';
+export type CheckoutAcceptance = {
+  accepted: true; reviewHash: string; termsVersion: string; cancellationRefundPolicyVersion: string;
+  packageTermsVersion: string | null;
+};
+export type CheckoutReview = {
+  reviewHash: string;
+  kind: CheckoutKind;
+  merchant: {
+    businessId: string; tradingName: string; legalName: string; registrationNumber: string | null;
+    supportEmail: string; supportAddress: string;
+    gstRegistrationStatus: 'NOT_DECLARED' | 'NOT_REGISTERED' | 'REGISTERED';
+    gstRegistrationNumber: string | null; pricesIncludeGst: boolean | null; identityReady: boolean; missingFields: string[];
+  };
+  platform: { name: 'Courtly'; role: string };
+  purchaser: { name: string; email: string };
+  item: {
+    label: string; description: string | null; serviceName: string | null; coachName: string | null;
+    venueName: string | null; venueAddress: string | null; startAt: string | null; endAt: string | null;
+    timezone: string | null; totalCredits: number | null; validityDays: number | null; scopeNames: string[];
+  };
+  amount: number;
+  currency: string;
+  cancellation: { deadline: string | null; rule: string };
+  policies: Array<{ kind: CheckoutPolicyKind; version: string; hash: string; path: string; label: string }>;
+};
+export type CheckoutInput = {
+  idempotencyKey: string; simulatedOutcome: SimulatedPaymentOutcome; acceptance: CheckoutAcceptance;
+};
 export type PaymentCapabilities = {
   mode: 'disabled' | 'stripe' | 'simulated'; enabled: boolean; liveCheckout: boolean; simulatedCheckout: boolean;
   publishableKey: string | null;
+  blockedReasons?: Array<'LEGAL_DOCUMENTS_NOT_APPROVED' | 'PAYMENT_COMMERCIAL_NOT_APPROVED'>;
 };
-export type LiveCheckoutInput = { kind: 'PACKAGE' | 'BOOKING'; targetId: string; idempotencyKey: string };
+export type LiveCheckoutInput = {
+  kind: 'PACKAGE' | 'BOOKING'; targetId: string; idempotencyKey: string; acceptance: CheckoutAcceptance;
+};
 export type PaymentIntent = {
   id: string; kind?: 'PACKAGE' | 'BOOKING' | 'RENTAL'; amount: number; currency: string; status: PaymentIntentStatus;
   provider?: string; providerReference?: string; idempotencyKey?: string; failureCode?: string | null;
@@ -445,7 +524,17 @@ export type SessionProposal = {
 export type ChatMessage = {
   id: string; kind: 'TEXT' | 'SYSTEM' | 'PROPOSAL'; event: string | null; senderRole: ChatRole | 'SYSTEM';
   senderName: string; body: string; createdAt: string; mine: boolean; proposalId: string | null;
-  proposal?: SessionProposal | null;
+  proposal?: SessionProposal | null; canReport: boolean; reportedByViewer: boolean;
+};
+export type ChatSafety = {
+  canReport: boolean; blockTarget: { name: string; username: string } | null;
+  blockedByViewer: boolean; messagingBlocked: boolean; canBlock: boolean; canUnblock: boolean;
+  reason: ChatMessaging['reason'];
+};
+export type ChatMessaging = {
+  blocked: boolean; blockedByViewer: boolean; canBlock: boolean; canUnblock: boolean;
+  reason: null | 'BLOCKED' | 'ACCOUNT_CHAT_RESTRICTED';
+  blockTarget: { name: string; username: string } | null;
 };
 export type ChatThreadContext =
   | { kind: 'SESSION'; bookingId: string; session: ChatSession; conversation: ChatConversation }
@@ -465,6 +554,71 @@ export type ChatThreadList = {
 };
 export type ChatThreadDetail = ChatThreadBase & ChatThreadContext & {
   viewer: { role: ChatViewerRole; canPost: boolean; canPropose: boolean; canAssignCoach: boolean };
-  messages: ChatMessage[]; hasEarlier: boolean;
+  messages: ChatMessage[]; hasEarlier: boolean; safety: ChatSafety;
 };
 export type ChatProposalAction = 'accept' | 'decline' | 'withdraw';
+export type ChatReportCategory = 'GROOMING_SEXUAL' | 'HARASSMENT' | 'SELF_HARM_IMMEDIATE_DANGER' | 'SPAM_OTHER';
+export type ChatReportInput = { category: ChatReportCategory; description?: string; messageId?: string };
+export type ChatReportReceipt = {
+  id: string; category: ChatReportCategory; status: SafeguardingReportStatus; severity: SafeguardingReportSeverity;
+  childInvolved: boolean; createdAt: string;
+};
+export type ChatReportConfirmation = {
+  report: ChatReportReceipt;
+  guidance?: {
+    immediateDanger: true;
+    police: { label: 'Singapore Police'; phone: '999' };
+    policeSms: { label: 'Police Emergency SMS'; phone: '70999' };
+    navh: { label: 'National Anti-Violence and Sexual Harassment Helpline'; phone: '1800-777-0000' };
+  };
+};
+
+export type SafeguardingReportStatus = 'OPEN' | 'IN_REVIEW' | 'REFERRED_TO_PLATFORM' | 'ACTION_TAKEN' | 'CLOSED_NO_ACTION';
+export type SafeguardingReportSeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+export type SafeguardingAccountAction = 'RESTRICT_ACCOUNT_CHAT' | 'RESTORE_ACCOUNT_CHAT';
+export type SafeguardingReportSubject = {
+  name: string; username: string; accountType?: AccountType; userId?: string;
+  safetyStatus?: string;
+};
+export type SafeguardingReportMessage = {
+  id?: string; senderName: string; senderRole?: ChatRole; body: string; createdAt: string;
+};
+export type SafeguardingReportAuditEvent = {
+  id: string; action: string; actorKind?: string; actorName?: string | null; note?: string | null; createdAt: string;
+  fromStatus?: SafeguardingReportStatus | null; toStatus?: SafeguardingReportStatus | null;
+  fromSeverity?: SafeguardingReportSeverity | null; toSeverity?: SafeguardingReportSeverity | null; assignedTo?: string | null;
+  assignedClubUserId?: string | null;
+};
+export type SafeguardingReportEvidence = {
+  thread?: { id?: string; kind?: ChatThreadKind } | null;
+  business?: { id?: string; name: string; slug?: string } | null;
+  session?: { bookingId?: string; serviceName?: string; startAt?: string; timezone?: string } | null;
+  members?: Array<{ name: string; username?: string; role?: ChatRole }>;
+  reportedMessage?: SafeguardingReportMessage | null;
+  context?: SafeguardingReportMessage[];
+};
+export type SafeguardingReportSummary = {
+  id: string; category: ChatReportCategory; status: SafeguardingReportStatus; severity: SafeguardingReportSeverity;
+  childInvolved: boolean; assignedTo: string | null; threadKind: ChatThreadKind;
+  subject: SafeguardingReportSubject; createdAt: string; updatedAt: string;
+  business: { id?: string; name: string; slug?: string } | null;
+  session: { bookingId?: string; serviceName?: string; startAt?: string; timezone?: string } | null;
+  reportedMessage: SafeguardingReportMessage | null;
+};
+export type SafeguardingReport = SafeguardingReportSummary & {
+  /** Club responses deliberately omit or null these platform-only fields. */
+  reporter?: { name: string; username: string; accountType: AccountType; email?: string | null } | null;
+  description?: string | null; evidence?: SafeguardingReportEvidence; evidenceHash?: string;
+  audits?: SafeguardingReportAuditEvent[]; auditHistoryHasEarlier?: boolean; targetSafetyStatus?: string | null;
+};
+export type SafeguardingReportList = { reports: SafeguardingReportSummary[]; nextCursor: string | null };
+export type SafeguardingReportFilters = {
+  status?: SafeguardingReportStatus; severity?: SafeguardingReportSeverity; cursor?: string; q?: string;
+};
+export type SafeguardingReportUpdate = {
+  status?: SafeguardingReportStatus; severity?: SafeguardingReportSeverity; assignedTo?: string | null; note: string;
+};
+export type ClubSafeguardingReportUpdate = Omit<SafeguardingReportUpdate, 'assignedTo'> & {
+  status?: Extract<SafeguardingReportStatus, 'IN_REVIEW' | 'REFERRED_TO_PLATFORM'>;
+  assignment?: 'SELF' | 'UNASSIGNED';
+};

@@ -1,5 +1,5 @@
 import { Router, type RequestHandler, type Response } from 'express';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
@@ -13,6 +13,15 @@ import { editableClubAccountProfile, editablePersonalProfile, sportsSchema, upda
 import { CHILD_AGE, ageOnSingaporeDate, parseDateOfBirth } from './children-policy.js';
 import { loadAccountPolicy } from './account-policy.js';
 import { lockAccountEmailClaim } from './account-email-claim.js';
+import { CURRENT_LEGAL_POLICY_SET_HASH, CURRENT_PRIVACY_NOTICE_VERSION, CURRENT_TERMS_VERSION } from './legal-policy.js';
+import { assertLegalAcceptanceEnabled } from './legal-policy-gate.js';
+import {
+  activeEmailVerificationToken,
+  configuredEmailVerificationKeyring,
+  deriveEmailVerificationToken,
+  emailVerificationTokenDigest,
+} from './email-verification-token.js';
+import { enqueueEmailVerificationSecurityEmail } from './outbound-events.js';
 
 const digest = (token: string) => createHash('sha256').update(token).digest('hex');
 const cookieOptions = { httpOnly: true, secure: production, sameSite: 'lax' as const, path: '/' };
@@ -20,6 +29,7 @@ const membershipOrder = [{ createdAt: 'asc' as const }, { id: 'asc' as const }];
 const dummyPasswordHash = '$2b$12$QrsSSNoV/kdmGVRTVVmoIOKhMlSeSPFjGtV8.iKB7MHYFUPprZWyK';
 const bcryptHash = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/;
 const SERIALIZABLE_RETRY_LIMIT = 3;
+const EMAIL_VERIFICATION_LIFETIME_MS = 24 * 60 * 60_000;
 
 async function serializableAuthTransaction<T>(
   operation: (tx: Prisma.TransactionClient) => Promise<T>,
@@ -172,6 +182,16 @@ const loginLimit = rateLimit({
   skipSuccessfulRequests: true,
   message: { error: 'Too many attempts. Please try again later.' },
 });
+const emailVerificationLimit = rateLimit({
+  windowMs: 60 * 60_000, limit: 5, standardHeaders: 'draft-8', legacyHeaders: false,
+  skip: skipRateLimits,
+  message: { error: 'Too many verification emails requested. Please try again later.' },
+});
+const emailVerificationAttemptLimit = rateLimit({
+  windowMs: 15 * 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false,
+  skip: skipRateLimits,
+  message: { error: 'Too many verification attempts. Please try again later.' },
+});
 const credentials = z.object({
   email: z.string().trim().max(254).email().transform(value => value.toLowerCase()),
   password: z.string().min(8).max(72).refine(value => Buffer.byteLength(value, 'utf8') <= 72, 'Password must fit within 72 UTF-8 bytes'),
@@ -196,6 +216,11 @@ const registration = z.object({
   parentName: z.string().trim().max(120).optional(),
   sports: sportsSchema.optional().default([]),
   dateOfBirth: dateOfBirthSchema.optional(),
+  termsAccepted: z.literal(true),
+  privacyNoticeAcknowledged: z.literal(true),
+  termsVersion: z.string().trim().min(1).max(120),
+  privacyPolicyVersion: z.string().trim().min(1).max(120),
+  policySetHash: z.string().trim().toLowerCase().regex(/^[0-9a-f]{64}$/),
 }).strict().superRefine((value, context) => {
   if (value.accountType === 'CLUB' && !value.businessName) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['businessName'], message: 'A club or academy name is required' });
@@ -207,6 +232,59 @@ const registration = z.object({
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['dateOfBirth'], message: 'Date of birth is required' });
   }
 });
+
+function assertCurrentSignupDocuments(input: {
+  termsVersion: string; privacyPolicyVersion: string; policySetHash: string;
+}) {
+  assertLegalAcceptanceEnabled();
+  if (input.termsVersion !== CURRENT_TERMS_VERSION
+    || input.privacyPolicyVersion !== CURRENT_PRIVACY_NOTICE_VERSION
+    || input.policySetHash !== CURRENT_LEGAL_POLICY_SET_HASH) {
+    throw new HttpError(409, "Courtly's legal documents changed. Review the current versions and try again.", {
+      code: 'LEGAL_DOCUMENTS_CHANGED',
+      termsVersion: CURRENT_TERMS_VERSION,
+      privacyPolicyVersion: CURRENT_PRIVACY_NOTICE_VERSION,
+      policySetHash: CURRENT_LEGAL_POLICY_SET_HASH,
+    });
+  }
+}
+
+export function assertSignupEmailVerificationAvailable(
+  isProduction = production,
+  emailEnabled = config.email.enabled,
+  keyring = configuredEmailVerificationKeyring(),
+) {
+  if (!isProduction || (emailEnabled && keyring.enabled && keyring.keys.has(keyring.activeKeyId))) return;
+  throw new HttpError(503, 'Account registration is temporarily unavailable because email verification is not configured.', {
+    code: 'SIGNUP_EMAIL_VERIFICATION_UNAVAILABLE',
+  });
+}
+
+async function createEmailVerification(
+  tx: Prisma.TransactionClient,
+  user: { id: string; email: string | null; name: string },
+  issuedAt: Date,
+) {
+  if (!user.email) throw new HttpError(500, 'Credentialed account is missing an email address');
+  const claimId = randomUUID();
+  const expiresAt = new Date(issuedAt.getTime() + EMAIL_VERIFICATION_LIFETIME_MS);
+  const { keyId: tokenKeyId, token } = activeEmailVerificationToken(claimId);
+  const claim = await tx.emailVerificationClaim.create({ data: {
+    id: claimId, userId: user.id, email: user.email,
+    tokenHash: emailVerificationTokenDigest(token), tokenKeyId, expiresAt,
+  } });
+  const delivery = await enqueueEmailVerificationSecurityEmail(tx, {
+    claimId: claim.id, tokenKeyId, recipientEmail: user.email, recipientName: user.name,
+    recipientUserId: user.id, expiresAt,
+  });
+  if (config.email.enabled && (!delivery || typeof delivery !== 'object'
+    || !('status' in delivery) || String(delivery.status) !== 'QUEUED')) {
+    throw new HttpError(503, 'Verification email cannot be queued for this address', {
+      code: 'EMAIL_VERIFICATION_UNAVAILABLE',
+    });
+  }
+  return { claim, delivery };
+}
 const clubProfile = z.object({
   name: z.string().trim().min(2).max(120),
   ownerName: z.string().trim().min(2).max(120),
@@ -220,6 +298,8 @@ const clubProfile = z.object({
 
 authRouter.post('/register', registrationLimit, asyncRoute(async (req, res) => {
   const body = registration.parse(req.body);
+  assertCurrentSignupDocuments(body);
+  assertSignupEmailVerificationAvailable();
   const dateOfBirth = body.accountType === 'CLUB' ? null : parseDateOfBirth(body.dateOfBirth!);
   const age = ageOnSingaporeDate(dateOfBirth);
   if (age !== null && age < CHILD_AGE) {
@@ -234,15 +314,27 @@ authRouter.post('/register', registrationLimit, asyncRoute(async (req, res) => {
       throw new HttpError(409, 'This record already exists. Please use a different email or username.');
     }
     const accountName = body.accountType === 'CLUB' ? body.businessName! : body.name;
+    const acceptedAt = new Date();
     const userData = {
       name: accountName, legalName: accountName, dateOfBirth,
       username: body.username, email: body.email, passwordHash, accountType: body.accountType,
       sports: body.sports,
-      profileVisibility: age !== null && age < 18 ? 'CLUBS_ONLY' : 'PUBLIC',
+      // Self-managed teens start private. Public discovery requires a later
+      // deliberate profile choice rather than a signup default.
+      profileVisibility: age !== null && age < 18 ? 'PRIVATE' : 'PUBLIC',
+      termsAcceptedVersion: body.termsVersion, termsAcceptedAt: acceptedAt,
+      privacyNoticeAcceptedVersion: body.privacyPolicyVersion, privacyNoticeAcceptedAt: acceptedAt,
+      signupPolicySetHash: CURRENT_LEGAL_POLICY_SET_HASH,
       phone: body.phone ?? '', parentName: body.parentName ?? '',
     };
     if (body.accountType !== 'CLUB') {
       const user = await tx.user.create({ data: userData });
+      await tx.signupAcceptanceEvidence.create({ data: {
+        id: randomUUID(), userId: user.id, termsVersion: body.termsVersion,
+        privacyNoticeVersion: body.privacyPolicyVersion,
+        policySetHash: CURRENT_LEGAL_POLICY_SET_HASH, acceptedAt, createdAt: acceptedAt,
+      } });
+      await createEmailVerification(tx, user, acceptedAt);
       return { user, membershipId: null as string | null };
     }
     const businessName = body.businessName!;
@@ -253,6 +345,12 @@ authRouter.post('/register', registrationLimit, asyncRoute(async (req, res) => {
       },
     });
     const user = await tx.user.create({ data: userData });
+    await tx.signupAcceptanceEvidence.create({ data: {
+      id: randomUUID(), userId: user.id, termsVersion: body.termsVersion,
+      privacyNoticeVersion: body.privacyPolicyVersion,
+      policySetHash: CURRENT_LEGAL_POLICY_SET_HASH, acceptedAt, createdAt: acceptedAt,
+    } });
+    await createEmailVerification(tx, user, acceptedAt);
     // A club account is the club, not a person, so it gets no roster entry of
     // its own. Whoever coaches here — including the founder — registers a coach
     // account and is added to the roster like anyone else.
@@ -263,6 +361,69 @@ authRouter.post('/register', registrationLimit, asyncRoute(async (req, res) => {
   });
   await issueSession(result.user.id, res, result.membershipId, null, req.cookies?.[config.sessionCookie]);
   res.status(201).json(await authState(result.user.id, result.membershipId));
+}));
+
+const verificationToken = z.string().trim().min(20).max(200)
+  .regex(/^[A-Za-z0-9_-]+$/, 'Verification token is invalid');
+
+authRouter.post('/verify-email', emailVerificationAttemptLimit, asyncRoute(async (req, res) => {
+  const { token } = z.object({ token: verificationToken }).strict().parse(req.body);
+  const tokenHash = emailVerificationTokenDigest(token);
+  const result = await prisma.$transaction(async tx => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`courtly:email-verification:${tokenHash}`}, 0))`;
+    await tx.$queryRaw`SELECT id FROM "EmailVerificationClaim" WHERE "tokenHash" = ${tokenHash} FOR UPDATE`;
+    const claim = await tx.emailVerificationClaim.findUnique({ where: { tokenHash }, include: { user: true } });
+    if (!claim) return { code: 'EMAIL_VERIFICATION_NOT_FOUND' as const, status: 404 };
+    if (claim.revokedAt || claim.consumedAt || claim.expiresAt <= new Date()) {
+      return { code: 'EMAIL_VERIFICATION_EXPIRED' as const, status: 410 };
+    }
+    let expectedToken: string;
+    try { expectedToken = deriveEmailVerificationToken(claim.id, claim.tokenKeyId); }
+    catch { return { code: 'EMAIL_VERIFICATION_NOT_FOUND' as const, status: 404 }; }
+    if (expectedToken !== token || claim.user.email !== claim.email) {
+      return { code: 'EMAIL_VERIFICATION_NOT_FOUND' as const, status: 404 };
+    }
+    const now = new Date();
+    await tx.user.update({ where: { id: claim.userId }, data: { emailVerifiedAt: now } });
+    await tx.emailVerificationClaim.update({ where: { id: claim.id }, data: { consumedAt: now } });
+    return { code: null, status: 200, verifiedAt: now };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  if (result.code) throw new HttpError(result.status, 'This verification link is invalid or has expired', { code: result.code });
+  res.json({ ok: true, verifiedAt: result.verifiedAt.toISOString() });
+}));
+
+authRouter.post('/email-verification/resend', requireAuth, emailVerificationLimit, asyncRoute(async (req, res) => {
+  z.object({}).strict().parse(req.body ?? {});
+  if (req.auth.user.emailVerifiedAt) {
+    res.json({ ok: true, emailQueued: false, alreadyVerified: true });
+    return;
+  }
+  const verificationKeyring = configuredEmailVerificationKeyring();
+  if (!config.email.enabled || !verificationKeyring.enabled
+    || !verificationKeyring.keys.has(verificationKeyring.activeKeyId)) {
+    throw new HttpError(503, 'Verification email is temporarily unavailable', {
+      code: 'EMAIL_VERIFICATION_UNAVAILABLE',
+    });
+  }
+  const issuedAt = new Date();
+  const result = await prisma.$transaction(async tx => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`courtly:email-verification-user:${req.auth.user.id}`}, 0))`;
+    const user = await tx.user.findUnique({
+      where: { id: req.auth.user.id }, select: { id: true, email: true, name: true, emailVerifiedAt: true },
+    });
+    if (!user) throw new HttpError(404, 'Account not found');
+    if (user.emailVerifiedAt) return { alreadyVerified: true, expiresAt: null };
+    await tx.emailVerificationClaim.updateMany({
+      where: { userId: user.id, consumedAt: null, revokedAt: null },
+      data: { revokedAt: issuedAt },
+    });
+    const { claim } = await createEmailVerification(tx, user, issuedAt);
+    return { alreadyVerified: false, expiresAt: claim.expiresAt };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  res.json({
+    ok: true, emailQueued: !result.alreadyVerified, alreadyVerified: result.alreadyVerified,
+    expiresAt: result.expiresAt?.toISOString() ?? null,
+  });
 }));
 
 authRouter.post('/login', loginLimit, asyncRoute(async (req, res) => {

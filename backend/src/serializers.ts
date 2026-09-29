@@ -13,6 +13,10 @@ export type { AccountType } from './http.js';
 export const publicBusiness = (b: Business) => ({
   id: b.id, name: b.name, slug: b.slug, ownerName: b.ownerName, email: b.email, timezone: b.timezone,
   currency: b.currency, color: b.color, tagline: b.tagline, cancellationHours: b.cancellationHours,
+  legalName: b.legalName, registrationNumber: b.registrationNumber,
+  supportEmail: b.supportEmail, supportAddress: b.supportAddress,
+  gstRegistrationStatus: b.gstRegistrationStatus, gstRegistrationNumber: b.gstRegistrationNumber,
+  pricesIncludeGst: b.pricesIncludeGst,
   kind: b.kind, isDemo: b.isDemo, legacyReadOnly: b.legacyReadOnly,
 });
 export const publicBookingBusiness = (b: Business) => ({
@@ -35,6 +39,14 @@ export const userJson = (user: User) => ({
   legalName: user.legalName, dateOfBirth: user.dateOfBirth?.toISOString().slice(0, 10) ?? null,
   accountControl: user.accountControl, accountStatus: user.accountStatus,
   profileVisibility: user.profileVisibility,
+  emailVerified: user.emailVerifiedAt !== null,
+  signupEvidence: {
+    termsVersion: user.termsAcceptedVersion,
+    termsAcceptedAt: user.termsAcceptedAt?.toISOString() ?? null,
+    privacyPolicyVersion: user.privacyNoticeAcceptedVersion,
+    privacyNoticeAcknowledgedAt: user.privacyNoticeAcceptedAt?.toISOString() ?? null,
+    policySetHash: user.signupPolicySetHash,
+  },
   accountType: user.accountType as AccountType,
 });
 export const workspaceUserJson = (user: User, membership: Pick<Membership, 'instructorId'> | null) => ({

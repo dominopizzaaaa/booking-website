@@ -18,6 +18,7 @@ import type {
   Service,
   Slot,
 } from '../src/lib/types';
+import { currentLegalAcceptance } from './legal-acceptance';
 
 const password = 'TestingOnly!2026';
 
@@ -120,10 +121,10 @@ test.beforeAll(async ({}, workerInfo) => {
   provider = await playwrightRequest.newContext({ baseURL });
   try {
     await responseJson<AuthSession>(await coach.post('/api/auth/register', {
-      data: { accountType: 'COACH', name: coachName, username: `vc_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: coachEmail, password, dateOfBirth: '1990-01-01' },
+      data: { accountType: 'COACH', name: coachName, username: `vc_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: coachEmail, password, dateOfBirth: '1990-01-01', ...currentLegalAcceptance },
     }));
     await responseJson<AuthSession>(await student.post('/api/auth/register', {
-      data: { accountType: 'STUDENT', name: studentName, username: `vs_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: studentEmail, password, dateOfBirth: '1990-01-01' },
+      data: { accountType: 'STUDENT', name: studentName, username: `vs_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: studentEmail, password, dateOfBirth: '1990-01-01', ...currentLegalAcceptance },
     }));
     await student.dispose();
 

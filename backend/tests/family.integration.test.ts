@@ -12,6 +12,7 @@ import { familyPublicRouter, familyRouter } from '../src/family.js';
 import { deriveFamilyHandoverToken } from '../src/family-handover-token.js';
 import { HttpError } from '../src/http.js';
 import { prisma, verifyTestDatabase } from './fixtures.js';
+import { currentSignupAcceptance } from './helpers/legal.js';
 
 const testApp = express();
 testApp.use(express.json());
@@ -55,7 +56,7 @@ async function createUser(overrides: Record<string, unknown> = {}) {
       legalName: 'Family Guardian',
       username: `guardian_${identity.slice(0, 16)}`,
       email: `${identity}@example.test`,
-      emailVerifiedAt: null,
+      emailVerifiedAt: new Date(),
       passwordHash: await bcrypt.hash('Courtly-family-test-123', 4),
       accountType: 'STUDENT',
       accountControl: 'SELF',
@@ -100,6 +101,7 @@ const registrationInput = (email: string, overrides: Record<string, unknown> = {
   email,
   password: 'Courtly-reserved-email-123',
   dateOfBirth: '1990-01-01',
+  ...currentSignupAcceptance,
   ...overrides,
 });
 

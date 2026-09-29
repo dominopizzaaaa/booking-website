@@ -9,6 +9,7 @@ import {
   type Response,
 } from '@playwright/test';
 import type { AuthSession, Booking, LessonPackage, ManagerWorkspace, Payment, Slot } from '../src/lib/types';
+import { currentLegalAcceptance } from './legal-acceptance';
 
 const password = 'TestingOnly!2026';
 const timezone = 'Asia/Singapore';
@@ -198,10 +199,10 @@ test('a club creates a booking and completes its venue, receipt, reversal, and c
   const coachAccount = await isolatedApiContext(baseURL);
   const studentAccount = await isolatedApiContext(baseURL);
   await responseJson<AuthSession>(await coachAccount.post('/api/auth/register', {
-    data: { accountType: 'COACH', name: coachName, username: `pc_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: coachEmail, password, dateOfBirth: '1990-01-01' },
+    data: { accountType: 'COACH', name: coachName, username: `pc_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: coachEmail, password, dateOfBirth: '1990-01-01', ...currentLegalAcceptance },
   }));
   await responseJson<AuthSession>(await studentAccount.post('/api/auth/register', {
-    data: { accountType: 'STUDENT', name: studentName, username: `ps_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: studentEmail, password, dateOfBirth: '1990-01-01' },
+    data: { accountType: 'STUDENT', name: studentName, username: `ps_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: studentEmail, password, dateOfBirth: '1990-01-01', ...currentLegalAcceptance },
   }));
 
   await responseJson<AuthSession>(await page.request.post('/api/auth/demo', { data: {} }));
@@ -463,6 +464,7 @@ test('a coach account cannot create or enter a private practice', async ({ page 
       email: coachEmail,
       password,
       dateOfBirth: '1990-01-01',
+      ...currentLegalAcceptance,
     },
   }));
 

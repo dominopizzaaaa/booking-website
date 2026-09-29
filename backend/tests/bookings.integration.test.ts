@@ -7,6 +7,7 @@ import { config } from '../src/config.js';
 import { HttpError } from '../src/http.js';
 import { cancelBooking, createBookings, type BookingInput } from '../src/scheduling.js';
 import { createAccount, createStudent, createPackage, createSession, inputFor, linkedInputFor, prisma, requireTestEmail, tenantCounts, TestTenants, verifyTestDatabase, type Fixture } from './fixtures.js';
+import { currentSignupAcceptance } from './helpers/legal.js';
 
 // Keep every PostgreSQL/HTTP integration suite in this file and sequential;
 // concurrency is introduced only by the explicit transaction race tests.
@@ -544,6 +545,7 @@ describe.sequential('Global account authentication and workspace memberships', (
     const email = randomUUID() + '@example.test';
     const response = await request(app).post('/api/auth/register').send({
       name: 'Unspecified Account', username: `unspecified_${randomUUID().slice(0, 8)}`, email, password,
+      ...currentSignupAcceptance,
     });
     expect(response.status).toBe(400);
     expect(await prisma.user.findUnique({ where: { email } })).toBeNull();
@@ -554,6 +556,7 @@ describe.sequential('Global account authentication and workspace memberships', (
     await request(app).post('/api/auth/register').send({
       accountType: 'CLUB', businessName: 'Strict Club', businessKind: 'SOLO',
       name: 'Club Contact', username: `strict_${randomUUID().slice(0, 8)}`, email, password,
+      ...currentSignupAcceptance,
     }).expect(400);
     expect(await prisma.user.findUnique({ where: { email } })).toBeNull();
   });
@@ -564,7 +567,7 @@ describe.sequential('Global account authentication and workspace memberships', (
     const agent = request.agent(app);
     const response = await agent.post('/api/auth/register').send({
       accountType: 'CLUB', businessName: 'Test New Academy', name: 'New Contact',
-      username: username.toUpperCase(), email: email.toUpperCase(), password,
+      username: username.toUpperCase(), email: email.toUpperCase(), password, ...currentSignupAcceptance,
     });
     const registered = await trackRegistration(email);
     expect(response.status).toBe(201);
@@ -607,6 +610,7 @@ describe.sequential('Global account authentication and workspace memberships', (
       const agent = request.agent(app);
       const response = await agent.post('/api/auth/register').send({
         accountType, name: `${accountType} Account`, username, email, password, dateOfBirth: '1990-01-01',
+        ...currentSignupAcceptance,
       }).expect(201);
       await trackRegistration(email);
       expect(response.body).toMatchObject({

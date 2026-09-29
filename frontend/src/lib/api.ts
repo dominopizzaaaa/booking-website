@@ -24,7 +24,10 @@ import {
   type ChatThreadDetail,
   type ChatThreadList,
   type ChatMessage,
+  type ChatReportConfirmation,
+  type ChatReportInput,
   type CheckoutInput,
+  type CheckoutReview,
   type CheckoutResult,
   type CoachInvitation,
   type FamilyChild,
@@ -41,6 +44,7 @@ import {
   type ClubStaffAccessInput,
   type ClubStaffInvitation,
   type ClubStaffWorkspaceAccess,
+  type ClubSafeguardingReportUpdate,
   type IntegrityFlag,
   type LiveCheckoutInput,
   type LiveCheckoutResult,
@@ -50,6 +54,12 @@ import {
   type Payment,
   type PaymentCapabilities,
   type PaymentIntent,
+  type PrivacyRequest,
+  type PrivacyRequestInput,
+  type PrivacyRequestPage,
+  type AdminPrivacyRequest,
+  type PrivacyOperatorUpdate,
+  type PrivacyRequestEventPage,
   type ProviderBookingResult,
   type PublicBusiness,
   type PublicBookingInput,
@@ -66,6 +76,11 @@ import {
   type RentalReservationResult,
   type RentalSlotsResult,
   type RescheduleRequest,
+  type SafeguardingAccountAction,
+  type SafeguardingReport,
+  type SafeguardingReportFilters,
+  type SafeguardingReportList,
+  type SafeguardingReportUpdate,
   type OperationsInboxCategory,
   type OperationsInboxResult,
   type Slot,
@@ -211,6 +226,8 @@ export const loginStudentAccount = loginAccount;
 type RegisterAccountBase = {
   name: string; username: string; sports?: string[]; email: string; password: string;
   phone?: string; parentName?: string;
+  termsAccepted: true; privacyNoticeAcknowledged: true; termsVersion: string; privacyPolicyVersion: string;
+  policySetHash: string;
 };
 export type RegisterPersonalAccountInput = RegisterAccountBase & {
   accountType: 'STUDENT' | 'COACH'; dateOfBirth: string; businessName?: never;
@@ -222,6 +239,22 @@ export type RegisterAccountInput = RegisterPersonalAccountInput | RegisterClubAc
 export async function registerAccount(values: RegisterAccountInput): Promise<AuthSession> {
   return normalizeAuthSession(await api<CompatibleAuthSession>('/auth/register', { method: 'POST', body: JSON.stringify(values) }));
 }
+export const verifyAccountEmail = (token: string) =>
+  api<{ ok: true; verifiedAt: string }>('/auth/verify-email', {
+    method: 'POST', body: JSON.stringify({ token }),
+  });
+export const resendAccountEmailVerification = () =>
+  api<{ ok: true; emailQueued: boolean; alreadyVerified: boolean; expiresAt?: string | null }>(
+    '/auth/email-verification/resend', { method: 'POST', body: JSON.stringify({}) },
+  );
+export const loadPrivacyRequests = (filters: { cursor?: string; limit?: number } = {}) =>
+  api<PrivacyRequestPage>(`/privacy/requests${filteredQuery(filters)}`);
+export const createPrivacyRequest = (values: PrivacyRequestInput) =>
+  api<{ request: PrivacyRequest }>('/privacy/requests', { method: 'POST', body: JSON.stringify(values) });
+export const cancelPrivacyRequest = (id: string) =>
+  api<{ request: PrivacyRequest }>(`/privacy/requests/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST', body: JSON.stringify({}),
+  });
 export const registerStudentAccount = (values: Omit<RegisterPersonalAccountInput, 'accountType' | 'businessName'>) =>
   registerAccount({ ...values, accountType: 'STUDENT' });
 export type AccountProfileInput = Partial<Pick<AuthSession['user'], 'name' | 'username' | 'sports' | 'phone' | 'parentName'>>;
@@ -403,6 +436,11 @@ export const loadAccountPackageOffers = (businessSlug?: string) => {
 export const getAccountPackageOffers = loadAccountPackageOffers;
 export const loadAccountPackages = () => api<{ packages: AccountPackage[] }>('/account/packages');
 export const getAccountPackages = loadAccountPackages;
+export async function loadCheckoutReview(kind: 'PACKAGE' | 'BOOKING', targetId: string): Promise<CheckoutReview> {
+  const query = new URLSearchParams({ kind, targetId });
+  const result = await api<{ review: CheckoutReview }>(`/payments/checkout-review?${query}`);
+  return result.review;
+}
 export const checkoutPackageOffer = (id: string, values: CheckoutInput) =>
   api<CheckoutResult>(`/account/package-offers/${encodeURIComponent(id)}/checkout`, { method: 'POST', body: JSON.stringify(values) });
 export const checkoutBookingParticipant = (participantId: string, values: CheckoutInput) =>
@@ -559,6 +597,23 @@ export async function loadChatThread(threadId: string, before?: string): Promise
 }
 export const sendChatMessage = (threadId: string, body: string) =>
   api<{ message: ChatMessage }>(`/chats/${encodeURIComponent(threadId)}/messages`, { method: 'POST', body: JSON.stringify({ body }) });
+export function reportChatMessage(threadId: string, input: ChatReportInput): Promise<ChatReportConfirmation> {
+  return api<ChatReportConfirmation>(`/chats/${encodeURIComponent(threadId)}/reports`, {
+    method: 'POST', body: JSON.stringify(input),
+  });
+}
+export async function blockChatAccount(threadId: string): Promise<ChatThreadDetail> {
+  const result = await api<ChatThreadDetailWire | { thread: ChatThreadDetailWire }>(`/chats/${encodeURIComponent(threadId)}/block`, {
+    method: 'POST', body: JSON.stringify({}),
+  });
+  return normalizeChatThreadDetail('thread' in result ? result.thread : result);
+}
+export async function unblockChatAccount(threadId: string): Promise<ChatThreadDetail> {
+  const result = await api<ChatThreadDetailWire | { thread: ChatThreadDetailWire }>(`/chats/${encodeURIComponent(threadId)}/block`, {
+    method: 'DELETE', body: JSON.stringify({}),
+  });
+  return normalizeChatThreadDetail('thread' in result ? result.thread : result);
+}
 export async function markChatRead(threadId: string) {
   const options = { method: 'POST', body: JSON.stringify({}) };
   try {
@@ -627,7 +682,61 @@ export async function adminChatThread(threadId: string, before?: string): Promis
   }
 }
 
-export type AdminSession = { configured: boolean; authenticated: boolean };
+function safeguardingQuery(filters: SafeguardingReportFilters = {}) {
+  const query = new URLSearchParams();
+  if (filters.status) query.set('status', filters.status);
+  if (filters.severity) query.set('severity', filters.severity);
+  if (filters.cursor) query.set('cursor', filters.cursor);
+  if (filters.q?.trim()) query.set('q', filters.q.trim());
+  return query.size ? `?${query}` : '';
+}
+export const loadAdminSafeguardingReports = (filters: SafeguardingReportFilters = {}) =>
+  api<SafeguardingReportList>(`/admin/safeguarding/reports${safeguardingQuery(filters)}`);
+async function safeguardingReportRequest(path: string, options?: RequestInit): Promise<SafeguardingReport> {
+  const result = await api<SafeguardingReport | { report: SafeguardingReport }>(path, options);
+  return 'report' in result ? result.report : result;
+}
+export const loadAdminSafeguardingReport = (id: string) =>
+  safeguardingReportRequest(`/admin/safeguarding/reports/${encodeURIComponent(id)}`);
+export const updateAdminSafeguardingReport = (id: string, update: SafeguardingReportUpdate) =>
+  safeguardingReportRequest(`/admin/safeguarding/reports/${encodeURIComponent(id)}`, {
+    method: 'PATCH', body: JSON.stringify({ ...update, note: update.note.trim() }),
+  });
+export const applyAdminSafeguardingAccountAction = (id: string, action: SafeguardingAccountAction, note: string) =>
+  safeguardingReportRequest(`/admin/safeguarding/reports/${encodeURIComponent(id)}/account-action`, {
+    method: 'POST', body: JSON.stringify({ action, note }),
+  });
+export const loadClubSafeguardingReports = (filters: SafeguardingReportFilters = {}) =>
+  api<SafeguardingReportList>(`/safeguarding/reports${safeguardingQuery(filters)}`);
+export const loadClubSafeguardingReport = (id: string) =>
+  safeguardingReportRequest(`/safeguarding/reports/${encodeURIComponent(id)}`);
+export const updateClubSafeguardingReport = (id: string, update: ClubSafeguardingReportUpdate) =>
+  safeguardingReportRequest(`/safeguarding/reports/${encodeURIComponent(id)}`, {
+    method: 'PATCH', body: JSON.stringify({ ...update, note: update.note.trim() }),
+  });
+
+const privacyOperatorHeaders = { 'X-Courtly-Privacy-Operator': '1' };
+export const loadAdminPrivacyRequests = (filters: { status?: string; overdue?: boolean; limit?: number; cursor?: string } = {}) =>
+  api<PrivacyRequestPage<AdminPrivacyRequest>>(`/admin/privacy-requests${filteredQuery({
+    status: filters.status, overdue: filters.overdue === undefined ? undefined : String(filters.overdue), limit: filters.limit, cursor: filters.cursor,
+  })}`, { headers: privacyOperatorHeaders });
+export const updateAdminPrivacyRequest = (id: string, update: PrivacyOperatorUpdate) =>
+  api<{ request: PrivacyRequest }>(`/admin/privacy-requests/${encodeURIComponent(id)}`, {
+    method: 'PATCH', headers: privacyOperatorHeaders, body: JSON.stringify(update),
+  });
+export const loadAdminPrivacyRequestEvents = (id: string, filters: { limit?: number; cursor?: string } = {}) =>
+  api<PrivacyRequestEventPage>(`/admin/privacy-requests/${encodeURIComponent(id)}/events${filteredQuery(filters)}`, {
+    headers: privacyOperatorHeaders,
+  });
+
+export type AdminOperator = { id: string; name: string; email: string };
+export type AdminAuthMode = 'named' | 'legacy' | 'disabled';
+export type AdminSession = {
+  configured: boolean; authenticated: boolean; authMode: AdminAuthMode;
+  operator: AdminOperator | null; sensitiveAccess: boolean;
+  /** Missing only during a rolling deployment from an older API; clients must fail closed. */
+  businessDeletionMode?: 'all' | 'demo-only';
+};
 export type AdminTotals = { businesses: number; demoBusinesses: number; realBusinesses: number; users: number; memberships: number; students: number; bookings: number; upcomingBookings: number; bookingsLast7Days: number; packages: number; paymentsCount: number; paymentsTotal: number;
   /** Optional while an older API without session chat may still answer. */
   chatThreads?: number; chatMessages?: number };
@@ -635,7 +744,11 @@ export type AdminOverview = { generatedAt: string; totals: AdminTotals };
 export type AdminBusinessCounts = { users: number; students: number; bookings: number; locations: number; services: number; instructors: number };
 export type AdminBusiness = { id: string; name: string; slug: string; ownerName: string; email: string; currency: string; timezone: string; isDemo: boolean; createdAt: string; counts: AdminBusinessCounts };
 export const adminSession = () => api<AdminSession>('/admin/session');
-export const adminLogin = (password: string) => api<{ ok: true }>('/admin/login', { method: 'POST', body: JSON.stringify({ password }) });
+export type AdminLoginInput = { password: string; email?: string };
+export const adminLogin = (credentials: AdminLoginInput) =>
+  api<{ ok: true; authMode: Exclude<AdminAuthMode, 'disabled'>; operator: AdminOperator | null }>('/admin/login', {
+    method: 'POST', body: JSON.stringify(credentials),
+  });
 export const adminLogout = () => api<{ ok: true }>('/admin/logout', { method: 'POST', body: JSON.stringify({}) });
 export const adminOverview = () => api<AdminOverview>('/admin/overview');
 export const adminBusinesses = (params: { search?: string; filter?: 'all' | 'real' | 'demo' } = {}) => api<{ businesses: AdminBusiness[] }>(`/admin/businesses?${new URLSearchParams({ ...(params.search ? { search: params.search } : {}), filter: params.filter || 'all' })}`);

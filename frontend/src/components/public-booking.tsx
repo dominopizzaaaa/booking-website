@@ -65,6 +65,9 @@ import type {
   Slot,
 } from "@/lib/types";
 import { markProductTourPending } from "@/lib/product-tour";
+import {
+  CURRENT_LEGAL_POLICY_SET_HASH, CURRENT_PRIVACY_NOTICE_VERSION, CURRENT_TERMS_VERSION, POLICY_PATHS,
+} from "@/lib/policies";
 import { isFamilyBookingAuthorityError } from "@/components/family/family-booking-errors";
 import { singaporeCivilDate, validPastDate } from "@/components/family/family-helpers";
 import { cn, coversWeeklyOccurrences, dateKey, money, shortDate, time } from "@/lib/utils";
@@ -227,11 +230,13 @@ function StudentAccountAccess({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [familyRequired, setFamilyRequired] = useState(false);
+  const [legalAccepted, setLegalAccepted] = useState(false);
   const tabRefs = useRef<Record<"login" | "register", HTMLButtonElement | null>>({ login: null, register: null });
   function selectMode(next: "login" | "register") {
     setMode(next);
     setError("");
     setFamilyRequired(false);
+    setLegalAccepted(false);
   }
   function handleModeKey(event: KeyboardEvent<HTMLButtonElement>, value: "login" | "register") {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -245,6 +250,11 @@ function StudentAccountAccess({
     if (busy) return;
     if (mode === "register" && !validPastDate(values.dateOfBirth)) {
       setError("Enter your complete date of birth.");
+      setFamilyRequired(false);
+      return;
+    }
+    if (mode === "register" && !legalAccepted) {
+      setError("Please accept the Terms of Service and acknowledge the Privacy Notice.");
       setFamilyRequired(false);
       return;
     }
@@ -266,6 +276,11 @@ function StudentAccountAccess({
               ...(values.parentName.trim()
                 ? { parentName: values.parentName.trim() }
                 : {}),
+              termsAccepted: true,
+              privacyNoticeAcknowledged: true,
+              termsVersion: CURRENT_TERMS_VERSION,
+              privacyPolicyVersion: CURRENT_PRIVACY_NOTICE_VERSION,
+              policySetHash: CURRENT_LEGAL_POLICY_SET_HASH,
             });
       if (session.user.requiredAction) {
         router.replace("/account/action-required");
@@ -432,6 +447,14 @@ function StudentAccountAccess({
             </>
           )}
         </div>
+        {mode === "register" && <fieldset className="rounded-xl border border-[#dfe7d8] bg-[#f3f7ef] p-4">
+          <legend className="px-1 text-sm font-semibold text-[#304b39]">Before you create your account</legend>
+          <label htmlFor={`${formId}-legal-acceptance`} className="!mb-0 flex cursor-pointer items-start gap-3 text-sm font-medium leading-6 text-[#304b39]">
+            <input id={`${formId}-legal-acceptance`} type="checkbox" required checked={legalAccepted} onChange={event => { setLegalAccepted(event.target.checked); setError(""); }} disabled={busy} className="mt-1" />
+            <span>I agree to the <Link href={POLICY_PATHS.terms} target="_blank" rel="noopener noreferrer" className="font-semibold underline underline-offset-2">Terms of Service</Link> (version {CURRENT_TERMS_VERSION}) and acknowledge the <Link href={POLICY_PATHS.privacy} target="_blank" rel="noopener noreferrer" className="font-semibold underline underline-offset-2">Privacy Notice</Link> (version {CURRENT_PRIVACY_NOTICE_VERSION}).</span>
+          </label>
+          <p className="!mt-3 text-xs leading-relaxed text-[#59675c]">This is required to create an account. It is not consent to marketing.</p>
+        </fieldset>}
         {error && <div><ErrorNotice message={error} />{familyRequired && <p className="!mt-3 text-xs leading-relaxed text-[#6f6044]">Ask a parent or guardian to <Link href="/login?next=%2Ffamily" className="font-semibold underline underline-offset-2">sign in and open Family</Link> to create a managed child profile.</p>}</div>}
         {!externalSubmit && (
           <button type="submit" className={button} disabled={busy}>
@@ -440,7 +463,7 @@ function StudentAccountAccess({
           </button>
         )}
         <p className="text-[11px] leading-relaxed text-[#929d86]">
-          Your contact details belong to your account and are shared only with the coaches you book.
+          Your contact details are handled as described in the Privacy Notice and shared only as needed to provide and administer Courtly services.
         </p>
       </form>
     </section>
@@ -2316,10 +2339,10 @@ export function PublicBooking({ slug }: { slug: string }) {
                     : selectedPackage
                     ? packageSummaryNote
                     : service && !mapping
-                      ? "Final price depends on your chosen location."
+                      ? "The displayed amount depends on your chosen location."
                       : data.business.kind === "CLUB"
-                        ? `Payment is payable to ${data.business.name}.`
-                        : "Payment is payable to your coach."}
+                        ? `Payment is arranged through the options shown for ${data.business.name}; this booking page does not determine the legal payment recipient.`
+                        : "This historical payment route does not determine the legal payment recipient."}
                 </p>
               </div>
             </div>
@@ -2503,7 +2526,7 @@ function BookingReceipt({
           <VenueNotice location={location} />
           <div className="flex justify-between border-t border-[#edf0e7] pt-5">
             <span className="text-sm text-[#7e8d70]">
-              Total · payable to {data.business.name}
+              Recorded booking amount · {data.business.name}
             </span>
             <span className="text-xl font-semibold text-[#375833]">
               {money(
@@ -2870,11 +2893,11 @@ export function StudentBookings({ slug }: { slug?: string }) {
               <p className="text-xs text-[#89977d]">
                 {item.participant.paid
                   ? item.booking.paymentRoute === "CLUB"
-                    ? `Paid to ${item.business.name}`
-                    : "Paid to your coach"
+                    ? `Recorded as paid for ${item.business.name}`
+                    : "Recorded as paid under the historical coach route"
                   : item.booking.paymentRoute === "CLUB"
-                    ? `Payment payable to ${item.business.name}`
-                    : "Payment payable to your coach"}
+                    ? `Payment options are associated with ${item.business.name}`
+                    : "Historical payment route"}
               </p>
             </DetailRow>
             <DetailRow icon={<UserRound size={18} />} title="Booked for">

@@ -27,8 +27,11 @@ import { HttpError, requireAccountCapability, requireAccountReady } from './http
 import { prisma } from './db.js';
 import { inspectSchema } from './schema-health.js';
 import { paymentsRouter, stripeWebhookHandler } from './payments/routes.js';
+import { liveCheckoutBlockReasons } from './payments/compliance.js';
 import { auditRouter } from './audit-routes.js';
 import { familyPublicRouter, familyRouter } from './family.js';
+import { privacyAdminRouter, privacyPublicRouter, privacyRouter } from './privacy.js';
+import { safeguardingRouter } from './safeguarding.js';
 export const app = express();
 app.disable('x-powered-by');
 if (production) app.set('trust proxy', 1);
@@ -71,9 +74,12 @@ app.get('/api/health', async (_req, res) => {
         sessionChat: true, accountChat: true, namedClubStaff: true, bookingSeries: true,
         operationalInbox: true, bookingExport: true,
         payments: config.payments.mode === 'stripe'
-          ? (config.payments.publishableKey.startsWith('pk_live_') ? 'stripe-live' : 'stripe-test')
+          ? liveCheckoutBlockReasons().length
+            ? 'stripe-blocked'
+            : (config.payments.publishableKey.startsWith('pk_live_') ? 'stripe-live' : 'stripe-test')
           : config.payments.mode,
         transactionalEmail: config.email.enabled ? 'configured' : 'disabled',
+        family: config.familyFeatureEnabled ? 'enabled' : 'disabled',
         familyHandover: config.email.enabled && config.familyHandoverTokens.enabled
           ? 'configured'
           : 'disabled',
@@ -84,11 +90,28 @@ app.get('/api/health', async (_req, res) => {
   }
   catch { res.status(503).json({ error: 'Database is unavailable' }); }
 });
+app.use('/api/public', privacyPublicRouter);
 app.use('/api/auth', authRouter);
-app.use('/api', adminRouter);
+app.use('/api', adminRouter, privacyAdminRouter);
+// Public handover claims must not advertise that a token route exists while
+// Family is disabled. Authenticated Family surfaces may report temporary
+// unavailability so signed-in clients can distinguish a rollout gate from an
+// authorization failure. These prefix gates cover every current and future
+// route mounted by the two Family routers below.
+app.use('/api/family/handovers', (_req, _res, next) => {
+  if (!config.familyFeatureEnabled) return next(new HttpError(404, 'Route not found'));
+  next();
+});
+app.use('/api/family', (_req, _res, next) => {
+  if (!config.familyFeatureEnabled) return next(new HttpError(503, 'Family features are temporarily unavailable'));
+  next();
+});
 app.use('/api/family', familyPublicRouter);
 app.use('/api/family', requireAuth, familyRouter);
 app.use('/api', publicRouter);
+// Privacy rights remain reachable for an authenticated account even when its
+// ordinary product capabilities are restricted or awaiting remediation.
+app.use('/api/privacy', requireAuth, privacyRouter);
 // Everything below this point is an ordinary signed-in account surface. Keep
 // public/auth/family remediation routes above it so an account that needs age,
 // consent, deletion, or handover action can still reach the route that resolves
@@ -115,7 +138,7 @@ app.use('/api/account', requireStudent, accountRouter);
 // Account-only public booking management installs its own authentication
 // middleware. Every provider route below additionally requires an active,
 // non-revoked membership selected on the session.
-app.use('/api', requireAccountCapability('workspace'), requireWorkspace, workspaceRouter, bookingsRouter, bookingSeriesRouter, crudRouter, staffRouter, clubStaffAccessRouter, auditRouter, venuesRouter, integrityRouter);
+app.use('/api', requireAccountCapability('workspace'), requireWorkspace, workspaceRouter, bookingsRouter, bookingSeriesRouter, crudRouter, staffRouter, clubStaffAccessRouter, auditRouter, venuesRouter, integrityRouter, safeguardingRouter);
 app.use((_req, _res, next) => next(new HttpError(404, 'Route not found')));
 const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
   if (error instanceof HttpError) { res.status(error.status).json({ error: error.message, ...error.details }); return; }

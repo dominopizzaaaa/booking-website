@@ -31,6 +31,15 @@ export type FamilyHandoverSecurityEmailInput = {
   recipientUserId?: string | null;
 };
 
+export type EmailVerificationSecurityEmailInput = {
+  claimId: string;
+  tokenKeyId: string;
+  recipientEmail: string;
+  recipientName: string;
+  recipientUserId: string;
+  expiresAt: Date;
+};
+
 export function normalizedRecipient(email: string) { return email.trim().toLowerCase(); }
 export function isDeliverableEmail(email: string) {
   const value = normalizedRecipient(email);
@@ -102,6 +111,35 @@ export async function enqueueFamilyHandoverSecurityEmail(
     // Only non-secret derivation inputs are durable. The worker reconstructs
     // the bearer link in memory immediately before provider dispatch.
     payload: { handoverId: input.handoverId, tokenKeyId: input.tokenKeyId, expiresAt },
+    status: suppressed ? 'SUPPRESSED' : 'QUEUED',
+    ...(suppressionCode ? { lastErrorCode: suppressionCode } : {}),
+  } });
+}
+
+export async function enqueueEmailVerificationSecurityEmail(
+  tx: OutboundTransaction,
+  input: EmailVerificationSecurityEmailInput,
+) {
+  if (!config.email.enabled) return null;
+  const email = normalizedRecipient(input.recipientEmail);
+  let suppressed = !isDeliverableEmail(email);
+  let suppressionCode = suppressed ? 'INVALID_RECIPIENT' : null;
+  if (!suppressed) {
+    const preference = await tx.notificationPreference.findUnique({ where: { userId: input.recipientUserId } });
+    if (preference?.emailSuppressedAt) {
+      suppressed = true;
+      suppressionCode = 'HARD_SUPPRESSION';
+    }
+  }
+  return tx.outboundDelivery.create({ data: {
+    channel: 'EMAIL', eventType: 'EMAIL_VERIFICATION', eventVersion: 1,
+    dedupeKey: `email-verification:${input.claimId}`,
+    recipientKey: email, recipientUserId: input.recipientUserId, recipientEmail: email,
+    recipientName: input.recipientName.trim(), businessId: null, bookingId: null,
+    notificationId: null, accountNotificationId: null, template: 'email-verification-v1',
+    // The worker derives the bearer from this non-secret claim ID immediately
+    // before sending. No verification token is stored in the database.
+    payload: { claimId: input.claimId, tokenKeyId: input.tokenKeyId, expiresAt: input.expiresAt.toISOString() },
     status: suppressed ? 'SUPPRESSED' : 'QUEUED',
     ...(suppressionCode ? { lastErrorCode: suppressionCode } : {}),
   } });

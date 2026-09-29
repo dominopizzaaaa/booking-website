@@ -5,7 +5,7 @@ export type TransactionalEmailEvent =
   | 'RESCHEDULE_DECLINED' | 'RESCHEDULE_WITHDRAWN' | 'BOOKING_REMINDER'
   | 'COACH_ASSIGNED' | 'COACH_DECLINED' | 'PAYMENT_RECORDED' | 'PAYMENT_REVERSED'
   | 'PACKAGE_PURCHASED' | 'RENTAL_CONFIRMED' | 'RENTAL_CANCELLED' | 'COACH_INVITED'
-  | 'FAMILY_HANDOVER_SECURITY';
+  | 'FAMILY_HANDOVER_SECURITY' | 'EMAIL_VERIFICATION';
 
 type TransactionalEmailTemplatePayload = {
   eventType: TransactionalEmailEvent;
@@ -23,19 +23,27 @@ export type FamilyHandoverSecurityEmailTemplatePayload = {
   expiresAt: Date | string;
 };
 
+export type EmailVerificationSecurityEmailTemplatePayload = {
+  eventType: 'EMAIL_VERIFICATION';
+  recipientName: string;
+  verificationUrl: string;
+  expiresAt: Date | string;
+};
+
 // The generic member remains worker-compatible with already persisted
 // deliveries. New family handovers can instead use the security-specific
 // member so the claim URL and expiry are required at the template boundary.
 export type EmailTemplatePayload = TransactionalEmailTemplatePayload
-  | FamilyHandoverSecurityEmailTemplatePayload;
+  | FamilyHandoverSecurityEmailTemplatePayload
+  | EmailVerificationSecurityEmailTemplatePayload;
 
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, character => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 }[character]!));
 
-function handoverExpiry(value: Date | string) {
+function securityExpiry(value: Date | string, label: string) {
   const date = value instanceof Date ? value : new Date(value);
-  if (!Number.isFinite(date.getTime())) throw new TypeError('Family handover expiry must be a valid date');
+  if (!Number.isFinite(date.getTime())) throw new TypeError(`${label} expiry must be a valid date`);
   return `${new Intl.DateTimeFormat('en-SG', {
     dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC',
   }).format(date)} UTC`;
@@ -43,13 +51,21 @@ function handoverExpiry(value: Date | string) {
 
 export function renderTransactionalEmail(payload: EmailTemplatePayload) {
   const securityPayload = payload.eventType === 'FAMILY_HANDOVER_SECURITY' && 'claimUrl' in payload;
+  const verificationPayload = payload.eventType === 'EMAIL_VERIFICATION' && 'verificationUrl' in payload;
   const content = securityPayload
     ? {
       title: 'Complete your Courtly family profile handover',
-      message: `You have been invited to take over management of a child profile. This secure claim link expires ${handoverExpiry(payload.expiresAt)}. If you did not expect this handover, ignore this email.`,
+      message: `You have been invited to take over management of a child profile. This secure claim link expires ${securityExpiry(payload.expiresAt, 'Family handover')}. If you did not expect this handover, ignore this email.`,
       actionUrl: payload.claimUrl,
       actionLabel: 'Review family handover',
     }
+    : verificationPayload
+      ? {
+        title: 'Verify your Courtly email',
+        message: `Confirm this address to use privacy-sensitive account features. This secure link expires ${securityExpiry(payload.expiresAt, 'Email verification')}. If you did not create this account, ignore this email.`,
+        actionUrl: payload.verificationUrl,
+        actionLabel: 'Verify email',
+      }
     : payload;
   const greeting = payload.recipientName.trim() ? `Hi ${payload.recipientName.trim()},` : 'Hello,';
   const actionText = content.actionLabel?.trim() || 'Open Courtly';
@@ -58,7 +74,9 @@ export function renderTransactionalEmail(payload: EmailTemplatePayload) {
   if (content.actionUrl) text.push(`${actionText}: ${content.actionUrl}`);
   const footer = payload.eventType === 'FAMILY_HANDOVER_SECURITY'
     ? 'This is a security message about access to a Courtly family profile. Never share this claim link.'
-    : 'This is a transactional message about your Courtly account.';
+    : payload.eventType === 'EMAIL_VERIFICATION'
+      ? 'This is a security message about your Courtly account. Never share this verification link.'
+      : 'This is a transactional message about your Courtly account.';
   text.push('', footer);
   const action = content.actionUrl
     ? `<p><a href="${escapeHtml(content.actionUrl)}" style="display:inline-block;padding:12px 18px;border-radius:10px;background:#174c3c;color:#fff;text-decoration:none;font-weight:600">${escapeHtml(actionText)}</a></p>`

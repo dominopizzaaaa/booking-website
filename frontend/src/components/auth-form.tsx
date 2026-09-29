@@ -10,6 +10,9 @@ import type { AccountType, AuthSession } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { markProductTourPending } from '@/lib/product-tour';
 import { singaporeCivilDate, validPastDate } from '@/components/family/family-helpers';
+import {
+  CURRENT_LEGAL_POLICY_SET_HASH, CURRENT_PRIVACY_NOTICE_VERSION, CURRENT_TERMS_VERSION, POLICY_PATHS,
+} from '@/lib/policies';
 
 const accountOptions: Array<{ value: AccountType; label: string }> = [
   { value: 'CLUB', label: 'Club or academy' },
@@ -19,7 +22,7 @@ const accountOptions: Array<{ value: AccountType; label: string }> = [
 
 const usernamePattern = /^[a-z0-9_]{3,30}$/;
 type AuthValues = { businessName: string; name: string; username: string; sports: string; dateOfBirth: string; email: string; password: string };
-type AuthField = 'accountType' | keyof AuthValues;
+type AuthField = 'accountType' | 'legalAcceptance' | keyof AuthValues;
 
 function sportsFromText(value: string): string[] | null {
   if (!value.trim()) return [];
@@ -108,7 +111,7 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
     setError(message);
     setErrorField(field);
     requestAnimationFrame(() => {
-      const suffix = field === 'businessName' ? 'business' : field;
+      const suffix = field === 'businessName' ? 'business' : field === 'legalAcceptance' ? 'legal-acceptance' : field;
       const selector = field === 'accountType' ? 'input[name="accountType"]' : '#auth-' + suffix;
       formRef.current?.querySelector<HTMLElement>(selector)?.focus();
     });
@@ -132,12 +135,21 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
     if (signup && accountType !== 'CLUB' && !validPastDate(values.dateOfBirth)) { validationError('dateOfBirth', 'Enter a valid date of birth from 1900 onwards that is not in the future.'); return; }
     if (!/^\S+@\S+\.\S+$/.test(values.email.trim())) { validationError('email', 'Enter a valid email address.'); return; }
     if (!values.password || (signup && values.password.length < 12)) { validationError('password', signup ? 'Use at least 12 characters for your password.' : 'Enter your password.'); return; }
+    if (signup) {
+      const form = new FormData(event.currentTarget);
+      if (form.get('legalAcceptance') !== 'on') { validationError('legalAcceptance', 'Please accept the Terms of Service and acknowledge the Privacy Notice.'); return; }
+    }
     setBusy('form'); clearError();
     try {
+      const legalAcceptance = {
+        termsAccepted: true as const, privacyNoticeAcknowledged: true as const,
+        termsVersion: CURRENT_TERMS_VERSION, privacyPolicyVersion: CURRENT_PRIVACY_NOTICE_VERSION,
+        policySetHash: CURRENT_LEGAL_POLICY_SET_HASH,
+      };
       const result = signup
         ? accountType === 'CLUB'
-          ? await registerAccount({ accountType, businessName: values.businessName.trim(), name: values.name.trim(), username, sports: sports!, email: values.email.trim(), password: values.password })
-          : await registerAccount({ accountType: accountType!, dateOfBirth: values.dateOfBirth, name: values.name.trim(), username, sports: sports!, email: values.email.trim(), password: values.password })
+          ? await registerAccount({ accountType, businessName: values.businessName.trim(), name: values.name.trim(), username, sports: sports!, email: values.email.trim(), password: values.password, ...legalAcceptance })
+          : await registerAccount({ accountType: accountType!, dateOfBirth: values.dateOfBirth, name: values.name.trim(), username, sports: sports!, email: values.email.trim(), password: values.password, ...legalAcceptance })
         : await loginAccount({ email: values.email.trim(), password: values.password });
       if (signup) markProductTourPending(result.user.id);
       router.replace(destinationFor(result, redirect?.destination ?? null)); router.refresh();
@@ -194,6 +206,15 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
           </>}
           <div><label htmlFor="auth-email" className="!mb-2 !text-sm !font-medium !text-[#52634b]">Email address</label><input id="auth-email" className={input} type="email" value={values.email} onChange={event => update('email', event.target.value)} required maxLength={254} autoComplete="email" placeholder="you@example.com" disabled={!!busy} aria-invalid={errorField === 'email'} aria-describedby={describedBy('email')} />{fieldError('email')}</div>
           <div><label htmlFor="auth-password" className="!mb-2 !text-sm !font-medium !text-[#52634b]">Password</label><div className="relative"><input id="auth-password" className={cn(input, '!pr-12')} type={showPassword ? 'text' : 'password'} value={values.password} onChange={event => update('password', event.target.value)} required minLength={signup ? 12 : undefined} maxLength={72} autoComplete={signup ? 'new-password' : 'current-password'} placeholder={signup ? 'Create a password' : 'Your password'} disabled={!!busy} aria-invalid={errorField === 'password'} aria-describedby={describedBy('password', signup ? 'password-hint' : undefined)} /><button type="button" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword} className="absolute inset-y-0 right-0 flex w-12 items-center justify-center rounded-r-xl text-[#596653] transition hover:text-[#49673d]">{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></div>{signup && <p id="password-hint" className="!mt-2 text-sm text-[#596653]">Make it yours. Use at least 12 characters.</p>}{fieldError('password')}</div>
+          {signup && <fieldset aria-invalid={errorField === 'legalAcceptance'} aria-describedby={describedBy('legalAcceptance')} className="rounded-xl border border-[#dfe7d8] bg-[#f3f7ef] p-4">
+            <legend className="px-1 text-sm font-semibold text-[#304b39]">Before you create your account</legend>
+            <label htmlFor="auth-legal-acceptance" className="!mb-0 flex cursor-pointer items-start gap-3 text-sm font-medium leading-6 text-[#304b39]">
+              <input id="auth-legal-acceptance" type="checkbox" name="legalAcceptance" required disabled={!!busy} className="mt-1" onChange={() => clearError('legalAcceptance')} />
+              <span>I agree to the <Link href={POLICY_PATHS.terms} target="_blank" rel="noopener noreferrer" className="font-semibold underline underline-offset-2">Terms of Service</Link> (version {CURRENT_TERMS_VERSION}) and acknowledge the <Link href={POLICY_PATHS.privacy} target="_blank" rel="noopener noreferrer" className="font-semibold underline underline-offset-2">Privacy Notice</Link> (version {CURRENT_PRIVACY_NOTICE_VERSION}).</span>
+            </label>
+            {fieldError('legalAcceptance')}
+            <p className="!mt-3 text-xs leading-relaxed text-[#596653]">This is required to create an account. It is not consent to marketing.</p>
+          </fieldset>}
           {error && !errorField && <div role="alert" aria-live="polite" className="rounded-xl border border-[#e4c7bc] bg-[#fff6f1] p-3.5 text-sm leading-relaxed text-[#8a4937]"><p>{error}</p>{familyRequired && <p className="mt-2">Ask a parent or guardian to <Link className="font-semibold underline underline-offset-2" href="/login?next=%2Ffamily">sign in and open Family</Link> to create a managed child profile.</p>}</div>}
           <button type="submit" className={primary} disabled={!!busy}>{busy === 'form' ? <><LoaderCircle size={16} className="animate-spin" />{signup ? 'Creating your account…' : 'Signing you in…'}</> : <>{signup ? accountType === 'CLUB' ? 'Create your workspace' : accountType === 'COACH' ? 'Create coach account' : accountType === 'STUDENT' ? 'Create player account' : 'Create account' : 'Sign in'}<ArrowRight size={16} /></>}</button>
         </form>

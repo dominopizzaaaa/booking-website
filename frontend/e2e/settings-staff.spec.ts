@@ -1,5 +1,6 @@
 import { expect, test, type APIResponse, type Page, type Response } from '@playwright/test';
 import type { ManagerWorkspace } from '../src/lib/types';
+import { currentLegalAcceptance } from './legal-acceptance';
 
 const password = 'TestingOnly!2026';
 
@@ -50,7 +51,7 @@ test('club settings and coach access persist through the responsive UI', async (
   // Account and tenant creation are setup. Every policy or access change below
   // is submitted through the same controls a club account uses.
   await responseJson(await page.request.post('/api/auth/register', {
-    data: { accountType: 'COACH', name: coachName, username: `stc_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-26)}`, email: coachEmail, password, dateOfBirth: '1990-01-01' },
+    data: { accountType: 'COACH', name: coachName, username: `stc_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-26)}`, email: coachEmail, password, dateOfBirth: '1990-01-01', ...currentLegalAcceptance },
   }));
   await responseJson(await page.request.post('/api/auth/logout', { data: {} }));
   await responseJson(await page.request.post('/api/auth/demo', { data: {} }));

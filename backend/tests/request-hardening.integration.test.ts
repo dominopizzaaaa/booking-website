@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { app } from '../src/app.js';
 import { config } from '../src/config.js';
 import { TestTenants, createAccount, createSession, prisma, verifyTestDatabase, type Fixture } from './fixtures.js';
+import { currentSignupAcceptance } from './helpers/legal.js';
 
 beforeAll(verifyTestDatabase, 15_000);
 afterAll(async () => { await prisma.$disconnect(); });
@@ -102,7 +103,7 @@ describe.sequential('The HTTP request envelope', () => {
       const email = `${randomUUID()}@example.test`;
       const response = await request(app).post('/api/auth/register').send({
         accountType: 'STUDENT', name: 'Cookie Student', username: `cookie_${randomUUID().slice(0, 8)}`,
-        email, password: 'Courtly-cookie-test-1', dateOfBirth: '1990-01-01',
+        email, password: 'Courtly-cookie-test-1', dateOfBirth: '1990-01-01', ...currentSignupAcceptance,
       });
       expect(response.status).toBe(201);
       const [cookie] = response.headers['set-cookie'] as unknown as string[];
@@ -136,7 +137,7 @@ describe.sequential('The HTTP request envelope', () => {
       const email = `${randomUUID()}@example.test`;
       const body = {
         accountType: 'STUDENT' as const, name: 'Twice Over', username: `twice_${randomUUID().slice(0, 8)}`,
-        email, password: 'Courtly-duplicate-1', dateOfBirth: '1990-01-01',
+        email, password: 'Courtly-duplicate-1', dateOfBirth: '1990-01-01', ...currentSignupAcceptance,
       };
       expect((await request(app).post('/api/auth/register').send(body)).status).toBe(201);
       const duplicate = await request(app).post('/api/auth/register').send(body);
@@ -149,6 +150,7 @@ describe.sequential('The HTTP request envelope', () => {
       const response = await request(app).post('/api/auth/register').send({
         accountType: 'STUDENT', name: 'Short Password', username: `short_${randomUUID().slice(0, 8)}`,
         email: `${randomUUID()}@example.test`, password: 'short', dateOfBirth: '1990-01-01',
+        ...currentSignupAcceptance,
       });
       expect(response.status).toBe(400);
       expect(response.body.error).toBe('Use a password with at least 12 characters');

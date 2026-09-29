@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowRight, Building2, Check, Compass, HelpCircle, Loader2, LogOut, MapPin, Pencil, RefreshCw, Search, ShieldCheck, UserRound, UsersRound, X } from 'lucide-react';
 import { CalendarConnectionCard } from '@/components/calendar-connection-card';
+import { EmailVerificationNotice } from '@/components/email-verification-notice';
+import { PrivacyRequestsPanel } from '@/components/privacy/privacy-requests-panel';
 import { AccountRentalDialog } from '@/components/account-rental-dialog';
 import { CourtlyLogo } from '@/components/public-booking';
 import { Button } from '@/components/ui/button';
@@ -426,6 +428,7 @@ export default function AccountPage() {
             </div>
 
             <div className="mt-8 space-y-5">
+              {state.user.emailVerified === false && <EmailVerificationNotice email={state.user.email} />}
               {error && <p role="alert" className="rounded-xl bg-red-50 p-3 text-xs text-red-700">{error}</p>}
               <section data-tour="account-profile" className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-profile-heading">
                 <div className="flex items-start justify-between gap-3">
@@ -467,6 +470,8 @@ export default function AccountPage() {
               {canUseStaffAccess && (staffInvitationError || invitationBusy === 'staff-link' || staffInvitations.length > 0) && <section className="rounded-2xl border border-[#dbe5d4] bg-[#f2f6ee] p-5 shadow-sm sm:p-6" aria-labelledby="staff-invitations-heading"><div className="flex items-start gap-3"><ShieldCheck size={19} className="mt-0.5 shrink-0 text-[#66805a]" /><div><h2 id="staff-invitations-heading" className="text-base text-[#405941]">Staff invitations</h2><p className="mt-1 text-xs leading-relaxed text-stone-500">Named staff access lets a person help run a specific club with assigned permissions. Accepting it does not change that person’s account type or coach affiliations.</p></div></div>{invitationBusy === 'staff-link' && <p role="status" className="mt-4 flex items-center gap-2 text-xs text-stone-500"><Loader2 size={14} className="animate-spin" />Checking your staff invitation…</p>}{staffInvitationError && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-3 text-xs text-red-700">{staffInvitationError}</p>}<ul className="mt-4 space-y-2">{staffInvitations.map(invitation => <li key={invitation.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#dce5d6] bg-white p-4"><div><p className="text-sm font-semibold text-[#344b39]">{invitation.business.name}</p><p className="mt-1 text-xs text-stone-500">{invitation.accessLevel.toLowerCase().replaceAll('_', ' ')} staff access · {invitation.permissions.length} permission{invitation.permissions.length === 1 ? '' : 's'}</p></div><Button type="button" disabled={!!invitationBusy} onClick={() => void acceptStaffInvitation(invitation)}>{invitationBusy === `staff:${invitation.id}` && <Loader2 size={14} className="animate-spin" />}Accept and open</Button></li>)}</ul></section>}
 
               {canUseCalendar && <CalendarConnectionCard accountType={state.user.accountType} returnTo="/account" />}
+
+              <PrivacyRequestsPanel emailVerified={state.user.emailVerified} />
 
               <section data-tour="account-workspaces" className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-workspaces-heading">
                 <div className="flex items-start gap-3"><ShieldCheck size={18} className="mt-0.5 shrink-0 text-[#6f865f]" /><div><h2 id="account-workspaces-heading" className="text-sm text-[#405941]">{clubAccount ? 'Your club workspace' : 'Your workspace access'}</h2><p className="mt-1 text-[11px] leading-relaxed text-stone-500">{clubAccount ? 'A club account has one club and never switches to another.' : state.user.email ? `Clubs can add ${state.user.email} as ${coachAccount ? 'a coach or ' : ''}a named staff member. Your password and account type always remain yours.` : 'This profile has no independent sign-in email and cannot currently receive club invitations.'}</p></div></div>
