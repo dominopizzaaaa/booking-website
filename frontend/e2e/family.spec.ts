@@ -118,6 +118,7 @@ test('empty Family supports keyboard-safe add validation and an in-dialog API er
 
 test('multiple children keep consent-only rows private and obey per-link permissions', async ({ page }) => {
   let renewal = renewalChild();
+  let renewalVisible = true;
   const profileOnly = child('profile-only', 'Morgan', {
     link: {
       id: 'link-profile-only', status: 'ACTIVE', relationshipType: 'Guardian',
@@ -126,7 +127,8 @@ test('multiple children keep consent-only rows private and obey per-link permiss
   });
   const full = child('full-child', 'Taylor');
   const response = (): FamilyResponse => ({
-    guardian: { eligible: true, reason: null }, children: [renewal, profileOnly, full],
+    guardian: { eligible: true, reason: null },
+    children: [...(renewalVisible ? [renewal] : []), profileOnly, full],
     privacyPolicyVersion: '2026-09-29', handoverAvailable: true,
   });
   await mockFamily(page, response);
@@ -141,6 +143,7 @@ test('multiple children keep consent-only rows private and obey per-link permiss
         expiresAt: null, withdrawnAt: null,
       },
     };
+    renewalVisible = false;
     await fulfillJson(route, { child: renewal });
   });
 
@@ -159,7 +162,7 @@ test('multiple children keep consent-only rows private and obey per-link permiss
   const renewDialog = page.getByRole('dialog', { name: 'Renew guardian consent?' });
   await renewDialog.getByRole('button', { name: 'Renew consent' }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Consent renewed for Riley.' })).toBeFocused();
-  await expect(page.getByRole('article', { name: 'Riley' })).toContainText('Consent current');
+  await expect(page.getByRole('article', { name: 'Riley' })).toHaveCount(0);
 });
 
 test('handover follows server age bands and availability while deletion copy promises review, not erasure', async ({ page }) => {

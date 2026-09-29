@@ -1,5 +1,6 @@
 import type { Prisma, User } from '@prisma/client';
 import { prisma } from './db.js';
+import { config } from './config.js';
 import {
   CURRENT_PRIVACY_POLICY_VERSION,
   evaluateAccountPolicy,
@@ -50,7 +51,7 @@ export async function loadAccountPolicy(
   const hasCurrentConsent = user.accountControl === 'GUARDIAN_MANAGED'
     ? await hasCurrentChildConsent(user.id, options.db ?? prisma)
     : false;
-  return evaluateAccountPolicy({
+  const policy = evaluateAccountPolicy({
     accountType: user.accountType as AccountType,
     dateOfBirth: user.dateOfBirth,
     accountControl: user.accountControl as AccountControl,
@@ -58,5 +59,10 @@ export async function loadAccountPolicy(
     profileVisibility: user.profileVisibility as ProfileVisibility,
     hasCurrentConsent,
     sessionCreatedAt: options.sessionCreatedAt,
+  });
+  if (config.familyFeatureEnabled || !policy.capabilities.familyManagement) return policy;
+  return Object.freeze({
+    ...policy,
+    capabilities: Object.freeze({ ...policy.capabilities, familyManagement: false }),
   });
 }
