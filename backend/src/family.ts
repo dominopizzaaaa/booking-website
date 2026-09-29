@@ -20,6 +20,7 @@ import {
   parseDateOfBirth,
   type GuardianPermission,
 } from './children-policy.js';
+import { assertLegalAcceptanceEnabled } from './legal-policy-gate.js';
 import { enqueueFamilyHandoverSecurityEmail } from './outbound-events.js';
 import { activeFamilyHandoverToken, familyHandoverTokenDigest } from './family-handover-token.js';
 import { lockAccountEmailClaim } from './account-email-claim.js';
@@ -195,12 +196,28 @@ function guardianEligible(user: {
     && age >= ADULT_AGE;
 }
 
+function guardianEmailVerified(user: { emailVerifiedAt: Date | null; createdAt: Date }, now = new Date()) {
+  // Existing production accounts predate verification. Give that cohort a
+  // bounded transition through 29 October 2026; every new account and all
+  // accounts after the cutoff must prove control of their email first.
+  const transitionCutoff = new Date('2026-10-29T00:00:00.000Z');
+  const signupEvidenceLaunchedAt = new Date('2026-09-29T00:00:00.000Z');
+  return Boolean(user.emailVerifiedAt)
+    || (user.createdAt < signupEvidenceLaunchedAt && now < transitionCutoff);
+}
+
 function assertGuardianEligible(user: {
   accountType: string; accountControl: string; accountStatus: string; dateOfBirth: Date | null;
+  emailVerifiedAt: Date | null; createdAt: Date;
 }) {
   if (!guardianEligible(user)) {
     throw new HttpError(403, 'Only an eligible adult personal account can manage children', {
       code: 'FAMILY_MANAGEMENT_REQUIRED',
+    });
+  }
+  if (!guardianEmailVerified(user)) {
+    throw new HttpError(403, 'Verify your email before managing a child profile', {
+      code: 'EMAIL_VERIFICATION_REQUIRED',
     });
   }
 }
@@ -275,6 +292,7 @@ const guardianBookingBody = z.object({
 }).strict();
 
 function assertCurrentPrivacyPolicy(version: string) {
+  assertLegalAcceptanceEnabled();
   if (version !== CURRENT_PRIVACY_POLICY_VERSION) {
     throw new HttpError(409, 'The child privacy policy changed. Review the current policy and try again', {
       code: 'PRIVACY_POLICY_CHANGED',
@@ -536,7 +554,11 @@ familyRouter.get('/', asyncRoute(async (req, res) => {
   });
   res.json({
     guardian: {
-      eligible: guardianEligible(req.auth.user),
+      eligible: guardianEligible(req.auth.user) && guardianEmailVerified(req.auth.user),
+      // Report the actual verification state. Legacy accounts may remain
+      // temporarily eligible during the bounded transition without being
+      // represented to clients as verified.
+      emailVerified: req.auth.user.emailVerifiedAt !== null,
       reason: req.auth.policy.reason,
     },
     children: await Promise.all(links.map(link => link.status === 'ACTIVE'

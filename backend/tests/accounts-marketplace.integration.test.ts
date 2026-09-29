@@ -6,6 +6,7 @@ import { app } from '../src/app.js';
 import {
   createAccount, createSession, prisma, TestTenants, verifyTestDatabase, type Fixture,
 } from './fixtures.js';
+import { currentSignupAcceptance } from './helpers/legal.js';
 
 beforeAll(verifyTestDatabase, 15_000);
 afterAll(async () => { await prisma.$disconnect(); });
@@ -31,6 +32,7 @@ describe.sequential('Marketplace account identities', () => {
       email: `${identity}@example.test`,
       password: 'Courtly-marketplace-123',
       dateOfBirth: '1990-01-01',
+      ...currentSignupAcceptance,
       ...overrides,
     });
     if (response.body?.user?.id) tenants.ownUser(response.body.user.id);

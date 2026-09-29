@@ -48,6 +48,8 @@ import {
 } from 'react';
 import { CourtlyLogo } from '@/components/public-booking';
 import { CalendarConnectionCard } from '@/components/calendar-connection-card';
+import { EmailVerificationNotice } from '@/components/email-verification-notice';
+import { PrivacyRequestsPanel } from '@/components/privacy/privacy-requests-panel';
 import { NotificationPreferencesCard } from '@/components/notification-preferences';
 import { AccountRentalHistory } from '@/components/account-rental-dialog';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
@@ -66,6 +68,7 @@ import {
   loadAccountClubs,
   loadAccountBookings,
   loadAuthSession,
+  loadCheckoutReview,
   loadLiveCheckoutIntent,
   loadPaymentCapabilities,
   loadRental,
@@ -87,6 +90,9 @@ import type {
   AccountDirectoryUser,
   AccountPackage,
   AuthSession,
+  CheckoutAcceptance,
+  CheckoutPolicyKind,
+  CheckoutReview,
   PackageOffer,
   PackageOfferBusiness,
   PaymentCapabilities,
@@ -99,6 +105,9 @@ import type {
   Slot,
   StudentClubDirectoryEntry,
 } from '@/lib/types';
+import {
+  POLICY_PATHS,
+} from '@/lib/policies';
 import { cn, dateKey, initials, money, shortDate, time } from '@/lib/utils';
 
 type StudentTab = 'home' | 'explore' | 'book' | 'chat' | 'alerts' | 'profile';
@@ -112,6 +121,11 @@ type Conflict = { date: string; reason: string };
 type LiveCheckoutSession = {
   localIntentId: string; clientSecret: string; connectedAccountId: string; amount: number; currency: string;
   kind: 'PACKAGE' | 'BOOKING'; targetId: string; label: string; clubName: string; retrySignature: string;
+  review: CheckoutReview;
+};
+type CheckoutReviewState = {
+  kind: 'PACKAGE' | 'BOOKING'; targetId: string; review: CheckoutReview | null;
+  loading: boolean; accepted: boolean; error: string;
 };
 type StudentNotification = {
   id: string;
@@ -774,6 +788,157 @@ function forgetDefinitiveCheckoutFailure(attempts: Map<string, string>, signatur
   if (error instanceof ApiError && error.status < 500) attempts.delete(signature);
 }
 
+const checkoutPolicyFallbacks: Record<CheckoutPolicyKind, { path: string; label: string }> = {
+  TERMS: { path: POLICY_PATHS.terms, label: 'Terms of Service' },
+  CANCELLATION_REFUNDS: { path: POLICY_PATHS.cancellationRefunds, label: 'Cancellation & Refund Policy' },
+  PACKAGE_TERMS: { path: POLICY_PATHS.packageTerms, label: 'Package Terms' },
+};
+
+function checkoutAcceptance(review: CheckoutReview): CheckoutAcceptance {
+  const policy = (kind: CheckoutPolicyKind) => review.policies.find(candidate => candidate.kind === kind);
+  return {
+    accepted: true,
+    reviewHash: review.reviewHash,
+    termsVersion: policy('TERMS')?.version ?? '',
+    cancellationRefundPolicyVersion: policy('CANCELLATION_REFUNDS')?.version ?? '',
+    packageTermsVersion: review.kind === 'PACKAGE' ? policy('PACKAGE_TERMS')?.version ?? '' : null,
+  };
+}
+
+function checkoutDateTime(value: string, timezone: string | null) {
+  const zone = timezone || 'Asia/Singapore';
+  return `${shortDate(value, zone)} at ${time(value, zone)}`;
+}
+
+function gstDescription(review: CheckoutReview) {
+  const merchant = review.merchant;
+  if (merchant.gstRegistrationStatus === 'REGISTERED') {
+    const treatment = merchant.pricesIncludeGst === true
+      ? 'The club declares that the displayed checkout amount includes GST.'
+      : merchant.pricesIncludeGst === false
+        ? 'The club declares that displayed prices exclude GST; this amount must not be treated as the final payable price if GST will be added.'
+        : 'The club has not declared whether displayed prices include GST.';
+    return `Club-declared GST registration: registered${merchant.gstRegistrationNumber ? ` (${merchant.gstRegistrationNumber})` : ''}. ${treatment} Courtly has not independently verified this declaration.`;
+  }
+  if (merchant.gstRegistrationStatus === 'NOT_REGISTERED') return 'The club declares that it is not GST registered; Courtly has not independently verified this declaration.';
+  return 'The club has not declared its GST registration status.';
+}
+
+function CheckoutReviewDetails({ review, compact = false }: { review: CheckoutReview; compact?: boolean }) {
+  const item = review.item;
+  const merchant = review.merchant;
+  return (
+    <div className={cn('space-y-4 text-xs leading-relaxed text-[#59675c]', compact && 'space-y-3')}>
+      <section className="rounded-xl border border-[#dfe5dc] bg-[#f8faf6] p-4">
+        <p className="text-[10px] font-semibold uppercase tracking-[1.4px] text-[#59675c]">Selected club details</p>
+        <p className="mt-1 text-sm font-semibold text-[#304b39]">{merchant.tradingName}</p>
+        <p className="mt-1">Legal name: {merchant.legalName || 'Not provided'}</p>
+        <p>Registration number: {merchant.registrationNumber || 'Not provided'}</p>
+        <p>Support email: {merchant.supportEmail || 'Not provided'}</p>
+        <p>Support address: {merchant.supportAddress || 'Not provided'}</p>
+        <p className="mt-2">{gstDescription(review)}</p>
+      </section>
+
+      <section className="rounded-xl border border-[#dfe5dc] p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[1.4px] text-[#59675c]">Purchase</p>
+            <p className="mt-1 text-sm font-semibold text-[#304b39]">{item.label}</p>
+          </div>
+          <p className="text-right text-base font-semibold text-[#174c3c]"><span className="block text-[9px] uppercase tracking-wide text-[#59675c]">Checkout amount</span>{money(review.amount, review.currency)}</p>
+        </div>
+        {item.description && <p className="mt-2">{item.description}</p>}
+        <dl className="mt-3 grid gap-x-5 gap-y-2 sm:grid-cols-2">
+          {item.serviceName && <div><dt className="font-semibold text-[#415244]">Service</dt><dd>{item.serviceName}</dd></div>}
+          {item.coachName && <div><dt className="font-semibold text-[#415244]">Coach</dt><dd>{item.coachName}</dd></div>}
+          {item.venueName && <div><dt className="font-semibold text-[#415244]">Venue</dt><dd>{item.venueName}{item.venueAddress ? ` · ${item.venueAddress}` : ''}</dd></div>}
+          {item.startAt && <div><dt className="font-semibold text-[#415244]">Starts</dt><dd>{checkoutDateTime(item.startAt, item.timezone)}</dd></div>}
+          {item.endAt && <div><dt className="font-semibold text-[#415244]">Ends</dt><dd>{checkoutDateTime(item.endAt, item.timezone)}</dd></div>}
+          {item.timezone && <div><dt className="font-semibold text-[#415244]">Timezone</dt><dd>{item.timezone}</dd></div>}
+          {item.totalCredits !== null && <div><dt className="font-semibold text-[#415244]">Credits</dt><dd>{item.totalCredits}</dd></div>}
+          {item.validityDays !== null && <div><dt className="font-semibold text-[#415244]">Validity</dt><dd>{item.validityDays} days</dd></div>}
+        </dl>
+        {item.scopeNames.length > 0 && <p className="mt-3"><strong className="font-semibold text-[#415244]">Eligible for:</strong> {item.scopeNames.join(', ')}</p>}
+      </section>
+
+      <section className="rounded-xl border border-[#dfe5dc] p-4">
+        <p><strong className="font-semibold text-[#415244]">Purchaser:</strong> {review.purchaser.name}</p>
+        <p><strong className="font-semibold text-[#415244]">Purchaser email:</strong> {review.purchaser.email}</p>
+        <p className="mt-2"><strong className="font-semibold text-[#415244]">Cancellation deadline:</strong> {review.cancellation.deadline ? checkoutDateTime(review.cancellation.deadline, item.timezone) : 'No deadline provided'}</p>
+        <p className="mt-1">{review.cancellation.rule}</p>
+      </section>
+
+      <p className="rounded-xl bg-[#f2f5f0] p-3">
+        Product and payment-routing note: {review.platform.role}
+      </p>
+    </div>
+  );
+}
+
+function CheckoutReviewDialog({ state, paymentMode, busy, onAcceptedChange, onContinue, onChange, onClose, onRetry }: {
+  state: CheckoutReviewState | null; paymentMode: PaymentUiMode; busy: boolean; onAcceptedChange: (accepted: boolean) => void;
+  onContinue: () => void; onChange: () => void; onClose: () => void; onRetry: () => void;
+}) {
+  if (!state) return null;
+  const review = state.review;
+  const identityBlocksLive = paymentMode === 'live' && review?.merchant.identityReady === false;
+  const applicablePolicyKinds: CheckoutPolicyKind[] = review
+    ? ['TERMS', 'CANCELLATION_REFUNDS', ...(review.kind === 'PACKAGE' ? ['PACKAGE_TERMS' as const] : [])]
+    : [];
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open && !busy) onClose(); }}>
+      <DialogContent
+        className="max-w-2xl"
+        onEscapeKeyDown={(event) => { if (busy) event.preventDefault(); }}
+        onPointerDownOutside={(event) => { if (busy) event.preventDefault(); }}
+      >
+        <DialogTitle className="text-xl font-semibold tracking-tight text-[#20382d]">Review before payment</DialogTitle>
+        <DialogDescription className="mt-2 text-xs leading-relaxed text-[#59675c]">
+          Check the selected club details, purchase details, checkout amount, and cancellation terms before continuing.
+        </DialogDescription>
+        {state.loading ? (
+          <div role="status" className="flex min-h-48 items-center justify-center gap-2 text-sm text-[#59675c]"><LoaderCircle size={17} className="animate-spin" /> Loading the latest checkout details…</div>
+        ) : state.error ? (
+          <div className="mt-5 space-y-4"><ErrorNotice message={state.error} /><button type="button" className={secondaryButton} onClick={onRetry}><RefreshCw size={14} /> Try again</button></div>
+        ) : review ? (
+          <div className="mt-5">
+            <CheckoutReviewDetails review={review} />
+            {!review.merchant.identityReady && (
+              <p role="alert" className="mt-4 rounded-xl border border-[#eee5ce] bg-[#fcf8ec] p-4 text-xs leading-relaxed text-[#70582e]">
+                {identityBlocksLive
+                  ? 'Payment cannot continue because the club has not completed the required business and GST declarations.'
+                  : 'Development warning: the club has not completed the required business and GST declarations. Simulated checkout may continue, but no real card will be charged.'}
+                {review.merchant.missingFields.length > 0 ? ` Missing: ${review.merchant.missingFields.join(', ')}.` : ''}
+              </p>
+            )}
+            <label className="mt-5 flex cursor-pointer items-start gap-3 rounded-xl border border-[#dfe5dc] p-4 text-xs leading-relaxed text-[#415244]">
+              <input type="checkbox" className="mt-0.5 h-4 w-4 accent-[#174c3c]" checked={state.accepted} disabled={busy} onChange={(event) => onAcceptedChange(event.target.checked)} />
+              <span>
+                I have reviewed the selected club details, item, checkout amount, and cancellation terms, and I accept{' '}
+                {applicablePolicyKinds.map((kind, index) => {
+                  const policy = review.policies.find((candidate) => candidate.kind === kind);
+                  const fallback = checkoutPolicyFallbacks[kind];
+                  return <span key={kind}>{index > 0 ? index === applicablePolicyKinds.length - 1 ? ' and ' : ', ' : ''}<Link href={fallback.path} target="_blank" rel="noreferrer" className="font-semibold text-[#174c3c] underline underline-offset-2">{policy?.label || fallback.label}</Link></span>;
+                })}.
+              </span>
+            </label>
+            <p className="mt-3 text-[10px] leading-relaxed text-[#667568]">
+              For fraud prevention, raw IP addresses and raw browser details are not stored. Courtly may store session-scoped pseudonymous fingerprints. Stripe may request additional authentication.
+            </p>
+            <div className="mt-5 flex flex-wrap gap-3">
+              <button type="button" className={primaryButton} disabled={!state.accepted || identityBlocksLive || busy || !['live', 'simulated'].includes(paymentMode)} onClick={onContinue}>
+                {busy ? <LoaderCircle size={15} className="animate-spin" /> : <ShieldCheck size={15} />}
+                {busy ? 'Starting checkout…' : paymentMode === 'simulated' ? 'Continue to demo payment' : 'Continue to Stripe'}
+              </button>
+              <button type="button" className={secondaryButton} disabled={busy} onClick={onChange}>Change purchase</button>
+            </div>
+          </div>
+        ) : null}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 const stripeAccounts = new Map<string, ReturnType<typeof loadStripe>>();
 
 function connectedStripe(publishableKey: string, connectedAccountId: string) {
@@ -887,15 +1052,16 @@ function LivePaymentForm({ checkout, onBusyChange, onSettled, onDefinitiveFailur
         {submitting ? 'Confirming payment…' : `Pay ${money(checkout.amount, checkout.currency)}`}
       </button>
       <p className="mt-3 text-center text-[10px] leading-relaxed text-[#667568]">
-        Secure payment by Stripe. Courtly sends the total and currency; your payment details go directly to Stripe.
+        Secure payment by Stripe. Courtly sends the total and currency; your payment details go directly to Stripe. Stripe may request additional authentication.
       </p>
     </form>
   );
 }
 
-function LiveCheckoutDialog({ checkout, publishableKey, testMode, busy, onBusyChange, onClose, onSettled, onDefinitiveFailure }: {
+function LiveCheckoutDialog({ checkout, publishableKey, testMode, busy, onBusyChange, onClose, onChange, onSettled, onDefinitiveFailure }: {
   checkout: LiveCheckoutSession | null; publishableKey: string; testMode: boolean; busy: boolean;
-  onBusyChange: (busy: boolean) => void; onClose: () => void; onSettled: () => Promise<PaymentIntent | null>; onDefinitiveFailure: () => void;
+  onBusyChange: (busy: boolean) => void; onClose: () => void; onChange: () => void;
+  onSettled: () => Promise<PaymentIntent | null>; onDefinitiveFailure: () => void;
 }) {
   const stripe = useMemo(() => checkout
     ? connectedStripe(publishableKey, checkout.connectedAccountId)
@@ -917,6 +1083,12 @@ function LiveCheckoutDialog({ checkout, publishableKey, testMode, busy, onBusyCh
             Stripe test mode — use test payment details. No real card will be charged.
           </p>
         )}
+        <div className="mt-5">
+          <CheckoutReviewDetails review={checkout.review} compact />
+          <button type="button" className={cn(secondaryButton, 'mt-4')} disabled={busy} onClick={onChange}>
+            Change purchase
+          </button>
+        </div>
         <div className="mt-6">
           <Elements
             stripe={stripe}
@@ -1380,11 +1552,11 @@ function BookingDialog({
                 <p className="text-xs text-[#59675c]">
                   {item.participant.paid
                     ? item.paymentRoute === 'CLUB'
-                      ? `Paid to ${item.business.name}`
-                      : 'Paid directly to your coach'
+                      ? `Recorded as paid for ${item.business.name}`
+                      : 'Recorded as paid under the historical coach route'
                     : item.paymentRoute === 'CLUB'
-                      ? `Payment is due to ${item.business.name}, who pays your coach`
-                      : 'Payment is due directly to your coach'}
+                      ? `Payment options are associated with ${item.business.name}`
+                      : 'Historical payment route'}
                 </p>
               </Detail>
               <Detail icon={<UserRound size={18} />} label="Booked for">
@@ -1511,7 +1683,7 @@ function BookingDialog({
                     {paymentMode === 'live'
                       ? stripeTestMode
                         ? 'Stripe test checkout is enabled. Use test payment details; no real card will be charged.'
-                        : `Continue to Stripe to pay ${item.business.name}. The final total is calculated securely by Courtly.`
+                        : `Continue to Stripe for the displayed checkout amount associated with ${item.business.name}. Courtly does not add tax or other charges to that amount.`
                       : paymentMode === 'loading' ? 'Checking secure payment availability…' : paymentUnavailableReason}
                   </p>
                 )}
@@ -2115,6 +2287,7 @@ export function StudentApp({ slug }: { slug?: string }) {
   const [paymentCapabilities, setPaymentCapabilities] = useState<PaymentCapabilities | null>(null);
   const [paymentCapabilitiesLoading, setPaymentCapabilitiesLoading] = useState(false);
   const [paymentCapabilitiesError, setPaymentCapabilitiesError] = useState('');
+  const [checkoutReviewState, setCheckoutReviewState] = useState<CheckoutReviewState | null>(null);
   const [liveCheckout, setLiveCheckout] = useState<LiveCheckoutSession | null>(null);
   const [liveCheckoutBusy, setLiveCheckoutBusy] = useState(false);
   const [checkoutReturnStatus, setCheckoutReturnStatus] = useState<{ message: string; error: boolean } | null>(null);
@@ -2165,6 +2338,7 @@ export function StudentApp({ slug }: { slug?: string }) {
   const packageCheckoutKeysRef = useRef(new Map<string, string>());
   const rentalCheckoutKeysRef = useRef(new Map<string, string>());
   const offersRequestRef = useRef(0);
+  const checkoutReviewRequestRef = useRef(0);
   const packagesRequestRef = useRef(0);
   const checkoutReturnHandledRef = useRef<string | null>(null);
   const chatOpenedFromListRef = useRef(false);
@@ -2939,29 +3113,78 @@ export function StudentApp({ slug }: { slug?: string }) {
                 participant.id === checkout.targetId ? { ...participant, paid: true } : participant),
             },
           } : item));
-      setNotice(`Stripe payment confirmed. Paid to ${checkout.clubName}.`);
+      setNotice(`Stripe payment confirmed for the checkout associated with ${checkout.clubName}.`);
       void refreshBookings();
     }
     void refreshNotifications();
   }
 
+  function requestCheckoutReview(kind: 'PACKAGE' | 'BOOKING', targetId: string) {
+    const requestId = ++checkoutReviewRequestRef.current;
+    setCheckoutReviewState({ kind, targetId, review: null, loading: true, accepted: false, error: '' });
+    void loadCheckoutReview(kind, targetId)
+      .then((review) => {
+        if (checkoutReviewRequestRef.current !== requestId) return;
+        if (review.kind !== kind) throw new Error('The checkout details did not match this purchase. Please try again.');
+        setCheckoutReviewState({ kind, targetId, review, loading: false, accepted: false, error: '' });
+      })
+      .catch((error) => {
+        if (checkoutReviewRequestRef.current !== requestId) return;
+        if (error instanceof ApiError && error.status === 401) router.replace(loginHrefRef.current);
+        setCheckoutReviewState({ kind, targetId, review: null, loading: false, accepted: false, error: messageOf(error) });
+      });
+  }
+
+  function closeCheckoutReview() {
+    if (actionBusy || offerBusyId) return;
+    checkoutReviewRequestRef.current += 1;
+    setCheckoutReviewState(null);
+  }
+
+  function retryCheckoutReview() {
+    if (!checkoutReviewState) return;
+    requestCheckoutReview(checkoutReviewState.kind, checkoutReviewState.targetId);
+  }
+
+  function changeCheckoutPurchase() {
+    checkoutReviewRequestRef.current += 1;
+    setCheckoutReviewState(null);
+    setLiveCheckout(null);
+  }
+
+  function continueReviewedCheckout() {
+    const current = checkoutReviewState;
+    if (!current?.accepted || !current.review || current.review.kind !== current.kind) return;
+    if (paymentMode === 'live' && !current.review.merchant.identityReady) return;
+    if (current.kind === 'BOOKING') executeBookingCheckout(current.review);
+    else executePackageCheckout(current.review);
+  }
+
   function payForBooking() {
     if (!canUsePayments || !actionBooking || actionBusy) return;
+    requestCheckoutReview('BOOKING', actionBooking.participant.id);
+  }
+
+  function executeBookingCheckout(review: CheckoutReview) {
+    if (!canUsePayments || !actionBooking || actionBusy || review.kind !== 'BOOKING' || review.reviewHash.length === 0
+      || checkoutReviewState?.targetId !== actionBooking.participant.id) return;
     const participantId = actionBooking.participant.id;
+    const acceptance = checkoutAcceptance(review);
     if (paymentMode === 'live') {
-      const signature = JSON.stringify([participantId, 'stripe']);
+      const signature = JSON.stringify([participantId, 'stripe', review.reviewHash]);
       const idempotencyKey = activeCheckoutKey(bookingCheckoutKeysRef.current, 'booking', participantId, signature);
       setActionBusy(true);
       setActionError('');
-      void createLiveCheckoutIntent({ kind: 'BOOKING', targetId: participantId, idempotencyKey })
+      void createLiveCheckoutIntent({ kind: 'BOOKING', targetId: participantId, idempotencyKey, acceptance })
         .then(({ paymentIntent, connectedAccountId }) => {
           const clientSecret = paymentIntent.clientSecret;
           const checkout: LiveCheckoutSession = {
             localIntentId: paymentIntent.id, clientSecret: clientSecret ?? '', connectedAccountId,
             amount: paymentIntent.amount, currency: paymentIntent.currency, kind: 'BOOKING', targetId: participantId,
-            label: actionBooking.booking.serviceName, clubName: actionBooking.business.name, retrySignature: signature,
+            label: review.item.label, clubName: review.merchant.tradingName, retrySignature: signature, review,
           };
           if (paymentIntent.status === 'SUCCEEDED') {
+            setCheckoutReviewState(null);
             completeLiveCheckout(checkout);
             return;
           }
@@ -2970,32 +3193,36 @@ export function StudentApp({ slug }: { slug?: string }) {
             throw new Error('This payment attempt is closed. Please try again.');
           }
           if (!clientSecret || !connectedAccountId) throw new Error('Secure checkout could not be initialized.');
+          setCheckoutReviewState(null);
           setLiveCheckout(checkout);
         })
         .catch((error) => {
           forgetDefinitiveCheckoutFailure(bookingCheckoutKeysRef.current, signature, error);
           if (error instanceof ApiError && error.status === 401) router.replace(loginHrefRef.current);
-          else setActionError(messageOf(error));
+          else setCheckoutReviewState((current) => current ? { ...current, accepted: false, error: messageOf(error) } : current);
         })
         .finally(() => setActionBusy(false));
       return;
     }
     if (paymentMode !== 'simulated') return;
     const outcome = bookingPaymentOutcome;
-    const signature = JSON.stringify([participantId, outcome]);
+    const signature = JSON.stringify([participantId, outcome, review.reviewHash]);
     const idempotencyKey = activeCheckoutKey(bookingCheckoutKeysRef.current, 'booking', participantId, signature);
     setActionBusy(true);
     setActionError('');
     void checkoutBookingParticipant(participantId, {
       idempotencyKey,
       simulatedOutcome: outcome,
+      acceptance,
     })
       .then((result) => {
         bookingCheckoutKeysRef.current.delete(signature);
         if (result.paymentIntent.status !== 'SUCCEEDED') {
+          setCheckoutReviewState(null);
           setActionError('The simulated Stripe payment was declined. No real card was charged.');
           return;
         }
+        setCheckoutReviewState(null);
         setBookings((current) => current.map((item) => item.participant.id === participantId
           ? {
               ...item,
@@ -3007,14 +3234,14 @@ export function StudentApp({ slug }: { slug?: string }) {
               },
             }
           : item));
-        setNotice(`Simulated Stripe payment completed. Paid to ${actionBooking.business.name}; no real card was charged.`);
+        setNotice(`Simulated Stripe payment completed for ${actionBooking.business.name}; no real card was charged.`);
         void refreshBookings();
         void refreshNotifications();
       })
       .catch((error) => {
         forgetDefinitiveCheckoutFailure(bookingCheckoutKeysRef.current, signature, error);
         if (error instanceof ApiError && error.status === 401) router.replace(loginHrefRef.current);
-        else setActionError(messageOf(error));
+        else setCheckoutReviewState((current) => current ? { ...current, accepted: false, error: messageOf(error) } : current);
       })
       .finally(() => setActionBusy(false));
   }
@@ -3047,21 +3274,37 @@ export function StudentApp({ slug }: { slug?: string }) {
 
   function buyPackage(offer: PackageOffer) {
     if (!canUseCommerce || !canUsePayments || offerBusyId) return;
+    requestCheckoutReview('PACKAGE', offer.id);
+  }
+
+  function executePackageCheckout(review: CheckoutReview) {
+    if (!canUseCommerce || !canUsePayments || offerBusyId || review.kind !== 'PACKAGE' || review.reviewHash.length === 0) return;
+    const offer = packageOffers.find((candidate) => candidate.id === checkoutReviewState?.targetId);
+    if (!offer) {
+      setCheckoutReviewState((current) => current ? { ...current, accepted: false, error: 'This package offer is no longer available. Return to the package list and choose again.' } : current);
+      return;
+    }
+    if (offer.businessId && review.merchant.businessId !== offer.businessId) {
+      setCheckoutReviewState((current) => current ? { ...current, accepted: false, error: 'The selected club details no longer match this package offer. Return to the package list and try again.' } : current);
+      return;
+    }
+    const acceptance = checkoutAcceptance(review);
     if (paymentMode === 'live') {
-      const signature = JSON.stringify([offer.id, 'stripe']);
+      const signature = JSON.stringify([offer.id, 'stripe', review.reviewHash]);
       const idempotencyKey = activeCheckoutKey(packageCheckoutKeysRef.current, 'package', offer.id, signature);
       setOfferBusyId(offer.id);
       setOffersError('');
       setOfferNotice('');
-      void createLiveCheckoutIntent({ kind: 'PACKAGE', targetId: offer.id, idempotencyKey })
+      void createLiveCheckoutIntent({ kind: 'PACKAGE', targetId: offer.id, idempotencyKey, acceptance })
         .then(({ paymentIntent, connectedAccountId }) => {
           const clientSecret = paymentIntent.clientSecret;
           const checkout: LiveCheckoutSession = {
             localIntentId: paymentIntent.id, clientSecret: clientSecret ?? '', connectedAccountId,
             amount: paymentIntent.amount, currency: paymentIntent.currency, kind: 'PACKAGE', targetId: offer.id,
-            label: offer.name, clubName: offersClub?.business.name ?? 'the club', retrySignature: signature,
+            label: review.item.label, clubName: review.merchant.tradingName, retrySignature: signature, review,
           };
           if (paymentIntent.status === 'SUCCEEDED') {
+            setCheckoutReviewState(null);
             completeLiveCheckout(checkout);
             return;
           }
@@ -3070,18 +3313,19 @@ export function StudentApp({ slug }: { slug?: string }) {
             throw new Error('This payment attempt is closed. Please try again.');
           }
           if (!clientSecret || !connectedAccountId) throw new Error('Secure checkout could not be initialized.');
+          setCheckoutReviewState(null);
           setLiveCheckout(checkout);
         })
         .catch((error) => {
           forgetDefinitiveCheckoutFailure(packageCheckoutKeysRef.current, signature, error);
           if (error instanceof ApiError && error.status === 401) router.replace(loginHrefRef.current);
-          else setOffersError(messageOf(error));
+          else setCheckoutReviewState((current) => current ? { ...current, accepted: false, error: messageOf(error) } : current);
         })
         .finally(() => setOfferBusyId(null));
       return;
     }
     if (paymentMode !== 'simulated') return;
-    const signature = JSON.stringify([offer.id, offerPaymentOutcome]);
+    const signature = JSON.stringify([offer.id, offerPaymentOutcome, review.reviewHash]);
     const idempotencyKey = activeCheckoutKey(packageCheckoutKeysRef.current, 'package', offer.id, signature);
     setOfferBusyId(offer.id);
     setOffersError('');
@@ -3089,20 +3333,23 @@ export function StudentApp({ slug }: { slug?: string }) {
     void checkoutPackageOffer(offer.id, {
       idempotencyKey,
       simulatedOutcome: offerPaymentOutcome,
+      acceptance,
     })
       .then((result) => {
         packageCheckoutKeysRef.current.delete(signature);
         if (result.paymentIntent.status !== 'SUCCEEDED' || !result.package) {
+          setCheckoutReviewState(null);
           setOffersError('The simulated Stripe payment was declined. No real card was charged.');
           return;
         }
+        setCheckoutReviewState(null);
         setOfferNotice(`${offer.name} is now in My Packages. This was a simulated Stripe payment; no real card was charged.`);
         void refreshPackages();
         void refreshNotifications();
       })
       .catch((error) => {
         forgetDefinitiveCheckoutFailure(packageCheckoutKeysRef.current, signature, error);
-        setOffersError(messageOf(error));
+        setCheckoutReviewState((current) => current ? { ...current, accepted: false, error: messageOf(error) } : current);
       })
       .finally(() => setOfferBusyId(null));
   }
@@ -4277,6 +4524,7 @@ export function StudentApp({ slug }: { slug?: string }) {
             <p className="text-[10px] font-semibold uppercase tracking-[2px] text-[#59675c]">Your student account</p>
             <h1 className="mt-1.5 text-[30px] font-medium tracking-[-1px] text-[#20382d] sm:text-[36px]">Profile</h1>
             <p className="mt-2 text-sm text-[#59675c]">Keep your details current across every club.</p>
+            {session.user.emailVerified === false && <div className="mt-6"><EmailVerificationNotice email={session.user.email} /></div>}
             {/*
               Personal details read as a record, not a form. People open this
               tab to check what a club sees far more often than to change it,
@@ -4499,6 +4747,7 @@ export function StudentApp({ slug }: { slug?: string }) {
               className="mt-6"
             />}
             <NotificationPreferencesCard className="mt-6" />
+            <PrivacyRequestsPanel emailVerified={session.user.emailVerified} className="mt-6" />
 
             {canUseCommerce && <section id="student-packages" className="mt-9 scroll-mt-24" aria-labelledby="student-packages-heading">
               <div className="flex flex-wrap items-end justify-between gap-3">
@@ -4600,9 +4849,9 @@ export function StudentApp({ slug }: { slug?: string }) {
           </section>
         )}
       </main>
-      <BookingDialog item={canUsePayments && liveCheckout ? null : actionBooking ?? null} {...bookingDialogProps} />
+      <BookingDialog item={canUsePayments && (liveCheckout || checkoutReviewState) ? null : actionBooking ?? null} {...bookingDialogProps} />
       {canUseCommerce && <PackageOffersDialog
-        club={liveCheckout ? null : offersClub}
+        club={liveCheckout || checkoutReviewState ? null : offersClub}
         offers={packageOffers}
         loading={offersLoading}
         error={offersError}
@@ -4618,6 +4867,16 @@ export function StudentApp({ slug }: { slug?: string }) {
         onRetryPaymentCapabilities={() => void refreshPaymentCapabilities()}
         onClose={closePackageOffers}
       />}
+      {canUsePayments && <CheckoutReviewDialog
+        state={checkoutReviewState}
+        paymentMode={paymentMode}
+        busy={actionBusy || !!offerBusyId}
+        onAcceptedChange={(accepted) => setCheckoutReviewState((current) => current ? { ...current, accepted } : current)}
+        onContinue={continueReviewedCheckout}
+        onChange={changeCheckoutPurchase}
+        onClose={closeCheckoutReview}
+        onRetry={retryCheckoutReview}
+      />}
       {canUsePayments && <LiveCheckoutDialog
         checkout={liveCheckout}
         publishableKey={paymentCapabilities?.publishableKey ?? ''}
@@ -4625,6 +4884,7 @@ export function StudentApp({ slug }: { slug?: string }) {
         busy={liveCheckoutBusy}
         onBusyChange={setLiveCheckoutBusy}
         onClose={() => setLiveCheckout(null)}
+        onChange={() => setLiveCheckout(null)}
         onSettled={settleLiveCheckout}
         onDefinitiveFailure={() => forgetLiveCheckoutAttempt()}
       />}

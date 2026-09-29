@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import { currentLegalAcceptance } from './legal-acceptance';
 
 const password = 'TestingOnly!2026';
 
@@ -46,14 +47,14 @@ test('standalone student signup requires an explicit account type and opens the 
   const coachEmail = `first-book-coach-${run}@example.test`;
   const clubEmail = `first-book-club-${run}@example.test`;
   const coachRegistration = await page.request.post('/api/auth/register', {
-    data: { accountType: 'COACH', name: 'First Book Coach', username: `fbc_${run.replace(/-/g, '_').slice(-26)}`, email: coachEmail, password, dateOfBirth: '1990-01-01' },
+    data: { accountType: 'COACH', name: 'First Book Coach', username: `fbc_${run.replace(/-/g, '_').slice(-26)}`, email: coachEmail, password, dateOfBirth: '1990-01-01', ...currentLegalAcceptance },
   });
   expect(coachRegistration.ok(), await coachRegistration.text()).toBeTruthy();
   expect((await page.request.post('/api/auth/logout', { data: {} })).ok()).toBeTruthy();
 
   const clubName = `First Booking Club ${run}`;
   const clubRegistration = await page.request.post('/api/auth/register', {
-    data: { accountType: 'CLUB', businessName: clubName, name: 'First Booking Operator', username: `fbl_${run.replace(/-/g, '_').slice(-26)}`, email: clubEmail, password },
+    data: { accountType: 'CLUB', businessName: clubName, name: 'First Booking Operator', username: `fbl_${run.replace(/-/g, '_').slice(-26)}`, email: clubEmail, password, ...currentLegalAcceptance },
   });
   expect(clubRegistration.ok(), await clubRegistration.text()).toBeTruthy();
   const clubAuth = await clubRegistration.json() as { business: { slug: string } };
@@ -167,7 +168,7 @@ test('safe booking and manage destinations survive auth mode changes while an ex
 
   const email = uniqueEmail('unsafe-next-student', testInfo.project.name);
   const registration = await page.request.post('/api/auth/register', {
-    data: { accountType: 'STUDENT', name: 'Unsafe Next Student', username: `uns_${email.split('@')[0].replace(/-/g, '_').slice(-26)}`, email, password, dateOfBirth: '1990-01-01' },
+    data: { accountType: 'STUDENT', name: 'Unsafe Next Student', username: `uns_${email.split('@')[0].replace(/-/g, '_').slice(-26)}`, email, password, dateOfBirth: '1990-01-01', ...currentLegalAcceptance },
   });
   expect(registration.ok()).toBeTruthy();
   const logout = await page.request.post('/api/auth/logout', { data: {} });

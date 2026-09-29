@@ -9,6 +9,7 @@ if (!process.env.DATABASE_URL) {
 
 export type CalendarTokenKey = { id: string; key: Buffer };
 export type FamilyHandoverTokenKey = { id: string; key: Buffer };
+export type EmailVerificationTokenKey = { id: string; key: Buffer };
 export type AdminOperatorCredential = {
   id: string;
   name: string;
@@ -58,12 +59,20 @@ function adminSessionKeyConfiguration(): { key: Buffer; configured: boolean; val
     }
     throw new Error('ADMIN_SESSION_SECRET must be exactly 32 bytes encoded as base64');
   }
+  // Production treats a missing key as admin-unconfigured, so the rest of the
+  // application remains available. This fallback is never accepted there.
   return {
     key: decoded.length === 32
       ? decoded
       : createHash('sha256').update('courtly-local-admin-session-only').digest(),
     configured: decoded.length === 32, valid: true,
   };
+}
+
+function featureFlag(value: string | undefined, defaultValue: boolean) {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return defaultValue;
+  return normalized === 'true';
 }
 
 function familyHandoverTokenConfiguration() {
@@ -93,6 +102,47 @@ function familyHandoverTokenConfiguration() {
   if (!keys.has(activeKeyId)) valid = false;
 
   return { enabled: valid, activeKeyId, keys };
+}
+
+function emailVerificationTokenConfiguration() {
+  const configuredActiveKeyId = (process.env.EMAIL_VERIFICATION_TOKEN_ACTIVE_KEY_ID || '').trim();
+  const encodedKeys = (process.env.EMAIL_VERIFICATION_TOKEN_KEYS || '').trim();
+
+  // Local development remains usable without secret provisioning. Production
+  // never receives this fallback: an absent or malformed keyring leaves only
+  // registration/resend unavailable, rather than taking down unrelated APIs.
+  if (!production && !configuredActiveKeyId && !encodedKeys) {
+    const activeKeyId = 'local-v1';
+    return {
+      enabled: true,
+      activeKeyId,
+      keys: new Map([[activeKeyId, createHash('sha256')
+        .update('courtly-local-email-verification-only').digest()]]),
+    };
+  }
+
+  const keys = new Map<string, Buffer>();
+  let valid = Boolean(configuredActiveKeyId && encodedKeys);
+  if (encodedKeys) {
+    for (const entry of encodedKeys.split(',')) {
+      const separator = entry.indexOf(':');
+      const id = entry.slice(0, separator).trim();
+      const encoded = entry.slice(separator + 1).trim();
+      if (separator < 1 || !/^[A-Za-z0-9_-]{1,64}$/.test(id)
+        || !/^(?:[A-Za-z0-9+/]{4}){10}[A-Za-z0-9+/]{3}=$/.test(encoded) || keys.has(id)) {
+        valid = false;
+        continue;
+      }
+      const key = Buffer.from(encoded, 'base64');
+      if (key.length !== 32 || key.toString('base64') !== encoded) {
+        valid = false;
+        continue;
+      }
+      keys.set(id, key);
+    }
+  }
+  if (!keys.has(configuredActiveKeyId)) valid = false;
+  return { enabled: valid, activeKeyId: configuredActiveKeyId, keys };
 }
 
 function calendarConfiguration() {
@@ -175,6 +225,29 @@ function emailConfiguration() {
   return { mode: requested as 'disabled' | 'capture' | 'resend', enabled: requested !== 'disabled', apiKey, fromAddress, fromName, replyTo };
 }
 
+function publicAppOriginConfiguration(emailEnabled: boolean) {
+  const explicit = (process.env.PUBLIC_APP_ORIGIN || '').trim();
+  const fallback = (process.env.APP_ORIGIN?.split(',')[0] || 'http://localhost:3000').trim();
+  const candidate = explicit || fallback;
+  if (production && emailEnabled) {
+    if (!explicit) {
+      throw new Error('PUBLIC_APP_ORIGIN is required when production email is enabled');
+    }
+    let parsed: URL;
+    try { parsed = new URL(explicit); }
+    catch { throw new Error('PUBLIC_APP_ORIGIN must be a canonical HTTPS origin'); }
+    const hostname = parsed.hostname.toLowerCase();
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password
+      || parsed.pathname !== '/' || parsed.search || parsed.hash
+      || ['localhost', '127.0.0.1', '::1', '[::1]'].includes(hostname)) {
+      throw new Error('PUBLIC_APP_ORIGIN must be a canonical non-loopback HTTPS origin');
+    }
+    return parsed.origin;
+  }
+  return candidate.replace(/\/$/, '');
+}
+
+const email = emailConfiguration();
 let adminOperators: AdminOperatorCredential[] = [];
 let adminOperatorsValid = true;
 try { adminOperators = adminOperatorConfiguration(); }
@@ -183,11 +256,14 @@ catch (error) {
   adminOperatorsValid = false;
 }
 const adminSession = adminSessionKeyConfiguration();
+const emailVerificationTokens = emailVerificationTokenConfiguration();
 
 export const config = {
   port: Number(process.env.PORT || 4000),
   sessionCookie: production ? '__Host-courtly_session' : 'courtly_session',
   adminCookie: production ? '__Host-courtly_admin' : 'courtly_admin',
+  // Named operators are mandatory in production. ADMIN_PASSWORD remains a
+  // non-production compatibility path and cannot reach sensitive admin routes.
   adminOperators,
   adminSessionSecret: adminSession.key,
   adminSessionSecretConfigured: adminSession.configured,
@@ -200,15 +276,27 @@ export const config = {
   googleMapsApiKey: (process.env.GOOGLE_MAPS_API_KEY || '').trim(),
   googleCalendar: calendarConfiguration(),
   payments: paymentConfiguration(),
-  email: emailConfiguration(),
+  email,
+  // Family is deliberately opt-in in production so schema rollout, worker
+  // readiness, and the matching frontend can be verified before writes open.
+  familyFeatureEnabled: featureFlag(process.env.FAMILY_FEATURE_ENABLED, !production),
   familyHandoverTokens: familyHandoverTokenConfiguration(),
+  // Destructive business deletion is never available in a production process.
+  // Local and test environments retain it for cleanup and coverage.
   realBusinessDeletionEnabled: !production,
-  publicAppOrigin: (process.env.PUBLIC_APP_ORIGIN || process.env.APP_ORIGIN?.split(',')[0] || 'http://localhost:3000').trim().replace(/\/$/, ''),
+  // Versioned HMAC keys keep email-verification bearers out of persistent
+  // storage and allow rotation without invalidating still-live claims.
+  emailVerificationTokens,
+  publicAppOrigin: publicAppOriginConfiguration(email.enabled),
   // Public policy publication and signup acceptance are production-disabled
   // until an accountable owner records approval of this exact version and
   // content hash. A date alone must never approve changed draft text.
   legalDocumentsApprovedVersion: (process.env.LEGAL_DOCUMENTS_APPROVED_VERSION || '').trim(),
   legalDocumentsApprovedHash: (process.env.LEGAL_DOCUMENTS_APPROVED_HASH || '').trim().toLowerCase(),
+  // This acknowledgement is deliberately independent from legal-document
+  // publication. Live Stripe checkout stays closed until the current seller,
+  // payment-recipient, refund-owner, and GST decisions are approved.
+  paymentCommercialApprovedVersion: (process.env.PAYMENT_COMMERCIAL_APPROVED_VERSION || '').trim(),
   // Marketing remains hard-disabled until consent evidence, unsubscribe, DNC,
   // campaign approval, and suppression controls are implemented end to end.
   marketingEnabled: false,

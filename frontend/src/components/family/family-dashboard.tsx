@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import {
   ApiError, cancelFamilyHandover, createFamilyChild, createFamilyHandover, downloadFamilyChildExport,
-  loadAuthSession, loadFamily, logoutAccount, renewFamilyChildConsent, requestFamilyChildDeletion,
+  loadAuthSession, loadFamily, logoutAccount, renewFamilyChildConsent, requestFamilyChildDeletion, resendAccountEmailVerification,
   setFamilyDateOfBirth, updateFamilyChild, withdrawFamilyChildConsent,
 } from '@/lib/api';
 import {
@@ -203,6 +203,15 @@ export function FamilyDashboard() {
   async function signOut() {
     await run('logout', async () => { await logoutAccount(); router.replace('/login'); router.refresh(); });
   }
+  async function resendVerification() {
+    await run('verification-email', async () => {
+      const result = await resendAccountEmailVerification();
+      setNotice(result.alreadyVerified
+        ? 'Your email is already verified. Refreshing Family now.'
+        : 'A new verification email has been queued. Use only the newest link.');
+      if (result.alreadyVerified) await refresh();
+    });
+  }
 
   const missingDob = !!session && !session.user.dateOfBirth;
   return <main className="min-h-screen bg-[#f6f7f4] px-4 pb-[max(2rem,env(safe-area-inset-bottom))] pt-5 text-[#1c3029] sm:px-8 sm:py-8">
@@ -216,7 +225,7 @@ export function FamilyDashboard() {
         <header className="mt-5 flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[1.8px] text-[#59675c]">Private family management</p><h1 className="mt-2 text-4xl font-medium tracking-[-1.2px]">Family</h1><p className="mt-3 max-w-2xl text-sm leading-relaxed text-[#59675c]">Create and protect managed child profiles. Children have no email, password, or sign-in until a verified handover is completed.</p></div>{family.guardian.eligible && <Button size="lg" onClick={() => openDialog({ kind: 'add' })}><Plus size={17} />Add child</Button>}</header>
         {notice && <div ref={noticeRef} tabIndex={-1} role="status" className="mt-6 flex items-start gap-2 rounded-xl border border-[#d8e4cb] bg-[#edf5e4] p-4 text-sm text-[#4f6847] outline-none"><Check size={17} className="mt-0.5 shrink-0" />{notice}</div>}
         {error && !dialog && <div role="alert" className="mt-6 rounded-xl border border-[#e4c7bc] bg-[#fff6f1] p-4 text-sm text-[#8a4937]">{error}</div>}
-        {!family.guardian.eligible && <section className={`${panel} mt-6 border-[#ead9c5] bg-[#fffaf3]`}><h2 className="text-lg">Family management is unavailable</h2><p className="mt-2 text-sm leading-relaxed text-[#735f44]">{family.guardian.reason === 'PARENT_ACCOUNT_REQUIRED' ? 'This account must be managed by an adult and cannot manage another child.' : 'The server has determined that this account is not eligible to manage children.'}</p></section>}
+        {!family.guardian.eligible && <section className={`${panel} mt-6 border-[#ead9c5] bg-[#fffaf3]`}><h2 className="text-lg">Family management is unavailable</h2><p className="mt-2 text-sm leading-relaxed text-[#735f44]">{family.guardian.emailVerified === false ? 'Verify your sign-in email before creating or managing a child profile.' : family.guardian.reason === 'PARENT_ACCOUNT_REQUIRED' ? 'This account must be managed by an adult and cannot manage another child.' : 'The server has determined that this account is not eligible to manage children.'}</p>{family.guardian.emailVerified === false && <Button className="mt-4" disabled={!!busy} onClick={() => void resendVerification()}>{busy === 'verification-email' ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}Send verification email</Button>}</section>}
         {family.children.length ? <div className="mt-7 grid gap-4">{family.children.map(child => {
           if (isFamilyConsentRenewalChild(child)) {
             return <ConsentRenewalCard

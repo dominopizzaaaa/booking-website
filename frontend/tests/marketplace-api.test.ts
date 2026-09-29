@@ -13,6 +13,7 @@ import {
   loadRental,
   loadRentals,
   loadLiveCheckoutIntent,
+  loadCheckoutReview,
   loadPaymentCapabilities,
   loadRentalSlots,
   normalizeAuthSession,
@@ -22,6 +23,12 @@ import {
   updateClubProfile,
   updatePackageOffer,
 } from '../src/lib/api';
+import {
+  CURRENT_CANCELLATION_REFUND_POLICY_VERSION,
+  CURRENT_LEGAL_POLICY_SET_HASH,
+  CURRENT_PACKAGE_TERMS_VERSION,
+  CURRENT_TERMS_VERSION,
+} from '../src/lib/policies';
 
 type Call = { url: string; init: RequestInit };
 let calls: Call[] = [];
@@ -62,13 +69,17 @@ describe('account contracts', () => {
     await registerStudentAccount({
       name: 'Avery Player', username: 'avery_player', sports: ['Tennis'],
       email: 'avery@example.test', password: 'long-password', dateOfBirth: '1990-01-01',
+      termsAccepted: true, privacyNoticeAcknowledged: true,
+      termsVersion: '2026-09-29', privacyPolicyVersion: '2026-09-29',
+      policySetHash: CURRENT_LEGAL_POLICY_SET_HASH,
     });
-    expect(calls[0]).toMatchObject({
-      url: '/api/auth/register',
-      init: { method: 'POST', body: JSON.stringify({
-        name: 'Avery Player', username: 'avery_player', sports: ['Tennis'],
-        email: 'avery@example.test', password: 'long-password', dateOfBirth: '1990-01-01', accountType: 'STUDENT',
-      }) },
+    expect(calls[0]).toMatchObject({ url: '/api/auth/register', init: { method: 'POST' } });
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({
+      name: 'Avery Player', username: 'avery_player', sports: ['Tennis'],
+      email: 'avery@example.test', password: 'long-password', dateOfBirth: '1990-01-01', accountType: 'STUDENT',
+      termsAccepted: true, privacyNoticeAcknowledged: true,
+      termsVersion: '2026-09-29', privacyPolicyVersion: '2026-09-29',
+      policySetHash: CURRENT_LEGAL_POLICY_SET_HASH,
     });
   });
 
@@ -104,6 +115,15 @@ describe('account contracts', () => {
 });
 
 describe('package marketplace requests', () => {
+  const packageAcceptance = {
+    accepted: true as const,
+    reviewHash: 'review-hash',
+    termsVersion: CURRENT_TERMS_VERSION,
+    cancellationRefundPolicyVersion: CURRENT_CANCELLATION_REFUND_POLICY_VERSION,
+    packageTermsVersion: CURRENT_PACKAGE_TERMS_VERSION,
+  };
+  const bookingAcceptance = { ...packageAcceptance, packageTermsVersion: null };
+
   const offerInput = {
     name: 'Ten plays', description: 'Classes and courts', price: 50_000, totalCredits: 10,
     validityDays: 180, active: true, serviceIds: ['svc/1'], rentalLocationIds: ['loc 1'],
@@ -133,18 +153,26 @@ describe('package marketplace requests', () => {
   });
 
   it('uses the same idempotent checkout contract for packages and classes', async () => {
-    const values = { idempotencyKey: 'checkout-key', simulatedOutcome: 'SUCCEEDED' as const };
     const result = { paymentIntent: { id: 'pi-1', amount: 1000, currency: 'SGD', status: 'SUCCEEDED', createdAt: '2026-01-01' }, package: null, participant: null };
     respond(result);
-    await checkoutPackageOffer('offer/1', values);
-    expect(calls[0]).toMatchObject({ url: '/api/account/package-offers/offer%2F1/checkout', init: { method: 'POST', body: JSON.stringify(values) } });
+    const packageValues = { idempotencyKey: 'checkout-key', simulatedOutcome: 'SUCCEEDED' as const, acceptance: packageAcceptance };
+    await checkoutPackageOffer('offer/1', packageValues);
+    expect(calls[0]).toMatchObject({ url: '/api/account/package-offers/offer%2F1/checkout', init: { method: 'POST', body: JSON.stringify(packageValues) } });
     respond(result);
-    await checkoutBookingParticipant('part 1', values);
-    expect(calls[0]).toMatchObject({ url: '/api/account/bookings/part%201/checkout', init: { method: 'POST', body: JSON.stringify(values) } });
+    const bookingValues = { idempotencyKey: 'checkout-key', simulatedOutcome: 'SUCCEEDED' as const, acceptance: bookingAcceptance };
+    await checkoutBookingParticipant('part 1', bookingValues);
+    expect(calls[0]).toMatchObject({ url: '/api/account/bookings/part%201/checkout', init: { method: 'POST', body: JSON.stringify(bookingValues) } });
+  });
+
+  it('loads and unwraps an authoritative checkout review', async () => {
+    const review = { reviewHash: 'review-hash', kind: 'BOOKING' };
+    respond({ review });
+    await expect(loadCheckoutReview('BOOKING', 'participant/1')).resolves.toEqual(review);
+    expect(calls[0].url).toBe('/api/payments/checkout-review?kind=BOOKING&targetId=participant%2F1');
   });
 
   it('creates and polls live checkout without accepting a client-supplied price', async () => {
-    const values = { kind: 'PACKAGE' as const, targetId: 'offer/1', idempotencyKey: 'live-checkout-key' };
+    const values = { kind: 'PACKAGE' as const, targetId: 'offer/1', idempotencyKey: 'live-checkout-key', acceptance: packageAcceptance };
     respond({ paymentIntent: { id: 'intent/1', status: 'REQUIRES_CONFIRMATION' }, connectedAccountId: 'acct_1' });
     await createLiveCheckoutIntent(values);
     expect(calls[0]).toMatchObject({

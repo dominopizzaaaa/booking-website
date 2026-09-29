@@ -36,6 +36,10 @@ async function loadAuthHarness() {
 
   const compare = vi.fn(async (candidate: string) => candidate === validPassword);
   const prisma = {
+    $transaction: vi.fn(async (operation: (tx: unknown) => Promise<unknown>) => operation(prisma)),
+    $executeRaw: vi.fn(async () => 1),
+    $queryRaw: vi.fn(async () => []),
+    emailVerificationClaim: { findUnique: vi.fn(async () => null) },
     user: {
       findUnique: vi.fn(async () => ({
         id: 'rate-limit-user',
@@ -109,6 +113,10 @@ function login(server: Server, password: string) {
   return request(server).post('/api/auth/login').send({ email: loginEmail, password });
 }
 
+function verifyEmail(server: Server, token: string) {
+  return request(server).post('/api/auth/verify-email').send({ token });
+}
+
 afterEach(async () => {
   const server = authServer;
   authServer = null;
@@ -172,5 +180,16 @@ describe.sequential('rate-limit enforcement', () => {
     const limited = await login(server, invalidPassword);
     expect(limited.status).toBe(429);
     expect(compare).toHaveBeenCalledTimes(33);
+  });
+
+  it('bounds public email-verification attempts independently', async () => {
+    const { server } = await loadAuthHarness();
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      const response = await verifyEmail(server, `invalid_verification_token_${attempt}`);
+      expect(response.status, `verification attempt ${attempt} should remain inside the quota: ${JSON.stringify(response.body)}`).toBe(404);
+    }
+    const limited = await verifyEmail(server, 'invalid_verification_token_21');
+    expect(limited.status).toBe(429);
+    expect(limited.body).toEqual({ error: 'Too many verification attempts. Please try again later.' });
   });
 });

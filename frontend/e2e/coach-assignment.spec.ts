@@ -1,5 +1,6 @@
 import { expect, test, type APIResponse, type Page } from '@playwright/test';
 import type { CoachScopedBooking, ManagerWorkspace, Payment } from '../src/lib/types';
+import { currentLegalAcceptance } from './legal-acceptance';
 
 const password = 'TestingOnly!2026';
 
@@ -42,11 +43,11 @@ test('a coach accepts a lesson assigned by the club from the booking dialog', as
   const locationName = `Assignment court ${runId}`;
 
   await responseJson(await page.request.post('/api/auth/register', {
-    data: { accountType: 'COACH', name: coachName, username: `ac_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: coachEmail, password, dateOfBirth: '1990-01-01' },
+    data: { accountType: 'COACH', name: coachName, username: `ac_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: coachEmail, password, dateOfBirth: '1990-01-01', ...currentLegalAcceptance },
   }));
   await logout(page);
   await responseJson(await page.request.post('/api/auth/register', {
-    data: { accountType: 'STUDENT', name: studentName, username: `as_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: studentEmail, password, dateOfBirth: '1990-01-01' },
+    data: { accountType: 'STUDENT', name: studentName, username: `as_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: studentEmail, password, dateOfBirth: '1990-01-01', ...currentLegalAcceptance },
   }));
   await logout(page);
 

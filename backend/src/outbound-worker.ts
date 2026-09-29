@@ -10,6 +10,11 @@ import {
   familyHandoverClaimUrl,
   familyHandoverTokenDigest,
 } from './family-handover-token.js';
+import {
+  deriveEmailVerificationToken,
+  emailVerificationTokenDigest,
+  emailVerificationUrl,
+} from './email-verification-token.js';
 
 export type ClaimedDelivery = { id: string; eventType: string; recipientEmail: string; recipientName: string; payload: unknown; attempts: number; leaseToken: string };
 export type DeliveryDb = {
@@ -19,6 +24,10 @@ export type DeliveryDb = {
     where: { id: string };
     select: { status: true; expiresAt: true; destinationEmail: true; tokenHash: true };
   }): Promise<{ status: string; expiresAt: Date; destinationEmail: string; tokenHash: string } | null> };
+  emailVerificationClaim: { findUnique(args: {
+    where: { id: string };
+    select: { email: true; expiresAt: true; tokenHash: true; tokenKeyId: true; consumedAt: true; revokedAt: true };
+  }): Promise<{ email: string; expiresAt: Date; tokenHash: string; tokenKeyId: string; consumedAt: Date | null; revokedAt: Date | null } | null> };
 };
 const defaultDb = prisma as unknown as DeliveryDb;
 const maxAttempts = 8;
@@ -89,6 +98,38 @@ async function payloadOf(delivery: ClaimedDelivery, db: DeliveryDb, now: Date) {
       recipientName: delivery.recipientName,
       claimUrl: familyHandoverClaimUrl(token),
       expiresAt,
+    };
+  }
+  if (delivery.eventType === 'EMAIL_VERIFICATION') {
+    if (typeof payload.claimId !== 'string' || typeof payload.tokenKeyId !== 'string'
+      || typeof payload.expiresAt !== 'string') {
+      throw new EmailProviderError('Email verification delivery payload is invalid', 'EMAIL_VERIFICATION_DELIVERY_INVALID', false);
+    }
+    const expiresAt = new Date(payload.expiresAt);
+    if (!Number.isFinite(expiresAt.getTime())) {
+      throw new EmailProviderError('Email verification delivery payload is invalid', 'EMAIL_VERIFICATION_DELIVERY_INVALID', false);
+    }
+    const claim = await db.emailVerificationClaim.findUnique({
+      where: { id: payload.claimId },
+      select: { email: true, expiresAt: true, tokenHash: true, tokenKeyId: true, consumedAt: true, revokedAt: true },
+    });
+    if (!claim || claim.consumedAt || claim.revokedAt || claim.expiresAt <= now
+      || claim.expiresAt.getTime() !== expiresAt.getTime() || claim.email !== delivery.recipientEmail
+      || claim.tokenKeyId !== payload.tokenKeyId) {
+      throw new SuppressDeliveryError('EMAIL_VERIFICATION_UNAVAILABLE');
+    }
+    let token: string;
+    try { token = deriveEmailVerificationToken(payload.claimId, payload.tokenKeyId); }
+    catch {
+      throw new EmailProviderError('Email verification token key is unavailable',
+        'EMAIL_VERIFICATION_TOKEN_KEY_UNAVAILABLE', true);
+    }
+    if (emailVerificationTokenDigest(token) !== claim.tokenHash) {
+      throw new SuppressDeliveryError('EMAIL_VERIFICATION_TOKEN_MISMATCH');
+    }
+    return {
+      eventType: 'EMAIL_VERIFICATION' as const, recipientName: delivery.recipientName,
+      verificationUrl: emailVerificationUrl(token), expiresAt,
     };
   }
   return { eventType: delivery.eventType as TransactionalEmailEvent, recipientName: delivery.recipientName,

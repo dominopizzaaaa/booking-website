@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  ApiError, adminBusinesses, api, assignChatCoach, beginGoogleCalendarConnection, cancelAccountBooking,
-  counterChatProposal, createAccountChat, disconnectGoogleCalendar,
-  loadAccountBookings, loadAccountClubs, loadCalendarConnection, loadChatThread, loadChatThreads, loadSlots, loadWorkspace,
-  normalizeCalendarConnection, proposeChatSession, removeChatCoach, respondToRescheduleRequest, reversePayment, searchVenues,
-  syncGoogleCalendar, updateCalendarConnection,
+  ApiError, adminBusinesses, adminLogin, adminSession, api, applyAdminSafeguardingAccountAction, assignChatCoach, beginGoogleCalendarConnection, blockChatAccount, cancelAccountBooking, cancelPrivacyRequest,
+  counterChatProposal, createAccountChat, createPrivacyRequest, disconnectGoogleCalendar,
+  loadAccountBookings, loadAccountClubs, loadAdminPrivacyRequestEvents, loadAdminPrivacyRequests, loadAdminSafeguardingReport, loadAdminSafeguardingReports, loadCalendarConnection, loadChatThread, loadChatThreads, loadClubSafeguardingReport, loadPrivacyRequests, loadSlots, loadWorkspace,
+  normalizeCalendarConnection, proposeChatSession, removeChatCoach, reportChatMessage, respondToRescheduleRequest, reversePayment, searchVenues,
+  syncGoogleCalendar, unblockChatAccount, updateAdminSafeguardingReport, updateCalendarConnection, updateClubSafeguardingReport,
+  resendAccountEmailVerification, updateAdminPrivacyRequest, verifyAccountEmail,
 } from '../src/lib/api';
 import { isCoachClubWorkspace, isManagerWorkspace, type WorkspaceResponse, type WorkspaceWireResponse } from '../src/lib/types';
 
@@ -95,6 +96,86 @@ describe('api', () => {
   it('falls back to a generic sentence when an error body carries no message', async () => {
     respond({}, { status: 500 });
     await expect(api('/workspace')).rejects.toMatchObject({ message: 'Something went wrong. Please try again.' });
+  });
+});
+
+describe('verifyAccountEmail', () => {
+  it('posts the verification bearer in the JSON body rather than the URL', async () => {
+    respond({ ok: true, verifiedAt: '2026-09-29T00:00:00.000Z' });
+    await verifyAccountEmail('verification_bearer');
+    expect(calls[0].url).toBe('/api/auth/verify-email');
+    expect(calls[0].init.method).toBe('POST');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ token: 'verification_bearer' });
+  });
+
+  it('requests a replacement verification email for the signed-in account', async () => {
+    respond({ ok: true, emailQueued: true, alreadyVerified: false });
+    await resendAccountEmailVerification();
+    expect(calls[0].url).toBe('/api/auth/email-verification/resend');
+    expect(calls[0].init.method).toBe('POST');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({});
+  });
+});
+
+describe('privacy request helpers', () => {
+  it('lists, creates, and cancels requests through authenticated subject routes', async () => {
+    respond({ requests: [] });
+    await loadPrivacyRequests();
+    expect(calls[0].url).toBe('/api/privacy/requests');
+    expect(calls[0].init.method).toBeUndefined();
+
+    respond({ requests: [], nextCursor: null });
+    await loadPrivacyRequests({ cursor: 'next page', limit: 25 });
+    expect(calls[0].url).toBe('/api/privacy/requests?cursor=next+page&limit=25');
+
+    const input = {
+      type: 'CORRECTION' as const,
+      details: 'My phone number is outdated.',
+      correctionFields: { phone: '+65 6123 4567' },
+    };
+    respond({ request: { id: 'privacy-1' } });
+    await createPrivacyRequest(input);
+    expect(calls[0]).toMatchObject({
+      url: '/api/privacy/requests',
+      init: { method: 'POST', body: JSON.stringify(input) },
+    });
+
+    respond({ request: { id: 'privacy-1', status: 'CANCELLED' } });
+    await cancelPrivacyRequest('privacy/1');
+    expect(calls[0]).toMatchObject({
+      url: '/api/privacy/requests/privacy%2F1/cancel',
+      init: { method: 'POST', body: '{}' },
+    });
+  });
+
+  it('adds the explicit operator acknowledgement and bounded admin filters', async () => {
+    respond({ requests: [] });
+    await loadAdminPrivacyRequests({ status: 'ACTIVE', overdue: true, limit: 25, cursor: 'next page' });
+    expect(calls[0].url).toBe('/api/admin/privacy-requests?status=ACTIVE&overdue=true&limit=25&cursor=next+page');
+    expect(calls[0].init.headers).toMatchObject({ 'X-Courtly-Privacy-Operator': '1' });
+
+    const update = {
+      status: 'IN_REVIEW' as const, note: 'Identity checked against the signed-in account.',
+      externalAuditReference: 'CASE-2026-001',
+      identityVerified: true,
+    };
+    respond({ request: { id: 'privacy-1', status: 'IN_REVIEW' } });
+    await updateAdminPrivacyRequest('privacy/1', update);
+    expect(calls[0]).toMatchObject({
+      url: '/api/admin/privacy-requests/privacy%2F1',
+      init: {
+        method: 'PATCH',
+        headers: expect.objectContaining({ 'X-Courtly-Privacy-Operator': '1' }),
+        body: JSON.stringify(update),
+      },
+    });
+
+    respond({ events: [], nextCursor: null });
+    await loadAdminPrivacyRequestEvents('privacy/1', { limit: 100, cursor: 'older page' });
+    expect(calls[0]).toMatchObject({
+      url: '/api/admin/privacy-requests/privacy%2F1/events?limit=100&cursor=older+page',
+      init: { headers: expect.objectContaining({ 'X-Courtly-Privacy-Operator': '1' }) },
+    });
   });
 });
 
@@ -445,6 +526,11 @@ describe('generalized chat requests', () => {
     });
     expect(detail.messages[0].proposal).not.toHaveProperty('price');
     expect(detail.messages[0].proposal).not.toHaveProperty('currency');
+    expect(detail.messages[0]).toMatchObject({ canReport: false, reportedByViewer: false });
+    expect(detail.safety).toEqual({
+      canReport: false, blockTarget: null, blockedByViewer: false, messagingBlocked: false,
+      canBlock: false, canUnblock: false, reason: null,
+    });
   });
 
   it('opens an account conversation by username', async () => {
@@ -467,6 +553,30 @@ describe('generalized chat requests', () => {
     expect(detail.kind).toBe('ACCOUNT');
     expect(detail.messages[0].proposal).not.toHaveProperty('price');
     expect(detail.messages[0].proposal).not.toHaveProperty('currency');
+  });
+
+  it('does not infer block authority when an older payload only names a target', async () => {
+    respond({ ...accountDetail, blockTarget: { name: 'Marcus Tan', username: 'marcus_tan' } });
+    const detail = await loadChatThread('account-thread');
+    expect(detail.safety).toMatchObject({
+      blockTarget: { name: 'Marcus Tan', username: 'marcus_tan' },
+      canBlock: false, canUnblock: false,
+    });
+  });
+
+  it('uses the server-authored block target and capabilities from messaging', async () => {
+    respond({
+      ...accountDetail,
+      messaging: {
+        blocked: false, blockedByViewer: false, canBlock: true, canUnblock: false, reason: null,
+        blockTarget: { name: 'Marcus Tan', username: 'marcus_tan' },
+      },
+    });
+    const detail = await loadChatThread('account-thread');
+    expect(detail.safety).toMatchObject({
+      blockTarget: { name: 'Marcus Tan', username: 'marcus_tan' },
+      canBlock: true, canUnblock: false, messagingBlocked: false,
+    });
   });
 
   it('assigns and removes a roster coach with escaped thread identifiers', async () => {
@@ -516,6 +626,82 @@ describe('generalized chat requests', () => {
     respond({ thread: accountDetail, proposalId: 'counter-1' });
     await counterChatProposal('proposal-1', '2026-10-22T02:00:00.000Z');
     expect(calls[0].init.body).toBe(JSON.stringify({ startAt: '2026-10-22T02:00:00.000Z', message: '' }));
+  });
+
+  it('reports an anchored message with the exact report envelope', async () => {
+    const receipt = {
+      id: 'report-1', category: 'HARASSMENT', status: 'OPEN', severity: 'HIGH',
+      childInvolved: false, createdAt: '2026-10-14T03:00:00.000Z',
+    };
+    respond({ report: receipt });
+    await expect(reportChatMessage('thread/1', {
+      category: 'HARASSMENT', description: 'A direct threat', messageId: 'message/1',
+    })).resolves.toEqual({ report: receipt });
+    expect(calls[0]).toMatchObject({
+      url: '/api/chats/thread%2F1/reports',
+      init: { method: 'POST', body: JSON.stringify({ category: 'HARASSMENT', description: 'A direct threat', messageId: 'message/1' }) },
+    });
+  });
+
+  it('blocks and unblocks with empty bodies and normalises returned threads', async () => {
+    respond({ thread: { ...accountDetail, messaging: { blocked: true, blockedByViewer: true, canBlock: false, canUnblock: true, reason: 'BLOCKED' } } });
+    const blocked = await blockChatAccount('thread/1');
+    expect(calls[0]).toMatchObject({ url: '/api/chats/thread%2F1/block', init: { method: 'POST', body: '{}' } });
+    expect(blocked.safety).toMatchObject({ blockedByViewer: true, messagingBlocked: true });
+
+    respond({ thread: accountDetail });
+    const unblocked = await unblockChatAccount('thread/1');
+    expect(calls[0]).toMatchObject({ url: '/api/chats/thread%2F1/block', init: { method: 'DELETE', body: '{}' } });
+    expect(unblocked.safety).toMatchObject({ blockedByViewer: false, messagingBlocked: false });
+  });
+});
+
+describe('safeguarding report requests', () => {
+  const summary = {
+    id: 'report-1', category: 'HARASSMENT', status: 'OPEN', severity: 'HIGH', childInvolved: false,
+    assignedTo: null, threadKind: 'ACCOUNT', subject: { name: 'Marcus Tan', username: 'marcus', accountType: 'COACH' },
+    business: null, session: null, reportedMessage: null, createdAt: '2026-10-14T03:00:00.000Z', updatedAt: '2026-10-14T03:00:00.000Z',
+  };
+  const detail = { ...summary, description: 'Threatening language', reporter: null, evidence: {}, evidenceHash: 'hash', audits: [], auditHistoryHasEarlier: true };
+
+  it('builds bounded admin filters in a stable order', async () => {
+    respond({ reports: [summary], nextCursor: 'next/1' });
+    await expect(loadAdminSafeguardingReports({ status: 'IN_REVIEW', severity: 'HIGH', cursor: 'next/1', q: ' marcus ' }))
+      .resolves.toMatchObject({ reports: [summary], nextCursor: 'next/1' });
+    expect(calls[0].url).toBe('/api/admin/safeguarding/reports?status=IN_REVIEW&severity=HIGH&cursor=next%2F1&q=marcus');
+  });
+
+  it('unwraps detail and sends exact admin review and account-action bodies', async () => {
+    respond({ report: detail });
+    await expect(loadAdminSafeguardingReport('report/1')).resolves.toEqual(detail);
+    expect(calls[0].url).toBe('/api/admin/safeguarding/reports/report%2F1');
+
+    respond({ report: detail });
+    await updateAdminSafeguardingReport('report/1', { status: 'IN_REVIEW', severity: 'CRITICAL', assignedTo: 'Safety lead', note: '  Escalated  \n' });
+    expect(calls[0]).toMatchObject({
+      url: '/api/admin/safeguarding/reports/report%2F1',
+      init: { method: 'PATCH', body: JSON.stringify({ status: 'IN_REVIEW', severity: 'CRITICAL', assignedTo: 'Safety lead', note: 'Escalated' }) },
+    });
+
+    respond({ report: detail });
+    await applyAdminSafeguardingAccountAction('report/1', 'RESTRICT_ACCOUNT_CHAT', 'Prevent further contact');
+    expect(calls[0]).toMatchObject({
+      url: '/api/admin/safeguarding/reports/report%2F1/account-action',
+      init: { method: 'POST', body: JSON.stringify({ action: 'RESTRICT_ACCOUNT_CHAT', note: 'Prevent further contact' }) },
+    });
+  });
+
+  it('uses redacted club routes and self-assignment vocabulary', async () => {
+    respond({ report: detail });
+    await loadClubSafeguardingReport('report/1');
+    expect(calls[0].url).toBe('/api/safeguarding/reports/report%2F1');
+
+    respond({ report: detail });
+    await updateClubSafeguardingReport('report/1', { status: 'REFERRED_TO_PLATFORM', severity: 'CRITICAL', assignment: 'SELF', note: '\n Needs platform review \t' });
+    expect(calls[0]).toMatchObject({
+      url: '/api/safeguarding/reports/report%2F1',
+      init: { method: 'PATCH', body: JSON.stringify({ status: 'REFERRED_TO_PLATFORM', severity: 'CRITICAL', assignment: 'SELF', note: 'Needs platform review' }) },
+    });
   });
 });
 
@@ -570,5 +756,33 @@ describe('request construction', () => {
     respond({ businesses: [] });
     await adminBusinesses({ search: 'tan', filter: 'demo' });
     expect(calls[0].url).toBe('/api/admin/businesses?search=tan&filter=demo');
+  });
+
+  it('preserves the server-authored admin deletion policy', async () => {
+    respond({
+      configured: true, authenticated: true, authMode: 'named', sensitiveAccess: true,
+      operator: { id: 'ops_1', name: 'Ada Operator', email: 'ada@example.test' },
+      businessDeletionMode: 'demo-only',
+    });
+    await expect(adminSession()).resolves.toEqual({
+      configured: true, authenticated: true, authMode: 'named', sensitiveAccess: true,
+      operator: { id: 'ops_1', name: 'Ada Operator', email: 'ada@example.test' },
+      businessDeletionMode: 'demo-only',
+    });
+    expect(calls[0].url).toBe('/api/admin/session');
+  });
+
+  it('sends the exact credential shape for named and legacy admin login', async () => {
+    respond({ ok: true, authMode: 'named', operator: { id: 'ops_1', name: 'Ada', email: 'ada@example.test' } });
+    await adminLogin({ email: 'ada@example.test', password: 'named-secret' });
+    expect(calls[0]).toMatchObject({
+      url: '/api/admin/login', init: { method: 'POST', body: JSON.stringify({ email: 'ada@example.test', password: 'named-secret' }) },
+    });
+
+    respond({ ok: true, authMode: 'legacy', operator: null });
+    await adminLogin({ password: 'legacy-secret' });
+    expect(calls[0]).toMatchObject({
+      url: '/api/admin/login', init: { method: 'POST', body: JSON.stringify({ password: 'legacy-secret' }) },
+    });
   });
 });
