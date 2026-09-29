@@ -45,8 +45,12 @@ export async function queueOutboundEmail(tx: OutboundTransaction, input: QueueEm
   // manufacture a queued record in deployments with no sending provider.
   if (input.category === 'SECURITY' && !config.email.enabled) return null;
   const email = normalizedRecipient(input.recipientEmail);
-  let suppressed = !isDeliverableEmail(email);
-  let suppressionCode = suppressed ? 'INVALID_RECIPIENT' : null;
+  let suppressed = input.category === 'MARKETING' && !config.marketingEnabled;
+  let suppressionCode = suppressed ? 'MARKETING_DISABLED' : null;
+  if (!suppressed && !isDeliverableEmail(email)) {
+    suppressed = true;
+    suppressionCode = 'INVALID_RECIPIENT';
+  }
   if (!suppressed && input.recipientUserId) {
     const preference = await tx.notificationPreference.findUnique({ where: { userId: input.recipientUserId } });
     if (preference?.emailSuppressedAt) {

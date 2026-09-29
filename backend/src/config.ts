@@ -132,6 +132,14 @@ export const config = {
   email: emailConfiguration(),
   familyHandoverTokens: familyHandoverTokenConfiguration(),
   publicAppOrigin: (process.env.PUBLIC_APP_ORIGIN || process.env.APP_ORIGIN?.split(',')[0] || 'http://localhost:3000').trim().replace(/\/$/, ''),
+  // Public policy publication and signup acceptance are production-disabled
+  // until an accountable owner records approval of this exact version and
+  // content hash. A date alone must never approve changed draft text.
+  legalDocumentsApprovedVersion: (process.env.LEGAL_DOCUMENTS_APPROVED_VERSION || '').trim(),
+  legalDocumentsApprovedHash: (process.env.LEGAL_DOCUMENTS_APPROVED_HASH || '').trim().toLowerCase(),
+  // Marketing remains hard-disabled until consent evidence, unsubscribe, DNC,
+  // campaign approval, and suppression controls are implemented end to end.
+  marketingEnabled: false,
   sessionDays: 14,
   demoEnabled: process.env.DEMO_ENABLED === 'true' || (!production && process.env.DEMO_ENABLED !== 'false'),
   // The browser suite creates many isolated accounts from one loopback IP.

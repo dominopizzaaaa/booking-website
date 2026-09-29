@@ -1,0 +1,586 @@
+{
+  "privacy": {
+    "key": "privacy",
+    "title": "Privacy Notice",
+    "summary": "How Courtly handles personal data, how clubs use information through the service, and the choices available to you.",
+    "version": "2026-09-29",
+    "effectiveDate": "2026-09-29",
+    "sections": [
+      {
+        "id": "scope-and-roles",
+        "title": "Who this notice covers",
+        "blocks": [
+          { "kind": "paragraph", "text": "This notice applies when you use the Courtly website, create a Courtly account, communicate through Courtly, or use Courtly to find, book, manage, or pay for a club activity. ‘Courtly’ is the product name used in this notice. The approved publication record must identify the legal person operating the platform and any registration or address details that law requires; a product name does not determine that identity." },
+          { "kind": "roles" },
+          { "kind": "paragraph", "text": "A club may handle your information for its own service-delivery, safety, financial, legal, and customer-management purposes. That club should explain its own practices. Contact the club about those practices and Courtly about the platform practices in this notice." }
+        ]
+      },
+      {
+        "id": "data-we-handle",
+        "title": "Personal data we handle",
+        "blocks": [
+          { "kind": "list", "items": [
+            "Account and profile data, such as your name, username, email, password hash, account type, date of birth for personal accounts, optional phone and sports, profile visibility, and account status.",
+            "Club and professional data, such as a club profile, roster affiliation, staff-access grant, permissions, services, availability, venues, and audit records.",
+            "Activity data, such as Classes, attendance, reschedule and cancellation requests, facility reservations, Packages and credits, notifications, and the people or clubs involved.",
+            "Communications, including account and Class chat messages, proposals, support correspondence, and system notices.",
+            "Payment records, such as the club, amount, currency, payment status, provider references, refunds, and entitlements. Stripe collects card details in its payment form; Courtly does not receive your complete card number or security code.",
+            "Calendar data when you choose to connect Google Calendar, including encrypted authorization credentials, connection settings, Courtly event references, and privacy-minimised free/busy intervals. Courtly does not import your external event titles, descriptions, attendees, or locations for conflict checks.",
+            "Technical and security data needed to deliver and protect the service, such as essential session identifiers, request timing, device or browser information provided with requests, and network address data used for security and rate limiting."
+          ] }
+        ]
+      },
+      {
+        "id": "sources",
+        "title": "Where data comes from",
+        "blocks": [
+          { "kind": "paragraph", "text": "We receive data from you; from a parent or guardian acting through Family; from clubs, coaches, and authorised club staff using Courtly; from your use of the service; and from providers you choose to connect, such as Stripe or Google Calendar. A club may create a local student record or record an offline payment relating to its own operations." }
+        ]
+      },
+      {
+        "id": "purposes",
+        "title": "Why we use personal data",
+        "blocks": [
+          { "kind": "list", "items": [
+            "Create and secure accounts, apply age-appropriate protections, and maintain sessions.",
+            "Show suitable clubs and profiles, operate booking and rental workflows, manage Packages, and keep contractual and financial records.",
+            "Deliver account and Class chat, notifications, requested transactional email, Calendar sync, and support.",
+            "Prevent misuse, enforce permissions, investigate safety or integrity concerns, maintain audit history, and protect Courtly, clubs, coaches, and players.",
+            "Debug and improve reliability, comply with law, respond to lawful requests, and establish or defend legal claims."
+          ] },
+          { "kind": "paragraph", "text": "We collect, use, or disclose personal data with consent, as needed to provide a service you request, and where otherwise permitted or required by applicable law. If we ask for optional data, you may leave it blank unless the product explains that it is needed for a specific feature." }
+        ]
+      },
+      {
+        "id": "sharing",
+        "title": "Who receives data",
+        "blocks": [
+          { "kind": "list", "items": [
+            "The club, coach, and authorised club staff involved in an enquiry, Class, facility rental, Package, payment, or operational issue, limited by their Courtly access.",
+            "Other conversation or Class participants where the feature requires it. Courtly does not expose internal account IDs through account search.",
+            "An authorised guardian for a managed child, according to the guardian link and permissions held for that child.",
+            "Service providers used to operate a configured feature, including Stripe for supported card payments, Google for optional Calendar and venue services, Resend for configured transactional email, and hosting or database providers.",
+            "Professional advisers, regulators, courts, law enforcement, or another party where disclosure is lawfully required or reasonably necessary to protect rights, safety, and service integrity.",
+            "A successor involved in a genuine reorganisation, financing, merger, or sale, subject to appropriate confidentiality and legal safeguards."
+          ] },
+          { "kind": "paragraph", "text": "A profile marked PUBLIC may be discoverable by authenticated Courtly accounts using bounded name or username search. Exact email may be used to find the matching account, but search results do not display email addresses. Guardian-managed children are not public directory results." }
+        ]
+      },
+      {
+        "id": "cookies",
+        "title": "Cookies and connected services",
+        "blocks": [
+          { "kind": "paragraph", "text": "Courtly uses HTTP-only cookies that are necessary to authenticate ordinary account sessions and, for authorised support or administration users, the separate administration console. An ordinary account session expires after 14 days and may end sooner when you sign out or when Courtly revokes it for security. Courtly also uses first-party local storage to remember whether an account has completed a product tour and session storage to start a newly requested tour. These tour records are not advertising identifiers. Courtly does not currently use advertising cookies in its own app. A provider page or embedded payment or Calendar flow may use that provider’s technologies under its own notice." }
+        ]
+      },
+      {
+        "id": "international",
+        "title": "International processing",
+        "blocks": [
+          { "kind": "paragraph", "text": "Courtly and its service providers may process data outside Singapore. If Courtly transfers personal data outside Singapore, the transfer must follow applicable law, including any requirement to ensure a standard of protection comparable to Singapore’s requirements. Configured providers, processing locations, and transfer arrangements may change; contact us for current information." }
+        ]
+      },
+      {
+        "id": "retention",
+        "title": "How long we keep data",
+        "blocks": [
+          { "kind": "paragraph", "text": "We keep personal data only while it is reasonably needed for the purposes above, including an active account or service, booking and package history, financial and tax records, consent and permission evidence, security, dispute handling, and legal obligations. Different records therefore have different retention periods." },
+          { "kind": "paragraph", "text": "A deletion request restricts a managed child profile immediately but does not instantly erase it. Account and child deletion requests are reviewed against legal, financial, safety, dispute, backup, and integrity-retention needs. Data no longer needed is deleted or anonymised through the applicable process." }
+        ]
+      },
+      {
+        "id": "choices",
+        "title": "Your choices and requests",
+        "blocks": [
+          { "kind": "list", "items": [
+            "Review or correct editable account information in Courtly, and ask us to correct other inaccurate personal data.",
+            "Ask for access to personal data in Courtly’s possession or control and information about how it was used or disclosed during the one-year period before the request, subject to applicable exceptions.",
+            "Withdraw consent for future collection, use, or disclosure by contacting us. We will explain likely consequences; some services may then be unavailable, and lawful prior processing is unaffected.",
+            "Disconnect Google Calendar, change optional notification preferences, or change profile visibility where the account supports it.",
+            "Use Family’s child export, consent withdrawal, and deletion-request tools when you hold the required guardian permission.",
+            "Complain to Courtly’s Data Protection contact. You may also contact Singapore’s Personal Data Protection Commission at [pdpc.gov.sg](https://www.pdpc.gov.sg/)."
+          ] },
+          { "kind": "paragraph", "text": "We may need to verify identity and authority before acting. Contact the relevant club directly for data that it controls outside Courtly or uses for its own service operations." }
+        ]
+      },
+      {
+        "id": "security",
+        "title": "Security",
+        "blocks": [
+          { "kind": "paragraph", "text": "Courtly uses technical and organisational safeguards designed for the sensitivity of the data, including access controls, hashed passwords, encrypted Calendar credentials, scoped permissions, expiring token digests, and audit records for selected actions. No online service can promise absolute security. Keep credentials private and tell us promptly if you suspect unauthorised access." }
+        ]
+      },
+      {
+        "id": "children",
+        "title": "Children and guardians",
+        "blocks": [
+          { "kind": "paragraph", "text": "Under Courtly’s current product rules, a person under 13 cannot create a direct login, an eligible adult may create a separate guardian-managed child profile through Family, and people aged 13 to 17 receive age-limited direct capabilities. At 18, a still-managed profile requires handover action. These thresholds control Courtly features using the Singapore calendar date; they are not statements of legal capacity or a universal age of consent. See the [Child Privacy Notice](/legal/child-privacy)." }
+        ]
+      },
+      {
+        "id": "contact-and-changes",
+        "title": "Contact and changes",
+        "blocks": [
+          { "kind": "contact", "privacy": true },
+          { "kind": "paragraph", "text": "Please use the subject “Privacy request” and explain the account or club involved. We may update this notice when the service or law changes. The version, date, and publication status at the top identify the text presented. Production acceptance opens only after the backend confirms its exact version and content hash. Where an approved change materially affects choices, we will provide an appropriate additional notice or request renewed consent when required." }
+        ]
+      }
+    ]
+  },
+  "childPrivacy": {
+    "key": "childPrivacy",
+    "title": "Child Privacy Notice",
+    "summary": "A simple first layer for children and young people, followed by fuller details for them and their guardians.",
+    "version": "2026-09-29",
+    "effectiveDate": "2026-09-29",
+    "sections": [
+      {
+        "id": "short-version",
+        "title": "The short version—for children and young people",
+        "blocks": [
+          { "kind": "callout", "title": "You have your own profile", "paragraphs": ["Your Courtly profile is about you, even when a parent or guardian manages it. It has its own name, username, birthday, sports, and activity history."] },
+          { "kind": "list", "items": [
+            "We use your information to protect your profile and help arrange Classes you are allowed to join.",
+            "Your parent or guardian can see and manage information only when Courtly records that they have permission.",
+            "A club and the coach can see the information they need for a Class, such as your display name and booking details.",
+            "We do not put a guardian-managed child in account search. We do not show your birthday, exact age, contact details, guardian details, or whether you are online to the public.",
+            "A guardian-managed profile has no email, password, or sign-in. It cannot buy Packages, pay, rent courts, connect Calendar, or use chat.",
+            "You can ask your guardian or Courtly what information we hold. You can also tell a trusted adult if something on Courtly makes you worried or uncomfortable."
+          ] },
+          { "kind": "callout", "tone": "safety", "title": "If you feel unsafe", "paragraphs": ["Stop the conversation or activity and tell a trusted adult. For immediate danger, contact local emergency services. Courtly’s email is not an emergency service.", "For a Courtly concern, you or a trusted adult can email [domksj23@gmail.com](mailto:domksj23@gmail.com). Share only what is needed to explain the concern."] }
+        ]
+      },
+      {
+        "id": "who-does-what",
+        "title": "Who does what",
+        "blocks": [
+          { "kind": "roles" },
+          { "kind": "paragraph", "text": "Courtly software manages profiles and booking records. The selected club configures its Classes, facilities, and coach roster. Those product facts do not decide which legal person supplies an activity, contracts with a family, or bears a particular legal duty; those roles must follow the approved arrangement for the transaction. Courtly does not promise that it has independently screened or approved every club or coach." }
+        ]
+      },
+      {
+        "id": "managed-profile",
+        "title": "How a managed child profile works",
+        "blocks": [
+          { "kind": "paragraph", "text": "An eligible adult signs in to their own account, confirms that they are the child’s parent or legal guardian, and creates a separate child profile. Courtly records their relationship, permissions, and the privacy-notice version they accepted. More than one guardian can be linked in the underlying account model, although co-guardian invitation screens are not currently available." },
+          { "kind": "paragraph", "text": "The guardian chooses PRIVATE or CLUBS_ONLY visibility. CLUBS_ONLY allows clubs involved in the child’s Courtly activity to see permitted details. It does not make the child publicly searchable." }
+        ]
+      },
+      {
+        "id": "information",
+        "title": "Information about a child",
+        "blocks": [
+          { "kind": "list", "items": [
+            "Legal name, display name, username, full date of birth, sports, and visibility choice.",
+            "Guardian relationship, permission, consent, export, deletion-request, and handover evidence.",
+            "Class and participation records, including club, coach, venue, time, status, attendance, and package-credit status where applicable.",
+            "Security, support, and audit information needed to operate and protect the profile."
+          ] },
+          { "kind": "paragraph", "text": "Courtly does not use the guardian’s email as the child’s identity. A guardian-managed child has no stored login email, verified email, password, or phone number." }
+        ]
+      },
+      {
+        "id": "booking",
+        "title": "Booking a Class for a child",
+        "blocks": [
+          { "kind": "paragraph", "text": "An authorised adult may book a public club Class for an eligible managed child. Courtly checks the adult’s current link, booking permission, consent, and the child’s age and account state again when booking. The child—not the guardian—becomes the participant. The club and coach receive the information needed to deliver that Class." },
+          { "kind": "paragraph", "text": "Courtly does not collect payment in this guardian-booking flow. Payment is arranged with the club. The guardian does not become a chat member and does not receive child cancellation or reschedule powers through this feature." }
+        ]
+      },
+      {
+        "id": "guardian-choices",
+        "title": "Guardian choices and a child’s voice",
+        "blocks": [
+          { "kind": "paragraph", "text": "A guardian with the right permission can update permitted profile fields, export child data, withdraw or renew consent, request deletion, and start an eligible handover. Withdrawing consent stops future consent-dependent use under that link; it does not undo lawful earlier use or necessarily erase records immediately. Another authorised guardian’s separate rights may continue." },
+          { "kind": "paragraph", "text": "Children and young people should be included in privacy decisions in a way they can understand. They can ask their guardian or Courtly to explain, correct, or review information. Courtly may need to verify the requester’s identity and authority before responding." }
+        ]
+      },
+      {
+        "id": "growing-up",
+        "title": "Growing up and account handover",
+        "blocks": [
+          { "kind": "paragraph", "text": "Under Courtly’s product rules, a managed child becomes eligible for guardian-initiated handover at 13. The young person receives a one-use, seven-day email link at the destination address chosen for handover and sets a password. Only successful completion changes the same profile to a self-managed account; its identity and history stay with it. The age threshold controls this feature and is not a statement of legal capacity or a universal age of consent." },
+          { "kind": "paragraph", "text": "Under Courtly’s product rules, at 18 a still-managed profile requires handover action. Courtly does not automatically transfer the account or promise automatic reminders. Handover is available only when secure transactional email is configured." }
+        ]
+      },
+      {
+        "id": "retention-rights",
+        "title": "Keeping data and making a request",
+        "blocks": [
+          { "kind": "paragraph", "text": "Courtly keeps child data while needed for the profile, guardian authority and consent evidence, Classes, safety, disputes, legal duties, and secure handover. A deletion request restricts the profile immediately and starts human review; it is not instant erasure. Some booking, consent, financial, safety, backup, or legal records may need to be retained." },
+          { "kind": "paragraph", "text": "For the complete account-level explanation, read the [Privacy Notice](/legal/privacy). A guardian may use Family tools where available or contact the Data Protection contact below." },
+          { "kind": "contact", "privacy": true }
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Changes to this notice",
+        "blocks": [
+          { "kind": "paragraph", "text": "The version, date, and publication status at the top identify the text presented. Production Family consent opens only after the backend confirms the exact policy-set version and content hash. If approved child-data practices later change in a way that requires a new guardian decision, Family will require consent to the new approved version before affected features continue." }
+        ]
+      }
+    ]
+  },
+  "terms": {
+    "key": "terms",
+    "title": "Terms of Service",
+    "summary": "The agreement text for creating an account and using the Courtly platform, with its publication status shown separately.",
+    "version": "2026-09-29",
+    "effectiveDate": "2026-09-29",
+    "sections": [
+      {
+        "id": "agreement",
+        "title": "Your agreement",
+        "blocks": [
+          { "kind": "paragraph", "text": "These Terms govern your use of Courtly. By creating an account or using the service, you agree to these Terms and the policies they incorporate: the [Acceptable Use & Safeguarding Policy](/legal/acceptable-use), [Cancellation & Refund Policy](/legal/cancellation-refunds), and, when you buy or use a Package, the [Package Terms](/legal/package-terms). The [Privacy Notice](/legal/privacy) explains personal-data handling." },
+          { "kind": "paragraph", "text": "If you use Courtly for a club, you confirm that you have authority to bind that club for its use of the platform. If you do not agree, do not create an account or use Courtly." }
+        ]
+      },
+      {
+        "id": "roles",
+        "title": "Courtly and clubs have different roles",
+        "blocks": [
+          { "kind": "roles" },
+          { "kind": "callout", "title": "Transaction roles require an approved decision", "paragraphs": ["Courtly shows the selected club, its supplied business details, the activity or Package recorded against it, and the payment route used by the product. Those facts do not by themselves decide the contracting seller, service provider, payment recipient, refund owner, or GST supplier. Until the transaction-specific legal and tax matrix is approved, neither this document nor a product label should be read as assigning those roles."] }
+        ]
+      },
+      {
+        "id": "accounts",
+        "title": "Accounts and eligibility",
+        "blocks": [
+          { "kind": "list", "items": [
+            "Provide accurate, current information and keep one account appropriate to your role: STUDENT, COACH, or CLUB. A CLUB account is the institution, not a person or coach.",
+            "Keep your password private, do not share access, and tell Courtly promptly about suspected misuse. You are responsible for activity under your account unless applicable law says otherwise.",
+            "Under Courtly’s product rules, a person under 13 cannot create a direct login, people aged 13 to 17 receive age-limited capabilities, and a still-managed profile requires handover action at 18. These feature thresholds do not decide legal capacity or replace any permission required by law.",
+            "A club that grants staff access or adds a coach remains responsible for choosing appropriate people, setting permissions, and removing access when no longer needed."
+          ] }
+        ]
+      },
+      {
+        "id": "using-courtly",
+        "title": "Using Courtly",
+        "blocks": [
+          { "kind": "paragraph", "text": "You may use Courtly only for lawful booking, club operations, communication, and related account purposes. Follow the [Acceptable Use & Safeguarding Policy](/legal/acceptable-use), respect other people’s privacy, and use only access that was genuinely granted to you. You must not work around account, permission, payment, safety, or technical controls." },
+          { "kind": "paragraph", "text": "Account and Class chat is part of Courtly. Messages and scheduling proposals may be visible to the participants, the relevant club, an assigned coach where applicable, and authorised Courtly support personnel for support, safety, or integrity purposes." }
+        ]
+      },
+      {
+        "id": "bookings",
+        "title": "Bookings, venues, and changes",
+        "blocks": [
+          { "kind": "paragraph", "text": "A booking is subject to the details shown at confirmation, including club, Class, coach, venue, date, time, duration, price, payment status, and cancellation window. Some bookings remain pending until a coach accepts or an external venue approves. Courtly does not guarantee that a third-party venue is reserved unless the booking information confirms it." },
+          { "kind": "paragraph", "text": "Rescheduling is a proposal until the other side accepts it. Cancellation and refund treatment is described in the [Cancellation & Refund Policy](/legal/cancellation-refunds) and any additional lawful club terms shown before purchase." }
+        ]
+      },
+      {
+        "id": "payments",
+        "title": "Prices and payments",
+        "blocks": [
+          { "kind": "paragraph", "text": "Amounts are shown in the selected club’s stated currency and stored in whole minor units. You authorise the checkout amount displayed when you confirm a supported checkout. For live card checkout, Courtly creates the payment request in the connected-account context configured for that club. Some deployments or products use an explicitly labelled simulation or require payment to be arranged directly; those flows do not charge a real card through Courtly. These routing facts do not determine the contracting or payment-recipient roles." },
+          { "kind": "paragraph", "text": "Price and GST fields are supplied by the selected club and are not independently verified by Courtly. Courtly does not calculate or add GST in the current checkout flow. A displayed checkout amount must not be described as the final unavoidable price if another unavoidable tax or charge could still be payable. Contracting, refund, tax, invoice, and payment-recipient responsibilities remain subject to the approved transaction matrix and applicable law." }
+        ]
+      },
+      {
+        "id": "packages",
+        "title": "Packages",
+        "blocks": [
+          { "kind": "paragraph", "text": "A Package is associated with one selected club in Courtly and can be used only for the Classes or rental locations within its displayed scope, before its displayed expiry and while credits remain. This product association does not determine the contracting seller. The [Package Terms](/legal/package-terms) form part of these Terms whenever you purchase or use one." }
+        ]
+      },
+      {
+        "id": "content",
+        "title": "Your content and Courtly materials",
+        "blocks": [
+          { "kind": "paragraph", "text": "You keep ownership of content you submit. You give Courtly a non-exclusive, worldwide licence to host, copy, transmit, format, and display it only as reasonably needed to operate, secure, support, and improve the service and meet legal obligations. You confirm that you have the rights and permissions needed to submit it." },
+          { "kind": "paragraph", "text": "Courtly and its licensors retain rights in the platform, design, software, branding, and documentation. These Terms give you a limited, revocable, non-transferable right to use the service for its intended purpose; they do not transfer Courtly intellectual property to you." }
+        ]
+      },
+      {
+        "id": "availability",
+        "title": "Availability and third-party services",
+        "blocks": [
+          { "kind": "paragraph", "text": "Courtly may change, maintain, suspend, or discontinue features. We aim to provide a reliable service but do not promise uninterrupted, error-free, or permanently available operation. Stripe, Google, email, maps, venues, clubs, and other third-party services have their own terms and may fail or change independently. Google Calendar is a convenience copy; Courtly remains the booking record." }
+        ]
+      },
+      {
+        "id": "suspension",
+        "title": "Restriction and termination",
+        "blocks": [
+          { "kind": "paragraph", "text": "Courtly may restrict or end access where reasonably necessary for security, safeguarding, legal compliance, non-payment to Courtly where applicable, material breach, misuse, or risk to people or the service. Where appropriate, we will give notice and a chance to respond. Ending platform access does not automatically cancel a club service, erase records that must be kept, or remove accrued payment obligations and rights." }
+        ]
+      },
+      {
+        "id": "responsibility",
+        "title": "Responsibility and liability",
+        "blocks": [
+          { "kind": "paragraph", "text": "Sport carries inherent risks. You are responsible for deciding whether an activity is suitable for you or a child, following venue and coach safety instructions, and sharing relevant needs through an appropriate private channel. The selected club configures the activity, roster, and venue information shown in Courtly. Legal responsibility for the activity, people, facilities, representations, and acts or omissions depends on the applicable contract and law rather than the product labels alone." },
+          { "kind": "paragraph", "text": "Nothing in these Terms excludes or limits liability that cannot lawfully be excluded or limits mandatory consumer rights. To the maximum extent permitted by law, Courtly is not liable for indirect or consequential loss, lost opportunity or profits, or a club’s or user’s acts, omissions, services, facilities, content, or off-platform arrangements." }
+        ]
+      },
+      {
+        "id": "disputes",
+        "title": "Concerns and disputes",
+        "blocks": [
+          { "kind": "paragraph", "text": "Raise service, coaching, venue, price, cancellation, or refund issues with the identified club first. Raise platform, account, privacy, or safety issues with Courtly. The parties should try in good faith to resolve a dispute before formal proceedings." },
+          { "kind": "paragraph", "text": "These Terms are governed by Singapore law, and the Singapore courts have non-exclusive jurisdiction, subject to any mandatory rights or forum available to you under applicable law." }
+        ]
+      },
+      {
+        "id": "general",
+        "title": "General terms",
+        "blocks": [
+          { "kind": "paragraph", "text": "If a provision is unenforceable, the rest remains effective. A delay in enforcing a right is not a waiver. You may not transfer these Terms without Courtly’s written consent; Courtly may transfer them as part of a genuine reorganisation or transfer of the service, subject to law. These Terms and incorporated policies address use of Courtly. Transaction-specific details shown by the product do not, without the approved contractual arrangement, identify the parties to or terms of a separate activity contract." }
+        ]
+      },
+      {
+        "id": "changes-contact",
+        "title": "Changes and contact",
+        "blocks": [
+          { "kind": "paragraph", "text": "We may update these Terms to reflect service, risk, or legal changes. The version, date, and publication status identify the text presented; production acceptance opens only after the backend confirms the exact policy-set version and content hash. We will give an appropriate notice of approved material changes and request a fresh acceptance when required." },
+          { "kind": "contact" }
+        ]
+      }
+    ]
+  },
+  "acceptableUse": {
+    "key": "acceptableUse",
+    "title": "Acceptable Use & Safeguarding Policy",
+    "summary": "Rules for respectful, lawful use of Courtly and clear responsibilities for safeguarding children and vulnerable participants.",
+    "version": "2026-09-29",
+    "effectiveDate": "2026-09-29",
+    "sections": [
+      {
+        "id": "scope",
+        "title": "Who must follow this policy",
+        "blocks": [
+          { "kind": "paragraph", "text": "This policy applies to every Courtly account, club, coach, authorised staff member, guardian, and person using Courtly communications or booking tools. It forms part of the [Terms of Service](/legal/terms)." }
+        ]
+      },
+      {
+        "id": "respect",
+        "title": "Respect people and boundaries",
+        "blocks": [
+          { "kind": "list", "items": [
+            "Do not harass, threaten, stalk, bully, shame, discriminate against, sexually exploit, groom, or intimidate anyone.",
+            "Do not request sexual content, sexualise a child, or use Courtly to arrange inappropriate private contact with a child or vulnerable person.",
+            "Do not share another person’s private or sensitive information, images, contact details, or messages without a lawful reason and appropriate permission.",
+            "Respect a person’s decision to stop a conversation or activity. Keep communication relevant to coaching, club, booking, or account purposes."
+          ] }
+        ]
+      },
+      {
+        "id": "honesty-and-law",
+        "title": "Be honest and lawful",
+        "blocks": [
+          { "kind": "list", "items": [
+            "Do not impersonate another person or club, misstate qualifications, forge consent, create a false child or guardian relationship, or manipulate attendance, payment, or safety records.",
+            "Do not use Courtly for fraud, unlawful discrimination, exploitation, prohibited goods or services, money laundering, or any activity that violates applicable law.",
+            "Do not upload or send unlawful, infringing, deceptive, malicious, or abusive content.",
+            "Do not evade club safeguards or use information gained through a club to solicit concealed off-platform arrangements in breach of your duties to that club."
+          ] }
+        ]
+      },
+      {
+        "id": "protect-service",
+        "title": "Protect accounts and the service",
+        "blocks": [
+          { "kind": "list", "items": [
+            "Do not share passwords or invitation links, access another person’s account, or retain staff or coach access after authority ends.",
+            "Do not probe, scrape, reverse engineer, overload, disrupt, introduce malware, bypass rate limits, or defeat security, privacy, payment, tenancy, or permission controls.",
+            "Do not use account search to build contact lists, enumerate email addresses, send spam, or market without the required consent.",
+            "Report suspected account compromise or a security weakness privately; do not expose personal data or exploit the issue."
+          ] }
+        ]
+      },
+      {
+        "id": "club-duties",
+        "title": "Club and coach safeguarding duties",
+        "blocks": [
+          { "kind": "paragraph", "text": "The club—not Courtly—selects its coaches and staff and delivers its Classes and facility services. Each club must apply the screening, qualifications, insurance, supervision, venue safety, child-protection, incident response, and reporting measures required for its activities and jurisdiction. A Courtly roster entry or profile is not certification, a background check, or an endorsement." },
+          { "kind": "list", "items": [
+            "Use age-appropriate, professional communication and avoid unnecessary one-to-one contact with a child outside approved channels and arrangements.",
+            "Follow the club’s safeguarding lead and escalation process, applicable mandatory-reporting duties, and lawful guardian permissions.",
+            "Do not copy a guardian’s contact details into a child identity, expose a child in public search, or use child data beyond the activity and authority for which it was provided.",
+            "Record and escalate safety concerns promptly. Do not investigate serious allegations in a way that risks the person’s safety or compromises evidence."
+          ] }
+        ]
+      },
+      {
+        "id": "reporting",
+        "title": "Report a concern",
+        "blocks": [
+          { "kind": "callout", "tone": "safety", "title": "Immediate danger", "paragraphs": ["Leave the situation if you can and contact local emergency services. In Singapore, call Police on 999 or ambulance/fire services on 995. Do not wait for an email response from Courtly."] },
+          { "kind": "paragraph", "text": "For a Class, coach, venue, or club-service concern, contact the club’s safeguarding or management contact as soon as it is safe. Also contact Courtly at [domksj23@gmail.com](mailto:domksj23@gmail.com) when the concern involves a Courtly account, message, booking, privacy issue, or platform misuse. Include the account or club, approximate time, and a concise description. Do not email passwords, full card details, or unnecessary intimate material." }
+        ]
+      },
+      {
+        "id": "response",
+        "title": "How Courtly may respond",
+        "blocks": [
+          { "kind": "paragraph", "text": "Courtly may preserve relevant records, limit contact or account access, remove content, ask the club to act, investigate within the platform’s records, and disclose information to emergency services, law enforcement, regulators, or safeguarding authorities when permitted or required by law. Response depends on the information and authority available; Courtly is not an emergency service and does not continuously monitor all activity or messages." },
+          { "kind": "paragraph", "text": "Courtly’s integrity feature may alert a club when platform records show certain historical private-session patterns, but it does not block a booking and is not a general safety-screening or monitoring system." }
+        ]
+      },
+      {
+        "id": "enforcement",
+        "title": "Enforcement and review",
+        "blocks": [
+          { "kind": "paragraph", "text": "A breach may lead to a warning, content or feature restriction, access removal, account suspension or termination, preservation of evidence, and referral to the relevant club or authority. Courtly considers severity, urgency, repeated behavior, available evidence, safety, and legal duties. You may ask Courtly to review a platform enforcement decision by emailing the business contact." },
+          { "kind": "contact" }
+        ]
+      }
+    ]
+  },
+  "cancellationRefunds": {
+    "key": "cancellationRefunds",
+    "title": "Cancellation & Refund Policy",
+    "summary": "How Courtly records Class and facility cancellations, restores eligible credits, and supports refund workflows without deciding unresolved legal roles.",
+    "version": "2026-09-29",
+    "effectiveDate": "2026-09-29",
+    "sections": [
+      {
+        "id": "roles",
+        "title": "Start with the club",
+        "blocks": [
+          { "kind": "roles" },
+          { "kind": "paragraph", "text": "The identified club configures the cancellation windows shown for the Class or facility. Courtly enforces supported self-service windows, records changes, restores eligible Package credits, and may submit a provider refund through a supported payment path. These product facts do not decide who legally owes a refund or bears responsibility for service delivery." },
+          { "kind": "callout", "title": "Mandatory rights remain", "paragraphs": ["This policy does not exclude refunds, remedies, or cancellation rights that applicable consumer law requires. If an additional club term conflicts with a mandatory right, the mandatory right prevails."] }
+        ]
+      },
+      {
+        "id": "classes",
+        "title": "Cancelling a Class place",
+        "blocks": [
+          { "kind": "list", "items": [
+            "The club’s required notice period is shown with the booking. Self-service cancellation is available until that many hours before the Class starts, unless the booking is already completed, cancelled, or otherwise ineligible.",
+            "A timely cancellation releases your place. If that place consumed a Package credit, Courtly restores that credit once.",
+            "Cancelling a Class does not by itself guarantee or automatically trigger a cash or card refund. Contact the identified club as the first operational contact about money already paid; supported Courtly refund or ledger-reversal tools may be available.",
+            "Inside the notice window, after the Class starts, or where self-service is unavailable, contact the club or coach about operational options. Any legal entitlement to a refund or other remedy depends on the applicable contract and law."
+          ] }
+        ]
+      },
+      {
+        "id": "club-cancellation",
+        "title": "When the club or coach cancels",
+        "blocks": [
+          { "kind": "paragraph", "text": "When a club or coach records a Class cancellation in Courtly, consumed Package credits are restored. Contact the identified club as the first operational contact about a replacement, account credit, or money refund. A cancellation notice in Courtly is not proof that an external email was delivered or that money has already reached your bank." }
+        ]
+      },
+      {
+        "id": "rescheduling",
+        "title": "Rescheduling is separate",
+        "blocks": [
+          { "kind": "paragraph", "text": "A reschedule request does not move a Class until the other side accepts it. Its notice window may be longer than the cancellation window because Courtly uses the greater of the coach’s reschedule notice and the club’s cancellation notice. If a request expires or is declined, the original booking remains unless separately cancelled." }
+        ]
+      },
+      {
+        "id": "rentals",
+        "title": "Facility rentals",
+        "blocks": [
+          { "kind": "list", "items": [
+            "The rental’s cancellation period is snapshotted when the reservation is made. Self-service cancellation is available through the deadline shown for that reservation.",
+            "A timely cancellation restores one consumed rental Package credit once. If a supported paid checkout exists, Courtly starts or records the corresponding refund; a provider refund may remain pending while the payment provider processes it.",
+            "Current rental checkout may be explicitly labelled simulated. A simulated payment does not charge a real card, so a simulated refund is only a product-state reversal.",
+            "After the deadline, Courtly blocks self-service cancellation. Contact the club about exceptional changes or remedies."
+          ] }
+        ]
+      },
+      {
+        "id": "packages",
+        "title": "Package purchases and credits",
+        "blocks": [
+          { "kind": "paragraph", "text": "Unused Package purchases are not automatically refunded by Courtly. Contact the identified club as the first operational contact. Courtly’s supported full-Package reversal can proceed only while no credit has been used and no live Class or rental relies on it. Cancellation of an eligible activity restores the consumed credit instead of reversing the whole Package. This describes product mechanics, not who legally owes a refund. See the [Package Terms](/legal/package-terms)." }
+        ]
+      },
+      {
+        "id": "refund-process",
+        "title": "Refund timing and method",
+        "blocks": [
+          { "kind": "paragraph", "text": "When a refund is authorised under the applicable arrangement or law and submitted through a supported payment path, it normally returns through that path. Courtly records the request and provider result, but banks and payment providers control when returned funds appear. A pending result is not a completed refund. Offline payment adjustments are handled outside Courtly’s provider flow and may be recorded by the club." },
+          { "kind": "paragraph", "text": "To ask about a refund, send the club your booking, reservation, or Package details without including full card information. For a technical problem with a Courtly refund record, contact Courtly after contacting the club." }
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "Getting help",
+        "blocks": [
+          { "kind": "contact" }
+        ]
+      }
+    ]
+  },
+  "packageTerms": {
+    "key": "packageTerms",
+    "title": "Package Terms",
+    "summary": "How prepaid Class or facility credits associated with a selected club are scoped, used, restored, and expired in Courtly.",
+    "version": "2026-09-29",
+    "effectiveDate": "2026-09-29",
+    "sections": [
+      {
+        "id": "club-record",
+        "title": "The club shown with a Package",
+        "blocks": [
+          { "kind": "paragraph", "text": "Courtly records each Package offer against one selected club. That club supplies the offer details, price, availability, and eligible activities shown in the product. Courtly records the purchased entitlement and, for supported live checkout, uses the connected-account route configured for that club. These facts do not decide the contracting seller, service provider, payment recipient, refund owner, or GST supplier. A Package is not a Courtly-wide balance." }
+        ]
+      },
+      {
+        "id": "purchase",
+        "title": "What you purchase",
+        "blocks": [
+          { "kind": "paragraph", "text": "Before purchase, Courtly shows the Package name, selected club, checkout amount and currency, number of credits, validity period, and eligible Classes and/or rental locations. The club’s GST fields are declarations and are not independently verified; Courtly does not add tax to the displayed checkout amount. Successful checkout creates a snapshot of those details and an expiry date in My Packages. Later editing or archiving of the public offer does not rewrite that purchased snapshot." },
+          { "kind": "paragraph", "text": "A purchase is complete only when the payment status succeeds and Courtly creates the Package entitlement. A pending or failed payment does not create usable credits." }
+        ]
+      },
+      {
+        "id": "using-credits",
+        "title": "Using credits",
+        "blocks": [
+          { "kind": "list", "items": [
+            "Credits can be used only by the purchasing student account, within the selected club’s recorded scope, for activities included in the purchased snapshot. Courtly does not support transfer, resale, cash withdrawal, or use at another club.",
+            "Each booked Class occurrence or eligible facility reservation normally consumes one credit. A finite series therefore needs enough credits for every occurrence shown at confirmation.",
+            "A credit can be used only while the Package is paid, unexpired, and has credits remaining, and while the selected activity is currently eligible and available.",
+            "A Package does not guarantee a particular coach, time, venue, court, or minimum availability. Ordinary booking, capacity, notice, conflict, and venue rules still apply."
+          ] }
+        ]
+      },
+      {
+        "id": "expiry",
+        "title": "Expiry",
+        "blocks": [
+          { "kind": "paragraph", "text": "The expiry date shown in My Packages is calculated from the purchased validity period. Unused credits cannot be redeemed after expiry. Courtly does not automatically extend or refund expired credits. Ask the club about an exception; mandatory legal rights still apply." }
+        ]
+      },
+      {
+        "id": "cancellations",
+        "title": "Cancellation and restored credits",
+        "blocks": [
+          { "kind": "paragraph", "text": "When you cancel an eligible Class or rental through Courtly within its displayed self-service window, Courtly restores the credit once. A club cancellation also restores a consumed Class credit. A restored credit remains subject to the Package’s original scope and expiry; restoration does not extend the expiry date." },
+          { "kind": "paragraph", "text": "Inside a cancellation window or where self-service is unavailable, contact the club. The [Cancellation & Refund Policy](/legal/cancellation-refunds) explains the platform rules." }
+        ]
+      },
+      {
+        "id": "refunds",
+        "title": "Package refunds",
+        "blocks": [
+          { "kind": "paragraph", "text": "Package purchases are not automatically refunded by Courtly. Contact the identified club as the first operational contact. Courtly’s supported full-refund flow requires that no credit has been used and no active Class or rental relies on the Package. Once a credit has been used or supports live activity, the whole Package cannot be reversed through that flow. This product rule does not decide who legally owes a refund or limit a remedy required by law." },
+          { "kind": "paragraph", "text": "A successful provider refund may take additional time to appear through the original payment method. Offline payment adjustments are handled outside Courtly’s provider flow." }
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Offer changes and service disruption",
+        "blocks": [
+          { "kind": "paragraph", "text": "A club may stop new sales by archiving an offer without deleting purchase history. If a purchased activity becomes unavailable, contact the club for an alternative or remedy. The club may not use a later offer edit to silently change the purchased price, credit count, validity period, or snapshotted scope in Courtly." }
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "Questions",
+        "blocks": [
+          { "kind": "paragraph", "text": "Contact the identified club first as the operational contact for activity availability, expiry exceptions, or a refund request. Contact Courtly about a technical issue with the Package record or checkout." },
+          { "kind": "contact" }
+        ]
+      }
+    ]
+  }
+}

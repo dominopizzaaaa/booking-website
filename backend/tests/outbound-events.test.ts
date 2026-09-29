@@ -29,6 +29,26 @@ describe('outbound event queue', () => {
     expect(disabled.create).toHaveBeenCalledWith({ data: expect.objectContaining({ status: 'SUPPRESSED', lastErrorCode: 'USER_PREFERENCE' }) });
   });
 
+  it.each([
+    ['an unbound recipient', null, undefined],
+    ['an account with no preference row', null, 'u1'],
+    ['an opted-out account', { emailMarketingEnabled: false }, 'u2'],
+    ['an opted-in account', { emailMarketingEnabled: true }, 'u3'],
+  ] as const)('hard-suppresses marketing for %s', async (_description, preference, recipientUserId) => {
+    const { tx, create } = transaction(preference);
+    await queueOutboundEmail(tx, {
+      eventType: 'COACH_INVITED', category: 'MARKETING',
+      dedupeKey: 'marketing:blocked',
+      recipientEmail: 'student@example.com', recipientName: 'Avery', recipientUserId,
+      title: 'New programme', message: 'See what is new.',
+    });
+
+    expect(create).toHaveBeenCalledWith({ data: expect.objectContaining({
+      status: 'SUPPRESSED', lastErrorCode: 'MARKETING_DISABLED',
+    }) });
+    expect(tx.notificationPreference.findUnique).not.toHaveBeenCalled();
+  });
+
   it('queues a durable family-handover security event without requiring a recipient user', async () => {
     config.email.enabled = true;
     const { tx, create } = transaction();
