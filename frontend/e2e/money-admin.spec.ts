@@ -355,13 +355,50 @@ test('a club receipt can be reversed without erasing its ledger trail or mixing 
 
 test('the admin route explains how to enable an unconfigured console', async ({ page }) => {
   await page.route('**/api/admin/session', route => route.fulfill({
-    json: { configured: false, authenticated: false },
+    json: { configured: false, authenticated: false, authMode: 'disabled', operator: null, sensitiveAccess: false },
   }));
 
   await page.goto('/admin');
   await expect(page.getByRole('heading', { name: 'Admin console not configured', exact: true })).toBeVisible();
-  await expect(page.locator('main')).toContainText('ADMIN_PASSWORD');
-  await expect(page.getByLabel('Admin password', { exact: true })).toHaveCount(0);
+  await expect(page.locator('main')).toContainText('named platform operators');
+  await expect(page.getByLabel('Password', { exact: true })).toHaveCount(0);
+  await expectNoHorizontalOverflow(page);
+});
+
+test('an admin session bootstrap failure requests no credentials and can retry safely', async ({ page }) => {
+  let sessionRequests = 0;
+
+  await page.route('**/api/admin/session', route => {
+    sessionRequests += 1;
+    return route.fulfill(sessionRequests === 1
+      ? { status: 503, json: { error: 'Temporarily unavailable' } }
+      : {
+          json: {
+            configured: true,
+            authenticated: false,
+            authMode: 'named',
+            operator: null,
+            sensitiveAccess: false,
+            businessDeletionMode: 'demo-only',
+          },
+        });
+  });
+
+  await page.goto('/admin');
+
+  await expect(page.getByRole('heading', {
+    name: 'Admin sign-in status unavailable',
+    exact: true,
+  })).toBeVisible();
+  await expect(page.getByLabel('Operator email', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Password', { exact: true })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Try again', exact: true }).click();
+
+  await expect(page.getByRole('heading', { name: 'Admin sign in', exact: true })).toBeVisible();
+  await expect(page.getByLabel('Operator email', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Password', { exact: true })).toBeVisible();
+  expect(sessionRequests).toBe(2);
   await expectNoHorizontalOverflow(page);
 });
 
@@ -371,7 +408,10 @@ test('an expired admin session returns to sign in and can be signed out explicit
   const logoutRequests: Array<{ method: string; body: unknown }> = [];
 
   await page.route('**/api/admin/session', route => route.fulfill({
-    json: { configured: true, authenticated },
+    json: {
+      configured: true, authenticated, authMode: 'named', sensitiveAccess: authenticated,
+      operator: authenticated ? { id: 'ops_e2e', name: 'E2E Operator', email: 'operator@example.test' } : null,
+    },
   }));
   await page.route('**/api/admin/overview', route => route.fulfill(sessionExpired
     ? { status: 401, json: { error: 'Admin session expired' } }
@@ -451,7 +491,7 @@ test('an older delayed admin business response cannot overwrite newer filters', 
   const olderResponseGate = new Promise<void>(resolve => { releaseOlderResponse = resolve; });
 
   await page.route('**/api/admin/session', route => route.fulfill({
-    json: { configured: true, authenticated: true },
+    json: { configured: true, authenticated: true, authMode: 'named', sensitiveAccess: true, operator: { id: 'ops_e2e', name: 'E2E Operator', email: 'operator@example.test' } },
   }));
   await page.route('**/api/admin/overview', route => route.fulfill({ json: overview }));
   await page.route(/\/api\/admin\/businesses(?:\?.*)?$/, async route => {
@@ -541,7 +581,7 @@ test('admin login, discovery, and destructive actions remain safe and usable at 
       counts: { ...counts, students: 8, bookings: 12 },
     },
   ];
-  const loginPasswords: string[] = [];
+  const loginCredentials: Array<{ email: string; password: string }> = [];
   const loginMethods: string[] = [];
   const purgeRequests: Array<{ method: string; body: unknown }> = [];
   const deleteRequests: Array<{ method: string; path: string }> = [];
@@ -549,17 +589,17 @@ test('admin login, discovery, and destructive actions remain safe and usable at 
   let deleteAttempts = 0;
 
   await page.route('**/api/admin/session', route => route.fulfill({
-    json: { configured: true, authenticated: false },
+    json: { configured: true, authenticated: false, authMode: 'named', operator: null, sensitiveAccess: false },
   }));
   await page.route('**/api/admin/login', async route => {
     loginMethods.push(route.request().method());
-    const body = route.request().postDataJSON() as { password: string };
-    loginPasswords.push(body.password);
+    const body = route.request().postDataJSON() as { email: string; password: string };
+    loginCredentials.push(body);
     if (body.password === 'wrong-admin') {
-      await route.fulfill({ status: 401, json: { error: 'Incorrect admin password' } });
+      await route.fulfill({ status: 401, json: { error: 'Incorrect admin email or password' } });
       return;
     }
-    await route.fulfill({ json: { ok: true } });
+    await route.fulfill({ json: { ok: true, authMode: 'named', operator: { id: 'ops_e2e', name: 'E2E Operator', email: body.email } } });
   });
   await page.route('**/api/admin/overview', route => {
     const demos = businesses.filter(business => business.isDemo).length;
@@ -624,13 +664,15 @@ test('admin login, discovery, and destructive actions remain safe and usable at 
 
   await page.goto('/admin');
   await expect(page.getByRole('heading', { name: 'Admin sign in', exact: true })).toBeVisible();
-  const password = page.getByLabel('Admin password', { exact: true });
-  const unlock = page.getByRole('button', { name: 'Unlock admin console', exact: true });
+  const email = page.getByLabel('Operator email', { exact: true });
+  const password = page.getByLabel('Password', { exact: true });
+  const unlock = page.getByRole('button', { name: 'Sign in', exact: true });
   await expect(unlock).toBeDisabled();
+  await email.fill('operator@example.test');
   await password.fill('wrong-admin');
   await unlock.click();
-  const loginError = page.getByRole('alert').filter({ hasText: 'Incorrect admin password' });
-  await expect(loginError).toHaveText('Incorrect admin password');
+  const loginError = page.getByRole('alert').filter({ hasText: 'Incorrect admin email or password' });
+  await expect(loginError).toHaveText('Incorrect admin email or password');
 
   await password.fill('correct-admin');
   await expect(loginError).toHaveCount(0);
@@ -725,7 +767,10 @@ test('admin login, discovery, and destructive actions remain safe and usable at 
   await expect(page.getByText('Deleted “Alpha Academy”.', { exact: true })).toBeVisible();
   await expect(page.getByText('No businesses match your filters yet.', { exact: true })).toBeVisible();
   await expect(page.getByText('0 real · 0 demo', { exact: true })).toBeVisible();
-  expect(loginPasswords).toEqual(['wrong-admin', 'correct-admin']);
+  expect(loginCredentials).toEqual([
+    { email: 'operator@example.test', password: 'wrong-admin' },
+    { email: 'operator@example.test', password: 'correct-admin' },
+  ]);
   expect(loginMethods).toEqual(['POST', 'POST']);
   expect(purgeAttempts).toBe(2);
   expect(purgeRequests).toEqual([

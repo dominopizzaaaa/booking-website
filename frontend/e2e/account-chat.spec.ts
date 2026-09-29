@@ -16,6 +16,7 @@ import type {
   Slot,
 } from '../src/lib/types';
 import { money } from '../src/lib/utils';
+import { currentLegalAcceptance } from './legal-acceptance';
 
 const password = 'TestingOnly!2026';
 const timezone = 'Asia/Singapore';
@@ -125,18 +126,18 @@ test('a club can bring its coach into an account conversation and plan a session
 
   await responseJson<AuthSession>(await studentAccount.post('/api/auth/register', {
     data: {
-      accountType: 'STUDENT', name: studentName, username: studentUsername, email: studentEmail, password, sports: ['Tennis'], dateOfBirth: '1990-01-01',
+      accountType: 'STUDENT', name: studentName, username: studentUsername, email: studentEmail, password, sports: ['Tennis'], dateOfBirth: '1990-01-01', ...currentLegalAcceptance,
     },
   }));
   await responseJson<AuthSession>(await coachAccount.post('/api/auth/register', {
     data: {
-      accountType: 'COACH', name: coachName, username: coachUsername, email: coachEmail, password, sports: ['Tennis'], dateOfBirth: '1990-01-01',
+      accountType: 'COACH', name: coachName, username: coachUsername, email: coachEmail, password, sports: ['Tennis'], dateOfBirth: '1990-01-01', ...currentLegalAcceptance,
     },
   }));
   const clubAuth = await responseJson<AuthSession>(await clubAccount.post('/api/auth/register', {
     data: {
       accountType: 'CLUB', businessName: clubName, name: `Operator ${run}`, username: clubUsername,
-      email: clubEmail, password, sports: ['Tennis'],
+      email: clubEmail, password, sports: ['Tennis'], ...currentLegalAcceptance,
     },
   }));
   expect(clubAuth.business).not.toBeNull();
@@ -393,7 +394,7 @@ test('a club can bring its coach into an account conversation and plan a session
     });
 
     await page.route('**/api/admin/session', route => route.fulfill({
-      json: { configured: true, authenticated: true },
+      json: { configured: true, authenticated: true, authMode: 'named', sensitiveAccess: true, operator: { id: 'ops_chat', name: 'Chat Operator', email: 'chat@example.test' } },
     }));
     await page.route('**/api/admin/overview', route => route.fulfill({
       json: {

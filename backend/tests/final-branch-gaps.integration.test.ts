@@ -202,7 +202,10 @@ describe.sequential('Final backend branch coverage', () => {
   it('reports and enforces an unconfigured admin console', async () => {
     config.adminPassword = '';
     const session = await request(app).get('/api/admin/session').expect(200);
-    expect(session.body).toEqual({ configured: false, authenticated: false });
+    expect(session.body).toEqual({
+      configured: false, authenticated: false, authMode: 'disabled', operator: null, sensitiveAccess: false,
+      businessDeletionMode: config.realBusinessDeletionEnabled ? 'all' : 'demo-only',
+    });
     const login = await request(app).post('/api/admin/login')
       .send({ password: 'unused-admin-password' }).expect(503);
     expect(login.body).toEqual({ error: 'Admin console is not configured' });

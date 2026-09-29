@@ -1,5 +1,6 @@
-import { Router, type RequestHandler, type Response } from 'express';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { Router, type Request, type RequestHandler, type Response } from 'express';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import bcrypt from 'bcryptjs';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { rateLimit } from 'express-rate-limit';
@@ -8,11 +9,10 @@ import { config, production, skipRateLimits } from './config.js';
 import { asyncRoute, HttpError } from './http.js';
 import { adminChatListQuery, chatThreadForAdmin, listChatThreadsForAdmin, threadQuery } from './chat.js';
 
-// The platform admin console is separate from provider (business) logins. It is
-// gated by a single ADMIN_PASSWORD set in the host environment (Railway). No
-// admin credentials are stored in the database; the session is a stateless,
-// HMAC-signed cookie keyed by the password itself, so rotating the password
-// immediately invalidates every existing admin session.
+// The platform admin console is separate from provider (business) logins.
+// Production admits only explicitly configured named operators. A shared
+// password remains a non-production compatibility path, and its sessions are
+// deliberately excluded from sensitive reads and every enforcement mutation.
 export const adminRouter = Router();
 const adminCookieOptions = { httpOnly: true, secure: production, sameSite: 'lax' as const, path: '/' };
 const adminLimit = rateLimit({
@@ -21,43 +21,127 @@ const adminLimit = rateLimit({
   message: { error: 'Too many attempts. Please try again later.' },
 });
 
+function businessDeletionMode(): 'all' | 'demo-only' {
+  return config.realBusinessDeletionEnabled ? 'all' : 'demo-only';
+}
+
 function safeEqual(a: string, b: string) {
   const left = Buffer.from(a);
   const right = Buffer.from(b);
   if (left.length !== right.length) return false;
   return timingSafeEqual(left, right);
 }
-function sign(value: string) {
-  return createHmac('sha256', config.adminPassword).update(value).digest('base64url');
+export type AdminOperator = { id: string; name: string; email: string };
+export type AdminSessionContext =
+  | { mode: 'named'; operator: AdminOperator }
+  | { mode: 'legacy'; operator: null };
+export type AdminRequest = Request & { admin: AdminSessionContext };
+
+type AdminSessionPayload = {
+  v: 1; mode: 'named' | 'legacy'; operatorId?: string; operatorName?: string; operatorEmail?: string;
+  credentialVersion: string; expiresAt: number;
+};
+
+const DUMMY_BCRYPT_HASH = '$2b$12$iqhVwv9QRpq.hKuJLYeuHOuO5.J3oBTOj5BSn5lUbyZp1KiVkRfsC';
+const namedLoginBody = z.object({ email: z.string().trim().toLowerCase().email().max(320), password: z.string().min(1).max(200) }).strict();
+const legacyLoginBody = z.object({ password: z.string().min(1).max(200) }).strict();
+
+function adminAuthMode(): 'named' | 'legacy' | 'disabled' {
+  if (config.adminOperators.length && config.adminConfigurationValid
+    && (!production || config.adminSessionSecretConfigured)) return 'named';
+  if (!production && config.adminPassword) return 'legacy';
+  return 'disabled';
 }
-function issueAdminSession(res: Response) {
+function credentialVersion(value: string) {
+  return createHash('sha256').update(value).digest('base64url');
+}
+function sign(value: string) {
+  return createHmac('sha256', config.adminSessionSecret).update(value).digest('base64url');
+}
+function issueAdminSession(res: Response, context: AdminSessionContext) {
   const expiresAt = Date.now() + config.adminSessionHours * 3600_000;
-  const payload = String(expiresAt);
-  const token = `${payload}.${sign(payload)}`;
+  const credentials = context.mode === 'named'
+    ? config.adminOperators.find(operator => operator.id === context.operator.id)?.passwordHash ?? ''
+    : config.adminPassword;
+  const payload: AdminSessionPayload = {
+    v: 1, mode: context.mode, expiresAt, credentialVersion: credentialVersion(credentials),
+    ...(context.mode === 'named' ? {
+      operatorId: context.operator.id, operatorName: context.operator.name, operatorEmail: context.operator.email,
+    } : {}),
+  };
+  const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const token = `${encoded}.${sign(encoded)}`;
   res.cookie(config.adminCookie, token, { ...adminCookieOptions, expires: new Date(expiresAt) });
 }
-function adminSessionValid(token: unknown) {
-  if (typeof token !== 'string' || !config.adminPassword) return false;
-  const [payload, signature] = token.split('.');
-  if (!payload || !signature || !safeEqual(signature, sign(payload))) return false;
-  const expiresAt = Number(payload);
-  return Number.isFinite(expiresAt) && expiresAt > Date.now();
+function readAdminSession(token: unknown): AdminSessionContext | null {
+  if (typeof token !== 'string') return null;
+  const [encoded, signature, extra] = token.split('.');
+  if (!encoded || !signature || extra || !safeEqual(signature, sign(encoded))) return null;
+  let payload: AdminSessionPayload;
+  try {
+    payload = z.object({
+      v: z.literal(1), mode: z.enum(['named', 'legacy']), operatorId: z.string().optional(),
+      operatorName: z.string().optional(), operatorEmail: z.string().optional(),
+      credentialVersion: z.string().min(1), expiresAt: z.number().finite(),
+    }).strict().parse(JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')));
+  } catch { return null; }
+  if (payload.expiresAt <= Date.now()) return null;
+  if (payload.mode !== adminAuthMode()) return null;
+  if (payload.mode === 'named') {
+    if (!payload.operatorId || !payload.operatorName || !payload.operatorEmail) return null;
+    const configured = config.adminOperators.find(operator => operator.id === payload.operatorId);
+    if (!configured || payload.operatorName !== configured.name || payload.operatorEmail !== configured.email
+      || !safeEqual(payload.credentialVersion, credentialVersion(configured.passwordHash))) return null;
+    return { mode: 'named', operator: { id: configured.id, name: configured.name, email: configured.email } };
+  }
+  if (production || !config.adminPassword
+    || !safeEqual(payload.credentialVersion, credentialVersion(config.adminPassword))) return null;
+  return { mode: 'legacy', operator: null };
 }
-const requireAdmin: RequestHandler = asyncRoute(async (req, _res, next) => {
-  if (!config.adminPassword) throw new HttpError(503, 'Admin console is not configured');
-  if (!adminSessionValid(req.cookies?.[config.adminCookie])) throw new HttpError(401, 'Please sign in to the admin console');
+export const requireAdmin: RequestHandler = asyncRoute(async (req, _res, next) => {
+  if (adminAuthMode() === 'disabled') throw new HttpError(503, 'Admin console is not configured');
+  const session = readAdminSession(req.cookies?.[config.adminCookie]);
+  if (!session) throw new HttpError(401, 'Please sign in to the admin console');
+  (req as unknown as AdminRequest).admin = session;
+  next();
+});
+export const requireNamedAdmin: RequestHandler = asyncRoute(async (req, _res, next) => {
+  if (adminAuthMode() === 'disabled') throw new HttpError(503, 'Admin console is not configured');
+  const session = (req as unknown as Partial<AdminRequest>).admin ?? readAdminSession(req.cookies?.[config.adminCookie]);
+  if (!session) throw new HttpError(401, 'Please sign in to the admin console');
+  if (session.mode !== 'named') {
+    throw new HttpError(403, 'A named admin operator is required for this action', { code: 'NAMED_ADMIN_REQUIRED' });
+  }
+  (req as unknown as AdminRequest).admin = session;
   next();
 });
 
 adminRouter.get('/admin/session', asyncRoute(async (req, res) => {
-  res.json({ configured: !!config.adminPassword, authenticated: adminSessionValid(req.cookies?.[config.adminCookie]) });
+  const mode = adminAuthMode();
+  const session = mode === 'disabled' ? null : readAdminSession(req.cookies?.[config.adminCookie]);
+  res.json({
+    configured: mode !== 'disabled', authMode: mode, authenticated: !!session,
+    operator: session?.operator ?? null, sensitiveAccess: session?.mode === 'named',
+    businessDeletionMode: businessDeletionMode(),
+  });
 }));
 adminRouter.post('/admin/login', adminLimit, asyncRoute(async (req, res) => {
-  if (!config.adminPassword) throw new HttpError(503, 'Admin console is not configured');
-  const { password } = z.object({ password: z.string().min(1).max(200) }).strict().parse(req.body);
+  const mode = adminAuthMode();
+  if (mode === 'disabled') throw new HttpError(503, 'Admin console is not configured');
+  if (mode === 'named') {
+    const { email, password } = namedLoginBody.parse(req.body);
+    const configured = config.adminOperators.find(operator => operator.email === email);
+    const matches = await bcrypt.compare(password, configured?.passwordHash ?? DUMMY_BCRYPT_HASH);
+    if (!configured || !matches) throw new HttpError(401, 'Incorrect admin email or password');
+    const operator = { id: configured.id, name: configured.name, email: configured.email };
+    issueAdminSession(res, { mode: 'named', operator });
+    res.json({ ok: true, authMode: 'named', operator });
+    return;
+  }
+  const { password } = legacyLoginBody.parse(req.body);
   if (!safeEqual(password, config.adminPassword)) throw new HttpError(401, 'Incorrect admin password');
-  issueAdminSession(res);
-  res.json({ ok: true });
+  issueAdminSession(res, { mode: 'legacy', operator: null });
+  res.json({ ok: true, authMode: 'legacy', operator: null });
 }));
 adminRouter.post('/admin/logout', asyncRoute(async (_req, res) => {
   res.clearCookie(config.adminCookie, adminCookieOptions);
@@ -226,20 +310,40 @@ async function deleteBusinessDeep(tx: Prisma.TransactionClient, businessId: stri
   }
 }
 
-adminRouter.delete('/admin/businesses/:id', requireAdmin, asyncRoute(async (req, res) => {
+adminRouter.delete('/admin/businesses/:id', requireAdmin, requireNamedAdmin, asyncRoute(async (req, res) => {
   const id = z.string().trim().min(1).max(200).parse(req.params.id);
-  const business = await prisma.business.findUnique({ where: { id }, select: { id: true } });
-  if (!business) throw new HttpError(404, 'Business not found');
-  await prisma.$transaction(tx => deleteBusinessDeep(tx, id), { timeout: 30_000 });
+  await prisma.$transaction(async tx => {
+    // Lock the target while applying the destructive-action policy so its demo
+    // classification cannot change between authorization and deletion.
+    const [business] = await tx.$queryRaw<Array<{ id: string; isDemo: boolean }>>`
+      SELECT "id", "isDemo"
+      FROM "Business"
+      WHERE "id" = ${id}
+      FOR UPDATE
+    `;
+    if (!business) throw new HttpError(404, 'Business not found');
+    if (!business.isDemo && !config.realBusinessDeletionEnabled) {
+      throw new HttpError(403, 'Only demo businesses can be deleted in this environment');
+    }
+    await deleteBusinessDeep(tx, id);
+  }, { timeout: 30_000 });
   res.json({ ok: true });
 }));
 
-adminRouter.post('/admin/purge-demos', requireAdmin, asyncRoute(async (_req, res) => {
+adminRouter.post('/admin/purge-demos', requireAdmin, requireNamedAdmin, asyncRoute(async (_req, res) => {
   // Purging is one platform operation. Keeping every demo in the same
   // transaction avoids per-workspace commit overhead and cannot leave a
   // half-purged platform if a later workspace fails its teardown.
   const deleted = await prisma.$transaction(async tx => {
-    const demos = await tx.business.findMany({ where: { isDemo: true }, select: { id: true } });
+    // Hold each selected row through teardown so a concurrent reclassification
+    // cannot turn a demo into a real business after the purge has selected it.
+    const demos = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "Business"
+      WHERE "isDemo" = true
+      ORDER BY "id"
+      FOR UPDATE
+    `;
     for (const demo of demos) await deleteBusinessDeep(tx, demo.id);
     return demos.length;
   }, { timeout: 30_000 });
@@ -249,11 +353,11 @@ adminRouter.post('/admin/purge-demos', requireAdmin, asyncRoute(async (_req, res
 // Every conversation is readable here for safety review when the generalized
 // contract is requested. Legacy clients continue receiving SESSION rows. The console only
 // reads: it has no account identity to post as and exposes no actions.
-adminRouter.get('/admin/chats', requireAdmin, asyncRoute(async (req, res) => {
+adminRouter.get('/admin/chats', requireAdmin, requireNamedAdmin, asyncRoute(async (req, res) => {
   res.json(await listChatThreadsForAdmin(adminChatListQuery.parse(req.query)));
 }));
 
-adminRouter.get('/admin/chats/:threadId', requireAdmin, asyncRoute(async (req, res) => {
+adminRouter.get('/admin/chats/:threadId', requireAdmin, requireNamedAdmin, asyncRoute(async (req, res) => {
   const { before, contract } = threadQuery.parse(req.query);
   const threadId = z.string().trim().min(1).max(200).parse(req.params.threadId);
   res.json(await chatThreadForAdmin(threadId, { before, includeAccountChats: contract === 'accounts' }));
