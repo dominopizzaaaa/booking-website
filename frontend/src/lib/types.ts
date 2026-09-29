@@ -1,11 +1,33 @@
 export type Status = 'CONFIRMED' | 'PENDING' | 'CANCELLED' | 'COMPLETED';
 export type AccountType = 'STUDENT' | 'COACH' | 'CLUB';
+export type AccountControl = 'SELF' | 'GUARDIAN_MANAGED';
+export type AccountStatus = 'ACTIVE' | 'CONSENT_REQUIRED' | 'DELETION_REQUESTED';
+export type ProfileVisibility = 'PRIVATE' | 'CLUBS_ONLY' | 'PUBLIC';
+export type AgeBand = 'CHILD' | 'TEEN' | 'ADULT' | 'UNKNOWN';
+export type AccountRequiredAction = 'DELETION_REQUESTED' | 'GUARDIAN_SESSION_STALE' | 'HANDOVER_REQUIRED' | 'CONSENT_REQUIRED' | 'PARENT_ACCOUNT_REQUIRED';
+/**
+ * Policy is authored by the API. Keys stay optional so a new frontend can
+ * overlap briefly with an older server, and so newly introduced restrictions
+ * default to the server's existing route enforcement rather than age math in
+ * the browser.
+ */
+export type AccountCapabilities = {
+  ordinaryAccess: boolean; familyManagement: boolean; payments: boolean; staffAccess: boolean;
+  directory: boolean; chat: boolean; commerce: boolean; rentals: boolean; calendar: boolean;
+  workspace: boolean; profileEdit: boolean;
+};
 /** New commerce belongs to clubs; SOLO remains only as a historical wire value. */
 export type BusinessKind = 'CLUB' | 'SOLO';
 export type Business = { id: string; name: string; slug: string; ownerName: string; email: string; timezone: string; currency: string; color: string; tagline: string; cancellationHours: number; kind: BusinessKind; isDemo: boolean; legacyReadOnly?: boolean };
 /** username and sports are optional only while old fixtures or servers roll forward. */
-export type AccountUser = { id: string; name: string; username?: string; email: string; accountType: AccountType; sports?: string[]; phone?: string; parentName?: string };
-export type WorkspaceUser = AccountUser & { instructorId: string | null };
+export type AccountUser = {
+  id: string; name: string; username?: string; email: string | null; accountType: AccountType; sports?: string[]; phone?: string; parentName?: string;
+  legalName?: string | null; dateOfBirth?: string | null; accountControl?: AccountControl | null;
+  accountStatus?: AccountStatus | null; profileVisibility?: ProfileVisibility | null;
+  ageBand?: AgeBand | null; needsAgeReview?: boolean; requiredAction?: AccountRequiredAction | null;
+  capabilities?: AccountCapabilities;
+};
+export type WorkspaceUser = Omit<AccountUser, 'email'> & { email: string; instructorId: string | null };
 /** A membership is an affiliation; permissions come from the account and business kinds. */
 export type Membership = { id: string; userId: string; businessId: string; instructorId: string | null; active: boolean; createdAt: string; business: Business };
 export type WorkspaceAccessMode = 'NONE' | 'CLUB_ACCOUNT' | 'COACH' | 'STAFF';
@@ -46,6 +68,59 @@ export type AuthSession = {
   staffAccess?: ClubStaffWorkspaceAccess | null; staffAccesses?: ClubStaffWorkspaceAccess[]; accessMode?: WorkspaceAccessMode;
   permissions?: ClubPermission[];
 };
+
+export type FamilyPermission = 'PROFILE_MANAGE' | 'BOOKINGS_MANAGE' | 'CREDENTIAL_RESET' | 'PRIVACY_MANAGE' | 'DATA_EXPORT' | 'CONSENT_MANAGE' | 'DELETION_REQUEST' | 'HANDOVER_MANAGE';
+export type GuardianLinkStatus = 'ACTIVE' | 'WITHDRAWN' | 'ENDED';
+export type FamilyHandoverStatus = 'PENDING' | 'COMPLETED' | 'CANCELLED' | 'EXPIRED';
+export type GuardianConsent = {
+  status: 'GRANTED' | 'RENEWED' | 'WITHDRAWN'; policyVersion: string; consentedAt: string;
+  expiresAt: null; withdrawnAt: string | null;
+};
+export type GuardianLink = {
+  id: string; status: GuardianLinkStatus; relationshipType: string; permissions: FamilyPermission[];
+  createdAt: string; endedAt: string | null;
+};
+export type FamilyHandover = {
+  id: string; status: FamilyHandoverStatus; maskedDestinationEmail: string | null; createdAt: string;
+  expiresAt: string; completedAt: string | null; cancelledAt: string | null; emailQueued: boolean;
+};
+export type FamilyChild = {
+  access?: never;
+  id: string; legalName: string; displayName: string; username: string; dateOfBirth: string; sports: string[];
+  profileVisibility: ProfileVisibility; accountControl: AccountControl; accountStatus: AccountStatus; ageBand: AgeBand;
+  requiredAction: AccountRequiredAction | null; link: GuardianLink; consent: GuardianConsent | null;
+  handover: FamilyHandover | null; deletionRequestedAt: string | null;
+};
+/**
+ * A withdrawn guardian link is intentionally privacy-minimal. Its presence
+ * authorizes consent renewal only; it must not expose or enable the full child
+ * profile actions that are available through an active link.
+ */
+export type FamilyConsentRenewalChild = {
+  id: string; displayName: string; access: 'CONSENT_RENEWAL';
+  link: Pick<GuardianLink, 'id' | 'status' | 'relationshipType'>;
+  consent: GuardianConsent | null;
+};
+export type FamilyChildEntry = FamilyChild | FamilyConsentRenewalChild;
+export function isFamilyConsentRenewalChild(child: FamilyChildEntry): child is FamilyConsentRenewalChild {
+  return child.access === 'CONSENT_RENEWAL';
+}
+export type FamilyResponse = {
+  guardian: { eligible: boolean; reason: AccountRequiredAction | null };
+  children: FamilyChildEntry[]; privacyPolicyVersion: string; handoverAvailable: boolean;
+};
+/** Privacy-minimal child projection used only to choose who a guardian is booking for. */
+export type FamilyBookingChild = { id: string; displayName: string; username: string };
+export type FamilyBookingChildrenResponse = { children: FamilyBookingChild[] };
+export type FamilyChildInput = {
+  legalName: string; displayName: string; username: string; dateOfBirth: string; sports: string[];
+  relationship: string; profileVisibility: Extract<ProfileVisibility, 'PRIVATE' | 'CLUBS_ONLY'>;
+  legalGuardianConfirmed: true; privacyPolicyVersion: string;
+};
+export type FamilyChildUpdateInput = Pick<FamilyChildInput, 'legalName' | 'displayName' | 'sports' | 'profileVisibility'>;
+export type FamilyHandoverPublic = {
+  childName: string; guardianName: string; maskedDestinationEmail: string | null; expiresAt: string; status: FamilyHandoverStatus;
+};
 export type Instructor = { id: string; name: string; initials: string; color: string; email: string; specialty: string; rescheduleNoticeHours: number; active: boolean };
 export type WorkspaceInstructor = Instructor & { accountLinkAvailable: boolean };
 export type Location = { id: string; name: string; address: string; type: 'FACILITY' | 'RENTED' | 'HOME' | 'ONLINE'; color: string; requiresApproval: boolean; classUnitSchedulingEnabled?: boolean; travelMinutes: number; notes: string; source: VenueSource; placeId: string; mapsUrl: string; latitude: number | null; longitude: number | null; active: boolean };
@@ -81,14 +156,14 @@ export type CoachScopedServiceLocation = Omit<ServiceLocation, 'price'>;
 export type CoachScopedService = Omit<Service, 'price' | 'locations'> & { locations: CoachScopedServiceLocation[] };
 export type Availability = { id: string; instructorId: string; locationId: string; dayOfWeek: number; startTime: string; endTime: string };
 export type AvailabilityException = { id: string; instructorId: string; date: string; reason: string };
-export type Student = { id: string; userId: string | null; name: string; email: string; phone: string; initials: string; notes: string; parentName: string; createdAt: string; bookingCount: number; lastBookingAt: string | null };
+export type Student = { id: string; userId: string | null; name: string; email: string | null; phone: string; initials: string; notes: string; parentName: string; createdAt: string; bookingCount: number; lastBookingAt: string | null };
 export type LessonPackage = {
   id: string; studentId: string; studentName: string; name: string; serviceId: string | null;
   /** Optional only while older workspace payloads roll forward. */
   serviceIds?: string[]; rentalLocationIds?: string[];
   totalCredits: number; usedCredits: number; price: number; expiresAt: string; paid: boolean;
 };
-export type Participant = { id: string; studentId: string; name: string; email: string; attendance: 'UNMARKED' | 'PRESENT' | 'ABSENT'; paid: boolean; price: number; packageId: string | null; notes: string; cancelled?: boolean; cancelledAt?: string | null };
+export type Participant = { id: string; studentId: string; name: string; email: string | null; attendance: 'UNMARKED' | 'PRESENT' | 'ABSENT'; paid: boolean; price: number; packageId: string | null; notes: string; cancelled?: boolean; cancelledAt?: string | null };
 export type CoachScopedParticipant = Omit<Participant, 'paid' | 'price' | 'packageId'>;
 /** "CLUB" runs the money through the club's books; "DIRECT" goes to the coach. */
 export type PaymentRoute = 'CLUB' | 'DIRECT';
@@ -213,6 +288,11 @@ export type BookingSeriesResult = {
 };
 export type PublicBookingInput = { serviceId: string; instructorId: string; locationId: string; startAt: string; student?: { phone?: string; parentName?: string }; repeatWeeks?: number; packageId?: string; notes?: string; address?: string };
 export type BookingResult = { bookings: Booking[]; conflicts?: { date: string; reason: string }[] };
+export type FamilyChildBookingInput = {
+  businessSlug: string; serviceId: string; instructorId: string; locationId: string; startAt: string;
+  repeatWeeks?: number; notes?: string; address?: string;
+};
+export type FamilyChildBookingResult = BookingResult & { bookedFor: FamilyBookingChild };
 export type ProviderBookingResult = { bookings: WorkspaceBooking[]; conflicts?: { date: string; reason: string }[] };
 export type AccountBooking = {
   business: PublicBookingBusiness; booking: Booking; participant: Participant; location?: PublicLocation;

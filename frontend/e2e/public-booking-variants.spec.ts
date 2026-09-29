@@ -120,10 +120,10 @@ test.beforeAll(async ({}, workerInfo) => {
   provider = await playwrightRequest.newContext({ baseURL });
   try {
     await responseJson<AuthSession>(await coach.post('/api/auth/register', {
-      data: { accountType: 'COACH', name: coachName, username: `vc_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: coachEmail, password },
+      data: { accountType: 'COACH', name: coachName, username: `vc_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: coachEmail, password, dateOfBirth: '1990-01-01' },
     }));
     await responseJson<AuthSession>(await student.post('/api/auth/register', {
-      data: { accountType: 'STUDENT', name: studentName, username: `vs_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: studentEmail, password },
+      data: { accountType: 'STUDENT', name: studentName, username: `vs_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: studentEmail, password, dateOfBirth: '1990-01-01' },
     }));
     await student.dispose();
 

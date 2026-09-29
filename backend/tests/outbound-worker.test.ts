@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { CaptureEmailProvider, EmailProviderError, type EmailProvider } from '../src/email-provider.js';
+import { config } from '../src/config.js';
+import { deriveFamilyHandoverToken, familyHandoverTokenDigest } from '../src/family-handover-token.js';
 import { claimOutboundDeliveries, processOutboundDeliveries, retryDelayMs, type DeliveryDb } from '../src/outbound-worker.js';
 
 function database(job: Record<string, unknown>) {
   const updateMany = vi.fn(async () => ({ count: 1 }));
-  return { db: { $queryRaw: vi.fn(async () => [job]), outboundDelivery: { updateMany } } as unknown as DeliveryDb, updateMany };
+  const findUnique = vi.fn(async () => null);
+  return { db: { $queryRaw: vi.fn(async () => [job]), outboundDelivery: { updateMany }, childAccountHandover: { findUnique } } as unknown as DeliveryDb, updateMany, findUnique };
 }
 const job = { id: 'delivery-1', eventType: 'BOOKING_CONFIRMED', recipientEmail: 'a@example.test', recipientName: 'Avery', payload: { title: 'Confirmed', message: 'See you soon.' }, attempts: 0 };
 
@@ -21,6 +24,60 @@ describe('outbound worker', () => {
     expect(await processOutboundDeliveries({ provider, from: { email: 'updates@courtly.test', name: 'Courtly' }, db })).toBe(1);
     expect(provider.messages[0]).toMatchObject({ deliveryId: 'delivery-1', subject: 'Confirmed' });
     expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: 'ACCEPTED', providerMessageId: 'capture_delivery-1', leaseToken: null }) }));
+  });
+
+  it('reconstructs a valid handover claim URL without a persisted bearer token', async () => {
+    const keyId = 'handover-test';
+    const key = Buffer.alloc(32, 19);
+    const handoverId = 'handover-123';
+    const expiresAt = new Date('2030-10-02T09:30:00.000Z');
+    const token = deriveFamilyHandoverToken(handoverId, keyId, { keys: new Map([[keyId, key]]) });
+    const original = {
+      activeKeyId: config.familyHandoverTokens.activeKeyId,
+      keys: config.familyHandoverTokens.keys,
+    };
+    config.familyHandoverTokens.activeKeyId = keyId;
+    config.familyHandoverTokens.keys = new Map([[keyId, key]]);
+    try {
+      const secureJob = {
+        ...job, eventType: 'FAMILY_HANDOVER_SECURITY', recipientEmail: 'child@example.test',
+        payload: { handoverId, tokenKeyId: keyId, expiresAt: expiresAt.toISOString() },
+      };
+      const { db, findUnique } = database(secureJob);
+      findUnique.mockResolvedValue({
+        status: 'PENDING', expiresAt, destinationEmail: 'child@example.test',
+        tokenHash: familyHandoverTokenDigest(token),
+      });
+      const provider = new CaptureEmailProvider();
+      await processOutboundDeliveries({
+        provider, from: { email: 'updates@courtly.test', name: 'Courtly' }, db,
+        now: () => new Date('2029-10-02T09:30:00.000Z'),
+      });
+      expect(provider.messages[0]?.text).toContain(encodeURIComponent(token));
+      expect(JSON.stringify(secureJob)).not.toContain(token);
+      expect(JSON.stringify(secureJob)).not.toContain('claimUrl');
+    } finally {
+      config.familyHandoverTokens.activeKeyId = original.activeKeyId;
+      config.familyHandoverTokens.keys = original.keys;
+    }
+  });
+
+  it('suppresses a handover delivery whose live request is no longer pending', async () => {
+    const secureJob = {
+      ...job, eventType: 'FAMILY_HANDOVER_SECURITY',
+      payload: { handoverId: 'handover-closed', tokenKeyId: 'old', expiresAt: '2030-10-02T09:30:00.000Z' },
+    };
+    const { db, updateMany, findUnique } = database(secureJob);
+    findUnique.mockResolvedValue({
+      status: 'CANCELLED', expiresAt: new Date('2030-10-02T09:30:00.000Z'),
+      destinationEmail: secureJob.recipientEmail, tokenHash: '0'.repeat(64),
+    });
+    const provider = new CaptureEmailProvider();
+    await processOutboundDeliveries({ provider, from: { email: 'updates@courtly.test', name: 'Courtly' }, db });
+    expect(provider.messages).toHaveLength(0);
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: 'SUPPRESSED', lastErrorCode: 'HANDOVER_UNAVAILABLE' }),
+    }));
   });
 
   it('reclaims expired sending jobs atomically without consuming another attempt', async () => {

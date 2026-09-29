@@ -62,11 +62,11 @@ test('a coach and student agree the next session in chat and it lands on the cal
   const serviceName = `Chat lesson ${run}`;
 
   await responseJson(await page.request.post('/api/auth/register', {
-    data: { accountType: 'COACH', name: coachName, username: `cc_${handle}`, email: coachEmail, password },
+    data: { accountType: 'COACH', name: coachName, username: `cc_${handle}`, email: coachEmail, password, dateOfBirth: '1990-01-01' },
   }));
   await responseJson(await page.request.post('/api/auth/logout', { data: {} }));
   await responseJson(await page.request.post('/api/auth/register', {
-    data: { accountType: 'STUDENT', name: studentName, username: `cs_${handle}`, email: studentEmail, password },
+    data: { accountType: 'STUDENT', name: studentName, username: `cs_${handle}`, email: studentEmail, password, dateOfBirth: '1990-01-01' },
   }));
   await responseJson(await page.request.post('/api/auth/logout', { data: {} }));
 

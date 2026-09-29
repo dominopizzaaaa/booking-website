@@ -30,6 +30,7 @@ describe.sequential('Marketplace account identities', () => {
       username: `student_${identity}`,
       email: `${identity}@example.test`,
       password: 'Courtly-marketplace-123',
+      dateOfBirth: '1990-01-01',
       ...overrides,
     });
     if (response.body?.user?.id) tenants.ownUser(response.body.user.id);
@@ -252,6 +253,29 @@ describe.sequential('Marketplace account identities', () => {
     }]);
     expect(JSON.stringify(exactEmail.body)).not.toContain(emailOnly.email);
     expect(JSON.stringify(exactEmail.body)).not.toContain(emailOnly.id);
+  });
+
+  it('excludes DOB-known self-managed children while preserving DOB-null legacy accounts', async () => {
+    const marker = suffix();
+    const hiddenChild = await createAccount(club, {
+      name: `Policy ${marker} Child`, username: `child_${marker}`, accountType: 'STUDENT',
+    });
+    await prisma.user.update({
+      where: { id: hiddenChild.id },
+      data: { dateOfBirth: new Date('2020-01-01T00:00:00.000Z') },
+    });
+    const legacy = await createAccount(club, {
+      name: `Policy ${marker} Legacy`, username: `legacy_${marker}`, accountType: 'STUDENT',
+    });
+
+    const result = await request(app).get('/api/accounts/search')
+      .query({ q: marker }).set('Cookie', club.cookie).expect(200);
+    expect(result.body).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ username: hiddenChild.username }),
+    ]));
+    expect(result.body).toEqual(expect.arrayContaining([
+      expect.objectContaining({ username: legacy.username }),
+    ]));
   });
 
   it('rate-limits account-directory searches per authenticated account', async () => {

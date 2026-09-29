@@ -749,8 +749,9 @@ async function resolveStudent(tx: Tx, businessId: string, userId: string) {
   const linked = await tx.student.findFirst({ where: { businessId, userId } });
   if (linked) return linked;
   const account = await tx.user.findUniqueOrThrow({ where: { id: userId } });
-  const existing = await tx.student.findUnique({
-    where: { businessId_email: { businessId, email: account.email } }, select: { userId: true },
+  if (!account.email) throw new HttpError(403, 'An account email is required to reserve a rental');
+  const existing = await tx.student.findFirst({
+    where: { businessId, email: account.email }, select: { userId: true },
   });
   if (existing) throw new HttpError(409, existing.userId
     ? 'This email is already connected to another student account for this club'

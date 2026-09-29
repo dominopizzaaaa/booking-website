@@ -27,6 +27,16 @@ import {
   type CheckoutInput,
   type CheckoutResult,
   type CoachInvitation,
+  type FamilyChild,
+  type FamilyBookingChildrenResponse,
+  type FamilyChildBookingInput,
+  type FamilyChildBookingResult,
+  type FamilyConsentRenewalChild,
+  type FamilyChildInput,
+  type FamilyChildUpdateInput,
+  type FamilyHandover,
+  type FamilyHandoverPublic,
+  type FamilyResponse,
   type ClubStaffAccess,
   type ClubStaffAccessInput,
   type ClubStaffInvitation,
@@ -126,8 +136,9 @@ type CompatibleAuthSession = Omit<AuthSession, 'user' | 'membership' | 'business
 
 function readableUsername(user: CompatibleAuthSession['user']) {
   if (user.username?.trim()) return user.username.trim();
-  const fromEmail = user.email.split('@')[0]?.toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 30);
-  return fromEmail && fromEmail.length >= 3 ? fromEmail : `user_${user.id.slice(0, 12).toLowerCase()}`;
+  const identity = user.email?.split('@')[0] || user.legalName || user.name;
+  const readable = identity.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^_+|_+$/g, '').slice(0, 30);
+  return readable.length >= 3 ? readable : `user_${user.id.slice(0, 12).toLowerCase()}`;
 }
 
 /** Keep a rolling deployment usable while older auth payloads are still in flight. */
@@ -137,7 +148,21 @@ export function normalizeAuthSession(value: CompatibleAuthSession): AuthSession 
   const staffAccess = value.staffAccess ? { ...value.staffAccess, business: business(value.staffAccess.business) } : null;
   return {
     ...value,
-    user: { ...value.user, username: readableUsername(value.user), sports: value.user.sports ?? [] },
+    user: {
+      ...value.user,
+      email: value.user.email ?? null,
+      username: readableUsername(value.user),
+      sports: value.user.sports ?? [],
+      legalName: value.user.legalName ?? value.user.name,
+      dateOfBirth: value.user.dateOfBirth ?? null,
+      accountControl: value.user.accountControl ?? null,
+      accountStatus: value.user.accountStatus ?? null,
+      profileVisibility: value.user.profileVisibility ?? null,
+      ageBand: value.user.ageBand ?? null,
+      needsAgeReview: value.user.needsAgeReview ?? false,
+      requiredAction: value.user.requiredAction ?? null,
+      capabilities: value.user.capabilities,
+    },
     membership,
     staffAccess,
     business: value.business ? business(value.business) : null,
@@ -183,14 +208,21 @@ export async function loginAccount(values: { email: string; password: string }):
   return normalizeAuthSession(await api<CompatibleAuthSession>('/auth/login', { method: 'POST', body: JSON.stringify(values) }));
 }
 export const loginStudentAccount = loginAccount;
-export type RegisterAccountInput = {
-  accountType: AuthSession['user']['accountType']; businessName?: string; name: string; username: string; sports?: string[];
-  email: string; password: string; phone?: string; parentName?: string;
+type RegisterAccountBase = {
+  name: string; username: string; sports?: string[]; email: string; password: string;
+  phone?: string; parentName?: string;
 };
+export type RegisterPersonalAccountInput = RegisterAccountBase & {
+  accountType: 'STUDENT' | 'COACH'; dateOfBirth: string; businessName?: never;
+};
+export type RegisterClubAccountInput = RegisterAccountBase & {
+  accountType: 'CLUB'; businessName: string; dateOfBirth?: never;
+};
+export type RegisterAccountInput = RegisterPersonalAccountInput | RegisterClubAccountInput;
 export async function registerAccount(values: RegisterAccountInput): Promise<AuthSession> {
   return normalizeAuthSession(await api<CompatibleAuthSession>('/auth/register', { method: 'POST', body: JSON.stringify(values) }));
 }
-export const registerStudentAccount = (values: Omit<RegisterAccountInput, 'accountType' | 'businessName'>) =>
+export const registerStudentAccount = (values: Omit<RegisterPersonalAccountInput, 'accountType' | 'businessName'>) =>
   registerAccount({ ...values, accountType: 'STUDENT' });
 export type AccountProfileInput = Partial<Pick<AuthSession['user'], 'name' | 'username' | 'sports' | 'phone' | 'parentName'>>;
 export async function updateAuthAccount(values: AccountProfileInput): Promise<AuthSession> {
@@ -202,6 +234,56 @@ export async function updateClubProfile(values: ClubProfileInput): Promise<AuthS
   return normalizeAuthSession(await api<CompatibleAuthSession>('/auth/club-profile', { method: 'PATCH', body: JSON.stringify(values) }));
 }
 export const logoutAccount = () => api<{ ok: true }>('/auth/logout', { method: 'POST', body: JSON.stringify({}) });
+
+export async function loadFamily(): Promise<FamilyResponse> {
+  type FamilyWireResponse = Omit<FamilyResponse, 'children'> & {
+    children?: FamilyResponse['children'];
+  };
+  const family = await api<FamilyWireResponse>('/family');
+  return { ...family, children: family.children ?? [] };
+}
+export const loadFamilyBookingChildren = () =>
+  api<FamilyBookingChildrenResponse>('/family/booking-children');
+export const createFamilyChildBooking = (id: string, values: FamilyChildBookingInput) =>
+  api<FamilyChildBookingResult>(`/family/children/${encodeURIComponent(id)}/bookings`, {
+    method: 'POST', body: JSON.stringify(values),
+  });
+export async function setFamilyDateOfBirth(dateOfBirth: string): Promise<AuthSession> {
+  return normalizeAuthSession(await api<CompatibleAuthSession>('/family/date-of-birth', {
+    method: 'POST', body: JSON.stringify({ dateOfBirth }),
+  }));
+}
+export const createFamilyChild = (values: FamilyChildInput) =>
+  api<{ child: FamilyChild }>('/family/children', { method: 'POST', body: JSON.stringify(values) });
+export const updateFamilyChild = (id: string, values: FamilyChildUpdateInput) =>
+  api<{ child: FamilyChild }>(`/family/children/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(values) });
+export const withdrawFamilyChildConsent = (id: string) =>
+  api<{ child: FamilyConsentRenewalChild }>(`/family/children/${encodeURIComponent(id)}/consent/withdraw`, { method: 'POST', body: JSON.stringify({}) });
+export const renewFamilyChildConsent = (id: string, privacyPolicyVersion: string) =>
+  api<{ child: FamilyChild | FamilyConsentRenewalChild }>(`/family/children/${encodeURIComponent(id)}/consent/renew`, {
+    method: 'POST', body: JSON.stringify({ legalGuardianConfirmed: true, privacyPolicyVersion }),
+  });
+export const requestFamilyChildDeletion = (id: string) =>
+  api<{ child: FamilyChild }>(`/family/children/${encodeURIComponent(id)}/deletion-request`, { method: 'POST', body: JSON.stringify({}) });
+export const createFamilyHandover = (id: string, destinationEmail: string) =>
+  api<{ handover: FamilyHandover; emailQueued: true }>(`/family/children/${encodeURIComponent(id)}/handovers`, { method: 'POST', body: JSON.stringify({ destinationEmail }) });
+export const cancelFamilyHandover = (id: string, handoverId: string) =>
+  api<{ ok: true }>(`/family/children/${encodeURIComponent(id)}/handovers/${encodeURIComponent(handoverId)}`, { method: 'DELETE', body: JSON.stringify({}) });
+export async function downloadFamilyChildExport(id: string) {
+  const response = await fetch(`/api/family/children/${encodeURIComponent(id)}/export`, { credentials: 'include' });
+  if (!response.ok) {
+    let data: { error?: string } = {};
+    if (response.headers.get('content-type')?.includes('application/json')) data = await response.json();
+    throw new ApiError(data.error || 'This child data export could not be downloaded.', response.status, data);
+  }
+  const disposition = response.headers.get('content-disposition') || '';
+  const filename = /filename="?([^";]+)"?/iu.exec(disposition)?.[1] || 'courtly-child-data.json';
+  return { blob: await response.blob(), filename };
+}
+export const loadFamilyHandover = (token: string) =>
+  api<FamilyHandoverPublic>(`/family/handovers/${encodeURIComponent(token)}`);
+export const completeFamilyHandover = (token: string, password: string) =>
+  api<{ ok: true; username?: string; loginEmail?: string }>(`/family/handovers/${encodeURIComponent(token)}/complete`, { method: 'POST', body: JSON.stringify({ password }) });
 export async function loadAccountBookings(businessSlug?: string): Promise<AccountBookingsResult> {
   const query = businessSlug ? `?${new URLSearchParams({ businessSlug })}` : '';
   const value = await api<AccountBookingsResult | AccountBooking[]>(`/account/bookings${query}`);

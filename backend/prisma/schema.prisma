@@ -66,7 +66,16 @@ model Business {
 model User {
   id                     String                  @id @default(cuid())
   name                   String
-  email                  String                  @unique
+  /// Private legal identity. Existing accounts are backfilled from name; name
+  /// remains the display identity used throughout the product.
+  legalName              String
+  /// A calendar date rather than a timestamp. Null means the legacy account
+  /// has not completed the one-time age review. Once set, SQL keeps it fixed.
+  dateOfBirth            DateTime?               @db.Date
+  /// Guardian-managed children do not need synthetic credentials or contact
+  /// addresses. PostgreSQL uniqueness still applies to every non-null email.
+  email                  String?                 @unique
+  emailVerifiedAt        DateTime?
   /// Public account handle. SQL enforces canonical lowercase ASCII
   /// [a-z0-9_] content and the 3-30 character boundary.
   username               String                  @unique
@@ -77,6 +86,11 @@ model User {
   /// value decides both the profile someone sees and what they may do, so
   /// there is deliberately no second role stored per membership.
   accountType            String                  @default("STUDENT")
+  /// SELF accounts authenticate and act for themselves. GUARDIAN_MANAGED is
+  /// reserved for private child identities operated through active links.
+  accountControl         String                  @default("SELF")
+  accountStatus          String                  @default("ACTIVE")
+  profileVisibility      String                  @default("PUBLIC")
   phone                  String                  @default("")
   parentName             String                  @default("")
   memberships            Membership[]
@@ -95,7 +109,84 @@ model User {
   notificationPreference NotificationPreference?
   outboundDeliveries     OutboundDelivery[]
   paymentRefundRequests  PaymentRefund[]         @relation("PaymentRefundRequestedBy")
+  guardianLinks          GuardianChildLink[]     @relation("GuardianChildLinkGuardian")
+  childLinks             GuardianChildLink[]     @relation("GuardianChildLinkChild")
+  guardianConsentRecords ChildConsentRecord[]    @relation("ChildConsentRecordGuardian")
+  childConsentRecords    ChildConsentRecord[]    @relation("ChildConsentRecordChild")
+  initiatedHandovers     ChildAccountHandover[]  @relation("ChildAccountHandoverInitiator")
+  childHandovers         ChildAccountHandover[]  @relation("ChildAccountHandoverChild")
   createdAt              DateTime                @default(now())
+}
+
+/// A guardian's explicit authority over a global child identity. This is not
+/// a business Membership and several guardians may hold independent links.
+model GuardianChildLink {
+  id               String               @id @default(cuid())
+  guardianUserId   String
+  guardian         User                 @relation("GuardianChildLinkGuardian", fields: [guardianUserId], references: [id], onDelete: Restrict)
+  childUserId      String
+  child            User                 @relation("GuardianChildLinkChild", fields: [childUserId], references: [id], onDelete: Restrict)
+  relationshipType String
+  status           String               @default("ACTIVE")
+  permissions      String[]             @default(["PROFILE_MANAGE", "BOOKINGS_MANAGE", "CREDENTIAL_RESET", "PRIVACY_MANAGE", "DATA_EXPORT", "CONSENT_MANAGE", "DELETION_REQUEST", "HANDOVER_MANAGE"])
+  createdAt        DateTime             @default(now())
+  activatedAt      DateTime             @default(now())
+  withdrawnAt      DateTime?
+  endedAt          DateTime?
+  updatedAt        DateTime             @updatedAt
+  consentRecords   ChildConsentRecord[]
+
+  @@unique([guardianUserId, childUserId])
+  @@unique([id, guardianUserId, childUserId], map: "GuardianChildLink_identity_key")
+  @@index([guardianUserId, status])
+  @@index([childUserId, status])
+}
+
+/// Immutable evidence of guardian consent and family-account lifecycle events.
+/// State changes append a new row; SQL rejects UPDATE and DELETE.
+model ChildConsentRecord {
+  id                   String            @id @default(cuid())
+  linkId               String
+  link                 GuardianChildLink @relation(fields: [linkId, guardianUserId, childUserId], references: [id, guardianUserId, childUserId], onDelete: Restrict, onUpdate: NoAction, map: "ChildConsentRecord_linkId_guardianUserId_childUserId_fkey")
+  guardianUserId       String
+  guardian             User              @relation("ChildConsentRecordGuardian", fields: [guardianUserId], references: [id], onDelete: Restrict)
+  childUserId          String
+  child                User              @relation("ChildConsentRecordChild", fields: [childUserId], references: [id], onDelete: Restrict)
+  /// Database-assigned global append order. Latest state is selected within
+  /// the link by this value; the insert trigger replaces this placeholder.
+  sequence             Int               @default(0)
+  eventType            String
+  relationshipType     String
+  privacyPolicyVersion String
+  permissions          String[]
+  metadata             Json?
+  createdAt            DateTime          @default(now())
+
+  @@unique([linkId, sequence], map: "ChildConsentRecord_linkId_sequence_key")
+  @@index([childUserId, createdAt])
+  @@index([guardianUserId, createdAt])
+}
+
+/// A one-time invitation for a guardian-managed child to take control of their
+/// own account. The raw token is never stored; only its unique digest remains.
+model ChildAccountHandover {
+  id                        String    @id @default(cuid())
+  childUserId               String
+  child                     User      @relation("ChildAccountHandoverChild", fields: [childUserId], references: [id], onDelete: Restrict)
+  initiatedByGuardianUserId String
+  initiatedByGuardian       User      @relation("ChildAccountHandoverInitiator", fields: [initiatedByGuardianUserId], references: [id], onDelete: Restrict, map: "ChildAccountHandover_initiatedByGuardianUserId_fkey")
+  destinationEmail          String
+  tokenHash                 String    @unique
+  status                    String    @default("PENDING")
+  expiresAt                 DateTime
+  initiatedAt               DateTime  @default(now())
+  lastSentAt                DateTime  @default(now())
+  completedAt               DateTime?
+  cancelledAt               DateTime?
+
+  @@index([childUserId, status])
+  @@index([initiatedByGuardianUserId, initiatedAt], map: "ChildHandover_initiator_initiatedAt_idx")
+  @@index([destinationEmail, status])
 }
 
 /// Which businesses an account belongs to. A coach has one row per club that
@@ -536,7 +627,8 @@ model Student {
   userId        String?
   user          User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
   name          String
-  email         String
+  /// Linked managed children may have no direct email address.
+  email         String?
   phone         String                @default("")
   initials      String
   notes         String                @default("")

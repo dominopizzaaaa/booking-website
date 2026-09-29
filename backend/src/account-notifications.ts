@@ -186,6 +186,9 @@ export async function createBookingAccountAlerts(
     const notification = await tx.accountNotification.create({
       data: { userId: recipient.id, businessId: booking.businessId, bookingId: booking.id, ...alert },
     });
+    // Managed children have no direct email address. Keep their in-app alert,
+    // but do not invent a delivery address or enqueue an undeliverable email.
+    if (!recipient.email) continue;
     await queueOutboundEmail(tx, {
       eventType: alert.type, dedupeKey: `booking:${booking.id}:${event}:${notification.id}`,
       recipientEmail: recipient.email, recipientName: recipient.name, recipientUserId: recipient.id,

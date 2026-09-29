@@ -32,6 +32,7 @@ describe.sequential('Session chat', () => {
   // A student booking the fixture's private class for themselves.
   async function bookFor(person: Person, startAt = f.starts) {
     const account = await prisma.user.findUniqueOrThrow({ where: { id: person.userId } });
+    if (!account.email) throw new Error('Credentialed chat test account must have an email address');
     const result = await createBookings(f.business.id, inputFor(f, {
       startAt: startAt.toISO()!, student: { name: account.name, email: account.email },
     }), { studentUserId: person.userId });
@@ -372,6 +373,7 @@ describe.sequential('Session chat', () => {
     const [eve, finn] = [await student('Eve Group'), await student('Finn Group')];
     for (const person of [eve, finn]) {
       const account = await prisma.user.findUniqueOrThrow({ where: { id: person.userId } });
+      if (!account.email) throw new Error('Credentialed chat test account must have an email address');
       await createBookings(f.business.id, inputFor(f, {
         serviceId: group.id, student: { name: account.name, email: account.email },
       }), { studentUserId: person.userId });

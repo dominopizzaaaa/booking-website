@@ -70,7 +70,7 @@ async function populateBusiness(
   // holds no roster entry; every coach below has their own account.
   const clubAccount = await tx.user.create({
     data: {
-      name: business.name, email, username: `club_${tenantKey}`, sports: ['Tennis', 'Badminton'],
+      name: business.name, legalName: business.name, email, username: `club_${tenantKey}`, sports: ['Tennis', 'Badminton'],
       passwordHash, accountType: 'CLUB', phone: '', parentName: '', createdAt: business.createdAt,
     },
   });
@@ -83,6 +83,7 @@ async function populateBusiness(
       data: {
         id: accountId,
         name: instructor.name,
+        legalName: instructor.name,
         email: instructor.email,
         username: `coach_${instructors.indexOf(instructor) + 1}_${tenantKey.slice(0, 14)}`,
         sports: [instructor.specialty.startsWith('Badminton') ? 'Badminton' : 'Tennis'],
@@ -218,7 +219,7 @@ async function populateBusiness(
   }));
   await tx.user.createMany({
     data: students.map(student => ({
-      id: student.userId, name: student.name, email: student.email,
+      id: student.userId, name: student.name, legalName: student.name, email: student.email,
       username: `student_${students.indexOf(student) + 1}_${tenantKey.slice(0, 12)}`,
       sports: student.notes.toLowerCase().includes('badminton') ? ['Badminton'] : ['Tennis'],
       passwordHash: samplePasswordHash, accountType: 'STUDENT',

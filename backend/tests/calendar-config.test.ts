@@ -8,6 +8,10 @@ const testEnvironment = [
   'GOOGLE_CALENDAR_REDIRECT_URI',
   'CALENDAR_TOKEN_ENCRYPTION_KEYS',
   'CALENDAR_TOKEN_ACTIVE_KEY_ID',
+  'FAMILY_HANDOVER_TOKEN_KEYS',
+  'FAMILY_HANDOVER_TOKEN_ACTIVE_KEY_ID',
+  'EMAIL_PROVIDER',
+  'EMAIL_FROM_ADDRESS',
 ] as const;
 
 const originalEnvironment = Object.fromEntries(
@@ -21,11 +25,15 @@ const validCalendarEnvironment = {
   CALENDAR_TOKEN_ENCRYPTION_KEYS: `v1:${Buffer.alloc(32, 7).toString('base64')}`,
   CALENDAR_TOKEN_ACTIVE_KEY_ID: 'v1',
 };
+const validFamilyHandoverEnvironment = {
+  FAMILY_HANDOVER_TOKEN_KEYS: `v1:${Buffer.alloc(32, 9).toString('base64')}`,
+  FAMILY_HANDOVER_TOKEN_ACTIVE_KEY_ID: 'v1',
+};
 
 async function loadCalendarConfig(overrides: Partial<Record<(typeof testEnvironment)[number], string>> = {}) {
   for (const name of testEnvironment) delete process.env[name];
   process.env.DATABASE_URL = 'postgresql://test:test@127.0.0.1:5432/test';
-  Object.assign(process.env, validCalendarEnvironment, overrides);
+  Object.assign(process.env, validCalendarEnvironment, validFamilyHandoverEnvironment, overrides);
   vi.resetModules();
   return import('../src/config.js');
 }
@@ -55,7 +63,7 @@ describe('Google Calendar configuration', () => {
   ] as const)('reports only the public %s capability through health', async (capability, environment) => {
     for (const name of testEnvironment) delete process.env[name];
     process.env.DATABASE_URL = 'postgresql://test:test@127.0.0.1:5432/test';
-    Object.assign(process.env, environment);
+    Object.assign(process.env, validFamilyHandoverEnvironment, environment);
     vi.resetModules();
     const [{ app }, { prisma }] = await Promise.all([import('../src/app.js'), import('../src/db.js')]);
     const query = vi.spyOn(prisma, '$queryRawUnsafe').mockResolvedValueOnce([{
@@ -69,11 +77,15 @@ describe('Google Calendar configuration', () => {
       paymentProviderEvents: true,
       outboundDelivery: true,
       activeStripeBookingCheckoutGuard: true,
+      guardianChildAccounts: true,
+      childConsentAppendOnly: true,
+      onePendingChildHandover: true,
     }]);
 
     const response = await request(app).get('/api/health').expect(200);
 
     expect(response.body.capabilities.googleCalendar).toBe(capability);
+    expect(response.body.capabilities.familyHandover).toBe('disabled');
     expect(response.body.schema).toBe('ready');
     expect(JSON.stringify(response.body)).not.toContain('calendar-client-secret');
     expect(JSON.stringify(response.body)).not.toContain(validCalendarEnvironment.CALENDAR_TOKEN_ENCRYPTION_KEYS);
@@ -83,7 +95,7 @@ describe('Google Calendar configuration', () => {
   it('reports schema drift as a service-unavailable health response', async () => {
     for (const name of testEnvironment) delete process.env[name];
     process.env.DATABASE_URL = 'postgresql://test:test@127.0.0.1:5432/test';
-    Object.assign(process.env, validCalendarEnvironment);
+    Object.assign(process.env, validCalendarEnvironment, validFamilyHandoverEnvironment);
     vi.resetModules();
     const [{ app }, { prisma }] = await Promise.all([import('../src/app.js'), import('../src/db.js')]);
     const query = vi.spyOn(prisma, '$queryRawUnsafe').mockResolvedValueOnce([{
@@ -97,6 +109,9 @@ describe('Google Calendar configuration', () => {
       paymentProviderEvents: true,
       outboundDelivery: true,
       activeStripeBookingCheckoutGuard: true,
+      guardianChildAccounts: true,
+      childConsentAppendOnly: true,
+      onePendingChildHandover: true,
     }]);
 
     const response = await request(app).get('/api/health').expect(503);
@@ -119,5 +134,64 @@ describe('Google Calendar configuration', () => {
     const { config } = await loadCalendarConfig(overrides);
 
     expect(config.googleCalendar.enabled).toBe(false);
+  });
+
+  it('enables family handovers only for a complete dedicated 32-byte keyring', async () => {
+    const valid = await loadCalendarConfig();
+    expect(valid.config.familyHandoverTokens.enabled).toBe(true);
+    expect(valid.config.familyHandoverTokens.keys.get('v1')).toHaveLength(32);
+
+    const missingActive = await loadCalendarConfig({ FAMILY_HANDOVER_TOKEN_ACTIVE_KEY_ID: 'v2' });
+    expect(missingActive.config.familyHandoverTokens.enabled).toBe(false);
+    const malformed = await loadCalendarConfig({ FAMILY_HANDOVER_TOKEN_KEYS: 'v1:not-base64' });
+    expect(malformed.config.familyHandoverTokens.enabled).toBe(false);
+  });
+
+  it.each([
+    ['complete configuration', 'configured', {
+      ...validFamilyHandoverEnvironment,
+      EMAIL_PROVIDER: 'capture',
+      EMAIL_FROM_ADDRESS: 'security@courtly.example.test',
+    }],
+    ['missing email', 'disabled', validFamilyHandoverEnvironment],
+    ['missing keyring', 'disabled', {
+      EMAIL_PROVIDER: 'capture',
+      EMAIL_FROM_ADDRESS: 'security@courtly.example.test',
+      FAMILY_HANDOVER_TOKEN_KEYS: '',
+      FAMILY_HANDOVER_TOKEN_ACTIVE_KEY_ID: '',
+    }],
+    ['invalid keyring', 'disabled', {
+      EMAIL_PROVIDER: 'capture',
+      EMAIL_FROM_ADDRESS: 'security@courtly.example.test',
+      FAMILY_HANDOVER_TOKEN_KEYS: 'v1:not-base64',
+      FAMILY_HANDOVER_TOKEN_ACTIVE_KEY_ID: 'v1',
+    }],
+  ] as const)('reports Family handover readiness for %s', async (_case, capability, environment) => {
+    for (const name of testEnvironment) delete process.env[name];
+    delete process.env.EMAIL_PROVIDER;
+    delete process.env.EMAIL_FROM_ADDRESS;
+    process.env.DATABASE_URL = 'postgresql://test:test@127.0.0.1:5432/test';
+    Object.assign(process.env, validCalendarEnvironment, environment);
+    vi.resetModules();
+    const [{ app }, { prisma }] = await Promise.all([import('../src/app.js'), import('../src/db.js')]);
+    const query = vi.spyOn(prisma, '$queryRawUnsafe').mockResolvedValueOnce([{
+      coachInvitations: true,
+      packageScopeColumn: true,
+      packageScopeTrigger: true,
+      venueUnitIdentity: true,
+      namedClubStaff: true,
+      bookingSeries: true,
+      venueAllocation: true,
+      paymentProviderEvents: true,
+      outboundDelivery: true,
+      activeStripeBookingCheckoutGuard: true,
+      guardianChildAccounts: true,
+      childConsentAppendOnly: true,
+      onePendingChildHandover: true,
+    }]);
+
+    const response = await request(app).get('/api/health').expect(200);
+    expect(response.body.capabilities.familyHandover).toBe(capability);
+    query.mockRestore();
   });
 });

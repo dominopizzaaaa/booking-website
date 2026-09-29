@@ -61,13 +61,13 @@ describe('account contracts', () => {
     respond({ ...legacySession, user: { ...legacySession.user, username: 'avery_player', sports: ['Tennis'] } });
     await registerStudentAccount({
       name: 'Avery Player', username: 'avery_player', sports: ['Tennis'],
-      email: 'avery@example.test', password: 'long-password',
+      email: 'avery@example.test', password: 'long-password', dateOfBirth: '1990-01-01',
     });
     expect(calls[0]).toMatchObject({
       url: '/api/auth/register',
       init: { method: 'POST', body: JSON.stringify({
         name: 'Avery Player', username: 'avery_player', sports: ['Tennis'],
-        email: 'avery@example.test', password: 'long-password', accountType: 'STUDENT',
+        email: 'avery@example.test', password: 'long-password', dateOfBirth: '1990-01-01', accountType: 'STUDENT',
       }) },
     });
   });

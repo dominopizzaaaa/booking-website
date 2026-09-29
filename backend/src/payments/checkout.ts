@@ -47,9 +47,11 @@ export async function prepareCheckout(input: {
 }): Promise<CheckoutPreparation> {
   return prisma.$transaction(async tx => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`payment-intent:${input.userId}:${input.idempotencyKey}`}, 0))`;
+    const checkoutAccount = await tx.user.findUnique({ where: { id: input.userId }, select: { email: true } });
+    if (!checkoutAccount?.email) throw new HttpError(403, 'An account email is required to make a payment');
+    const receiptEmail = checkoutAccount.email;
     const existing = await tx.paymentIntent.findUnique({
       where: { userId_idempotencyKey: { userId: input.userId, idempotencyKey: input.idempotencyKey } },
-      include: { user: { select: { email: true } } },
     });
     if (existing) {
       assertReplay(existing, input.kind, input.targetId);
@@ -57,7 +59,7 @@ export async function prepareCheckout(input: {
         intentId: existing.id, kind: input.kind, amount: existing.amount, currency: existing.currency,
         providerAccountReference: existing.providerAccountReference,
         providerReference: existing.providerReference, idempotencyKey: existing.idempotencyKey,
-        receiptEmail: existing.user.email, replay: true,
+        receiptEmail, replay: true,
       };
     }
 
@@ -76,7 +78,6 @@ export async function prepareCheckout(input: {
       if (!account || account.provider !== 'STRIPE' || !account.chargesEnabled) {
         throw new HttpError(409, 'This club is not ready to accept online payments');
       }
-      const user = await tx.user.findUniqueOrThrow({ where: { id: input.userId }, select: { email: true } });
       const created = await tx.paymentIntent.create({ data: {
         userId: input.userId, businessId: offer.businessId, kind: 'PACKAGE',
         packageOfferId: offer.id, amount: offer.price, currency: offer.business.currency,
@@ -91,7 +92,7 @@ export async function prepareCheckout(input: {
       return {
         intentId: created.id, kind: 'PACKAGE', amount: created.amount, currency: created.currency,
         providerAccountReference: account.providerAccountId, providerReference: null,
-        idempotencyKey: created.idempotencyKey, receiptEmail: user.email, replay: false,
+        idempotencyKey: created.idempotencyKey, receiptEmail, replay: false,
       };
     }
 
@@ -134,7 +135,6 @@ export async function prepareCheckout(input: {
         participantId: participant.id, provider: 'STRIPE',
         status: { in: ['REQUIRES_CONFIRMATION', 'FAILED'] },
       },
-      include: { user: { select: { email: true } } },
     });
     if (activeCheckout) {
       if (activeCheckout.status !== 'FAILED') {
@@ -149,7 +149,7 @@ export async function prepareCheckout(input: {
         intentId: activeCheckout.id, kind: 'BOOKING', amount: activeCheckout.amount,
         currency: activeCheckout.currency, providerAccountReference: activeCheckout.providerAccountReference,
         providerReference: activeCheckout.providerReference, idempotencyKey: activeCheckout.idempotencyKey,
-        receiptEmail: activeCheckout.user.email, replay: true,
+        receiptEmail, replay: true,
       };
     }
     const created = await tx.paymentIntent.create({ data: {
@@ -163,7 +163,7 @@ export async function prepareCheckout(input: {
     return {
       intentId: created.id, kind: 'BOOKING', amount: created.amount, currency: created.currency,
       providerAccountReference: account.providerAccountId, providerReference: null,
-      idempotencyKey: created.idempotencyKey, receiptEmail: participant.student.email, replay: false,
+      idempotencyKey: created.idempotencyKey, receiptEmail, replay: false,
     };
   }, { timeout: 30_000 });
 }

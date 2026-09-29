@@ -46,7 +46,7 @@ test('standalone student signup requires an explicit account type and opens the 
   const coachEmail = `first-book-coach-${run}@example.test`;
   const clubEmail = `first-book-club-${run}@example.test`;
   const coachRegistration = await page.request.post('/api/auth/register', {
-    data: { accountType: 'COACH', name: 'First Book Coach', username: `fbc_${run.replace(/-/g, '_').slice(-26)}`, email: coachEmail, password },
+    data: { accountType: 'COACH', name: 'First Book Coach', username: `fbc_${run.replace(/-/g, '_').slice(-26)}`, email: coachEmail, password, dateOfBirth: '1990-01-01' },
   });
   expect(coachRegistration.ok(), await coachRegistration.text()).toBeTruthy();
   expect((await page.request.post('/api/auth/logout', { data: {} })).ok()).toBeTruthy();
@@ -104,6 +104,7 @@ test('standalone student signup requires an explicit account type and opens the 
   await expect(page.getByLabel('Username', { exact: true })).toBeVisible();
   await page.getByLabel('Your full name', { exact: true }).fill('First Use Student');
   await page.getByLabel('Username', { exact: true }).fill(`fus_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-26)}`);
+  await page.getByLabel('Date of birth', { exact: true }).fill('1990-01-01');
   await page.getByLabel('Email address', { exact: true }).fill(studentEmail);
   await page.getByLabel('Password', { exact: true }).fill(password);
   await page.getByRole('button', { name: 'Create student account', exact: true }).click();
@@ -166,7 +167,7 @@ test('safe booking and manage destinations survive auth mode changes while an ex
 
   const email = uniqueEmail('unsafe-next-student', testInfo.project.name);
   const registration = await page.request.post('/api/auth/register', {
-    data: { accountType: 'STUDENT', name: 'Unsafe Next Student', username: `uns_${email.split('@')[0].replace(/-/g, '_').slice(-26)}`, email, password },
+    data: { accountType: 'STUDENT', name: 'Unsafe Next Student', username: `uns_${email.split('@')[0].replace(/-/g, '_').slice(-26)}`, email, password, dateOfBirth: '1990-01-01' },
   });
   expect(registration.ok()).toBeTruthy();
   const logout = await page.request.post('/api/auth/logout', { data: {} });

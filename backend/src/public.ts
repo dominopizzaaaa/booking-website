@@ -7,7 +7,7 @@ import { rateLimit } from 'express-rate-limit';
 import { requireAuth, requireStudent } from './auth.js';
 import { skipRateLimits } from './config.js';
 import { prisma } from './db.js';
-import { asyncRoute, HttpError } from './http.js';
+import { asyncRoute, HttpError, requireAccountCapability, requireAccountReady } from './http.js';
 import { bookingInclude, bookingJson, publicBookingBusiness, publicInstructor, publicLocation, serviceJson } from './serializers.js';
 import { assertWritableClubBooking, bookableInstructorWhere, createBookings, evaluateSlot, lockInstructors, publicBookingInput, refundParticipant, rescheduleBooking, schedulingContext } from './scheduling.js';
 import { releaseBookingUnit } from './venue-allocations.js';
@@ -15,6 +15,7 @@ import { createBookingAccountAlerts } from './account-notifications.js';
 import { notifyWorkspace } from './notifications.js';
 import { enqueueCalendarSync } from './calendar-sync.js';
 import { noteStudentLeft } from './chat-events.js';
+import { loadAccountPolicy } from './account-policy.js';
 import {
   acceptRescheduleRequest,
   assertInsideRescheduleWindow,
@@ -59,7 +60,13 @@ const clubDirectoryQuery = z.object({
 // Explore is an account surface, but its cards deliberately carry only the
 // same public-safe identity used by booking pages. A club belongs here only
 // when following its link can lead to at least one real booking choice.
-publicRouter.get('/account/clubs', requireAuth, requireStudent, asyncRoute(async (req, res) => {
+publicRouter.get(
+  '/account/clubs',
+  requireAuth,
+  requireAccountReady,
+  requireAccountCapability('directory'),
+  requireStudent,
+  asyncRoute(async (req, res) => {
   const { cursor, limit } = clubDirectoryQuery.parse(req.query);
   const businesses = await prisma.business.findMany({
     where: {
@@ -117,7 +124,8 @@ publicRouter.get('/account/clubs', requireAuth, requireStudent, asyncRoute(async
     }),
     nextCursor: hasNextPage ? page.at(-1)!.slug : null,
   });
-}));
+  }),
+);
 
 publicRouter.get('/public/:slug', asyncRoute(async (req, res) => {
   const business = await businessForSlug(req.params.slug);
@@ -174,8 +182,16 @@ publicRouter.get('/public/:slug/slots', slotLimit, asyncRoute(async (req, res) =
   res.json({ slots });
 }));
 
-publicRouter.post('/public/:slug/bookings', bookingLimit, requireAuth, requireStudent, asyncRoute(async (req, res) => {
+publicRouter.post(
+  '/public/:slug/bookings',
+  bookingLimit,
+  requireAuth,
+  requireAccountReady,
+  requireAccountCapability('commerce'),
+  requireStudent,
+  asyncRoute(async (req, res) => {
   const input = publicBookingInput.parse(req.body);
+  if (!req.auth.user.email) throw new HttpError(403, 'An account email is required to book a class');
   const business = await businessForSlug(req.params.slug);
   const result = await createBookings(business.id, {
     ...input,
@@ -187,7 +203,8 @@ publicRouter.post('/public/:slug/bookings', bookingLimit, requireAuth, requireSt
     },
   }, { studentUserId: req.auth.user.id });
   res.status(201).json(result);
-}));
+  }),
+);
 
 type AccountParticipant = Awaited<ReturnType<typeof accountParticipant>>;
 
@@ -275,7 +292,7 @@ function accountBookingJson(p: AccountParticipant) {
 const legacyTokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
 const legacyTokenSchema = z.string().length(43).regex(/^[A-Za-z0-9_-]+$/);
 const legacyParticipantInclude = {
-  student: true,
+  student: { include: { user: true } },
   booking: { include: {
     service: { include: { locations: { include: { instructors: true } } } },
     instructor: { include: { membership: { include: { user: true } } } },
@@ -283,11 +300,47 @@ const legacyParticipantInclude = {
   } },
 } as const;
 type LegacyParticipant = Awaited<ReturnType<typeof legacyParticipant>>;
+type LegacyParticipantDb = Pick<
+  Prisma.TransactionClient,
+  'participant' | 'user' | 'guardianChildLink' | '$queryRaw' | '$executeRaw'
+>;
+const defaultLegacyParticipantDb = prisma as unknown as LegacyParticipantDb;
 
-async function legacyParticipant(rawToken: string) {
+async function assertLegacyAccountAccess(
+  db: LegacyParticipantDb,
+  userId: string | null,
+  lockAccount: boolean,
+) {
+  // Truly historical, unlinked participants retain their old private link. A
+  // link attached to a global account must also satisfy today's server policy;
+  // otherwise the old credential would bypass child/consent restrictions.
+  if (!userId) return;
+  if (lockAccount) {
+    await db.$executeRaw`SELECT pg_advisory_xact_lock(
+      hashtextextended(${`courtly:family-child:${userId}`}, 0)
+    )`;
+  }
+  const account = await db.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true, accountType: true, dateOfBirth: true, accountControl: true,
+      accountStatus: true, profileVisibility: true,
+    },
+  });
+  if (!account || !(await loadAccountPolicy(account, { db })).capabilities.ordinaryAccess) {
+    // Preserve the private-token non-enumeration contract.
+    throw new HttpError(404, 'Management link not found');
+  }
+}
+
+async function legacyParticipant(
+  rawToken: string,
+  db: LegacyParticipantDb = defaultLegacyParticipantDb,
+  lockAccount = false,
+) {
   const token = legacyTokenSchema.parse(rawToken);
   const currentDigest = legacyTokenHash(token);
-  let participant = await prisma.participant.findUnique({
+  let participant = await db.participant.findUnique({
     where: { managementTokenHash: currentDigest },
     include: legacyParticipantInclude,
   });
@@ -297,7 +350,7 @@ async function legacyParticipant(rawToken: string) {
     // readable so links issued before account-only booking continue to work.
     // Active CLUB rows can be upgraded to the indexed SHA-256 format, while
     // retained SOLO/read-only rows must preserve their immutable history.
-    const migratedMatches = await prisma.$queryRaw<Array<{ id: string; digest: string }>>`
+    const migratedMatches = await db.$queryRaw<Array<{ id: string; digest: string }>>`
       SELECT participant."id", participant."managementTokenHash" AS digest
       FROM "Participant" AS participant
       WHERE length(participant."managementTokenHash") = 32
@@ -309,22 +362,24 @@ async function legacyParticipant(rawToken: string) {
     if (migratedMatches.length > 1) throw new HttpError(404, 'Management link not found');
     const [migrated] = migratedMatches;
     if (migrated) {
-      participant = await prisma.participant.findUnique({
+      participant = await db.participant.findUnique({
         where: { id: migrated.id },
         include: legacyParticipantInclude,
       });
-      if (participant?.booking.business.kind === 'CLUB' && !participant.booking.business.legacyReadOnly) {
-        await prisma.participant.updateMany({
-          where: { id: migrated.id, managementTokenHash: migrated.digest },
-          data: { managementTokenHash: currentDigest },
-        });
-      }
     }
   }
   if (!participant) throw new HttpError(404, 'Management link not found');
   if (!participant.managementTokenExpiresAt || participant.managementTokenRevokedAt
     || participant.managementTokenExpiresAt <= new Date()) {
     throw new HttpError(410, 'This management link has expired. Please contact your coach.');
+  }
+  await assertLegacyAccountAccess(db, participant.student.userId, lockAccount);
+  if (participant.managementTokenHash !== currentDigest
+    && participant.booking.business.kind === 'CLUB' && !participant.booking.business.legacyReadOnly) {
+    await db.participant.updateMany({
+      where: { id: participant.id, managementTokenHash: participant.managementTokenHash },
+      data: { managementTokenHash: currentDigest },
+    });
   }
   return participant;
 }
@@ -378,17 +433,23 @@ function legacyBookingJson(p: LegacyParticipant) {
 
 publicRouter.get('/manage/:token', legacyLookupLimit, asyncRoute(async (req, res) => {
   res.set('Cache-Control', 'no-store');
-  res.json(legacyBookingJson(await legacyParticipant(req.params.token)));
+  const participant = await prisma.$transaction(
+    tx => legacyParticipant(req.params.token, tx, true),
+  );
+  res.json(legacyBookingJson(participant));
 }));
 
 publicRouter.post('/manage/:token/cancel', bookingLimit, asyncRoute(async (req, res) => {
   z.object({}).strict().parse(req.body ?? {});
   const initial = await legacyParticipant(req.params.token);
   await prisma.$transaction(async tx => {
+    if (initial.student.userId) {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(
+        hashtextextended(${`courtly:family-child:${initial.student.userId}`}, 0)
+      )`;
+    }
     await lockInstructors(tx, [initial.booking.instructorId]);
-    const participant = await tx.participant.findUniqueOrThrow({
-      where: { id: initial.id }, include: { student: true, booking: { include: { business: true } } },
-    });
+    const participant = await legacyParticipant(req.params.token, tx);
     if (participant.booking.instructorId !== initial.booking.instructorId) throw new HttpError(409, 'Session changed. Please refresh and try again');
     assertWritableClubBooking(participant.booking);
     if (participant.cancelledAt || participant.booking.status === 'CANCELLED') return;
@@ -420,10 +481,13 @@ publicRouter.post('/manage/:token/reschedule', bookingLimit, asyncRoute(async (r
   const changes = z.object({ startAt: z.string().datetime({ offset: true }) }).strict().parse(req.body);
   const initial = await legacyParticipant(req.params.token);
   await prisma.$transaction(async tx => {
+    if (initial.student.userId) {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(
+        hashtextextended(${`courtly:family-child:${initial.student.userId}`}, 0)
+      )`;
+    }
     await lockInstructors(tx, [initial.booking.instructorId]);
-    const participant = await tx.participant.findUniqueOrThrow({
-      where: { id: initial.id }, include: { booking: { include: { business: true, instructor: true } } },
-    });
+    const participant = await legacyParticipant(req.params.token, tx);
     if (participant.booking.instructorId !== initial.booking.instructorId) throw new HttpError(409, 'Session changed. Please refresh and try again');
     assertWritableClubBooking(participant.booking);
     if (participant.cancelledAt || !['CONFIRMED', 'PENDING'].includes(participant.booking.status)
@@ -440,7 +504,7 @@ publicRouter.post('/manage/:token/reschedule', bookingLimit, asyncRoute(async (r
   res.json(legacyBookingJson(await legacyParticipant(req.params.token)));
 }));
 
-publicRouter.get('/account/bookings', requireAuth, requireStudent, asyncRoute(async (req, res) => {
+publicRouter.get('/account/bookings', requireAuth, requireAccountReady, requireStudent, asyncRoute(async (req, res) => {
   const query = z.object({ businessSlug: z.string().trim().min(1).optional() }).strict().parse(req.query);
   const participants = await prisma.participant.findMany({
     where: {
@@ -453,7 +517,7 @@ publicRouter.get('/account/bookings', requireAuth, requireStudent, asyncRoute(as
   res.json({ bookings: participants.map(accountBookingJson) });
 }));
 
-publicRouter.post('/account/bookings/:participantId/cancel', bookingLimit, requireAuth, requireStudent, asyncRoute(async (req, res) => {
+publicRouter.post('/account/bookings/:participantId/cancel', bookingLimit, requireAuth, requireAccountReady, requireStudent, asyncRoute(async (req, res) => {
   z.object({}).strict().parse(req.body ?? {});
   const initial = await accountParticipant(req.params.participantId, req.auth.user.id);
   await prisma.$transaction(async tx => {
@@ -486,7 +550,7 @@ publicRouter.post('/account/bookings/:participantId/cancel', bookingLimit, requi
 
 // Rescheduling from the student side is a request, not a change. The coach
 // has to agree before a session actually moves.
-publicRouter.post('/account/bookings/:participantId/reschedule-requests', bookingLimit, requireAuth, requireStudent, asyncRoute(async (req, res) => {
+publicRouter.post('/account/bookings/:participantId/reschedule-requests', bookingLimit, requireAuth, requireAccountReady, requireStudent, asyncRoute(async (req, res) => {
   const input = rescheduleRequestInput.parse(req.body);
   const initial = await accountParticipant(req.params.participantId, req.auth.user.id);
   if (initial.booking.type !== 'PRIVATE') throw new HttpError(400, 'Please contact your coach to move your place in a group session');
@@ -510,7 +574,7 @@ publicRouter.post('/account/bookings/:participantId/reschedule-requests', bookin
 }));
 
 // Answering a proposal the provider side raised.
-publicRouter.post('/account/reschedule-requests/:requestId/accept', bookingLimit, requireAuth, requireStudent, asyncRoute(async (req, res) => {
+publicRouter.post('/account/reschedule-requests/:requestId/accept', bookingLimit, requireAuth, requireAccountReady, requireStudent, asyncRoute(async (req, res) => {
   const body = rescheduleResponseInput.parse(req.body ?? {});
   const result = await prisma.$transaction(async tx => {
     const request = await tx.rescheduleRequest.findFirst({
@@ -535,7 +599,7 @@ publicRouter.post('/account/reschedule-requests/:requestId/accept', bookingLimit
   res.json(accountBookingJson(await accountParticipant(result.participantId, req.auth.user.id)));
 }));
 
-publicRouter.post('/account/reschedule-requests/:requestId/decline', bookingLimit, requireAuth, requireStudent, asyncRoute(async (req, res) => {
+publicRouter.post('/account/reschedule-requests/:requestId/decline', bookingLimit, requireAuth, requireAccountReady, requireStudent, asyncRoute(async (req, res) => {
   const body = rescheduleResponseInput.parse(req.body ?? {});
   const participantId = await prisma.$transaction(async tx => {
     const request = await tx.rescheduleRequest.findFirst({

@@ -7,6 +7,11 @@ import { bookingInput, publicBookingInput, type BookingInput, type PublicBooking
 
 export { prisma };
 
+export function requireTestEmail<T extends { email: string | null }>(record: T): T & { email: string } {
+  if (!record.email) throw new Error('Credentialed test records must have an email address');
+  return record as T & { email: string };
+}
+
 // Never reset, truncate or seed the shared development database. Each test owns
 // only the business IDs registered here and removes restrictive children first.
 export class TestTenants {
@@ -33,13 +38,13 @@ export class TestTenants {
           email: `${id}@example.test`, timezone: 'Asia/Singapore',
         },
       });
-      const createdUser = await tx.user.create({
+      const createdUser = requireTestEmail(await tx.user.create({
         data: {
-          name: `Test business ${id}`, email: `${id}-club@example.test`,
+          name: `Test business ${id}`, legalName: `Test business ${id}`, email: `${id}-club@example.test`,
           username: `club_${id.slice(-12).replace(/-/g, '_')}`,
           passwordHash: 'not-used-by-this-test', accountType: 'CLUB',
         },
-      });
+      }));
       const createdMembership = await tx.membership.create({
         data: { userId: createdUser.id, businessId: id },
       });
@@ -71,13 +76,13 @@ export class TestTenants {
       })),
     });
     // The coach who actually teaches, with their own portable account.
-    const coachUser = await prisma.user.create({
+    const coachUser = requireTestEmail(await prisma.user.create({
       data: {
-        name: 'Test Coach', email: `${id}-coach@example.test`,
+        name: 'Test Coach', legalName: 'Test Coach', email: `${id}-coach@example.test`,
         username: `coach_${id.slice(-12).replace(/-/g, '_')}`,
         passwordHash: 'not-used-by-this-test', accountType: 'COACH',
       },
-    });
+    }));
     this.ownUser(coachUser.id);
     const coachMembership = await prisma.membership.create({
       data: { userId: coachUser.id, businessId: id, instructorId: instructor.id },
@@ -137,7 +142,60 @@ export class TestTenants {
     // also cascades their sessions and cannot affect a pre-existing account that
     // was merely granted membership in one of the disposable businesses.
     if (this.userIds.size) {
-      await prisma.user.deleteMany({ where: { id: { in: [...this.userIds] } } });
+      const userIds = [...this.userIds];
+      await prisma.$transaction(async tx => {
+        // Family consent history is append-only in production and family rows
+        // intentionally restrict User deletion. The test fixture owns every
+        // ID in this set, so disable triggers only within this cleanup
+        // transaction and remove that owned graph in dependency order.
+        await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');
+        const handoverIds = (await tx.childAccountHandover.findMany({
+          where: {
+            OR: [
+              { childUserId: { in: userIds } },
+              { initiatedByGuardianUserId: { in: userIds } },
+            ],
+          },
+          select: { id: true },
+        })).map(handover => handover.id);
+        if (handoverIds.length) {
+          await tx.outboundDelivery.deleteMany({
+            where: {
+              OR: handoverIds.map(id => ({
+                dedupeKey: `family-handover:${id}:security-claim`,
+              })),
+            },
+          });
+        }
+        await tx.childConsentRecord.deleteMany({
+          where: {
+            OR: [
+              { childUserId: { in: userIds } },
+              { guardianUserId: { in: userIds } },
+            ],
+          },
+        });
+        await tx.childAccountHandover.deleteMany({
+          where: {
+            OR: [
+              { childUserId: { in: userIds } },
+              { initiatedByGuardianUserId: { in: userIds } },
+            ],
+          },
+        });
+        await tx.guardianChildLink.deleteMany({
+          where: {
+            OR: [
+              { childUserId: { in: userIds } },
+              { guardianUserId: { in: userIds } },
+            ],
+          },
+        });
+        // Restore normal FK triggers before deleting users so dependent rows
+        // such as sessions and Calendar connections still cascade normally.
+        await tx.$executeRawUnsafe('SET LOCAL session_replication_role = origin');
+        await tx.user.deleteMany({ where: { id: { in: userIds } } });
+      });
       this.userIds.clear();
     }
   }
@@ -164,16 +222,17 @@ export function publicInputFor(f: Fixture, overrides: Partial<PublicBookingInput
 
 export async function createAccount(
   f: Fixture,
-  overrides: Partial<{ name: string; username: string; email: string; passwordHash: string | null; accountType: string; sports: string[]; phone: string; parentName: string }> = {},
+  overrides: Partial<{ name: string; legalName: string; username: string; email: string; passwordHash: string | null; accountType: string; sports: string[]; phone: string; parentName: string }> = {},
 ) {
   const identity = randomUUID().replace(/-/g, '');
-  const user = await prisma.user.create({
+  const name = overrides.name ?? 'Test Student';
+  const user = requireTestEmail(await prisma.user.create({
     data: {
-      name: 'Test Student', username: `student_${identity.slice(0, 18)}`,
+      name, legalName: overrides.legalName ?? name, username: `student_${identity.slice(0, 18)}`,
       email: `${identity}@example.test`, passwordHash: 'not-used-by-this-test',
       accountType: 'STUDENT', phone: '', parentName: '', ...overrides,
     },
-  });
+  }));
   f.tracker.ownUser(user.id);
   return user;
 }
@@ -190,11 +249,11 @@ export async function createStudent(
       name, email,
     })).id;
   const { userId: _userId, ...profile } = overrides;
-  return prisma.student.create({
+  return requireTestEmail(await prisma.student.create({
     data: {
       businessId: f.business.id, userId, name, initials: 'PC', email, ...profile,
     },
-  });
+  }));
 }
 
 export async function linkedInputFor(f: Fixture, overrides: Partial<BookingInput> = {}): Promise<BookingInput> {

@@ -23,11 +23,12 @@ import { rentalsRouter } from './rentals.js';
 import { chatRouter } from './chat.js';
 import { clubStaffAccessRouter, clubStaffInvitationRouter } from './staff-access.js';
 import { bookingSeriesRouter } from './booking-series.js';
-import { HttpError } from './http.js';
+import { HttpError, requireAccountCapability, requireAccountReady } from './http.js';
 import { prisma } from './db.js';
 import { inspectSchema } from './schema-health.js';
 import { paymentsRouter, stripeWebhookHandler } from './payments/routes.js';
 import { auditRouter } from './audit-routes.js';
+import { familyPublicRouter, familyRouter } from './family.js';
 export const app = express();
 app.disable('x-powered-by');
 if (production) app.set('trust proxy', 1);
@@ -73,6 +74,9 @@ app.get('/api/health', async (_req, res) => {
           ? (config.payments.publishableKey.startsWith('pk_live_') ? 'stripe-live' : 'stripe-test')
           : config.payments.mode,
         transactionalEmail: config.email.enabled ? 'configured' : 'disabled',
+        familyHandover: config.email.enabled && config.familyHandoverTokens.enabled
+          ? 'configured'
+          : 'disabled',
         venueSearch: config.googleMapsApiKey ? 'google-places' : 'maps-link',
         googleCalendar: config.googleCalendar.enabled ? 'configured' : 'disabled',
       },
@@ -82,29 +86,36 @@ app.get('/api/health', async (_req, res) => {
 });
 app.use('/api/auth', authRouter);
 app.use('/api', adminRouter);
+app.use('/api/family', familyPublicRouter);
+app.use('/api/family', requireAuth, familyRouter);
 app.use('/api', publicRouter);
-app.use('/api', accountDirectoryRouter);
-app.use('/api', paymentsRouter);
+// Everything below this point is an ordinary signed-in account surface. Keep
+// public/auth/family remediation routes above it so an account that needs age,
+// consent, deletion, or handover action can still reach the route that resolves
+// that state. Narrow capability gates remain layered on each feature group.
+app.use('/api', requireAuth, requireAccountReady);
+app.use('/api', requireAccountCapability('directory'), accountDirectoryRouter);
+app.use('/api', requireAccountCapability('payments'), paymentsRouter);
 // A coach can review and accept invitations before selecting a workspace.
-app.use('/api', requireAuth, coachInvitationRouter);
-app.use('/api', requireAuth, clubStaffInvitationRouter);
+app.use('/api', requireAccountCapability('staffAccess'), coachInvitationRouter);
+app.use('/api', requireAccountCapability('staffAccess'), clubStaffInvitationRouter);
 // Commerce contains both global student checkout routes and club-workspace
 // management routes, so each endpoint applies its own narrower guard.
-app.use('/api', commerceRouter);
+app.use('/api', requireAccountCapability('commerce'), commerceRouter);
 // Rental discovery is global to every signed-in account; manager mutations
 // apply their club-only checks inside the router.
-app.use('/api', requireAuth, rentalsRouter);
+app.use('/api', requireAccountCapability('rentals'), rentalsRouter);
 // Calendar grants belong to the global person, not a selected workspace.
-app.use('/api/calendar', requireAuth, calendarRouter);
+app.use('/api/calendar', requireAccountCapability('calendar'), calendarRouter);
 // Chat is account-level: people keep direct conversations and session chats
 // across clubs, while each thread applies its own membership rule.
-app.use('/api/chats', requireAuth, chatRouter);
-app.use('/api/account', requireAuth, notificationPreferencesRouter);
-app.use('/api/account', requireAuth, requireStudent, accountRouter);
+app.use('/api/chats', requireAccountCapability('chat'), chatRouter);
+app.use('/api/account', notificationPreferencesRouter);
+app.use('/api/account', requireStudent, accountRouter);
 // Account-only public booking management installs its own authentication
 // middleware. Every provider route below additionally requires an active,
 // non-revoked membership selected on the session.
-app.use('/api', requireAuth, requireWorkspace, workspaceRouter, bookingsRouter, bookingSeriesRouter, crudRouter, staffRouter, clubStaffAccessRouter, auditRouter, venuesRouter, integrityRouter);
+app.use('/api', requireAccountCapability('workspace'), requireWorkspace, workspaceRouter, bookingsRouter, bookingSeriesRouter, crudRouter, staffRouter, clubStaffAccessRouter, auditRouter, venuesRouter, integrityRouter);
 app.use((_req, _res, next) => next(new HttpError(404, 'Route not found')));
 const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
   if (error instanceof HttpError) { res.status(error.status).json({ error: error.message, ...error.details }); return; }

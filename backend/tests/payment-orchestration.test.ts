@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { checkoutIntentJson, createOrResumeProviderCheckout, prepareCheckout } from '../src/payments/checkout.js';
+import { CURRENT_PRIVACY_POLICY_VERSION } from '../src/children-policy.js';
 import {
   applyProviderPaymentIntent, assertBookingFulfillmentContract, providerIntentFromWebhook,
 } from '../src/payments/fulfillment.js';
@@ -339,6 +340,60 @@ describe.sequential('delayed Stripe fulfillment', () => {
       intent.id, succeededProvider(providerReference, intent.amount),
     )).rejects.toMatchObject({ status: 409, message: expect.stringContaining('active club') });
     expect(await prisma.lessonPackage.count({ where: { businessId: fixture.business.id } })).toBe(0);
+    expect(await prisma.payment.count({ where: { paymentIntentId: intent.id } })).toBe(0);
+    expect(await prisma.paymentIntent.findUniqueOrThrow({ where: { id: intent.id } }))
+      .toMatchObject({ status: 'REQUIRES_CONFIRMATION', packageId: null });
+  });
+
+  it('does not create a package entitlement for an email-less managed child account', async () => {
+    const child = await prisma.$transaction(async tx => {
+      await tx.user.update({
+        where: { id: fixture.coachUser.id },
+        data: { dateOfBirth: new Date('1990-01-01T00:00:00.000Z') },
+      });
+      const managedChild = await tx.user.create({ data: {
+        name: 'Managed Child', legalName: 'Managed Child',
+        username: `managed_${randomUUID().replaceAll('-', '').slice(0, 16)}`,
+        email: null, passwordHash: null, accountType: 'STUDENT', accountControl: 'GUARDIAN_MANAGED',
+        dateOfBirth: new Date('2015-01-01T00:00:00.000Z'), profileVisibility: 'PRIVATE',
+      } });
+      const link = await tx.guardianChildLink.create({ data: {
+        guardianUserId: fixture.coachUser.id, childUserId: managedChild.id, relationshipType: 'PARENT',
+      } });
+      await tx.childConsentRecord.create({ data: {
+        linkId: link.id, guardianUserId: fixture.coachUser.id, childUserId: managedChild.id,
+        eventType: 'GRANTED', relationshipType: link.relationshipType, permissions: link.permissions,
+        privacyPolicyVersion: CURRENT_PRIVACY_POLICY_VERSION,
+      } });
+      return managedChild;
+    });
+    fixture.tracker.ownUser(child.id);
+    const linkedStudent = await prisma.student.create({ data: {
+      businessId: fixture.business.id, userId: child.id, name: child.name, initials: 'MC', email: null,
+    } });
+    const offer = await prisma.packageOffer.create({ data: {
+      businessId: fixture.business.id, name: 'Managed-child pass', price: 25_000, totalCredits: 5, validityDays: 90,
+      services: { create: { serviceId: fixture.service.id } },
+    } });
+    const providerReference = `pi_${randomUUID()}`;
+    const intent = await prisma.paymentIntent.create({ data: {
+      userId: child.id, businessId: fixture.business.id, kind: 'PACKAGE', packageOfferId: offer.id,
+      amount: offer.price, currency: fixture.business.currency, status: 'REQUIRES_CONFIRMATION', provider: 'STRIPE',
+      providerAccountReference: `acct_${fixture.business.id}`, providerReference, idempotencyKey: randomUUID(),
+      checkoutSnapshot: {
+        kind: 'PACKAGE', name: offer.name, totalCredits: offer.totalCredits,
+        validityDays: offer.validityDays, serviceIds: [fixture.service.id], rentalLocationIds: [],
+      },
+    } });
+
+    await expect(applyProviderPaymentIntent(
+      intent.id, succeededProvider(providerReference, intent.amount),
+    )).rejects.toMatchObject({
+      status: 409, message: expect.stringContaining('checkout account can no longer receive a student entitlement'),
+    });
+    expect(await prisma.student.findUniqueOrThrow({ where: { id: linkedStudent.id } }))
+      .toMatchObject({ userId: child.id, email: null });
+    expect(await prisma.lessonPackage.count({ where: { student: { userId: child.id } } })).toBe(0);
     expect(await prisma.payment.count({ where: { paymentIntentId: intent.id } })).toBe(0);
     expect(await prisma.paymentIntent.findUniqueOrThrow({ where: { id: intent.id } }))
       .toMatchObject({ status: 'REQUIRES_CONFIRMATION', packageId: null });

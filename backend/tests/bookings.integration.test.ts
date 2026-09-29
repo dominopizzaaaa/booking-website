@@ -6,7 +6,7 @@ import { app } from '../src/app.js';
 import { config } from '../src/config.js';
 import { HttpError } from '../src/http.js';
 import { cancelBooking, createBookings, type BookingInput } from '../src/scheduling.js';
-import { createAccount, createStudent, createPackage, createSession, inputFor, linkedInputFor, prisma, tenantCounts, TestTenants, verifyTestDatabase, type Fixture } from './fixtures.js';
+import { createAccount, createStudent, createPackage, createSession, inputFor, linkedInputFor, prisma, requireTestEmail, tenantCounts, TestTenants, verifyTestDatabase, type Fixture } from './fixtures.js';
 
 // Keep every PostgreSQL/HTTP integration suite in this file and sequential;
 // concurrency is introduced only by the explicit transaction race tests.
@@ -526,7 +526,7 @@ describe.sequential('Global account authentication and workspace memberships', (
     const response = await agent.post('/api/auth/login').send({ email: account.email, password }).expect(200);
     return {
       ...fixture, membership,
-      user: await prisma.user.findUniqueOrThrow({ where: { id: account.id } }),
+      user: requireTestEmail(await prisma.user.findUniqueOrThrow({ where: { id: account.id } })),
       agent, login: response,
     };
   }
@@ -606,7 +606,7 @@ describe.sequential('Global account authentication and workspace memberships', (
       const username = `${accountType.toLowerCase()}_${randomUUID().slice(0, 8)}`;
       const agent = request.agent(app);
       const response = await agent.post('/api/auth/register').send({
-        accountType, name: `${accountType} Account`, username, email, password,
+        accountType, name: `${accountType} Account`, username, email, password, dateOfBirth: '1990-01-01',
       }).expect(201);
       await trackRegistration(email);
       expect(response.body).toMatchObject({

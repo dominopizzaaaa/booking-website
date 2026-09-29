@@ -34,6 +34,8 @@ describe('investor showcase builder', () => {
     expect(registrationEnd).toBeGreaterThan(registrationStart);
     const registrationPayload = showcaseScript.slice(registrationStart, registrationEnd);
     expect(registrationPayload).toContain('username: person.username');
+    expect(registrationPayload).toContain('dateOfBirth: person.dateOfBirth');
+    expect(showcaseScript.match(/dateOfBirth: '\d{4}-\d{2}-\d{2}'/g)).toHaveLength(11);
   });
 
   it('does not try to mutate the business kind after registration', () => {

@@ -360,7 +360,7 @@ test('club management mutations persist across the responsive workspace', async 
 
   await page.goto('/?tab=explore&view=students');
   await expect(page.locator('main').getByRole('heading', { name: 'Students', exact: true })).toBeVisible();
-  await page.locator('input[aria-label="Search students by name, email, phone, or parent"]').fill(student.email);
+  await page.locator('input[aria-label="Search students by name, email, phone, or parent"]').fill(student.email ?? '');
   await page.getByRole('button', { name: `View ${student.name}'s profile`, exact: true }).first().click();
   dialog = page.getByRole('dialog', { name: student.name });
   await expect(dialog).toContainText(student.notes);

@@ -12,6 +12,7 @@ import { enqueueCalendarSync } from './calendar-sync.js';
 import { ensureChatThread, noteSessionCancelled, noteSessionMoved, noteStudentJoined } from './chat-events.js';
 import { config } from './config.js';
 import { availableClassUnit, releaseBookingUnit, replaceBookingUnit, reserveBookingUnit } from './venue-allocations.js';
+import { ADULT_AGE, ageOnSingaporeDate } from './children-policy.js';
 
 const bookingSelection = {
   serviceId: z.string().min(1), instructorId: z.string().min(1), locationId: z.string().min(1),
@@ -36,6 +37,11 @@ export const publicBookingInput = z.object({
 }).strict();
 export type BookingInput = z.infer<typeof bookingInput>;
 export type PublicBookingInput = z.infer<typeof publicBookingInput>;
+export type GuardianBookingInput = Omit<BookingInput, 'studentId' | 'student' | 'packageId'> & {
+  studentId?: never;
+  student?: never;
+  packageId?: never;
+};
 export type Tx = Prisma.TransactionClient;
 
 export function assertWritableClubBooking(booking: {
@@ -87,11 +93,17 @@ export async function selectEligibleLessonPackage(
  * Who is creating this booking, which decides two things that cannot be
  * derived later: whether the coach still has to accept it, and whose name
  * goes on the audit trail.
- *  - `studentUserId`  the student booked it themselves
- *  - `actor`           a provider created it inside a workspace
+ *  - `studentUserId`       the student booked it themselves
+ *  - `managedChildUserId`  an authorized guardian booked for this child
+ *  - `actor`               a provider created it inside a workspace
  */
 export type CreateBookingsOptions =
   | { studentUserId: string }
+  | {
+      guardianUserId: string;
+      guardianAccountType: 'STUDENT' | 'COACH';
+      managedChildUserId: string;
+    }
   | {
       requireLinkedStudent: true;
       actor?: { userId: string; accountType: AccountType; instructorId: string | null };
@@ -110,7 +122,7 @@ export function coachAcceptanceFor(
   options: CreateBookingsOptions,
   instructorId: string,
 ): 'NOT_REQUIRED' | 'PENDING' {
-  if ('studentUserId' in options) return 'NOT_REQUIRED';
+  if ('studentUserId' in options || 'managedChildUserId' in options) return 'NOT_REQUIRED';
   const actor = options.actor;
   if (!actor) return 'NOT_REQUIRED';
   if (actor.accountType === 'COACH' && actor.instructorId === instructorId) return 'NOT_REQUIRED';
@@ -351,9 +363,10 @@ async function resolveAccountStudent(tx: Tx, businessId: string, userId: string,
   const linked = await tx.student.findFirst({ where: { businessId, userId } });
   if (linked) return linked;
 
+  if (!account.email) throw new HttpError(403, 'An account email is required to book a class');
   const email = normalizeEmail(account.email);
-  const legacyContact = await tx.student.findUnique({
-    where: { businessId_email: { businessId, email } },
+  const legacyContact = await tx.student.findFirst({
+    where: { businessId, email },
     select: { id: true, userId: true },
   });
   if (legacyContact) {
@@ -368,7 +381,53 @@ async function resolveAccountStudent(tx: Tx, businessId: string, userId: string,
   } });
 }
 
-async function resolveBookingStudent(tx: Tx, businessId: string, input: BookingInput, options: CreateBookingsOptions) {
+async function resolveManagedChildStudent(tx: Tx, businessId: string, userId: string) {
+  // This lock is shared with ordinary account-backed student creation. A
+  // managed child never claims an email-only legacy row: their immutable
+  // global user ID is the sole identity bridge into a club.
+  const lockKey = `account-student:${businessId}:${userId}`;
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+  const child = await tx.user.findFirst({
+    where: {
+      id: userId, accountType: 'STUDENT', accountControl: 'GUARDIAN_MANAGED',
+      accountStatus: 'ACTIVE',
+    },
+    select: { id: true, name: true, email: true, phone: true, parentName: true, dateOfBirth: true },
+  });
+  const age = child ? ageOnSingaporeDate(child.dateOfBirth) : null;
+  if (!child || child.email !== null || child.phone !== '' || child.parentName !== ''
+    || age === null || age >= ADULT_AGE) {
+    throw new HttpError(404, 'Child profile not found', { code: 'CHILD_NOT_FOUND' });
+  }
+
+  const linked = await tx.student.findFirst({ where: { businessId, userId } });
+  if (linked) {
+    return tx.student.update({
+      where: { id: linked.id },
+      data: {
+        name: child.name, initials: initials(child.name), email: null, phone: '', parentName: '',
+      },
+    });
+  }
+
+  return tx.student.create({ data: {
+    businessId, userId, name: child.name, email: null, initials: initials(child.name),
+    phone: '', parentName: '',
+  } });
+}
+
+type SchedulingBookingInput = BookingInput | GuardianBookingInput;
+
+async function resolveBookingStudent(tx: Tx, businessId: string, input: SchedulingBookingInput, options: CreateBookingsOptions) {
+  if ('managedChildUserId' in options) {
+    // The Family route never accepts these fields. Keep the same rule here so
+    // future internal callers cannot accidentally turn guardian authority into
+    // identity selection or child commerce.
+    if (input.studentId || input.student || input.packageId) {
+      throw new HttpError(400, 'Guardian bookings cannot select a student identity or apply a package');
+    }
+    return resolveManagedChildStudent(tx, businessId, options.managedChildUserId);
+  }
   if ('studentUserId' in options) {
     if (input.studentId) throw new HttpError(400, 'Account bookings cannot select a student identity');
     if (!input.student) throw new HttpError(400, 'Student account details are required');
@@ -384,11 +443,18 @@ async function resolveBookingStudent(tx: Tx, businessId: string, input: BookingI
   return student;
 }
 
-export async function createBookingsInTransaction(tx: Tx, businessId: string, input: BookingInput, options: CreateBookingsOptions = { requireLinkedStudent: true }) {
+export async function createBookingsInTransaction(tx: Tx, businessId: string, input: SchedulingBookingInput, options: CreateBookingsOptions = { requireLinkedStudent: true }) {
+  if ('managedChildUserId' in options
+    && options.guardianAccountType !== 'STUDENT'
+    && options.guardianAccountType !== 'COACH') {
+    throw new HttpError(403, 'Only a personal guardian account can book for a child', {
+      code: 'FAMILY_MANAGEMENT_REQUIRED',
+    });
+  }
   await lockInstructors(tx, [input.instructorId]);
   const ctx = await schedulingContext(tx, businessId, input.serviceId, input.instructorId, input.locationId);
-  const accountBooking = 'studentUserId' in options;
-  if (!accountBooking && options.actor?.accountType === 'COACH' && ctx.business.kind === 'CLUB') {
+  const studentSideBooking = 'studentUserId' in options || 'managedChildUserId' in options;
+  if ('requireLinkedStudent' in options && options.actor?.accountType === 'COACH' && ctx.business.kind === 'CLUB') {
     if (!options.actor.instructorId || input.instructorId !== options.actor.instructorId) {
       throw new HttpError(403, 'Coaches can only create lessons on their own schedule');
     }
@@ -418,9 +484,13 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
   const recurringId = occurrences.length > 1 ? randomUUID() : null;
   const paymentRoute = paymentRouteFor(ctx.business);
   const coachAcceptance = coachAcceptanceFor(options, input.instructorId);
-  const actor = 'studentUserId' in options ? null : options.actor ?? null;
-  const createdByRole = accountBooking ? 'STUDENT' : actor?.accountType === 'COACH' ? 'COACH' : 'CLUB';
-  const createdByUserId = accountBooking ? options.studentUserId : actor?.userId ?? null;
+  const actor = 'requireLinkedStudent' in options ? options.actor ?? null : null;
+  const createdByRole = 'managedChildUserId' in options
+    ? options.guardianAccountType
+    : studentSideBooking ? 'STUDENT' : actor?.accountType === 'COACH' ? 'COACH' : 'CLUB';
+  const createdByUserId = 'managedChildUserId' in options
+    ? options.guardianUserId
+    : 'studentUserId' in options ? options.studentUserId : actor?.userId ?? null;
   // A lesson the coach has not accepted yet is not a confirmed lesson, even at
   // a venue that needs no approval.
   const venuePendingStatus = (ctx.location.requiresApproval || ctx.location.type === 'RENTED') ? 'PENDING' : 'CONFIRMED';
@@ -429,7 +499,7 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
   for (const slot of occurrences) {
     let bookingId = slot.groupId;
     if (!bookingId) {
-      const booking = await tx.booking.create({ data: { businessId, serviceId: input.serviceId, instructorId: input.instructorId, locationId: input.locationId, startAt: slot.startAt, endAt: slot.endAt, duration: ctx.assignment.duration, bufferMinutes: ctx.service.bufferMinutes, price: ctx.assignment.price, type: ctx.service.type, capacity: ctx.service.type === 'PRIVATE' ? 1 : ctx.service.capacity, status: initialStatus, paymentRoute, coachAcceptance, createdByRole, createdByUserId, recurringId, venueRequirement: slot.venueUnit ? 'UNIT' : 'NONE', venueApproval: (ctx.location.requiresApproval || ctx.location.type === 'RENTED') ? 'PENDING' : 'NOT_REQUIRED', notes: accountBooking ? '' : input.notes, address: input.address } });
+      const booking = await tx.booking.create({ data: { businessId, serviceId: input.serviceId, instructorId: input.instructorId, locationId: input.locationId, startAt: slot.startAt, endAt: slot.endAt, duration: ctx.assignment.duration, bufferMinutes: ctx.service.bufferMinutes, price: ctx.assignment.price, type: ctx.service.type, capacity: ctx.service.type === 'PRIVATE' ? 1 : ctx.service.capacity, status: initialStatus, paymentRoute, coachAcceptance, createdByRole, createdByUserId, recurringId, venueRequirement: slot.venueUnit ? 'UNIT' : 'NONE', venueApproval: (ctx.location.requiresApproval || ctx.location.type === 'RENTED') ? 'PENDING' : 'NOT_REQUIRED', notes: studentSideBooking ? '' : input.notes, address: input.address } });
       if (slot.venueUnit) await reserveBookingUnit(tx, {
         businessId, locationId: input.locationId, unitId: slot.venueUnit.id, unitName: slot.venueUnit.name,
         bookingId: booking.id, startAt: slot.startAt, endAt: slot.endAt,
@@ -438,7 +508,7 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
     }
     const existing = await tx.participant.findUnique({ where: { bookingId_studentId: { bookingId, studentId: student.id } } });
     const sessionSnapshot = await tx.booking.findUniqueOrThrow({ where: { id: bookingId }, select: { price: true } });
-    const participantData = { managementTokenHash: null, managementTokenExpiresAt: null, managementTokenRevokedAt: null, notes: accountBooking ? input.notes : '', price: sessionSnapshot.price, packageId: pkg?.id ?? null, paid: pkg?.paid ?? false, creditConsumed: !!pkg, cancelledAt: null, attendance: 'UNMARKED' };
+    const participantData = { managementTokenHash: null, managementTokenExpiresAt: null, managementTokenRevokedAt: null, notes: studentSideBooking ? input.notes : '', price: sessionSnapshot.price, packageId: pkg?.id ?? null, paid: pkg?.paid ?? false, creditConsumed: !!pkg, cancelledAt: null, attendance: 'UNMARKED' };
     if (existing) await tx.participant.update({ where: { id: existing.id }, data: participantData });
     else await tx.participant.create({ data: { bookingId, studentId: student.id, ...participantData } });
     await enqueueCalendarSync(tx, bookingId);
@@ -447,8 +517,8 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
     if (slot.groupId) await noteStudentJoined(tx, bookingId, { userId: student.userId, name: student.name });
     else await ensureChatThread(tx, bookingId);
     const booking = await tx.booking.findUniqueOrThrow({ where: { id: bookingId }, include: bookingInclude });
-    const json = bookingJson(booking, { includeNotes: !accountBooking });
-    booked.push(accountBooking
+    const json = bookingJson(booking, { includeNotes: !studentSideBooking });
+    booked.push(studentSideBooking
       ? { ...json, participants: json.participants.filter(participant => participant.studentId === student.id) }
       : json);
   }

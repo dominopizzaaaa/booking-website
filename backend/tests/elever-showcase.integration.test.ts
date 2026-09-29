@@ -43,6 +43,7 @@ function singaporeDate(value: Date) {
 const applicationTables = [
   'AccountNotification', 'BusinessAuditEvent', 'BusinessPaymentAccount', 'CalendarBusyInterval', 'CalendarEventProjection', 'CalendarOAuthAttempt',
   'CalendarRevocationJob', 'CalendarSyncJob', 'CalendarConnection', 'AuthSession', 'Availability',
+  'ChildConsentRecord', 'ChildAccountHandover', 'GuardianChildLink',
   'ClubStaffAccess', 'ClubStaffInvitation',
   'ChatMessage', 'ChatReadState', 'ChatThreadMember', 'ChatThread', 'SessionProposal', 'SessionProposalResponse',
   'AvailabilityException', 'Booking', 'BookingSeries', 'BookingSeriesMember', 'Business', 'CoachInvitation', 'Instructor', 'IntegrityFlag', 'LessonPackage',
@@ -63,6 +64,7 @@ const expectedApplicationCounts: Record<(typeof applicationTables)[number], numb
   AccountNotification: 2, BusinessAuditEvent: 0, BusinessPaymentAccount: 0,
   CalendarBusyInterval: 0, CalendarEventProjection: 0, CalendarOAuthAttempt: 0,
   CalendarRevocationJob: 0, CalendarSyncJob: 0, CalendarConnection: 0, AuthSession: 0, Availability: 14,
+  ChildConsentRecord: 0, ChildAccountHandover: 0, GuardianChildLink: 0,
   ClubStaffAccess: 0, ClubStaffInvitation: 0,
   ChatMessage: 0, ChatReadState: 0, ChatThreadMember: 0, ChatThread: 0, SessionProposal: 0, SessionProposalResponse: 0,
   AvailabilityException: 0, Booking: 39, BookingSeries: 0, BookingSeriesMember: 0,
@@ -120,6 +122,27 @@ async function snapshot(db: PrismaClient): Promise<Snapshot> {
   }
   return result;
 }
+async function familyHistoryGuardStates(db: PrismaClient) {
+  return db.$queryRaw<Array<{ tableName: string; triggerName: string; enabled: string }>>`
+    SELECT table_class.relname AS "tableName", trigger_row.tgname AS "triggerName", trigger_row.tgenabled AS enabled
+    FROM pg_trigger AS trigger_row
+    JOIN pg_class AS table_class ON table_class.oid = trigger_row.tgrelid
+    JOIN pg_namespace AS table_namespace ON table_namespace.oid = table_class.relnamespace
+    WHERE table_namespace.nspname = current_schema()
+      AND trigger_row.tgname IN (
+        'ChildConsentRecord_append_only',
+        'ChildConsentRecord_append_only_truncate',
+        'ChildAccountHandover_history_delete_guard'
+      )
+      AND NOT trigger_row.tgisinternal
+    ORDER BY table_class.relname, trigger_row.tgname
+  `;
+}
+const enabledFamilyHistoryGuards = [
+  { tableName: 'ChildAccountHandover', triggerName: 'ChildAccountHandover_history_delete_guard', enabled: 'O' },
+  { tableName: 'ChildConsentRecord', triggerName: 'ChildConsentRecord_append_only', enabled: 'O' },
+  { tableName: 'ChildConsentRecord', triggerName: 'ChildConsentRecord_append_only_truncate', enabled: 'O' },
+];
 async function showcaseProvisioningState(db: PrismaClient) {
   const [counts, bookings, businesses, memberships, serviceLocations, migrationHistory] = await Promise.all([
     snapshot(db),
@@ -206,9 +229,40 @@ describe.sequential('Elever showcase provisioner integration', () => {
   it('rejects a wrong database fingerprint before making any write', async () => {
     const database = db!;
     await database.user.create({ data: {
-      id: 'fingerprint-sentinel', name: 'Fingerprint Sentinel', email: 'fingerprint-sentinel@example.test',
-      username: 'fingerprint_sentinel', sports: ['Badminton'], accountType: 'STUDENT',
+      id: 'fingerprint-sentinel', name: 'Fingerprint Sentinel', legalName: 'Fingerprint Sentinel',
+      email: 'fingerprint-sentinel@example.test',
+      username: 'fingerprint_sentinel', sports: ['Badminton'], passwordHash: 'not-used-by-this-test',
+      accountType: 'STUDENT',
     } });
+    await database.$transaction(async tx => {
+      const guardian = await tx.user.create({ data: {
+        id: 'showcase-reset-guardian', name: 'Reset Guardian', legalName: 'Reset Guardian',
+        dateOfBirth: new Date('1980-01-01T00:00:00.000Z'), email: 'reset-guardian@example.test',
+        username: 'reset_guardian', sports: ['Badminton'], passwordHash: 'not-used-by-this-test',
+        accountType: 'STUDENT',
+      } });
+      const child = await tx.user.create({ data: {
+        id: 'showcase-reset-child', name: 'Reset Child', legalName: 'Reset Child',
+        dateOfBirth: new Date('2010-01-01T00:00:00.000Z'), email: null, username: 'reset_child',
+        sports: ['Badminton'], passwordHash: null, accountType: 'STUDENT',
+        accountControl: 'GUARDIAN_MANAGED', profileVisibility: 'PRIVATE', phone: '',
+      } });
+      const link = await tx.guardianChildLink.create({ data: {
+        id: 'showcase-reset-link', guardianUserId: guardian.id, childUserId: child.id,
+        relationshipType: 'PARENT',
+      } });
+      await tx.childConsentRecord.create({ data: {
+        id: 'showcase-reset-consent', linkId: link.id, guardianUserId: guardian.id, childUserId: child.id,
+        eventType: 'GRANTED', relationshipType: link.relationshipType,
+        privacyPolicyVersion: '2026-09-29', permissions: link.permissions,
+      } });
+      const initiatedAt = new Date('2026-09-29T00:00:00.000Z');
+      await tx.childAccountHandover.create({ data: {
+        id: 'showcase-reset-handover', childUserId: child.id, initiatedByGuardianUserId: guardian.id,
+        destinationEmail: 'reset-child-destination@example.test', tokenHash: 'a'.repeat(64),
+        initiatedAt, lastSentAt: initiatedAt, expiresAt: new Date('2026-10-06T00:00:00.000Z'),
+      } });
+    });
     const before = await snapshot(database);
     const result = runProvisioner(url, '0'.repeat(64));
     expect(result.status).not.toBe(0);
@@ -216,6 +270,7 @@ describe.sequential('Elever showcase provisioner integration', () => {
       'ELEVER_EXPECTED_DATABASE_SHA256 does not match DATABASE_URL; no data was changed',
     );
     expect(await snapshot(database)).toEqual(before);
+    expect(await familyHistoryGuardStates(database)).toEqual(enabledFamilyHistoryGuards);
   }, 30_000);
 
   it('atomically replaces the schema with the exact October 2026 Elever marketplace graph', async () => {
@@ -224,6 +279,12 @@ describe.sequential('Elever showcase provisioner integration', () => {
     if (result.status !== 0) throw new Error(commandFailure('Elever provisioner', result));
     expect(result.stdout).toContain('"ok": true');
     expect(await database.user.findUnique({ where: { id: 'fingerprint-sentinel' } })).toBeNull();
+    expect(await database.user.findUnique({ where: { id: 'showcase-reset-child' } })).toBeNull();
+    expect(await familyHistoryGuardStates(database)).toEqual(enabledFamilyHistoryGuards);
+    await expect(database.$executeRawUnsafe('TRUNCATE TABLE "ChildConsentRecord"'))
+      .rejects.toThrow(/Child consent records are append-only/);
+    await expect(database.$executeRawUnsafe('TRUNCATE TABLE "ChildAccountHandover"'))
+      .rejects.toThrow(/Child handover history cannot be deleted/);
 
     const businesses = await database.business.findMany();
     expect(businesses).toHaveLength(1);
@@ -438,6 +499,7 @@ describe.sequential('Elever showcase provisioner integration', () => {
     }).toEqual({ total: 138, paid: 103, group: 108, private: 30 });
     expect(replacementState.migrationHistory).toEqual(firstProvisioningState.migrationHistory);
     expect(replacementState.migrationHistory).toHaveLength(expectedMigrationCount);
+    expect(await familyHistoryGuardStates(database)).toEqual(enabledFamilyHistoryGuards);
 
     for (const key of Object.keys(firstProvisioningState.replacementIds) as Array<keyof typeof firstProvisioningState.replacementIds>) {
       const priorIds = new Set(firstProvisioningState.replacementIds[key]);
@@ -457,5 +519,6 @@ describe.sequential('Elever showcase provisioner integration', () => {
     expect(await snapshot(database)).toEqual(before);
     expect(await database.$queryRawUnsafe(`SELECT id, "businessId" FROM "UnexpectedFixtureReference"`))
       .toEqual([{ id: 'preserve-me', businessId: club.id }]);
+    expect(await familyHistoryGuardStates(database)).toEqual(enabledFamilyHistoryGuards);
   }, 180_000);
 });

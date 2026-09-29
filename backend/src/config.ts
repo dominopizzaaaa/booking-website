@@ -6,6 +6,36 @@ if (!process.env.DATABASE_URL) {
 }
 
 export type CalendarTokenKey = { id: string; key: Buffer };
+export type FamilyHandoverTokenKey = { id: string; key: Buffer };
+
+function familyHandoverTokenConfiguration() {
+  const activeKeyId = (process.env.FAMILY_HANDOVER_TOKEN_ACTIVE_KEY_ID || '').trim();
+  const encodedKeys = (process.env.FAMILY_HANDOVER_TOKEN_KEYS || '').trim();
+  const keys = new Map<string, Buffer>();
+  let valid = Boolean(activeKeyId && encodedKeys);
+
+  if (encodedKeys) {
+    for (const entry of encodedKeys.split(',')) {
+      const separator = entry.indexOf(':');
+      const id = entry.slice(0, separator).trim();
+      const encoded = entry.slice(separator + 1).trim();
+      if (separator < 1 || !/^[A-Za-z0-9_-]{1,64}$/.test(id)
+        || !/^(?:[A-Za-z0-9+/]{4}){10}[A-Za-z0-9+/]{3}=$/.test(encoded) || keys.has(id)) {
+        valid = false;
+        continue;
+      }
+      const key = Buffer.from(encoded, 'base64');
+      if (key.length !== 32 || key.toString('base64') !== encoded) {
+        valid = false;
+        continue;
+      }
+      keys.set(id, key);
+    }
+  }
+  if (!keys.has(activeKeyId)) valid = false;
+
+  return { enabled: valid, activeKeyId, keys };
+}
 
 function calendarConfiguration() {
   const clientId = (process.env.GOOGLE_CALENDAR_CLIENT_ID || '').trim();
@@ -100,6 +130,7 @@ export const config = {
   googleCalendar: calendarConfiguration(),
   payments: paymentConfiguration(),
   email: emailConfiguration(),
+  familyHandoverTokens: familyHandoverTokenConfiguration(),
   publicAppOrigin: (process.env.PUBLIC_APP_ORIGIN || process.env.APP_ORIGIN?.split(',')[0] || 'http://localhost:3000').trim().replace(/\/$/, ''),
   sessionDays: 14,
   demoEnabled: process.env.DEMO_ENABLED === 'true' || (!production && process.env.DEMO_ENABLED !== 'false'),

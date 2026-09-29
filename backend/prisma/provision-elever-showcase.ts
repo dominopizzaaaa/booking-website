@@ -44,6 +44,7 @@ if (new Set(Object.values(credentials).map(credential => credential.password)).s
 const allApplicationTables = [
   'AccountNotification', 'BusinessAuditEvent', 'BusinessPaymentAccount', 'CalendarBusyInterval', 'CalendarEventProjection', 'CalendarOAuthAttempt',
   'CalendarRevocationJob', 'CalendarSyncJob', 'CalendarConnection', 'CoachInvitation', 'AuthSession', 'Availability',
+  'ChildConsentRecord', 'ChildAccountHandover', 'GuardianChildLink',
   'ClubStaffAccess', 'ClubStaffInvitation',
   'ChatMessage', 'ChatReadState', 'ChatThreadMember', 'ChatThread', 'SessionProposal', 'SessionProposalResponse',
   'AvailabilityException', 'Booking', 'BookingSeries', 'BookingSeriesMember', 'Business', 'Instructor', 'IntegrityFlag', 'LessonPackage',
@@ -53,6 +54,20 @@ const allApplicationTables = [
   'Service', 'ServiceInstructor', 'ServiceLocation', 'Student', 'User', 'VenueOpeningHour', 'VenueReservation',
   'VenueUnit', 'VenueUnitAllocation',
 ] as const;
+
+// These two audit-history triggers deliberately reject TRUNCATE, including on
+// an empty table. The provisioner is an explicitly confirmed, whole-database
+// reset, so it may suspend only those exact TRUNCATE guards while it holds the
+// tables' access-exclusive locks. ALTER TABLE is transactional in PostgreSQL:
+// a failed reset rolls the trigger state back together with every data change.
+const familyHistoryResetTriggers = [
+  { table: 'ChildConsentRecord', trigger: 'ChildConsentRecord_append_only_truncate' },
+  { table: 'ChildAccountHandover', trigger: 'ChildAccountHandover_history_delete_guard' },
+] as const;
+
+function quoteIdentifier(value: string) {
+  return `"${value.replaceAll('"', '""')}"`;
+}
 
 const expectedMigrations = readdirSync(new URL('./migrations/', import.meta.url), { withFileTypes: true })
   .filter(entry => entry.isDirectory())
@@ -131,8 +146,34 @@ async function main() {
 
     const [target] = await tx.$queryRaw<Array<{ schema_name: string | null }>>`SELECT current_schema() AS schema_name`;
     if (!target?.schema_name) throw new Error('The target database has no current schema; no data was changed');
-    const quotedSchema = `"${target.schema_name.replaceAll('"', '""')}"`;
+    const quotedSchema = quoteIdentifier(target.schema_name);
+    const familyHistoryGuards = await tx.$queryRaw<Array<{ table_name: string; trigger_name: string; enabled: string }>>`
+      SELECT table_class.relname AS table_name, trigger_row.tgname AS trigger_name, trigger_row.tgenabled AS enabled
+      FROM pg_trigger AS trigger_row
+      JOIN pg_class AS table_class ON table_class.oid = trigger_row.tgrelid
+      JOIN pg_namespace AS table_namespace ON table_namespace.oid = table_class.relnamespace
+      WHERE table_namespace.nspname = current_schema()
+        AND (table_class.relname, trigger_row.tgname) IN (
+          ('ChildConsentRecord', 'ChildConsentRecord_append_only_truncate'),
+          ('ChildAccountHandover', 'ChildAccountHandover_history_delete_guard')
+        )
+        AND NOT trigger_row.tgisinternal
+    `;
+    if (familyHistoryGuards.length !== familyHistoryResetTriggers.length
+      || familyHistoryGuards.some(guard => guard.enabled !== 'O')) {
+      throw new Error('Family history reset guards are missing or not enabled; no data was changed');
+    }
+    for (const guard of familyHistoryResetTriggers) {
+      await tx.$executeRawUnsafe(
+        `ALTER TABLE ${quotedSchema}.${quoteIdentifier(guard.table)} DISABLE TRIGGER ${quoteIdentifier(guard.trigger)}`,
+      );
+    }
     await tx.$executeRawUnsafe(`TRUNCATE TABLE ${allApplicationTables.map(table => `${quotedSchema}."${table}"`).join(', ')} CONTINUE IDENTITY`);
+    for (const guard of familyHistoryResetTriggers) {
+      await tx.$executeRawUnsafe(
+        `ALTER TABLE ${quotedSchema}.${quoteIdentifier(guard.table)} ENABLE TRIGGER ${quoteIdentifier(guard.trigger)}`,
+      );
+    }
 
     const club = await tx.business.create({ data: {
       name: 'Elever Badminton Academy', slug: 'elever-badminton-academy', ownerName: 'Elever Badminton Academy',
@@ -141,7 +182,7 @@ async function main() {
       legacyReadOnly: false, isDemo: false, createdAt: october(1, 0).minus({ years: 2 }).toJSDate(),
     } });
     const clubUser = await tx.user.create({ data: {
-      name: club.name, email: credentials.club.email, username: 'elever_badminton', sports: ['Badminton'],
+      name: club.name, legalName: club.name, email: credentials.club.email, username: 'elever_badminton', sports: ['Badminton'],
       passwordHash: passwordHashes.club, accountType: 'CLUB', phone: '+65 6970 2026', parentName: '', createdAt: club.createdAt,
     } });
     await tx.membership.create({ data: { userId: clubUser.id, businessId: club.id, createdAt: club.createdAt } });
@@ -155,7 +196,7 @@ async function main() {
     for (const key of ['loh', 'eng'] as const) {
       const definition = coachDefinitions[key];
       const user = await tx.user.create({ data: {
-        name: definition.name, email: definition.email, username: definition.username, sports: ['Badminton'],
+        name: definition.name, legalName: definition.name, email: definition.email, username: definition.username, sports: ['Badminton'],
         passwordHash: passwordHashes[key], accountType: 'COACH', phone: definition.phone, parentName: '', createdAt: club.createdAt,
       } });
       coachUsers[key] = user;
@@ -173,7 +214,7 @@ async function main() {
     const students = {} as Record<StudentKey, { id: string; name: string }>;
     for (const [index, definition] of studentDefinitions.entries()) {
       const user = await tx.user.create({ data: {
-        name: definition.name, email: definition.email, username: definition.username, sports: ['Badminton'],
+        name: definition.name, legalName: definition.name, email: definition.email, username: definition.username, sports: ['Badminton'],
         passwordHash: definition.key === 'dominic' ? passwordHashes.dominic : passwordHashes.students,
         accountType: 'STUDENT', phone: definition.phone, parentName: '', createdAt: october(1, 0).minus({ months: 10 }).toJSDate(),
       } });

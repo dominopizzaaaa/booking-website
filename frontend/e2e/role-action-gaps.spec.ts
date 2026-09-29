@@ -73,11 +73,11 @@ test('an assigned coach can decline a package lesson and every affected role see
   const packageName = `Decline credit ${runId}`;
 
   await responseJson(await page.request.post('/api/auth/register', {
-    data: { accountType: 'COACH', name: coachName, username: `dc_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: coachEmail, password },
+    data: { accountType: 'COACH', name: coachName, username: `dc_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: coachEmail, password, dateOfBirth: '1990-01-01' },
   }));
   await logout(page);
   await responseJson(await page.request.post('/api/auth/register', {
-    data: { accountType: 'STUDENT', name: studentName, username: `ds_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: studentEmail, password },
+    data: { accountType: 'STUDENT', name: studentName, username: `ds_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: studentEmail, password, dateOfBirth: '1990-01-01' },
   }));
   await logout(page);
 

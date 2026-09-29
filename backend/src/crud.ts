@@ -226,7 +226,7 @@ crudRouter.post('/instructors', requireClubPermission('ROSTER_MANAGE'), asyncRou
       id: true, name: true, email: true, accountType: true, passwordHash: true,
       memberships: { where: { businessId }, select: { id: true, active: true, instructorId: true } },
     } });
-    if (!user || !user.passwordHash || user.accountType !== 'COACH') {
+    if (!user || !user.email || !user.passwordHash || user.accountType !== 'COACH') {
       throw new HttpError(404, 'Ask the coach to register their own Courtly coach account first');
     }
     const existing = user.memberships[0];
@@ -380,13 +380,13 @@ crudRouter.post('/students', requireClubPermission('STUDENTS_MANAGE'), asyncRout
       where: { id: matched.id },
       select: { id: true, name: true, email: true, phone: true, parentName: true, passwordHash: true, accountType: true },
     }) : null;
-    if (!user?.passwordHash || user.accountType !== 'STUDENT') {
+    if (!user?.email || !user.passwordHash || user.accountType !== 'STUDENT') {
       throw new HttpError(404, 'Ask the student to register their own Courtly student account first');
     }
     if (await tx.student.findFirst({ where: { businessId, userId: user.id }, select: { id: true } })) {
       throw new HttpError(409, 'This student already belongs to this business');
     }
-    const existing = await tx.student.findUnique({ where: { businessId_email: { businessId, email: user.email } } });
+    const existing = await tx.student.findFirst({ where: { businessId, email: user.email } });
     if (existing?.userId) throw new HttpError(409, 'This student email is linked to another account');
     if (existing) throw new HttpError(409, 'An unverified historical student record already uses this email. It cannot be claimed automatically');
     return tx.student.create({ data: {
