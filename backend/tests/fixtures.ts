@@ -112,12 +112,38 @@ export class TestTenants {
   }
 
   async cleanup() {
+    const ownedUserIds = [...this.userIds];
+    const ownedBusinessIds = [...this.businessIds];
+    if (ownedUserIds.length || ownedBusinessIds.length) {
+      // Reports deliberately survive deletion of all source FKs. Remove the
+      // owned safeguarding graph before deleting either businesses or users,
+      // otherwise SET NULL can erase the only fixture ownership keys and
+      // leave immutable rows behind in the shared test database.
+      await prisma.$transaction(async tx => {
+        await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');
+        const safetyReportIds = (await tx.chatSafetyReport.findMany({
+          where: { OR: [
+            ...(ownedBusinessIds.length ? [{ businessId: { in: ownedBusinessIds } }] : []),
+            ...(ownedUserIds.length ? [
+              { reporterUserId: { in: ownedUserIds } },
+              { subjectUserId: { in: ownedUserIds } },
+            ] : []),
+          ] },
+          select: { id: true },
+        })).map(report => report.id);
+        if (safetyReportIds.length) {
+          await tx.chatSafetyAuditEvent.deleteMany({ where: { reportId: { in: safetyReportIds } } });
+          await tx.chatSafetyReport.deleteMany({ where: { id: { in: safetyReportIds } } });
+        }
+      });
+    }
     for (const businessId of [...this.businessIds]) {
       await prisma.$transaction(async tx => {
         const institutionalAccountIds = (await tx.membership.findMany({
           where: { businessId, user: { accountType: 'CLUB' } },
           select: { userId: true },
         })).map(membership => membership.userId);
+        await tx.paymentRiskCase.deleteMany({ where: { businessId } });
         await tx.paymentRefund.deleteMany({ where: { businessId } });
         await tx.payment.deleteMany({ where: { businessId } });
         await tx.paymentIntent.deleteMany({ where: { businessId } });

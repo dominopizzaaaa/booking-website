@@ -43,13 +43,15 @@ function singaporeDate(value: Date) {
 const applicationTables = [
   'AccountNotification', 'BusinessAuditEvent', 'BusinessPaymentAccount', 'CalendarBusyInterval', 'CalendarEventProjection', 'CalendarOAuthAttempt',
   'CalendarRevocationJob', 'CalendarSyncJob', 'CalendarConnection', 'AuthSession', 'Availability',
-  'ChildConsentRecord', 'ChildAccountHandover', 'GuardianChildLink',
+  'ChildConsentRecord', 'ChildAccountHandover', 'GuardianChildLink', 'EmailVerificationClaim', 'SignupAcceptanceEvidence',
   'ClubStaffAccess', 'ClubStaffInvitation',
+  'ChatSafetyAuditEvent', 'ChatSafetyReport', 'ChatAccountBlock',
   'ChatMessage', 'ChatReadState', 'ChatThreadMember', 'ChatThread', 'SessionProposal', 'SessionProposalResponse',
   'AvailabilityException', 'Booking', 'BookingSeries', 'BookingSeriesMember', 'Business', 'CoachInvitation', 'Instructor', 'IntegrityFlag', 'LessonPackage',
   'LessonPackageLocation', 'LessonPackageService', 'Location', 'Membership', 'Notification', 'PackageOffer',
   'NotificationPreference', 'OutboundDelivery', 'PackageOfferLocation', 'PackageOfferService', 'Participant',
-  'Payment', 'PaymentIntent', 'PaymentProviderEvent', 'PaymentRefund', 'PaymentSettlement', 'RescheduleRequest',
+  'Payment', 'PaymentIntent', 'PaymentProviderEvent', 'PaymentRefund', 'PaymentRiskCase', 'PaymentSettlement',
+  'PrivacyRequestEvent', 'PrivacyRequest', 'RescheduleRequest',
   'Service', 'ServiceInstructor', 'ServiceLocation', 'Student', 'User', 'VenueOpeningHour', 'VenueReservation',
   'VenueUnit', 'VenueUnitAllocation',
 ] as const;
@@ -64,15 +66,17 @@ const expectedApplicationCounts: Record<(typeof applicationTables)[number], numb
   AccountNotification: 2, BusinessAuditEvent: 0, BusinessPaymentAccount: 0,
   CalendarBusyInterval: 0, CalendarEventProjection: 0, CalendarOAuthAttempt: 0,
   CalendarRevocationJob: 0, CalendarSyncJob: 0, CalendarConnection: 0, AuthSession: 0, Availability: 14,
-  ChildConsentRecord: 0, ChildAccountHandover: 0, GuardianChildLink: 0,
+  ChildConsentRecord: 0, ChildAccountHandover: 0, GuardianChildLink: 0, EmailVerificationClaim: 0, SignupAcceptanceEvidence: 0,
   ClubStaffAccess: 0, ClubStaffInvitation: 0,
+  ChatSafetyAuditEvent: 0, ChatSafetyReport: 0, ChatAccountBlock: 0,
   ChatMessage: 0, ChatReadState: 0, ChatThreadMember: 0, ChatThread: 0, SessionProposal: 0, SessionProposalResponse: 0,
   AvailabilityException: 0, Booking: 39, BookingSeries: 0, BookingSeriesMember: 0,
   Business: 1, CoachInvitation: 0, Instructor: 2, IntegrityFlag: 1, LessonPackage: 2,
   LessonPackageLocation: 1, LessonPackageService: 3, Location: 2, Membership: 3, Notification: 4,
   NotificationPreference: 0, OutboundDelivery: 0, PackageOffer: 3, PackageOfferLocation: 2,
   PackageOfferService: 3, Participant: 138, Payment: 110, PaymentIntent: 8, PaymentProviderEvent: 0,
-  PaymentRefund: 0, PaymentSettlement: 0, RescheduleRequest: 0, Service: 2, ServiceInstructor: 4,
+  PaymentRefund: 0, PaymentRiskCase: 0, PaymentSettlement: 0, PrivacyRequestEvent: 0, PrivacyRequest: 0,
+  RescheduleRequest: 0, Service: 2, ServiceInstructor: 4,
   ServiceLocation: 2, Student: 20, User: 23, VenueOpeningHour: 7, VenueReservation: 4,
   VenueUnit: 4, VenueUnitAllocation: 0,
 };
@@ -122,7 +126,7 @@ async function snapshot(db: PrismaClient): Promise<Snapshot> {
   }
   return result;
 }
-async function familyHistoryGuardStates(db: PrismaClient) {
+async function retainedHistoryGuardStates(db: PrismaClient) {
   return db.$queryRaw<Array<{ tableName: string; triggerName: string; enabled: string }>>`
     SELECT table_class.relname AS "tableName", trigger_row.tgname AS "triggerName", trigger_row.tgenabled AS enabled
     FROM pg_trigger AS trigger_row
@@ -132,16 +136,32 @@ async function familyHistoryGuardStates(db: PrismaClient) {
       AND trigger_row.tgname IN (
         'ChildConsentRecord_append_only',
         'ChildConsentRecord_append_only_truncate',
-        'ChildAccountHandover_history_delete_guard'
+        'ChildAccountHandover_history_delete_guard',
+        'PrivacyRequestEvent_append_only',
+        'PrivacyRequestEvent_append_only_truncate',
+        'SignupAcceptanceEvidence_append_only_truncate',
+        'ChatSafetyReport_contract_guard',
+        'ChatSafetyReport_decision_audit_guard',
+        'ChatSafetyReport_retained_truncate',
+        'ChatSafetyAuditEvent_append_only',
+        'ChatSafetyAuditEvent_append_only_truncate'
       )
       AND NOT trigger_row.tgisinternal
     ORDER BY table_class.relname, trigger_row.tgname
   `;
 }
-const enabledFamilyHistoryGuards = [
+const enabledRetainedHistoryGuards = [
+  { tableName: 'ChatSafetyAuditEvent', triggerName: 'ChatSafetyAuditEvent_append_only', enabled: 'O' },
+  { tableName: 'ChatSafetyAuditEvent', triggerName: 'ChatSafetyAuditEvent_append_only_truncate', enabled: 'O' },
+  { tableName: 'ChatSafetyReport', triggerName: 'ChatSafetyReport_contract_guard', enabled: 'O' },
+  { tableName: 'ChatSafetyReport', triggerName: 'ChatSafetyReport_decision_audit_guard', enabled: 'O' },
+  { tableName: 'ChatSafetyReport', triggerName: 'ChatSafetyReport_retained_truncate', enabled: 'O' },
   { tableName: 'ChildAccountHandover', triggerName: 'ChildAccountHandover_history_delete_guard', enabled: 'O' },
   { tableName: 'ChildConsentRecord', triggerName: 'ChildConsentRecord_append_only', enabled: 'O' },
   { tableName: 'ChildConsentRecord', triggerName: 'ChildConsentRecord_append_only_truncate', enabled: 'O' },
+  { tableName: 'PrivacyRequestEvent', triggerName: 'PrivacyRequestEvent_append_only', enabled: 'O' },
+  { tableName: 'PrivacyRequestEvent', triggerName: 'PrivacyRequestEvent_append_only_truncate', enabled: 'O' },
+  { tableName: 'SignupAcceptanceEvidence', triggerName: 'SignupAcceptanceEvidence_append_only_truncate', enabled: 'O' },
 ];
 async function showcaseProvisioningState(db: PrismaClient) {
   const [counts, bookings, businesses, memberships, serviceLocations, migrationHistory] = await Promise.all([
@@ -270,7 +290,7 @@ describe.sequential('Elever showcase provisioner integration', () => {
       'ELEVER_EXPECTED_DATABASE_SHA256 does not match DATABASE_URL; no data was changed',
     );
     expect(await snapshot(database)).toEqual(before);
-    expect(await familyHistoryGuardStates(database)).toEqual(enabledFamilyHistoryGuards);
+    expect(await retainedHistoryGuardStates(database)).toEqual(enabledRetainedHistoryGuards);
   }, 30_000);
 
   it('atomically replaces the schema with the exact October 2026 Elever marketplace graph', async () => {
@@ -280,11 +300,13 @@ describe.sequential('Elever showcase provisioner integration', () => {
     expect(result.stdout).toContain('"ok": true');
     expect(await database.user.findUnique({ where: { id: 'fingerprint-sentinel' } })).toBeNull();
     expect(await database.user.findUnique({ where: { id: 'showcase-reset-child' } })).toBeNull();
-    expect(await familyHistoryGuardStates(database)).toEqual(enabledFamilyHistoryGuards);
+    expect(await retainedHistoryGuardStates(database)).toEqual(enabledRetainedHistoryGuards);
     await expect(database.$executeRawUnsafe('TRUNCATE TABLE "ChildConsentRecord"'))
       .rejects.toThrow(/Child consent records are append-only/);
     await expect(database.$executeRawUnsafe('TRUNCATE TABLE "ChildAccountHandover"'))
       .rejects.toThrow(/Child handover history cannot be deleted/);
+    await expect(database.$executeRawUnsafe('TRUNCATE TABLE "SignupAcceptanceEvidence"'))
+      .rejects.toThrow(/Signup acceptance evidence is append-only/);
 
     const businesses = await database.business.findMany();
     expect(businesses).toHaveLength(1);
@@ -499,7 +521,7 @@ describe.sequential('Elever showcase provisioner integration', () => {
     }).toEqual({ total: 138, paid: 103, group: 108, private: 30 });
     expect(replacementState.migrationHistory).toEqual(firstProvisioningState.migrationHistory);
     expect(replacementState.migrationHistory).toHaveLength(expectedMigrationCount);
-    expect(await familyHistoryGuardStates(database)).toEqual(enabledFamilyHistoryGuards);
+    expect(await retainedHistoryGuardStates(database)).toEqual(enabledRetainedHistoryGuards);
 
     for (const key of Object.keys(firstProvisioningState.replacementIds) as Array<keyof typeof firstProvisioningState.replacementIds>) {
       const priorIds = new Set(firstProvisioningState.replacementIds[key]);
@@ -519,6 +541,6 @@ describe.sequential('Elever showcase provisioner integration', () => {
     expect(await snapshot(database)).toEqual(before);
     expect(await database.$queryRawUnsafe(`SELECT id, "businessId" FROM "UnexpectedFixtureReference"`))
       .toEqual([{ id: 'preserve-me', businessId: club.id }]);
-    expect(await familyHistoryGuardStates(database)).toEqual(enabledFamilyHistoryGuards);
+    expect(await retainedHistoryGuardStates(database)).toEqual(enabledRetainedHistoryGuards);
   }, 180_000);
 });

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 
 const testEnvironment = [
+  'NODE_ENV',
   'DATABASE_URL',
   'GOOGLE_CALENDAR_CLIENT_ID',
   'GOOGLE_CALENDAR_CLIENT_SECRET',
@@ -10,6 +11,9 @@ const testEnvironment = [
   'CALENDAR_TOKEN_ACTIVE_KEY_ID',
   'FAMILY_HANDOVER_TOKEN_KEYS',
   'FAMILY_HANDOVER_TOKEN_ACTIVE_KEY_ID',
+  'FAMILY_FEATURE_ENABLED',
+  'EMAIL_VERIFICATION_TOKEN_KEYS',
+  'EMAIL_VERIFICATION_TOKEN_ACTIVE_KEY_ID',
   'EMAIL_PROVIDER',
   'EMAIL_FROM_ADDRESS',
 ] as const;
@@ -29,11 +33,16 @@ const validFamilyHandoverEnvironment = {
   FAMILY_HANDOVER_TOKEN_KEYS: `v1:${Buffer.alloc(32, 9).toString('base64')}`,
   FAMILY_HANDOVER_TOKEN_ACTIVE_KEY_ID: 'v1',
 };
+const validEmailVerificationEnvironment = {
+  EMAIL_VERIFICATION_TOKEN_KEYS: `v1:${Buffer.alloc(32, 11).toString('base64')}`,
+  EMAIL_VERIFICATION_TOKEN_ACTIVE_KEY_ID: 'v1',
+};
 
 async function loadCalendarConfig(overrides: Partial<Record<(typeof testEnvironment)[number], string>> = {}) {
   for (const name of testEnvironment) delete process.env[name];
   process.env.DATABASE_URL = 'postgresql://test:test@127.0.0.1:5432/test';
-  Object.assign(process.env, validCalendarEnvironment, validFamilyHandoverEnvironment, overrides);
+  Object.assign(process.env, validCalendarEnvironment, validFamilyHandoverEnvironment,
+    validEmailVerificationEnvironment, overrides);
   vi.resetModules();
   return import('../src/config.js');
 }
@@ -49,6 +58,28 @@ afterEach(() => {
 });
 
 describe('Google Calendar configuration', () => {
+  it.each([
+    ['development', true, true],
+    ['test', true, true],
+    ['production', false, false],
+  ] as const)('uses safe Family and business-deletion defaults in %s', async (nodeEnv, familyEnabled, deletionEnabled) => {
+    const { config } = await loadCalendarConfig({ NODE_ENV: nodeEnv });
+
+    expect(config.familyFeatureEnabled).toBe(familyEnabled);
+    expect(config.realBusinessDeletionEnabled).toBe(deletionEnabled);
+  });
+
+  it.each([
+    ['production', 'true', true],
+    ['development', 'false', false],
+    ['development', ' true ', true],
+    ['test', 'invalid', false],
+  ] as const)('honors an explicit Family flag in %s (%s)', async (nodeEnv, value, enabled) => {
+    const { config } = await loadCalendarConfig({ NODE_ENV: nodeEnv, FAMILY_FEATURE_ENABLED: value });
+
+    expect(config.familyFeatureEnabled).toBe(enabled);
+  });
+
   it('enables the capability only for a complete OAuth client and valid active 32-byte key', async () => {
     const { config } = await loadCalendarConfig();
 
@@ -77,14 +108,23 @@ describe('Google Calendar configuration', () => {
       paymentProviderEvents: true,
       outboundDelivery: true,
       activeStripeBookingCheckoutGuard: true,
+      paymentCompliance: true,
       guardianChildAccounts: true,
       childConsentAppendOnly: true,
       onePendingChildHandover: true,
+      signupEvidence: true,
+      privacyRequests: true,
+      chatSafeguardingTables: true,
+      chatSafeguardingPermissions: true,
+      chatSafeguardingIndexes: true,
+      chatSafeguardingTriggers: true,
+      chatSafeguardingAssigneeIdentity: true,
     }]);
 
     const response = await request(app).get('/api/health').expect(200);
 
     expect(response.body.capabilities.googleCalendar).toBe(capability);
+    expect(response.body.capabilities.family).toBe('enabled');
     expect(response.body.capabilities.familyHandover).toBe('disabled');
     expect(response.body.schema).toBe('ready');
     expect(JSON.stringify(response.body)).not.toContain('calendar-client-secret');
@@ -99,7 +139,7 @@ describe('Google Calendar configuration', () => {
     vi.resetModules();
     const [{ app }, { prisma }] = await Promise.all([import('../src/app.js'), import('../src/db.js')]);
     const query = vi.spyOn(prisma, '$queryRawUnsafe').mockResolvedValueOnce([{
-      coachInvitations: false,
+      coachInvitations: true,
       packageScopeColumn: true,
       packageScopeTrigger: true,
       venueUnitIdentity: true,
@@ -109,9 +149,17 @@ describe('Google Calendar configuration', () => {
       paymentProviderEvents: true,
       outboundDelivery: true,
       activeStripeBookingCheckoutGuard: true,
+      paymentCompliance: false,
       guardianChildAccounts: true,
       childConsentAppendOnly: true,
       onePendingChildHandover: true,
+      signupEvidence: true,
+      privacyRequests: true,
+      chatSafeguardingTables: true,
+      chatSafeguardingPermissions: true,
+      chatSafeguardingIndexes: true,
+      chatSafeguardingTriggers: true,
+      chatSafeguardingAssigneeIdentity: true,
     }]);
 
     const response = await request(app).get('/api/health').expect(503);
@@ -185,13 +233,96 @@ describe('Google Calendar configuration', () => {
       paymentProviderEvents: true,
       outboundDelivery: true,
       activeStripeBookingCheckoutGuard: true,
+      paymentCompliance: true,
       guardianChildAccounts: true,
       childConsentAppendOnly: true,
       onePendingChildHandover: true,
+      signupEvidence: true,
+      privacyRequests: true,
+      chatSafeguardingTables: true,
+      chatSafeguardingPermissions: true,
+      chatSafeguardingIndexes: true,
+      chatSafeguardingTriggers: true,
+      chatSafeguardingAssigneeIdentity: true,
     }]);
 
     const response = await request(app).get('/api/health').expect(200);
     expect(response.body.capabilities.familyHandover).toBe(capability);
     query.mockRestore();
+  });
+
+  it('reports the Family rollout gate separately from configured handover dependencies', async () => {
+    for (const name of testEnvironment) delete process.env[name];
+    process.env.DATABASE_URL = 'postgresql://test:test@127.0.0.1:5432/test';
+    Object.assign(process.env, validCalendarEnvironment, validFamilyHandoverEnvironment, {
+      FAMILY_FEATURE_ENABLED: 'false',
+      EMAIL_PROVIDER: 'capture',
+      EMAIL_FROM_ADDRESS: 'security@courtly.example.test',
+    });
+    vi.resetModules();
+    const [{ app }, { prisma }] = await Promise.all([import('../src/app.js'), import('../src/db.js')]);
+    const query = vi.spyOn(prisma, '$queryRawUnsafe').mockResolvedValueOnce([{
+      coachInvitations: true,
+      packageScopeColumn: true,
+      packageScopeTrigger: true,
+      venueUnitIdentity: true,
+      namedClubStaff: true,
+      bookingSeries: true,
+      venueAllocation: true,
+      paymentProviderEvents: true,
+      outboundDelivery: true,
+      activeStripeBookingCheckoutGuard: true,
+      paymentCompliance: true,
+      guardianChildAccounts: true,
+      childConsentAppendOnly: true,
+      onePendingChildHandover: true,
+      signupEvidence: true,
+      privacyRequests: true,
+      chatSafeguardingTables: true,
+      chatSafeguardingPermissions: true,
+      chatSafeguardingIndexes: true,
+      chatSafeguardingTriggers: true,
+      chatSafeguardingAssigneeIdentity: true,
+    }]);
+
+    const response = await request(app).get('/api/health').expect(200);
+    expect(response.body.capabilities.family).toBe('disabled');
+    expect(response.body.capabilities.familyHandover).toBe('configured');
+    query.mockRestore();
+  });
+
+  it('hides public claims and closes authenticated Family routes while the rollout gate is off', async () => {
+    for (const name of testEnvironment) delete process.env[name];
+    process.env.DATABASE_URL = 'postgresql://test:test@127.0.0.1:5432/test';
+    Object.assign(process.env, validCalendarEnvironment, validFamilyHandoverEnvironment, {
+      FAMILY_FEATURE_ENABLED: 'false',
+    });
+    vi.resetModules();
+    const { app } = await import('../src/app.js');
+
+    const claim = await request(app).get('/api/family/handovers/redacted-token').expect(404);
+    expect(claim.body).toEqual({ error: 'Route not found' });
+    const completion = await request(app).post('/api/family/handovers/redacted-token/complete')
+      .send({ password: 'not-used' }).expect(404);
+    expect(completion.body).toEqual({ error: 'Route not found' });
+
+    const gatedRequests = [
+      ['family dashboard', () => request(app).get('/api/family')],
+      ['booking child chooser', () => request(app).get('/api/family/booking-children')],
+      ['child booking', () => request(app).post('/api/family/children/child-id/bookings').send({})],
+      ['date of birth', () => request(app).post('/api/family/date-of-birth').send({})],
+      ['child creation', () => request(app).post('/api/family/children').send({})],
+      ['child update', () => request(app).patch('/api/family/children/child-id').send({})],
+      ['consent withdrawal', () => request(app).post('/api/family/children/child-id/consent/withdraw').send({})],
+      ['consent renewal', () => request(app).post('/api/family/children/child-id/consent/renew').send({})],
+      ['deletion request', () => request(app).post('/api/family/children/child-id/deletion-request').send({})],
+      ['handover creation', () => request(app).post('/api/family/children/child-id/handovers').send({})],
+      ['handover cancellation', () => request(app).delete('/api/family/children/child-id/handovers/handover-id')],
+      ['child export', () => request(app).get('/api/family/children/child-id/export')],
+    ] as const;
+    for (const [_surface, gatedRequest] of gatedRequests) {
+      const response = await gatedRequest().expect(503);
+      expect(response.body).toEqual({ error: 'Family features are temporarily unavailable' });
+    }
   });
 });
