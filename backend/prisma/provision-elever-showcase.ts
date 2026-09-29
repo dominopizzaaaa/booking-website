@@ -44,25 +44,31 @@ if (new Set(Object.values(credentials).map(credential => credential.password)).s
 const allApplicationTables = [
   'AccountNotification', 'BusinessAuditEvent', 'BusinessPaymentAccount', 'CalendarBusyInterval', 'CalendarEventProjection', 'CalendarOAuthAttempt',
   'CalendarRevocationJob', 'CalendarSyncJob', 'CalendarConnection', 'CoachInvitation', 'AuthSession', 'Availability',
-  'ChildConsentRecord', 'ChildAccountHandover', 'GuardianChildLink',
+  'ChildConsentRecord', 'ChildAccountHandover', 'GuardianChildLink', 'EmailVerificationClaim', 'SignupAcceptanceEvidence',
   'ClubStaffAccess', 'ClubStaffInvitation',
+  'ChatSafetyAuditEvent', 'ChatSafetyReport', 'ChatAccountBlock',
   'ChatMessage', 'ChatReadState', 'ChatThreadMember', 'ChatThread', 'SessionProposal', 'SessionProposalResponse',
   'AvailabilityException', 'Booking', 'BookingSeries', 'BookingSeriesMember', 'Business', 'Instructor', 'IntegrityFlag', 'LessonPackage',
   'LessonPackageLocation', 'LessonPackageService', 'Location', 'Membership', 'Notification', 'PackageOffer',
   'NotificationPreference', 'OutboundDelivery', 'PackageOfferLocation', 'PackageOfferService', 'Participant',
-  'Payment', 'PaymentIntent', 'PaymentProviderEvent', 'PaymentRefund', 'PaymentSettlement', 'RescheduleRequest',
+  'Payment', 'PaymentIntent', 'PaymentProviderEvent', 'PaymentRefund', 'PaymentRiskCase', 'PaymentSettlement',
+  'PrivacyRequestEvent', 'PrivacyRequest', 'RescheduleRequest',
   'Service', 'ServiceInstructor', 'ServiceLocation', 'Student', 'User', 'VenueOpeningHour', 'VenueReservation',
   'VenueUnit', 'VenueUnitAllocation',
 ] as const;
 
-// These two audit-history triggers deliberately reject TRUNCATE, including on
+// These retained-history triggers deliberately reject TRUNCATE, including on
 // an empty table. The provisioner is an explicitly confirmed, whole-database
 // reset, so it may suspend only those exact TRUNCATE guards while it holds the
 // tables' access-exclusive locks. ALTER TABLE is transactional in PostgreSQL:
 // a failed reset rolls the trigger state back together with every data change.
-const familyHistoryResetTriggers = [
+const retainedHistoryResetTriggers = [
   { table: 'ChildConsentRecord', trigger: 'ChildConsentRecord_append_only_truncate' },
   { table: 'ChildAccountHandover', trigger: 'ChildAccountHandover_history_delete_guard' },
+  { table: 'PrivacyRequestEvent', trigger: 'PrivacyRequestEvent_append_only_truncate' },
+  { table: 'ChatSafetyReport', trigger: 'ChatSafetyReport_retained_truncate' },
+  { table: 'ChatSafetyAuditEvent', trigger: 'ChatSafetyAuditEvent_append_only_truncate' },
+  { table: 'SignupAcceptanceEvidence', trigger: 'SignupAcceptanceEvidence_append_only_truncate' },
 ] as const;
 
 function quoteIdentifier(value: string) {
@@ -147,7 +153,7 @@ async function main() {
     const [target] = await tx.$queryRaw<Array<{ schema_name: string | null }>>`SELECT current_schema() AS schema_name`;
     if (!target?.schema_name) throw new Error('The target database has no current schema; no data was changed');
     const quotedSchema = quoteIdentifier(target.schema_name);
-    const familyHistoryGuards = await tx.$queryRaw<Array<{ table_name: string; trigger_name: string; enabled: string }>>`
+    const retainedHistoryGuards = await tx.$queryRaw<Array<{ table_name: string; trigger_name: string; enabled: string }>>`
       SELECT table_class.relname AS table_name, trigger_row.tgname AS trigger_name, trigger_row.tgenabled AS enabled
       FROM pg_trigger AS trigger_row
       JOIN pg_class AS table_class ON table_class.oid = trigger_row.tgrelid
@@ -155,21 +161,25 @@ async function main() {
       WHERE table_namespace.nspname = current_schema()
         AND (table_class.relname, trigger_row.tgname) IN (
           ('ChildConsentRecord', 'ChildConsentRecord_append_only_truncate'),
-          ('ChildAccountHandover', 'ChildAccountHandover_history_delete_guard')
+          ('ChildAccountHandover', 'ChildAccountHandover_history_delete_guard'),
+          ('PrivacyRequestEvent', 'PrivacyRequestEvent_append_only_truncate'),
+          ('ChatSafetyReport', 'ChatSafetyReport_retained_truncate'),
+          ('ChatSafetyAuditEvent', 'ChatSafetyAuditEvent_append_only_truncate'),
+          ('SignupAcceptanceEvidence', 'SignupAcceptanceEvidence_append_only_truncate')
         )
         AND NOT trigger_row.tgisinternal
     `;
-    if (familyHistoryGuards.length !== familyHistoryResetTriggers.length
-      || familyHistoryGuards.some(guard => guard.enabled !== 'O')) {
-      throw new Error('Family history reset guards are missing or not enabled; no data was changed');
+    if (retainedHistoryGuards.length !== retainedHistoryResetTriggers.length
+      || retainedHistoryGuards.some(guard => guard.enabled !== 'O')) {
+      throw new Error('Retained-history reset guards are missing or not enabled; no data was changed');
     }
-    for (const guard of familyHistoryResetTriggers) {
+    for (const guard of retainedHistoryResetTriggers) {
       await tx.$executeRawUnsafe(
         `ALTER TABLE ${quotedSchema}.${quoteIdentifier(guard.table)} DISABLE TRIGGER ${quoteIdentifier(guard.trigger)}`,
       );
     }
     await tx.$executeRawUnsafe(`TRUNCATE TABLE ${allApplicationTables.map(table => `${quotedSchema}."${table}"`).join(', ')} CONTINUE IDENTITY`);
-    for (const guard of familyHistoryResetTriggers) {
+    for (const guard of retainedHistoryResetTriggers) {
       await tx.$executeRawUnsafe(
         `ALTER TABLE ${quotedSchema}.${quoteIdentifier(guard.table)} ENABLE TRIGGER ${quoteIdentifier(guard.trigger)}`,
       );

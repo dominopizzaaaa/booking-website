@@ -18,6 +18,16 @@ model Business {
   color                 String                  @default("sage")
   tagline               String                  @default("Good coaching. Great possibilities.")
   cancellationHours     Int                     @default(24)
+  /// Commercial identity shown before checkout and retained on receipts.
+  /// Empty values mean the club has not completed payment-readiness setup;
+  /// Courtly never invents a registration or GST position.
+  legalName             String                  @default("")
+  registrationNumber    String?
+  supportEmail          String                  @default("")
+  supportAddress        String                  @default("")
+  gstRegistrationStatus String                  @default("NOT_DECLARED")
+  gstRegistrationNumber String?
+  pricesIncludeGst      Boolean?
   /// "CLUB" routes every new lesson payment through the club before it reaches
   /// a coach. "SOLO" survives only on retained historical records. The value
   /// was snapshotted onto each Booking as paymentRoute.
@@ -59,63 +69,172 @@ model Business {
   paymentAccount        BusinessPaymentAccount?
   paymentProviderEvents PaymentProviderEvent[]
   paymentRefunds        PaymentRefund[]
+  paymentRiskCases      PaymentRiskCase[]
+  chatSafetyReports     ChatSafetyReport[]
 
   @@index([kind, isDemo, slug])
 }
 
 model User {
-  id                     String                  @id @default(cuid())
-  name                   String
+  id                           String                   @id @default(cuid())
+  name                         String
   /// Private legal identity. Existing accounts are backfilled from name; name
   /// remains the display identity used throughout the product.
-  legalName              String
+  legalName                    String
   /// A calendar date rather than a timestamp. Null means the legacy account
   /// has not completed the one-time age review. Once set, SQL keeps it fixed.
-  dateOfBirth            DateTime?               @db.Date
+  dateOfBirth                  DateTime?                @db.Date
   /// Guardian-managed children do not need synthetic credentials or contact
   /// addresses. PostgreSQL uniqueness still applies to every non-null email.
-  email                  String?                 @unique
-  emailVerifiedAt        DateTime?
+  email                        String?                  @unique
+  emailVerifiedAt              DateTime?
+  /// Versioned signup evidence. These values record acceptance of the account
+  /// terms and acknowledgement of the general privacy notice; child guardian
+  /// consent remains separate in ChildConsentRecord.
+  termsAcceptedVersion         String?
+  termsAcceptedAt              DateTime?
+  privacyNoticeAcceptedVersion String?
+  privacyNoticeAcceptedAt      DateTime?
+  /// Content-derived identifier for the complete policy set presented at
+  /// signup. Version labels alone are not acceptance evidence.
+  signupPolicySetHash          String?
   /// Public account handle. SQL enforces canonical lowercase ASCII
   /// [a-z0-9_] content and the 3-30 character boundary.
-  username               String                  @unique
-  sports                 String[]                @default([])
-  passwordHash           String?
+  username                     String                   @unique
+  sports                       String[]                 @default([])
+  passwordHash                 String?
   /// The only role vocabulary in Courtly. "STUDENT" books lessons, "COACH"
   /// teaches them, "CLUB" is a club or academy rather than a person. This one
   /// value decides both the profile someone sees and what they may do, so
   /// there is deliberately no second role stored per membership.
-  accountType            String                  @default("STUDENT")
+  accountType                  String                   @default("STUDENT")
   /// SELF accounts authenticate and act for themselves. GUARDIAN_MANAGED is
   /// reserved for private child identities operated through active links.
-  accountControl         String                  @default("SELF")
-  accountStatus          String                  @default("ACTIVE")
-  profileVisibility      String                  @default("PUBLIC")
-  phone                  String                  @default("")
-  parentName             String                  @default("")
-  memberships            Membership[]
-  sessions               AuthSession[]
-  students               Student[]
-  accountNotifications   AccountNotification[]
-  calendarConnection     CalendarConnection?
-  calendarOAuthAttempts  CalendarOAuthAttempt[]
-  venueReservations      VenueReservation[]
-  paymentIntents         PaymentIntent[]
-  chatThreadMemberships  ChatThreadMember[]      @relation("ChatThreadMemberUser")
-  chatMembersAdded       ChatThreadMember[]      @relation("ChatThreadMemberAddedBy")
-  acceptedCoachInvites   CoachInvitation[]       @relation("CoachInvitationAcceptedBy")
-  staffAccesses          ClubStaffAccess[]
-  acceptedStaffInvites   ClubStaffInvitation[]   @relation("ClubStaffInvitationAcceptedBy")
-  notificationPreference NotificationPreference?
-  outboundDeliveries     OutboundDelivery[]
-  paymentRefundRequests  PaymentRefund[]         @relation("PaymentRefundRequestedBy")
-  guardianLinks          GuardianChildLink[]     @relation("GuardianChildLinkGuardian")
-  childLinks             GuardianChildLink[]     @relation("GuardianChildLinkChild")
-  guardianConsentRecords ChildConsentRecord[]    @relation("ChildConsentRecordGuardian")
-  childConsentRecords    ChildConsentRecord[]    @relation("ChildConsentRecordChild")
-  initiatedHandovers     ChildAccountHandover[]  @relation("ChildAccountHandoverInitiator")
-  childHandovers         ChildAccountHandover[]  @relation("ChildAccountHandoverChild")
-  createdAt              DateTime                @default(now())
+  accountControl               String                   @default("SELF")
+  accountStatus                String                   @default("ACTIVE")
+  /// Safeguarding containment is deliberately separate from child-account
+  /// policy state. This bounded control restricts direct account chat only.
+  safetyStatus                 String                   @default("ACTIVE")
+  profileVisibility            String                   @default("PUBLIC")
+  phone                        String                   @default("")
+  parentName                   String                   @default("")
+  memberships                  Membership[]
+  sessions                     AuthSession[]
+  students                     Student[]
+  accountNotifications         AccountNotification[]
+  calendarConnection           CalendarConnection?
+  calendarOAuthAttempts        CalendarOAuthAttempt[]
+  venueReservations            VenueReservation[]
+  paymentIntents               PaymentIntent[]
+  chatThreadMemberships        ChatThreadMember[]       @relation("ChatThreadMemberUser")
+  chatMembersAdded             ChatThreadMember[]       @relation("ChatThreadMemberAddedBy")
+  acceptedCoachInvites         CoachInvitation[]        @relation("CoachInvitationAcceptedBy")
+  staffAccesses                ClubStaffAccess[]
+  acceptedStaffInvites         ClubStaffInvitation[]    @relation("ClubStaffInvitationAcceptedBy")
+  notificationPreference       NotificationPreference?
+  outboundDeliveries           OutboundDelivery[]
+  paymentRefundRequests        PaymentRefund[]          @relation("PaymentRefundRequestedBy")
+  ownedPaymentRiskCases        PaymentRiskCase[]        @relation("PaymentRiskCaseOwner")
+  guardianLinks                GuardianChildLink[]      @relation("GuardianChildLinkGuardian")
+  childLinks                   GuardianChildLink[]      @relation("GuardianChildLinkChild")
+  guardianConsentRecords       ChildConsentRecord[]     @relation("ChildConsentRecordGuardian")
+  childConsentRecords          ChildConsentRecord[]     @relation("ChildConsentRecordChild")
+  initiatedHandovers           ChildAccountHandover[]   @relation("ChildAccountHandoverInitiator")
+  childHandovers               ChildAccountHandover[]   @relation("ChildAccountHandoverChild")
+  signupAcceptanceEvidence     SignupAcceptanceEvidence?
+  emailVerificationClaims      EmailVerificationClaim[]
+  privacyRequests              PrivacyRequest[]         @relation("PrivacyRequestSubject")
+  chatBlocksInitiated          ChatAccountBlock[]       @relation("ChatAccountBlockBlocker")
+  chatBlocksReceived           ChatAccountBlock[]       @relation("ChatAccountBlockBlocked")
+  chatSafetyReportsFiled       ChatSafetyReport[]       @relation("ChatSafetyReportReporter")
+  chatSafetyReportsAgainst     ChatSafetyReport[]       @relation("ChatSafetyReportSubject")
+  chatSafetyReportsAssigned    ChatSafetyReport[]       @relation("ChatSafetyReportClubAssignee")
+  chatSafetyAuditEvents        ChatSafetyAuditEvent[]   @relation("ChatSafetyAuditActor")
+  createdAt                    DateTime                 @default(now())
+}
+
+/// Append-only proof of the exact policy set accepted at signup. It cannot be
+/// changed or deleted independently, but follows an authorized User deletion.
+model SignupAcceptanceEvidence {
+  id                   String    @id
+  userId               String    @unique
+  user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  termsVersion         String
+  privacyNoticeVersion String
+  policySetHash        String
+  acceptedAt           DateTime
+  createdAt            DateTime  @default(now())
+}
+
+/// Digest-only, expiring proof used to verify that a self-managed account
+/// controls its signup email address. The raw bearer token is never stored.
+model EmailVerificationClaim {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  tokenKeyId String
+  email      String
+  expiresAt  DateTime
+  consumedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+}
+
+/// A single data-subject request/case. The subject can track access,
+/// correction, erasure, restriction, consent withdrawal, or an objection.
+/// Resolution is always a reviewed decision, including partial refusal and
+/// retention/legal-hold grounds; creating a case does not pretend fulfilment.
+model PrivacyRequest {
+  id                   String                @id @default(cuid())
+  subjectUserId        String
+  subject              User                  @relation("PrivacyRequestSubject", fields: [subjectUserId], references: [id], onDelete: Restrict)
+  type                 String
+  status               String                @default("RECEIVED")
+  details              String                @default("")
+  correctionFields     Json?
+  submittedAt          DateTime              @default(now())
+  acknowledgementDueAt DateTime
+  responseDueAt        DateTime
+  acknowledgedAt       DateTime?
+  identityVerifiedAt   DateTime?
+  delayNoticeAt        DateTime?
+  delayReason          String?
+  estimatedResponseAt  DateTime?
+  legalHold            Boolean               @default(false)
+  legalHoldReason      String?
+  decision             String?
+  decisionReason       String?
+  completedAt          DateTime?
+  cancelledAt          DateTime?
+  updatedAt            DateTime              @updatedAt
+  events               PrivacyRequestEvent[]
+
+  @@index([subjectUserId, submittedAt])
+  @@index([status, responseDueAt])
+}
+
+/// Append-only operational history. Actor identity is snapshotted so a
+/// later account anonymisation cannot rewrite who made a compliance decision.
+model PrivacyRequestEvent {
+  id                 String         @id @default(cuid())
+  requestId          String
+  request            PrivacyRequest @relation(fields: [requestId], references: [id], onDelete: Restrict)
+  action             String
+  actorKind          String
+  actorUserId        String?
+  actorNameSnapshot  String
+  actorEmailSnapshot String
+  fromStatus         String?
+  toStatus           String?
+  note               String         @default("")
+  metadata           Json?
+  createdAt          DateTime       @default(now())
+
+  @@index([requestId, createdAt])
 }
 
 /// A guardian's explicit authority over a global child identity. This is not
@@ -765,6 +884,7 @@ model Booking {
   proposalResponses    SessionProposalResponse[]
   venueUnitAllocations VenueUnitAllocation[]
   outboundDeliveries   OutboundDelivery[]
+  chatSafetyReports    ChatSafetyReport[]
 
   // Supports the database-level composite FK that keeps a payment's optional
   // booking inside the same business.
@@ -1046,45 +1166,64 @@ model Payment {
 /// Idempotent simulated checkout state. The subject columns identify what the
 /// customer is buying; packageId and payment are results created on success.
 model PaymentIntent {
-  id                       String             @id @default(cuid())
-  userId                   String
-  user                     User               @relation(fields: [userId], references: [id], onDelete: Restrict)
-  businessId               String
-  business                 Business           @relation(fields: [businessId], references: [id], onDelete: Restrict)
+  id                                String             @id @default(cuid())
+  userId                            String
+  user                              User               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  businessId                        String
+  business                          Business           @relation(fields: [businessId], references: [id], onDelete: Restrict)
   /// "PACKAGE", "BOOKING" or "RENTAL". SQL enforces its matching
   /// target shape, including reservation-less failed rental attempts.
-  kind                     String
-  packageOfferId           String?
-  packageOffer             PackageOffer?      @relation(fields: [packageOfferId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
-  participantId            String?
-  participant              Participant?       @relation(fields: [participantId], references: [id], onDelete: Restrict)
-  reservationId            String?
-  reservation              VenueReservation?  @relation(fields: [reservationId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  kind                              String
+  packageOfferId                    String?
+  packageOffer                      PackageOffer?      @relation(fields: [packageOfferId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  participantId                     String?
+  participant                       Participant?       @relation(fields: [participantId], references: [id], onDelete: Restrict)
+  reservationId                     String?
+  reservation                       VenueReservation?  @relation(fields: [reservationId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   /// Purchased package entitlement produced by a successful package intent.
-  packageId                String?
-  package                  LessonPackage?     @relation(fields: [packageId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  packageId                         String?
+  package                           LessonPackage?     @relation(fields: [packageId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   /// Integer minor units (cents).
-  amount                   Int
-  currency                 String             @default("SGD")
-  status                   String             @default("REQUIRES_CONFIRMATION")
-  provider                 String             @default("SIMULATED_STRIPE")
-  providerAccountReference String             @default("")
-  providerReference        String?
-  checkoutSnapshot         Json?
-  idempotencyKey           String
-  expiresAt                DateTime?
-  failureCode              String?
-  lastProviderEventAt      DateTime?
-  createdAt                DateTime           @default(now())
-  confirmedAt              DateTime?
-  failedAt                 DateTime?
-  payment                  Payment?
-  refunds                  PaymentRefund[]
-  settlement               PaymentSettlement?
+  amount                            Int
+  currency                          String             @default("SGD")
+  status                            String             @default("REQUIRES_CONFIRMATION")
+  provider                          String             @default("SIMULATED_STRIPE")
+  providerAccountReference          String             @default("")
+  providerReference                 String?
+  checkoutSnapshot                  Json?
+  /// Affirmative, transaction-specific acceptance. Historical and explicitly
+  /// simulated records may be null; live checkout creation requires the full
+  /// set and SQL keeps it immutable with the checkout snapshot.
+  acceptedAt                        DateTime?
+  acceptedTermsVersion              String?
+  acceptedTermsHash                 String?
+  acceptedCancellationPolicyVersion String?
+  acceptedCancellationPolicyHash    String?
+  acceptedPackageTermsVersion       String?
+  acceptedPackageTermsHash          String?
+  acceptedReviewHash                String?
+  acceptanceSessionFingerprint      String?
+  acceptanceRequestFingerprint      String?
+  acceptanceEvidenceVersion         Int?
+  /// Safe provider evidence only. No card number, CVC, or raw provider body.
+  providerChargeReference           String?
+  authenticationEvidence            Json?
+  idempotencyKey                    String
+  expiresAt                         DateTime?
+  failureCode                       String?
+  lastProviderEventAt               DateTime?
+  createdAt                         DateTime           @default(now())
+  confirmedAt                       DateTime?
+  failedAt                          DateTime?
+  payment                           Payment?
+  refunds                           PaymentRefund[]
+  settlement                        PaymentSettlement?
+  riskCases                         PaymentRiskCase[]
 
   @@unique([id, businessId])
   @@unique([userId, idempotencyKey])
   @@unique([provider, providerAccountReference, providerReference])
+  @@unique([provider, providerAccountReference, providerChargeReference])
   @@index([businessId, status, createdAt])
   @@index([packageOfferId])
   @@index([participantId])
@@ -1151,6 +1290,37 @@ model PaymentRefund {
 
   @@index([businessId, status, createdAt])
   @@index([paymentIntentId])
+}
+
+/// Operational record for a Stripe dispute, pre-dispute inquiry, or early
+/// fraud warning. Raw webhook/card data is deliberately not retained here.
+model PaymentRiskCase {
+  id                       String         @id @default(cuid())
+  businessId               String
+  business                 Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  paymentIntentId          String?
+  paymentIntent            PaymentIntent? @relation(fields: [paymentIntentId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  provider                 String         @default("STRIPE")
+  providerAccountReference String
+  providerCaseId           String
+  kind                     String
+  status                   String
+  reason                   String         @default("")
+  amount                   Int?
+  currency                 String?
+  responseDueAt            DateTime?
+  ownerUserId              String?
+  owner                    User?          @relation("PaymentRiskCaseOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  providerCreatedAt        DateTime?
+  lastProviderEventAt      DateTime
+  resolvedAt               DateTime?
+  createdAt                DateTime       @default(now())
+  updatedAt                DateTime       @updatedAt
+
+  @@unique([provider, providerAccountReference, providerCaseId])
+  @@index([businessId, status, responseDueAt])
+  @@index([paymentIntentId])
+  @@index([ownerUserId, status])
 }
 
 model PaymentSettlement {
@@ -1365,6 +1535,7 @@ model ChatThread {
   readStates      ChatReadState[]
   members         ChatThreadMember[]
   proposals       SessionProposal[]
+  safetyReports   ChatSafetyReport[]
 
   @@unique([id, businessId])
   @@unique([bookingId, businessId])
@@ -1400,27 +1571,109 @@ model ChatThreadMember {
 /// describe a lifecycle event (reminders, confirmations) and PROPOSAL rows
 /// carry a next-session proposal card.
 model ChatMessage {
-  id           String           @id @default(cuid())
-  threadId     String
-  thread       ChatThread       @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  id            String             @id @default(cuid())
+  threadId      String
+  thread        ChatThread         @relation(fields: [threadId], references: [id], onDelete: Cascade)
   /// "TEXT", "SYSTEM" or "PROPOSAL".
-  kind         String           @default("TEXT")
+  kind          String             @default("TEXT")
   /// The lifecycle event behind a SYSTEM row, such as "OPENED" or "REMINDER".
-  event        String           @default("")
+  event         String             @default("")
   /// The person who wrote the message or whose action produced the event.
   /// SQL adds a SET NULL foreign key to User; the name is snapshotted so
   /// history still reads correctly after an account is renamed or removed.
-  senderUserId String?
+  senderUserId  String?
   /// "STUDENT", "COACH", "CLUB" or "SYSTEM".
-  senderRole   String
-  senderName   String           @default("")
-  body         String
-  proposalId   String?
-  proposal     SessionProposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
-  createdAt    DateTime         @default(now())
+  senderRole    String
+  senderName    String             @default("")
+  body          String
+  proposalId    String?
+  proposal      SessionProposal?   @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+  createdAt     DateTime           @default(now())
+  safetyReports ChatSafetyReport[]
 
   @@index([threadId, createdAt])
   @@index([proposalId])
+}
+
+/// A private, directional contact choice. Reciprocal blocks are distinct so
+/// each person can remove only the block that they created.
+model ChatAccountBlock {
+  blockerUserId String
+  blocker       User     @relation("ChatAccountBlockBlocker", fields: [blockerUserId], references: [id], onDelete: Cascade)
+  blockedUserId String
+  blocked       User     @relation("ChatAccountBlockBlocked", fields: [blockedUserId], references: [id], onDelete: Cascade)
+  createdAt     DateTime @default(now())
+
+  @@id([blockerUserId, blockedUserId])
+  @@index([blockedUserId])
+}
+
+/// A retained safeguarding case whose evidence is snapshotted at intake.
+/// Source records may later be removed, but SQL permits their foreign keys to
+/// change only from a concrete ID to null and never rewrites the snapshot.
+model ChatSafetyReport {
+  id                 String                 @id @default(cuid())
+  threadId           String?
+  thread             ChatThread?            @relation(fields: [threadId], references: [id], onDelete: SetNull)
+  messageId          String?
+  message            ChatMessage?           @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  businessId         String?
+  business           Business?              @relation(fields: [businessId], references: [id], onDelete: SetNull)
+  bookingId          String?
+  booking            Booking?               @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  reporterUserId     String?
+  reporter           User?                  @relation("ChatSafetyReportReporter", fields: [reporterUserId], references: [id], onDelete: SetNull)
+  subjectUserId      String?
+  subject            User?                  @relation("ChatSafetyReportSubject", fields: [subjectUserId], references: [id], onDelete: SetNull)
+  category           String
+  status             String                 @default("OPEN")
+  severity           String
+  childInvolved      Boolean                @default(false)
+  description        String                 @default("")
+  evidence           Json
+  evidenceHash       String
+  /// Stable identity for a club-side SELF assignment. assignedTo remains the
+  /// display snapshot and supports platform-only team labels.
+  assignedClubUserId String?
+  assignedClubUser   User?                  @relation("ChatSafetyReportClubAssignee", fields: [assignedClubUserId], references: [id], onDelete: SetNull)
+  assignedTo         String?
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  auditEvents        ChatSafetyAuditEvent[]
+
+  @@index([status, severity, createdAt])
+  @@index([businessId, status, createdAt])
+  @@index([reporterUserId, createdAt])
+  @@index([subjectUserId, createdAt])
+  @@index([threadId, createdAt])
+  @@index([messageId])
+  @@index([bookingId])
+  @@index([businessId, assignedClubUserId, status, createdAt], map: "ChatSafetyReport_assignee_status_createdAt_idx")
+}
+
+/// Immutable named-actor history for every safeguarding case decision.
+model ChatSafetyAuditEvent {
+  id           String           @id @default(cuid())
+  reportId     String
+  report       ChatSafetyReport @relation(fields: [reportId], references: [id], onDelete: Restrict)
+  actorKind    String
+  actorUserId  String?
+  actor        User?            @relation("ChatSafetyAuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  actorName    String
+  action       String
+  note         String?
+  fromStatus   String?
+  toStatus     String?
+  fromSeverity String?
+  toSeverity   String?
+  assignedTo   String?
+  /// Stable assignment snapshot; no foreign key so deletion cannot rewrite
+  /// retained ownership history.
+  assignedClubUserId String?
+  createdAt    DateTime         @default(now())
+
+  @@index([reportId, createdAt])
+  @@index([actorUserId, createdAt])
 }
 
 /// How far one person has read one thread. Unread counts are derived from
