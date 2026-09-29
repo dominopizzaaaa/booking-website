@@ -263,7 +263,7 @@ async function fulfillSucceeded(tx: Tx, intentId: string, provider: ProviderPaym
   }
   return tx.paymentIntent.update({ where: { id: intent.id }, data: {
     status: 'SUCCEEDED', packageId, confirmedAt: eventAt, failedAt: null, failureCode: null,
-    lastProviderEventAt: eventAt,
+    lastProviderEventAt: eventAt, providerChargeReference: provider.latestChargeId,
   } });
 }
 
@@ -282,6 +282,7 @@ export async function applyProviderPaymentIntent(
     }
     return prisma.paymentIntent.update({ where: { id: intent.id }, data: {
       status: 'REQUIRES_CONFIRMATION', failureCode: null, failedAt: null, lastProviderEventAt: eventAt,
+      ...(provider.latestChargeId ? { providerChargeReference: provider.latestChargeId } : {}),
     } });
   }
   return prisma.$transaction(async tx => {
@@ -296,6 +297,7 @@ export async function applyProviderPaymentIntent(
     return tx.paymentIntent.update({ where: { id: intent.id }, data: {
       status: provider.state, failureCode: provider.failureCode,
       failedAt: provider.state === 'FAILED' ? eventAt : null, lastProviderEventAt: eventAt,
+      ...(provider.latestChargeId ? { providerChargeReference: provider.latestChargeId } : {}),
     } });
   });
 }

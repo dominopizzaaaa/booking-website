@@ -2,11 +2,20 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { app } from '../src/app.js';
+import { CHECKOUT_POLICY_VERSION } from '../src/payments/compliance.js';
 import {
   TestTenants, createAccount, createSession, createStudent, prisma, verifyTestDatabase, type Fixture,
 } from './fixtures.js';
 
 const tenants = new TestTenants();
+
+function dummyBookingCheckoutAcceptance() {
+  return {
+    accepted: true as const, reviewHash: '0'.repeat(64),
+    termsVersion: CHECKOUT_POLICY_VERSION, cancellationRefundPolicyVersion: CHECKOUT_POLICY_VERSION,
+    packageTermsVersion: null,
+  };
+}
 
 describe.sequential('Solo practice invariants', () => {
   let club: Fixture;
@@ -222,6 +231,7 @@ describe.sequential('Solo practice invariants', () => {
       () => request(app).post(`/api/account/bookings/${historical.participantId}/checkout`)
         .set('Cookie', studentSession.cookie).send({
           idempotencyKey: `historical-checkout-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED',
+          acceptance: dummyBookingCheckoutAcceptance(),
         }),
       () => request(app).post(`/api/manage/${historical.token}/cancel`).send({}),
       () => request(app).post(`/api/manage/${historical.token}/reschedule`).send({ startAt: proposedStartAt }),
@@ -366,6 +376,7 @@ describe.sequential('Solo practice invariants', () => {
     const checkout = await request(app).post(`/api/account/bookings/${participantId}/checkout`)
       .set('Cookie', studentSession.cookie).send({
         idempotencyKey: `legacy-club-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED',
+        acceptance: dummyBookingCheckoutAcceptance(),
       }).expect(409);
     expect(checkout.body.error).toMatch(/^This historical booking is read-only/);
     expect(await prisma.participant.findUniqueOrThrow({ where: { id: participantId } }))

@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { checkoutIntentJson, createOrResumeProviderCheckout, prepareCheckout } from '../src/payments/checkout.js';
+import { checkoutIntentJson, checkoutReviewFor, createOrResumeProviderCheckout, prepareCheckout } from '../src/payments/checkout.js';
 import { CURRENT_PRIVACY_POLICY_VERSION } from '../src/children-policy.js';
+import { CHECKOUT_POLICY_VERSION } from '../src/payments/compliance.js';
 import {
   applyProviderPaymentIntent, assertBookingFulfillmentContract, providerIntentFromWebhook,
 } from '../src/payments/fulfillment.js';
@@ -9,7 +10,7 @@ import type { ProviderPaymentIntent } from '../src/payments/provider.js';
 import type { StripeWebhookEvent } from '../src/payments/webhooks.js';
 import { createBookings } from '../src/scheduling.js';
 import {
-  createStudent, inputFor, prisma, TestTenants, verifyTestDatabase, type Fixture,
+  createSession, createStudent, inputFor, prisma, TestTenants, verifyTestDatabase, type Fixture,
 } from './fixtures.js';
 
 beforeAll(verifyTestDatabase, 15_000);
@@ -137,6 +138,33 @@ describe.sequential('delayed Stripe fulfillment', () => {
   });
   afterEach(async () => { await tenants.cleanup(); });
 
+  async function enableMerchantCheckout() {
+    await prisma.business.update({ where: { id: fixture.business.id }, data: {
+      legalName: `${fixture.business.name} Pte. Ltd.`, supportEmail: fixture.business.email,
+      supportAddress: '1 Test Court, Singapore 123456', gstRegistrationStatus: 'NOT_REGISTERED',
+    } });
+    await prisma.businessPaymentAccount.create({ data: {
+      businessId: fixture.business.id, providerAccountId: `acct_${randomUUID().replaceAll('-', '')}`,
+      settlementCurrency: fixture.business.currency, chargesEnabled: true,
+    } });
+  }
+
+  async function prepareAcceptedBookingCheckout(input: {
+    userId: string; participantId: string; idempotencyKey: string; sessionId: string;
+  }) {
+    const review = await checkoutReviewFor({
+      userId: input.userId, kind: 'BOOKING', targetId: input.participantId,
+    });
+    return prepareCheckout({
+      userId: input.userId, kind: 'BOOKING', targetId: input.participantId,
+      idempotencyKey: input.idempotencyKey, sessionId: input.sessionId,
+      acceptance: {
+        accepted: true, reviewHash: review.reviewHash, termsVersion: CHECKOUT_POLICY_VERSION,
+        cancellationRefundPolicyVersion: CHECKOUT_POLICY_VERSION, packageTermsVersion: null,
+      },
+    });
+  }
+
   function succeededProvider(id: string, amount: number, currency = 'SGD'): ProviderPaymentIntent {
     return {
       id, state: 'SUCCEEDED', providerStatus: 'succeeded', amount, currency, clientSecret: null,
@@ -167,37 +195,36 @@ describe.sequential('delayed Stripe fulfillment', () => {
 
   it('allows only one active Stripe checkout across different idempotency keys for a participant', async () => {
     const student = await createStudent(fixture);
+    const studentSession = await createSession(fixture, student.userId!);
     const created = await createBookings(fixture.business.id, inputFor(fixture, {
       studentId: student.id, student: undefined,
     }));
     const participantId = created.bookings[0]!.participants[0]!.id;
-    await prisma.businessPaymentAccount.create({ data: {
-      businessId: fixture.business.id, providerAccountId: `acct_${randomUUID().replaceAll('-', '')}`,
-      settlementCurrency: fixture.business.currency, chargesEnabled: true,
-    } });
+    await enableMerchantCheckout();
 
-    const first = await prepareCheckout({
-      userId: student.userId!, kind: 'BOOKING', targetId: participantId, idempotencyKey: `first-${randomUUID()}`,
+    const first = await prepareAcceptedBookingCheckout({
+      userId: student.userId!, participantId, idempotencyKey: `first-${randomUUID()}`,
+      sessionId: studentSession.session.id,
     });
     expect(first.replay).toBe(false);
-    await expect(prepareCheckout({
-      userId: student.userId!, kind: 'BOOKING', targetId: participantId, idempotencyKey: `second-${randomUUID()}`,
+    await expect(prepareAcceptedBookingCheckout({
+      userId: student.userId!, participantId, idempotencyKey: `second-${randomUUID()}`,
+      sessionId: studentSession.session.id,
     })).rejects.toMatchObject({ status: 409, message: 'A card checkout is already in progress for this booking' });
     expect(await prisma.paymentIntent.count({ where: { participantId, provider: 'STRIPE' } })).toBe(1);
   });
 
   it('resumes the same failed Stripe checkout when the browser supplies a fresh key', async () => {
     const student = await createStudent(fixture);
+    const studentSession = await createSession(fixture, student.userId!);
     const created = await createBookings(fixture.business.id, inputFor(fixture, {
       studentId: student.id, student: undefined,
     }));
     const participantId = created.bookings[0]!.participants[0]!.id;
-    await prisma.businessPaymentAccount.create({ data: {
-      businessId: fixture.business.id, providerAccountId: `acct_${randomUUID().replaceAll('-', '')}`,
-      settlementCurrency: fixture.business.currency, chargesEnabled: true,
-    } });
-    const first = await prepareCheckout({
-      userId: student.userId!, kind: 'BOOKING', targetId: participantId, idempotencyKey: `first-${randomUUID()}`,
+    await enableMerchantCheckout();
+    const first = await prepareAcceptedBookingCheckout({
+      userId: student.userId!, participantId, idempotencyKey: `first-${randomUUID()}`,
+      sessionId: studentSession.session.id,
     });
     const providerReference = `pi_${randomUUID()}`;
     await prisma.paymentIntent.update({ where: { id: first.intentId }, data: { providerReference } });
@@ -207,8 +234,9 @@ describe.sequential('delayed Stripe fulfillment', () => {
       latestChargeId: null, failureCode: 'card_declined',
     });
 
-    const retry = await prepareCheckout({
-      userId: student.userId!, kind: 'BOOKING', targetId: participantId, idempotencyKey: `second-${randomUUID()}`,
+    const retry = await prepareAcceptedBookingCheckout({
+      userId: student.userId!, participantId, idempotencyKey: `second-${randomUUID()}`,
+      sessionId: studentSession.session.id,
     });
     expect(retry).toMatchObject({ intentId: first.intentId, providerReference, replay: true });
     const retrievePaymentIntent = vi.fn().mockResolvedValue({
@@ -227,6 +255,95 @@ describe.sequential('delayed Stripe fulfillment', () => {
       id: first.intentId, status: 'REQUIRES_CONFIRMATION', failedAt: null, failureCode: null,
     } });
     expect(await prisma.paymentIntent.count({ where: { participantId, provider: 'STRIPE' } })).toBe(1);
+  });
+
+  it('requires a renewed review when exact-key replay merchant disclosures changed', async () => {
+    const student = await createStudent(fixture);
+    const studentSession = await createSession(fixture, student.userId!);
+    const created = await createBookings(fixture.business.id, inputFor(fixture, {
+      studentId: student.id, student: undefined,
+    }));
+    const participantId = created.bookings[0]!.participants[0]!.id;
+    await enableMerchantCheckout();
+    const idempotencyKey = `merchant-change-${randomUUID()}`;
+    await prepareAcceptedBookingCheckout({
+      userId: student.userId!, participantId, idempotencyKey, sessionId: studentSession.session.id,
+    });
+
+    const supportEmail = `new-payments-${randomUUID()}@example.test`;
+    await prisma.business.update({
+      where: { id: fixture.business.id }, data: { supportEmail },
+    });
+
+    await expect(prepareAcceptedBookingCheckout({
+      userId: student.userId!, participantId, idempotencyKey, sessionId: studentSession.session.id,
+    })).rejects.toMatchObject({
+      status: 409, details: {
+        code: 'CHECKOUT_REVIEW_CHANGED',
+        review: { merchant: expect.objectContaining({ supportEmail }) },
+      },
+    });
+  });
+
+  it('revalidates unsafe current GST declarations on exact-key replay', async () => {
+    const student = await createStudent(fixture);
+    const studentSession = await createSession(fixture, student.userId!);
+    const created = await createBookings(fixture.business.id, inputFor(fixture, {
+      studentId: student.id, student: undefined,
+    }));
+    const participantId = created.bookings[0]!.participants[0]!.id;
+    await enableMerchantCheckout();
+    const idempotencyKey = `tax-change-${randomUUID()}`;
+    await prepareAcceptedBookingCheckout({
+      userId: student.userId!, participantId, idempotencyKey, sessionId: studentSession.session.id,
+    });
+
+    await prisma.business.update({ where: { id: fixture.business.id }, data: {
+      gstRegistrationStatus: 'REGISTERED', gstRegistrationNumber: 'M91234567X', pricesIncludeGst: false,
+    } });
+
+    await expect(prepareAcceptedBookingCheckout({
+      userId: student.userId!, participantId, idempotencyKey, sessionId: studentSession.session.id,
+    })).rejects.toMatchObject({
+      status: 409, details: {
+        code: 'MERCHANT_IDENTITY_REQUIRED', missingFields: ['GST-inclusive displayed prices'],
+      },
+    });
+  });
+
+  it('revalidates unsafe current GST declarations before fresh-key failed-intent reuse', async () => {
+    const student = await createStudent(fixture);
+    const studentSession = await createSession(fixture, student.userId!);
+    const created = await createBookings(fixture.business.id, inputFor(fixture, {
+      studentId: student.id, student: undefined,
+    }));
+    const participantId = created.bookings[0]!.participants[0]!.id;
+    await enableMerchantCheckout();
+    const first = await prepareAcceptedBookingCheckout({
+      userId: student.userId!, participantId, idempotencyKey: `first-${randomUUID()}`,
+      sessionId: studentSession.session.id,
+    });
+    const providerReference = `pi_${randomUUID()}`;
+    await prisma.paymentIntent.update({
+      where: { id: first.intentId }, data: { providerReference },
+    });
+    await applyProviderPaymentIntent(first.intentId, {
+      id: providerReference, state: 'FAILED', providerStatus: 'requires_payment_method',
+      amount: first.amount, currency: first.currency, clientSecret: 'secret_retry',
+      latestChargeId: null, failureCode: 'card_declined',
+    });
+    await prisma.business.update({ where: { id: fixture.business.id }, data: {
+      gstRegistrationStatus: 'REGISTERED', gstRegistrationNumber: 'M91234567X', pricesIncludeGst: false,
+    } });
+
+    await expect(prepareAcceptedBookingCheckout({
+      userId: student.userId!, participantId, idempotencyKey: `retry-${randomUUID()}`,
+      sessionId: studentSession.session.id,
+    })).rejects.toMatchObject({
+      status: 409, details: {
+        code: 'MERCHANT_IDENTITY_REQUIRED', missingFields: ['GST-inclusive displayed prices'],
+      },
+    });
   });
 
   it.each([

@@ -803,19 +803,32 @@ export function SettingsView({ data, refresh }: ManagementProps) {
       {editing && (
         <Editor
           title="Edit business details"
-          description="Your business name and tagline appear on your public booking page. Existing booking links stay the same."
+          description="Update the public club profile and business details shown before a student pays. Existing booking links stay the same."
           onClose={() => setEditing(false)}
           refresh={refresh}
           success="Business details updated"
-          onSubmit={(form) =>
-            mutate("/business", "PATCH", {
+          wide
+          onSubmit={(form) => {
+            const gstPriceTreatment = text(form, "pricesIncludeGst");
+            return mutate("/business", "PATCH", {
               name: text(form, "name"),
               ownerName: text(form, "ownerName"),
               color: text(form, "color"),
               tagline: text(form, "tagline"),
               cancellationHours: numeric(form, "cancellationHours"),
-            })
-          }
+              legalName: text(form, "legalName"),
+              registrationNumber: text(form, "registrationNumber") || null,
+              supportEmail: text(form, "supportEmail"),
+              supportAddress: text(form, "supportAddress"),
+              gstRegistrationStatus: text(form, "gstRegistrationStatus"),
+              gstRegistrationNumber: text(form, "gstRegistrationNumber") || null,
+              pricesIncludeGst: gstPriceTreatment === "INCLUDED"
+                ? true
+                : gstPriceTreatment === "EXCLUDED"
+                  ? false
+                  : null,
+            });
+          }}
         >
           <div className="form-grid max-sm:grid-cols-1!">
             <Field
@@ -855,7 +868,75 @@ export function SettingsView({ data, refresh }: ManagementProps) {
               required
               defaultValue={business.cancellationHours}
             />
+            <Field
+              label="Legal business name"
+              name="legalName"
+              required
+              defaultValue={business.legalName ?? ""}
+              wide
+              hint="Use the club’s registered legal name. This field does not determine its role in a transaction."
+            />
+            <Field
+              label="Registration number / UEN (optional)"
+              name="registrationNumber"
+              defaultValue={business.registrationNumber ?? ""}
+              wide
+            />
+            <Field
+              label="Payment support email"
+              name="supportEmail"
+              type="email"
+              required
+              defaultValue={business.supportEmail ?? ""}
+              wide
+              hint="Students see this address when they need help with a purchase or refund."
+            />
+            <Field label="Business / support address" name="supportAddress" required wide>
+              <textarea
+                id="supportAddress"
+                name="supportAddress"
+                rows={3}
+                required
+                defaultValue={business.supportAddress ?? ""}
+              />
+            </Field>
+            <Field label="GST registration status" name="gstRegistrationStatus" required wide>
+              <select
+                id="gstRegistrationStatus"
+                name="gstRegistrationStatus"
+                required
+                defaultValue={business.gstRegistrationStatus ?? ""}
+              >
+                <option value="" disabled>Select GST status</option>
+                <option value="NOT_DECLARED">Not declared</option>
+                <option value="NOT_REGISTERED">Not GST registered</option>
+                <option value="REGISTERED">GST registered</option>
+              </select>
+            </Field>
+            <Field
+              label="GST registration number"
+              name="gstRegistrationNumber"
+              defaultValue={business.gstRegistrationNumber ?? ""}
+              wide
+              hint="Required when the club is GST registered."
+            />
+            <Field label="Displayed-price GST treatment" name="pricesIncludeGst" wide>
+              <select
+                id="pricesIncludeGst"
+                name="pricesIncludeGst"
+                defaultValue={business.pricesIncludeGst == null
+                  ? ""
+                  : business.pricesIncludeGst ? "INCLUDED" : "EXCLUDED"}
+              >
+                <option value="">Not declared</option>
+                <option value="INCLUDED">Displayed prices include GST</option>
+                <option value="EXCLUDED">Displayed prices exclude GST</option>
+              </select>
+            </Field>
           </div>
+          <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] leading-relaxed text-amber-900">
+            Live card checkout remains unavailable until the legal name, payment support email, business/support address, and GST registration status are complete. GST-registered clubs must also provide their GST registration number and state whether displayed prices include GST. Completing these fields does not by itself activate Stripe or establish legal or tax compliance.
+          </p>
           <p className="text-[11px] leading-relaxed text-stone-500">
             Students can self-cancel until this many hours before their lesson.
             This updates the policy; it does not cancel or change existing
