@@ -4,9 +4,10 @@ export type TransactionalEmailEvent =
   | 'BOOKING_RESCHEDULED' | 'RESCHEDULE_REQUESTED' | 'RESCHEDULE_ACCEPTED'
   | 'RESCHEDULE_DECLINED' | 'RESCHEDULE_WITHDRAWN' | 'BOOKING_REMINDER'
   | 'COACH_ASSIGNED' | 'COACH_DECLINED' | 'PAYMENT_RECORDED' | 'PAYMENT_REVERSED'
-  | 'PACKAGE_PURCHASED' | 'RENTAL_CONFIRMED' | 'RENTAL_CANCELLED' | 'COACH_INVITED';
+  | 'PACKAGE_PURCHASED' | 'RENTAL_CONFIRMED' | 'RENTAL_CANCELLED' | 'COACH_INVITED'
+  | 'FAMILY_HANDOVER_SECURITY';
 
-export type EmailTemplatePayload = {
+type TransactionalEmailTemplatePayload = {
   eventType: TransactionalEmailEvent;
   recipientName: string;
   title: string;
@@ -15,23 +16,56 @@ export type EmailTemplatePayload = {
   actionLabel?: string;
 };
 
+export type FamilyHandoverSecurityEmailTemplatePayload = {
+  eventType: 'FAMILY_HANDOVER_SECURITY';
+  recipientName: string;
+  claimUrl: string;
+  expiresAt: Date | string;
+};
+
+// The generic member remains worker-compatible with already persisted
+// deliveries. New family handovers can instead use the security-specific
+// member so the claim URL and expiry are required at the template boundary.
+export type EmailTemplatePayload = TransactionalEmailTemplatePayload
+  | FamilyHandoverSecurityEmailTemplatePayload;
+
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, character => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 }[character]!));
 
+function handoverExpiry(value: Date | string) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) throw new TypeError('Family handover expiry must be a valid date');
+  return `${new Intl.DateTimeFormat('en-SG', {
+    dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC',
+  }).format(date)} UTC`;
+}
+
 export function renderTransactionalEmail(payload: EmailTemplatePayload) {
+  const securityPayload = payload.eventType === 'FAMILY_HANDOVER_SECURITY' && 'claimUrl' in payload;
+  const content = securityPayload
+    ? {
+      title: 'Complete your Courtly family profile handover',
+      message: `You have been invited to take over management of a child profile. This secure claim link expires ${handoverExpiry(payload.expiresAt)}. If you did not expect this handover, ignore this email.`,
+      actionUrl: payload.claimUrl,
+      actionLabel: 'Review family handover',
+    }
+    : payload;
   const greeting = payload.recipientName.trim() ? `Hi ${payload.recipientName.trim()},` : 'Hello,';
-  const actionText = payload.actionLabel?.trim() || 'Open Courtly';
-  const text = [greeting, '', payload.title, payload.message, payload.actionUrl ? '' : null]
+  const actionText = content.actionLabel?.trim() || 'Open Courtly';
+  const text = [greeting, '', content.title, content.message, content.actionUrl ? '' : null]
     .filter((line): line is string => line !== null);
-  if (payload.actionUrl) text.push(`${actionText}: ${payload.actionUrl}`);
-  text.push('', 'This is a transactional message about your Courtly account.');
-  const action = payload.actionUrl
-    ? `<p><a href="${escapeHtml(payload.actionUrl)}" style="display:inline-block;padding:12px 18px;border-radius:10px;background:#174c3c;color:#fff;text-decoration:none;font-weight:600">${escapeHtml(actionText)}</a></p>`
+  if (content.actionUrl) text.push(`${actionText}: ${content.actionUrl}`);
+  const footer = payload.eventType === 'FAMILY_HANDOVER_SECURITY'
+    ? 'This is a security message about access to a Courtly family profile. Never share this claim link.'
+    : 'This is a transactional message about your Courtly account.';
+  text.push('', footer);
+  const action = content.actionUrl
+    ? `<p><a href="${escapeHtml(content.actionUrl)}" style="display:inline-block;padding:12px 18px;border-radius:10px;background:#174c3c;color:#fff;text-decoration:none;font-weight:600">${escapeHtml(actionText)}</a></p>`
     : '';
   return {
-    subject: payload.title,
+    subject: content.title,
     text: text.join('\n'),
-    html: `<!doctype html><html lang="en"><body style="margin:0;background:#f6f7f4;color:#1c3029;font-family:Arial,sans-serif"><main style="max-width:600px;margin:auto;padding:32px 20px"><p>${escapeHtml(greeting)}</p><h1 style="font-size:24px;line-height:1.3">${escapeHtml(payload.title)}</h1><p style="font-size:16px;line-height:1.6">${escapeHtml(payload.message)}</p>${action}<p style="margin-top:32px;font-size:14px;color:#59675c">This is a transactional message about your Courtly account.</p></main></body></html>`,
+    html: `<!doctype html><html lang="en"><body style="margin:0;background:#f6f7f4;color:#1c3029;font-family:Arial,sans-serif"><main style="max-width:600px;margin:auto;padding:32px 20px"><p>${escapeHtml(greeting)}</p><h1 style="font-size:24px;line-height:1.3">${escapeHtml(content.title)}</h1><p style="font-size:16px;line-height:1.6">${escapeHtml(content.message)}</p>${action}<p style="margin-top:32px;font-size:14px;color:#59675c">${escapeHtml(footer)}</p></main></body></html>`,
   };
 }

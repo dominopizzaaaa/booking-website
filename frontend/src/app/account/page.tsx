@@ -73,10 +73,18 @@ export default function AccountPage() {
     setError('');
     try {
       const auth = await loadAuthSession();
+      if (auth.user.requiredAction) {
+        router.replace('/account/action-required');
+        return;
+      }
       const parameters = new URLSearchParams(window.location.search);
       const staffToken = parameters.get('staffInvite');
+      const staffAccessAllowed = auth.user.capabilities?.staffAccess !== false;
       if (staffToken && auth.user.accountType === 'CLUB') {
         setStaffInvitationError('Club accounts cannot accept named staff invitations. Sign in with a personal student or coach account.');
+      } else if (staffToken && !staffAccessAllowed) {
+        setError('Club staff and roster invitations are unavailable for this account.');
+        window.history.replaceState(window.history.state, '', '/account');
       } else if (staffToken) {
         setInvitationBusy('staff-link');
         try {
@@ -89,16 +97,16 @@ export default function AccountPage() {
           setStaffInvitationError(cause instanceof Error ? cause.message : 'Unable to accept this staff invitation.');
         } finally { setInvitationBusy(null); }
       }
-      if (auth.user.accountType === 'STUDENT' && !(auth.staffAccesses?.length || staffToken)) {
+      if (auth.user.accountType === 'STUDENT' && !(auth.staffAccesses?.length || (staffToken && staffAccessAllowed))) {
         router.replace('/manage');
         return;
       }
       setState(auth);
-      if (auth.user.accountType !== 'CLUB') {
+      if (auth.user.accountType !== 'CLUB' && staffAccessAllowed) {
         const pendingStaff = await loadClubStaffInvitations();
         setStaffInvitations(pendingStaff.invitations);
       }
-      if (auth.user.accountType === 'COACH') {
+      if (auth.user.accountType === 'COACH' && staffAccessAllowed) {
         const pending = await loadCoachInvitations();
         setInvitations(pending.invitations);
         const token = parameters.get('invite');
@@ -113,6 +121,9 @@ export default function AccountPage() {
           } catch (cause) { setCoachInvitationError(cause instanceof Error ? cause.message : 'Unable to accept this invitation.'); }
           finally { setInvitationBusy(null); }
         }
+      } else if (auth.user.accountType === 'COACH' && parameters.get('invite')) {
+        setError('Club staff and roster invitations are unavailable for this account.');
+        window.history.replaceState(window.history.state, '', '/account');
       }
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 401) {
@@ -126,7 +137,7 @@ export default function AccountPage() {
   }, [router]);
 
   async function acceptInvitation(invitation: CoachInvitation) {
-    if (invitationBusy) return;
+    if (invitationBusy || state?.user.capabilities?.staffAccess === false) return;
     setInvitationBusy(invitation.id); setCoachInvitationError('');
     try {
       await acceptCoachInvitation({ invitationId: invitation.id });
@@ -136,7 +147,7 @@ export default function AccountPage() {
   }
 
   async function acceptStaffInvitation(invitation: ClubStaffInvitation) {
-    if (invitationBusy) return;
+    if (invitationBusy || state?.user.capabilities?.staffAccess === false) return;
     setInvitationBusy(`staff:${invitation.id}`); setStaffInvitationError('');
     try {
       await acceptClubStaffInvitation({ invitationId: invitation.id });
@@ -170,12 +181,12 @@ export default function AccountPage() {
   }, []);
 
   useEffect(() => {
-    if (state?.user.accountType !== 'COACH') return;
+    if (state?.user.accountType !== 'COACH' || state.user.capabilities?.rentals === false) return;
     setRentalSport('');
     setAppliedRentalSport('');
     void loadRentalFirstPage('');
     return () => { rentalRequestGenerationRef.current += 1; };
-  }, [state?.user.accountType, loadRentalFirstPage]);
+  }, [state?.user.accountType, state?.user.capabilities?.rentals, loadRentalFirstPage]);
 
   function submitRentalFilters(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -351,8 +362,15 @@ export default function AccountPage() {
   const clubAccount = state?.user.accountType === 'CLUB';
   const coachAccount = state?.user.accountType === 'COACH';
   const personalAccount = !!state && !clubAccount;
-  const clubAffiliations = state?.memberships.filter(membership => membership.active && membership.business.kind === 'CLUB' && !membership.business.legacyReadOnly) ?? [];
-  const staffWorkspaces = state?.staffAccesses?.filter(access => access.active && access.business.kind === 'CLUB' && !access.business.legacyReadOnly) ?? [];
+  const canUseFamily = personalAccount && state.user.capabilities?.familyManagement === true;
+  const canSearchPeople = coachAccount && state.user.capabilities?.directory !== false;
+  const canUseCalendar = !!state && state.user.capabilities?.calendar !== false;
+  const canUseStaffAccess = personalAccount && state.user.capabilities?.staffAccess !== false;
+  const canUseRentals = coachAccount && state.user.capabilities?.rentals !== false;
+  const canUseWorkspace = !!state && state.user.capabilities?.workspace !== false;
+  const canEditProfile = !!state && state.user.capabilities?.profileEdit !== false;
+  const clubAffiliations = canUseWorkspace ? state?.memberships.filter(membership => membership.active && membership.business.kind === 'CLUB' && !membership.business.legacyReadOnly) ?? [] : [];
+  const staffWorkspaces = canUseWorkspace ? state?.staffAccesses?.filter(access => access.active && access.business.kind === 'CLUB' && !access.business.legacyReadOnly) ?? [] : [];
   const clubMembership = clubAccount
     ? state?.memberships.find(membership => membership.businessId === state.business?.id) ?? state?.memberships[0]
     : undefined;
@@ -412,7 +430,7 @@ export default function AccountPage() {
               <section data-tour="account-profile" className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-profile-heading">
                 <div className="flex items-start justify-between gap-3">
                   <div><p className="text-[10px] font-semibold uppercase tracking-[1.5px] text-[#95a085]">{clubAccount ? 'Club account' : 'Personal profile'}</p><h2 id="account-profile-heading" className="mt-1 text-lg text-[#2f4938]">{clubAccount ? 'Club profile' : state.user.name}</h2></div>
-                  {!editingProfile && <Button variant="outline" size="sm" onClick={() => { setEditingProfile(true); setError(''); }}><Pencil size={13} />{clubAccount ? 'Edit club profile' : 'Edit personal profile'}</Button>}
+                  {!editingProfile && canEditProfile && <Button variant="outline" size="sm" onClick={() => { setEditingProfile(true); setError(''); }}><Pencil size={13} />{clubAccount ? 'Edit club profile' : 'Edit personal profile'}</Button>}
                 </div>
 
                 {editingProfile && clubAccount && state.business ? <form className="mt-5 grid gap-4 sm:grid-cols-2" onSubmit={saveClubProfile}>
@@ -424,45 +442,47 @@ export default function AccountPage() {
                   <div className="sm:col-span-2"><label htmlFor="club-profile-tagline">Tagline <span className="font-normal text-stone-400">(optional)</span></label><input id="club-profile-tagline" name="tagline" className={inputClass} defaultValue={state.business.tagline} maxLength={500} disabled={savingProfile} /></div>
                   <div><label htmlFor="club-profile-color">Brand colour</label><input id="club-profile-color" name="color" className={inputClass} type="color" defaultValue={state.business.color} required disabled={savingProfile} /></div>
                   <div><label htmlFor="club-profile-cancellation">Cancellation notice (hours)</label><input id="club-profile-cancellation" name="cancellationHours" className={inputClass} type="number" defaultValue={state.business.cancellationHours} min={0} max={720} step={1} required disabled={savingProfile} /></div>
-                  <p className="sm:col-span-2 text-[10px] leading-relaxed text-stone-500">This edits the existing club workspace. The sign-in email remains {state.user.email}.</p>
+                  <p className="sm:col-span-2 text-[10px] leading-relaxed text-stone-500">This edits the existing club workspace. The sign-in email remains {state.user.email ?? 'unavailable'}.</p>
                   <div className="flex justify-end gap-2 sm:col-span-2"><Button type="button" variant="ghost" onClick={() => setEditingProfile(false)} disabled={savingProfile}><X size={14} />Cancel</Button><Button type="submit" disabled={savingProfile}>{savingProfile && <Loader2 size={14} className="animate-spin" />}Save club profile</Button></div>
                 </form> : editingProfile && personalAccount ? <form className="mt-5 grid gap-4 sm:grid-cols-2" onSubmit={saveCoachProfile}>
                   <div><label htmlFor="coach-profile-name">Full name</label><input id="coach-profile-name" name="name" className={inputClass} defaultValue={state.user.name} minLength={2} maxLength={120} autoComplete="name" required disabled={savingProfile} /></div>
                   <div><label htmlFor="coach-profile-phone">Phone <span className="font-normal text-stone-400">(optional)</span></label><input id="coach-profile-phone" name="phone" className={inputClass} type="tel" defaultValue={state.user.phone || ''} maxLength={40} autoComplete="tel" disabled={savingProfile} /></div>
                   <div><label htmlFor="coach-profile-username">Username</label><input id="coach-profile-username" name="username" className={inputClass} defaultValue={state.user.username || ''} minLength={3} maxLength={30} pattern="[a-z0-9_]{3,30}" autoComplete="username" required disabled={savingProfile} /></div>
                   <div><label htmlFor="coach-profile-sports">Sports <span className="font-normal text-stone-400">(comma-separated)</span></label><input id="coach-profile-sports" name="sports" className={inputClass} defaultValue={(state.user.sports ?? []).join(', ')} maxLength={819} placeholder="Tennis, badminton, padel" disabled={savingProfile} /></div>
-                  <div className="sm:col-span-2"><label htmlFor="coach-profile-email">Sign-in email</label><input id="coach-profile-email" className={inputClass} value={state.user.email} readOnly /><p className="mt-1.5 text-[10px] leading-relaxed text-stone-400">Your sign-in email cannot be changed here. Clubs use it to add your account.</p></div>
+                  <div className="sm:col-span-2"><label htmlFor="coach-profile-email">Sign-in email</label><input id="coach-profile-email" className={inputClass} value={state.user.email ?? ''} placeholder="No independent sign-in email" readOnly /><p className="mt-1.5 text-[10px] leading-relaxed text-stone-400">{state.user.email ? 'Your sign-in email cannot be changed here. Clubs use it to add your account.' : 'This profile does not currently have an independent email sign-in.'}</p></div>
                   <div className="flex justify-end gap-2 sm:col-span-2"><Button type="button" variant="ghost" onClick={() => setEditingProfile(false)} disabled={savingProfile}><X size={14} />Cancel</Button><Button type="submit" disabled={savingProfile}>{savingProfile && <Loader2 size={14} className="animate-spin" />}Save personal profile</Button></div>
                 </form> : <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                  <div className="rounded-xl bg-[#f4f7ef] p-4"><p className="text-[10px] uppercase tracking-[1.2px] text-stone-400">{clubAccount ? 'Contact name' : 'Account email'}</p><p className="mt-1 break-all text-xs font-semibold text-[#405941]">{clubAccount ? state.business?.ownerName : state.user.email}</p></div>
+                  <div className="rounded-xl bg-[#f4f7ef] p-4"><p className="text-[10px] uppercase tracking-[1.2px] text-stone-400">{clubAccount ? 'Contact name' : 'Account email'}</p><p className="mt-1 break-all text-xs font-semibold text-[#405941]">{clubAccount ? state.business?.ownerName : state.user.email ?? 'No independent sign-in email'}</p></div>
                   <div className="rounded-xl bg-[#f4f7ef] p-4"><p className="text-[10px] uppercase tracking-[1.2px] text-stone-400">{clubAccount ? 'Contact email' : 'Phone'}</p><p className="mt-1 break-all text-xs font-semibold text-[#405941]">{clubAccount ? state.business?.email : state.user.phone || 'Not added'}</p></div>
                   <div className="rounded-xl bg-[#f4f7ef] p-4"><p className="text-xs uppercase tracking-[1.2px] text-stone-400">Username</p><p className="mt-1 break-all text-sm font-semibold text-[#405941]">@{state.user.username}</p></div>
                   <div className="rounded-xl bg-[#f4f7ef] p-4"><p className="text-xs uppercase tracking-[1.2px] text-stone-400">Sports</p><p className="mt-1 text-sm font-semibold text-[#405941]">{state.user.sports?.length ? state.user.sports.join(', ') : 'Not added'}</p></div>
-                  {clubAccount && <div className="rounded-xl bg-[#f4f7ef] p-4 sm:col-span-2"><p className="text-[10px] uppercase tracking-[1.2px] text-stone-400">Sign-in email</p><p className="mt-1 break-all text-xs font-semibold text-[#405941]">{state.user.email}</p><p className="mt-1 text-[10px] text-stone-500">Separate from the public contact email above.</p></div>}
+                  {clubAccount && <div className="rounded-xl bg-[#f4f7ef] p-4 sm:col-span-2"><p className="text-[10px] uppercase tracking-[1.2px] text-stone-400">Sign-in email</p><p className="mt-1 break-all text-xs font-semibold text-[#405941]">{state.user.email ?? 'Unavailable'}</p><p className="mt-1 text-[10px] text-stone-500">Separate from the public contact email above.</p></div>}
                 </div>}
               </section>
 
-              {coachAccount && (invitationBusy === 'link' || invitations.length > 0 || coachInvitationError) && <section className="rounded-2xl border border-[#dbe5d4] bg-[#f2f6ee] p-5 shadow-sm sm:p-6" aria-labelledby="coach-invitations-heading"><div className="flex items-start gap-3"><Building2 size={19} className="mt-0.5 shrink-0 text-[#66805a]" /><div><h2 id="coach-invitations-heading" className="text-base text-[#405941]">Club invitations</h2><p className="mt-1 text-xs leading-relaxed text-stone-500">Joining gives you access to that club’s assigned schedule, students, venues, and availability tools. The club continues to manage class prices and payments.</p></div></div>{invitationBusy === 'link' && <p role="status" className="mt-4 flex items-center gap-2 text-xs text-stone-500"><Loader2 size={14} className="animate-spin" />Checking your invitation…</p>}{coachInvitationError && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-3 text-xs text-red-700">{coachInvitationError}</p>}<ul className="mt-4 space-y-2">{invitations.map(invitation => <li key={invitation.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#dce5d6] bg-white p-4"><div><p className="text-sm font-semibold text-[#344b39]">{invitation.business.name}</p><p className="mt-1 text-xs text-stone-500">Coach access · {invitation.rescheduleNoticeHours}-hour reschedule notice</p></div><Button type="button" disabled={!!invitationBusy} onClick={() => void acceptInvitation(invitation)}>{invitationBusy === invitation.id && <Loader2 size={14} className="animate-spin" />}Accept and open</Button></li>)}</ul></section>}
+              {canUseFamily && <section className="rounded-2xl border border-[#dbe5d4] bg-[#f2f6ee] p-5 shadow-sm sm:p-6" aria-labelledby="account-family-heading"><div className="flex items-start gap-3"><UsersRound size={19} className="mt-0.5 shrink-0 text-[#66805a]" /><div className="min-w-0 flex-1"><h2 id="account-family-heading" className="text-base text-[#405941]">Family</h2><p className="mt-1 text-xs leading-relaxed text-stone-500">Create and manage child profiles, privacy, guardian consent, data requests, and verified account handover. Managed children have no email, password, or sign-in.</p></div></div><Button asChild className="mt-5 w-full sm:w-auto"><Link href="/family">Open Family<ArrowRight size={14} /></Link></Button></section>}
 
-              {(staffInvitationError || (personalAccount && (invitationBusy === 'staff-link' || staffInvitations.length > 0))) && <section className="rounded-2xl border border-[#dbe5d4] bg-[#f2f6ee] p-5 shadow-sm sm:p-6" aria-labelledby="staff-invitations-heading"><div className="flex items-start gap-3"><ShieldCheck size={19} className="mt-0.5 shrink-0 text-[#66805a]" /><div><h2 id="staff-invitations-heading" className="text-base text-[#405941]">Staff invitations</h2><p className="mt-1 text-xs leading-relaxed text-stone-500">Named staff access lets a person help run a specific club with assigned permissions. Accepting it does not change that person’s account type or coach affiliations.</p></div></div>{invitationBusy === 'staff-link' && <p role="status" className="mt-4 flex items-center gap-2 text-xs text-stone-500"><Loader2 size={14} className="animate-spin" />Checking your staff invitation…</p>}{staffInvitationError && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-3 text-xs text-red-700">{staffInvitationError}</p>}<ul className="mt-4 space-y-2">{staffInvitations.map(invitation => <li key={invitation.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#dce5d6] bg-white p-4"><div><p className="text-sm font-semibold text-[#344b39]">{invitation.business.name}</p><p className="mt-1 text-xs text-stone-500">{invitation.accessLevel.toLowerCase().replaceAll('_', ' ')} staff access · {invitation.permissions.length} permission{invitation.permissions.length === 1 ? '' : 's'}</p></div><Button type="button" disabled={!!invitationBusy} onClick={() => void acceptStaffInvitation(invitation)}>{invitationBusy === `staff:${invitation.id}` && <Loader2 size={14} className="animate-spin" />}Accept and open</Button></li>)}</ul></section>}
+              {canUseStaffAccess && coachAccount && (invitationBusy === 'link' || invitations.length > 0 || coachInvitationError) && <section className="rounded-2xl border border-[#dbe5d4] bg-[#f2f6ee] p-5 shadow-sm sm:p-6" aria-labelledby="coach-invitations-heading"><div className="flex items-start gap-3"><Building2 size={19} className="mt-0.5 shrink-0 text-[#66805a]" /><div><h2 id="coach-invitations-heading" className="text-base text-[#405941]">Club invitations</h2><p className="mt-1 text-xs leading-relaxed text-stone-500">Joining gives you access to that club’s assigned schedule, students, venues, and availability tools. The club continues to manage class prices and payments.</p></div></div>{invitationBusy === 'link' && <p role="status" className="mt-4 flex items-center gap-2 text-xs text-stone-500"><Loader2 size={14} className="animate-spin" />Checking your invitation…</p>}{coachInvitationError && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-3 text-xs text-red-700">{coachInvitationError}</p>}<ul className="mt-4 space-y-2">{invitations.map(invitation => <li key={invitation.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#dce5d6] bg-white p-4"><div><p className="text-sm font-semibold text-[#344b39]">{invitation.business.name}</p><p className="mt-1 text-xs text-stone-500">Coach access · {invitation.rescheduleNoticeHours}-hour reschedule notice</p></div><Button type="button" disabled={!!invitationBusy} onClick={() => void acceptInvitation(invitation)}>{invitationBusy === invitation.id && <Loader2 size={14} className="animate-spin" />}Accept and open</Button></li>)}</ul></section>}
 
-              <CalendarConnectionCard accountType={state.user.accountType} returnTo="/account" />
+              {canUseStaffAccess && (staffInvitationError || invitationBusy === 'staff-link' || staffInvitations.length > 0) && <section className="rounded-2xl border border-[#dbe5d4] bg-[#f2f6ee] p-5 shadow-sm sm:p-6" aria-labelledby="staff-invitations-heading"><div className="flex items-start gap-3"><ShieldCheck size={19} className="mt-0.5 shrink-0 text-[#66805a]" /><div><h2 id="staff-invitations-heading" className="text-base text-[#405941]">Staff invitations</h2><p className="mt-1 text-xs leading-relaxed text-stone-500">Named staff access lets a person help run a specific club with assigned permissions. Accepting it does not change that person’s account type or coach affiliations.</p></div></div>{invitationBusy === 'staff-link' && <p role="status" className="mt-4 flex items-center gap-2 text-xs text-stone-500"><Loader2 size={14} className="animate-spin" />Checking your staff invitation…</p>}{staffInvitationError && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-3 text-xs text-red-700">{staffInvitationError}</p>}<ul className="mt-4 space-y-2">{staffInvitations.map(invitation => <li key={invitation.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#dce5d6] bg-white p-4"><div><p className="text-sm font-semibold text-[#344b39]">{invitation.business.name}</p><p className="mt-1 text-xs text-stone-500">{invitation.accessLevel.toLowerCase().replaceAll('_', ' ')} staff access · {invitation.permissions.length} permission{invitation.permissions.length === 1 ? '' : 's'}</p></div><Button type="button" disabled={!!invitationBusy} onClick={() => void acceptStaffInvitation(invitation)}>{invitationBusy === `staff:${invitation.id}` && <Loader2 size={14} className="animate-spin" />}Accept and open</Button></li>)}</ul></section>}
+
+              {canUseCalendar && <CalendarConnectionCard accountType={state.user.accountType} returnTo="/account" />}
 
               <section data-tour="account-workspaces" className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-workspaces-heading">
-                <div className="flex items-start gap-3"><ShieldCheck size={18} className="mt-0.5 shrink-0 text-[#6f865f]" /><div><h2 id="account-workspaces-heading" className="text-sm text-[#405941]">{clubAccount ? 'Your club workspace' : 'Your workspace access'}</h2><p className="mt-1 text-[11px] leading-relaxed text-stone-500">{clubAccount ? 'A club account has one club and never switches to another.' : `Clubs can add ${state.user.email} as ${coachAccount ? 'a coach or ' : ''}a named staff member. Your password and account type always remain yours.`}</p></div></div>
+                <div className="flex items-start gap-3"><ShieldCheck size={18} className="mt-0.5 shrink-0 text-[#6f865f]" /><div><h2 id="account-workspaces-heading" className="text-sm text-[#405941]">{clubAccount ? 'Your club workspace' : 'Your workspace access'}</h2><p className="mt-1 text-[11px] leading-relaxed text-stone-500">{clubAccount ? 'A club account has one club and never switches to another.' : state.user.email ? `Clubs can add ${state.user.email} as ${coachAccount ? 'a coach or ' : ''}a named staff member. Your password and account type always remain yours.` : 'This profile has no independent sign-in email and cannot currently receive club invitations.'}</p></div></div>
 
                 <div className="mt-5 space-y-3">
                   {clubAccount && clubMembership ? <button type="button" disabled={!clubMembership.active} onClick={() => { void openWorkspace(clubMembership); }} className="flex min-h-[72px] w-full items-center gap-3 rounded-xl border border-[#cbd9bf] bg-[#f8faf5] p-3.5 text-left transition hover:bg-[#f2f6ed] disabled:cursor-not-allowed disabled:opacity-55"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#e7efe0] text-xs font-semibold text-[#617851]">{initials(clubMembership.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-[#344b39]">{clubMembership.business.name}</span><span className="mt-1 block text-[10px] text-stone-500">{clubMembership.active ? 'Club workspace' : 'Club workspace · inactive'}</span></span><ArrowRight size={16} className="text-stone-400" /></button>
                     : personalAccount ? <>{clubAffiliations.map(membership => <button key={`membership:${membership.id}`} type="button" disabled={!!switching || !membership.active} onClick={() => { void openWorkspace(membership); }} className="flex min-h-[72px] w-full items-center gap-3 rounded-xl border border-[#e2e7dd] p-3.5 text-left transition hover:border-[#cbd9bf] hover:bg-[#f8faf5] disabled:cursor-not-allowed disabled:opacity-55"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#edf2e6] text-xs font-semibold text-[#617851]">{initials(membership.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-[#344b39]">{membership.business.name}</span><span className="mt-1 block text-xs text-stone-500">{workspaceDescription(membership)} · Coach</span></span>{switching === membership.id ? <Loader2 size={17} className="animate-spin text-[#71865f]" /> : state.accessMode === 'COACH' && membership.id === state.membership?.id ? <span className="flex items-center gap-1 text-xs font-semibold text-[#66805a]"><Check size={13} />Selected</span> : <ArrowRight size={16} className="text-stone-400" />}</button>)}{staffWorkspaces.map(access => <button key={`staff:${access.id}`} type="button" disabled={!!switching || !access.active} onClick={() => { void openStaffWorkspace(access); }} className="flex min-h-[72px] w-full items-center gap-3 rounded-xl border border-[#e2e7dd] p-3.5 text-left transition hover:border-[#cbd9bf] hover:bg-[#f8faf5] disabled:cursor-not-allowed disabled:opacity-55"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#e8eef3] text-xs font-semibold text-[#526b78]">{initials(access.business.name)}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-[#344b39]">{access.business.name}</span><span className="mt-1 block text-xs text-stone-500">{staffAccessDescription(access)}</span></span>{switching === `staff:${access.id}` ? <Loader2 size={17} className="animate-spin text-[#71865f]" /> : state.accessMode === 'STAFF' && access.id === state.staffAccess?.id ? <span className="flex items-center gap-1 text-xs font-semibold text-[#66805a]"><Check size={13} />Selected</span> : <ArrowRight size={16} className="text-stone-400" />}</button>)}</> : null}
 
-                  {personalAccount && !clubAffiliations.length && !staffWorkspaces.length && <div className="py-5 text-center"><span className="mx-auto grid h-11 w-11 place-items-center rounded-full bg-[#f0f3ec] text-[#809174]"><Building2 size={19} /></span><h3 className="mt-4 text-sm">No club access yet</h3><p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-stone-500">Ask a club to invite {state.user.email}. Invitations appear above; you choose whether to join, and your account remains yours.</p></div>}
+                  {personalAccount && !clubAffiliations.length && !staffWorkspaces.length && <div className="py-5 text-center"><span className="mx-auto grid h-11 w-11 place-items-center rounded-full bg-[#f0f3ec] text-[#809174]"><Building2 size={19} /></span><h3 className="mt-4 text-sm">No club access yet</h3><p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-stone-500">{state.user.email ? <>Ask a club to invite {state.user.email}. Invitations appear above; you choose whether to join, and your account remains yours.</> : 'This profile has no independent sign-in email, so it cannot receive a club invitation.'}</p></div>}
                   {clubAccount && !clubMembership && <p className="rounded-xl bg-[#fff6f1] p-4 text-xs leading-relaxed text-[#a16a55]">This club login is not connected to its workspace. Please contact support.</p>}
                 </div>
 
-                <div className="mt-5 flex flex-wrap justify-center gap-2 border-t border-[#edf0e8] pt-5"><Button variant="outline" disabled={loading || !!switching} onClick={() => { void load(); }}><RefreshCw size={14} />Refresh access</Button>{state.business && state.accessMode !== 'NONE' && <Button disabled={!!switching} onClick={() => { router.replace('/'); router.refresh(); }}>Open current workspace<ArrowRight size={14} /></Button>}{state.user.accountType === 'STUDENT' && <Button variant="outline" asChild><Link href="/manage">Open player app<ArrowRight size={14} /></Link></Button>}</div>
+                <div className="mt-5 flex flex-wrap justify-center gap-2 border-t border-[#edf0e8] pt-5"><Button variant="outline" disabled={loading || !!switching} onClick={() => { void load(); }}><RefreshCw size={14} />Refresh access</Button>{canUseWorkspace && state.business && state.accessMode !== 'NONE' && <Button disabled={!!switching} onClick={() => { router.replace('/'); router.refresh(); }}>Open current workspace<ArrowRight size={14} /></Button>}{state.user.accountType === 'STUDENT' && <Button variant="outline" asChild><Link href="/manage">Open player app<ArrowRight size={14} /></Link></Button>}</div>
               </section>
 
-              {coachAccount && <section data-tour="account-people" className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-people-heading">
+              {canSearchPeople && <section data-tour="account-people" className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-people-heading">
                 <div className="flex items-start gap-3"><UsersRound size={19} className="mt-0.5 shrink-0 text-[#6f865f]" /><div><h2 id="account-people-heading" className="text-base text-[#405941]">Find people on Courtly</h2><p className="mt-1 text-xs leading-relaxed text-stone-500">Search players, coaches, and clubs by name, username, or exact email address. Results show public profile details only.</p></div></div>
                 <form className="mt-5 flex flex-col gap-2 sm:flex-row" onSubmit={submitPeopleSearch}>
                   <label htmlFor="account-people-search" className="sr-only">Search all Courtly accounts</label>
@@ -474,7 +494,7 @@ export default function AccountPage() {
                 {people.length > 0 && <ul aria-label="Account search results" className="mt-4 grid gap-2 sm:grid-cols-2">{people.map(person => <li key={person.username} className="min-w-0 rounded-xl border border-[#e4e9df] bg-[#fafbf8] p-3"><div className="flex items-start gap-2.5"><span aria-hidden="true" className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[#e8efe0] text-[11px] font-bold text-[#4f6847]">{initials(person.name)}</span><div className="min-w-0"><p className="truncate text-sm font-semibold text-[#304b39]">{person.name}</p><p className="truncate text-xs text-stone-500">@{person.username} · {person.accountType.toLowerCase()}</p>{person.sports.length > 0 && <p className="truncate text-[11px] text-stone-500">{person.sports.join(', ')}</p>}</div></div></li>)}</ul>}
               </section>}
 
-              {coachAccount && <section data-tour="account-rentals" className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-rentals-heading">
+              {canUseRentals && <section data-tour="account-rentals" className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-rentals-heading">
                 <div className="flex items-start gap-3"><Compass size={19} className="mt-0.5 shrink-0 text-[#6f865f]" /><div><h2 id="account-rentals-heading" className="text-base text-[#405941]">Explore rental venues</h2><p className="mt-1 text-xs leading-relaxed text-stone-500">Find a court or training space even before a club hires you.</p></div></div>
                 <form role="search" aria-label="Filter rental venues" className="mt-5 flex flex-col gap-2 sm:flex-row sm:items-end" onSubmit={submitRentalFilters}>
                   <div className="min-w-0 flex-1"><label htmlFor="account-rental-sport" className="text-xs font-semibold text-[#405941]">Filter rental venues by sport</label><input id="account-rental-sport" type="search" className={`${inputClass} mt-1.5 w-full`} value={rentalSport} onChange={event => setRentalSport(event.target.value)} placeholder="Tennis, badminton, padel…" /></div>
@@ -486,7 +506,7 @@ export default function AccountPage() {
                       : <p className="mt-5 rounded-xl bg-[#f7f9f4] p-4 text-xs text-stone-500">{appliedRentalSport ? `No rental venues match “${appliedRentalSport}”.` : 'No rental venues are listed yet. Check back soon.'}</p>}
               </section>}
             </div>
-            <AccountRentalDialog rentalId={selectedRentalId} onClose={() => setSelectedRentalId(null)} />
+            {canUseRentals && <AccountRentalDialog rentalId={selectedRentalId} onClose={() => setSelectedRentalId(null)} />}
           </> : null}
       </section>
     </div>

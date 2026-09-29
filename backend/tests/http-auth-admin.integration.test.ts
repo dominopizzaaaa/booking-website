@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import bcrypt from 'bcryptjs';
+import { DateTime } from 'luxon';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { app } from '../src/app.js';
@@ -16,6 +18,13 @@ afterAll(async () => { await prisma.$disconnect(); });
 
 describe.sequential('HTTP, authentication, and admin boundaries', () => {
   let tenants: TestTenants;
+  const adultDateOfBirth = '1990-01-01';
+  const dateYearsAgo = (years: number) => DateTime.now().setZone('Asia/Singapore').minus({ years }).toISODate()!;
+  const adultCapabilities = {
+    ordinaryAccess: true, familyManagement: true, payments: true, staffAccess: true,
+    directory: true, chat: true, commerce: true, rentals: true, calendar: true,
+    workspace: true, profileEdit: true,
+  };
 
   beforeEach(() => {
     tenants = new TestTenants();
@@ -27,6 +36,24 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
     config.googleMapsApiKey = originalConfig.googleMapsApiKey;
     await tenants.cleanup();
   });
+
+  async function credentialedStudent(dateOfBirth: string | null) {
+    const identity = randomUUID().replace(/-/g, '');
+    const email = `${identity}@example.test`;
+    const password = 'Courtly-legacy-child-123';
+    const user = await prisma.user.create({
+      data: {
+        name: 'Legacy Child', legalName: 'Legacy Child', username: `legacy_${identity.slice(0, 18)}`,
+        email, passwordHash: await bcrypt.hash(password, 4), accountType: 'STUDENT',
+        dateOfBirth: dateOfBirth ? new Date(`${dateOfBirth}T00:00:00.000Z`) : null,
+        profileVisibility: 'CLUBS_ONLY',
+      },
+    });
+    tenants.ownUser(user.id);
+    const agent = request.agent(app);
+    const login = await agent.post('/api/auth/login').send({ email, password }).expect(200);
+    return { agent, login, user };
+  }
 
   it('reports a connected database and the configured venue-search capability', async () => {
     config.googleMapsApiKey = '';
@@ -56,6 +83,9 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
         bookingExport: true,
         payments: config.payments.mode,
         transactionalEmail: config.email.enabled ? 'configured' : 'disabled',
+        familyHandover: config.email.enabled && config.familyHandoverTokens.enabled
+          ? 'configured'
+          : 'disabled',
         venueSearch: 'maps-link',
         googleCalendar: 'disabled',
       },
@@ -141,7 +171,7 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
     const unknownRegistrationEmail = `${randomUUID()}@example.test`;
     await request(app).post('/api/auth/register').send({
       accountType: 'STUDENT', name: 'Strict Registration', username: `strict_${randomUUID().slice(0, 8)}`,
-      email: unknownRegistrationEmail, password,
+      email: unknownRegistrationEmail, password, dateOfBirth: adultDateOfBirth,
       businessKind: 'SOLO',
     }).expect(400);
     expect(await prisma.user.count({
@@ -152,10 +182,17 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
     const username = `http_${randomUUID().slice(0, 8)}`;
     const registered = await request(app).post('/api/auth/register').send({
       accountType: 'STUDENT', name: 'HTTP Student', username: username.toUpperCase(),
-      email: email.toUpperCase(), password,
+      email: email.toUpperCase(), password, dateOfBirth: adultDateOfBirth,
     }).expect(201);
     tenants.ownUser(registered.body.user.id);
-    expect(registered.body.user).toMatchObject({ username, email, accountType: 'STUDENT' });
+    expect(registered.body.user).toMatchObject({
+      username, email, accountType: 'STUDENT', dateOfBirth: adultDateOfBirth,
+      ageBand: 'ADULT', needsAgeReview: false, requiredAction: null, accountActionRequired: false,
+    });
+    expect(registered.body.user.capabilities).toEqual(adultCapabilities);
+    expect(registered.body.user).not.toHaveProperty('emailVerifiedAt');
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: registered.body.user.id } })).emailVerifiedAt)
+      .toBeNull();
 
     await request(app).post('/api/auth/login').send({
       email: 'not-an-email', password: 'short',
@@ -167,6 +204,146 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
       email: email.toUpperCase(), password,
     }).expect(200);
     expect(loggedIn.body.user).toMatchObject({ id: registered.body.user.id, email });
+  });
+
+  it.each(['STUDENT', 'COACH'] as const)(
+    'requires a date of birth when registering a %s account', async accountType => {
+      const email = `${accountType.toLowerCase()}-missing-dob-${randomUUID()}@example.test`;
+      const response = await request(app).post('/api/auth/register').send({
+        accountType, name: `${accountType} Missing DOB`,
+        username: `missing_${randomUUID().slice(0, 8)}`, email, password: 'Courtly-missing-dob-123',
+      }).expect(400);
+      expect(response.body.error).toBe('Date of birth is required');
+      expect(await prisma.user.findUnique({ where: { email } })).toBeNull();
+    },
+  );
+
+  it.each([
+    ['pre-1900', '1899-12-31', 'Date of birth must be a valid date and cannot be in the future'],
+    ['malformed', '1990-1-01', 'Date of birth must use YYYY-MM-DD'],
+    ['impossible', '2000-02-30', 'Date of birth must be a valid date and cannot be in the future'],
+    ['future', '2999-01-01', 'Date of birth must be a valid date and cannot be in the future'],
+  ])('rejects a %s personal registration date of birth', async (_case, dateOfBirth, error) => {
+    const email = `invalid-dob-${randomUUID()}@example.test`;
+    const response = await request(app).post('/api/auth/register').send({
+      accountType: 'STUDENT', name: 'Invalid DOB', username: `invalid_${randomUUID().slice(0, 8)}`,
+      email, password: 'Courtly-invalid-dob-123', dateOfBirth,
+    }).expect(400);
+    expect(response.body.error).toBe(error);
+    expect(await prisma.user.findUnique({ where: { email } })).toBeNull();
+  });
+
+  it.each(['STUDENT', 'COACH'] as const)(
+    'returns the stable parent-account requirement for an under-13 %s registration', async accountType => {
+      const email = `child-${accountType.toLowerCase()}-${randomUUID()}@example.test`;
+      const response = await request(app).post('/api/auth/register').send({
+        accountType, name: 'Under Thirteen', username: `child_${randomUUID().slice(0, 8)}`,
+        email, password: 'Courtly-child-register-123', dateOfBirth: dateYearsAgo(10),
+      }).expect(400);
+      expect(response.body).toEqual({
+        error: 'A parent or guardian must create and manage this child account',
+        code: 'PARENT_ACCOUNT_REQUIRED',
+      });
+      expect(await prisma.user.findUnique({ where: { email } })).toBeNull();
+    },
+  );
+
+  it('keeps club accounts DOB-free and serializes their account policy', async () => {
+    const rejectedEmail = `club-dob-${randomUUID()}@example.test`;
+    const rejected = await request(app).post('/api/auth/register').send({
+      accountType: 'CLUB', businessName: 'DOB Club', name: 'Club Contact',
+      username: `club_${randomUUID().slice(0, 8)}`, email: rejectedEmail,
+      password: 'Courtly-club-dob-123', dateOfBirth: adultDateOfBirth,
+    }).expect(400);
+    expect(rejected.body.error).toBe('Club accounts do not have a date of birth');
+    expect(await prisma.user.findUnique({ where: { email: rejectedEmail } })).toBeNull();
+
+    const email = `club-no-dob-${randomUUID()}@example.test`;
+    const registered = await request(app).post('/api/auth/register').send({
+      accountType: 'CLUB', businessName: 'No DOB Academy', name: 'Club Contact',
+      username: `club_${randomUUID().slice(0, 8)}`, email, password: 'Courtly-club-no-dob-123',
+    }).expect(201);
+    tenants.own(registered.body.business.id);
+    tenants.ownUser(registered.body.user.id);
+    expect(registered.body.user).toMatchObject({
+      accountType: 'CLUB', dateOfBirth: null, ageBand: 'UNKNOWN', needsAgeReview: false,
+      requiredAction: null, accountActionRequired: false,
+    });
+    expect(registered.body.user.capabilities).toEqual({
+      ...adultCapabilities, familyManagement: false, calendar: false,
+    });
+    expect(registered.body.user).not.toHaveProperty('emailVerifiedAt');
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: registered.body.user.id } })).emailVerifiedAt)
+      .toBeNull();
+  });
+
+  it('flags an unknown-DOB legacy personal account for age review without removing established access', async () => {
+    const { agent, user } = await credentialedStudent(null);
+    const account = await agent.get('/api/auth/me').expect(200);
+    expect(account.body.user).toMatchObject({
+      id: user.id, accountType: 'STUDENT', dateOfBirth: null, ageBand: 'UNKNOWN',
+      needsAgeReview: true, requiredAction: null, accountActionRequired: false,
+    });
+    expect(account.body.user.capabilities).toEqual(adultCapabilities);
+  });
+
+  it('gates every embedded account route for a credentialed under-13 SELF legacy row', async () => {
+    const dateOfBirth = dateYearsAgo(10);
+    const { agent, login, user } = await credentialedStudent(dateOfBirth);
+    expect(login.body.user).toMatchObject({
+      id: user.id, dateOfBirth, ageBand: 'CHILD', needsAgeReview: false,
+      requiredAction: 'PARENT_ACCOUNT_REQUIRED', accountActionRequired: true,
+      capabilities: { ordinaryAccess: false, commerce: false, directory: false, profileEdit: true },
+    });
+
+    const missingParticipant = randomUUID();
+    const missingRequest = randomUUID();
+    const routes = [
+      ['club directory', () => agent.get('/api/account/clubs').query({ limit: 0 })],
+      ['new booking', () => agent.post(`/api/public/missing-${randomUUID()}/bookings`).send({ unexpected: true })],
+      ['booking history', () => agent.get('/api/account/bookings').query({ unexpected: true })],
+      ['booking cancellation', () => agent.post(`/api/account/bookings/${missingParticipant}/cancel`).send({ unexpected: true })],
+      ['reschedule proposal', () => agent.post(`/api/account/bookings/${missingParticipant}/reschedule-requests`).send({})],
+      ['reschedule acceptance', () => agent.post(`/api/account/reschedule-requests/${missingRequest}/accept`).send({ unexpected: true })],
+      ['reschedule decline', () => agent.post(`/api/account/reschedule-requests/${missingRequest}/decline`).send({ unexpected: true })],
+      ['notification preferences read', () => agent.get('/api/account/notification-preferences')],
+      ['notification preferences update', () => agent.patch('/api/account/notification-preferences').send({ unexpected: true })],
+    ] as const;
+    for (const [label, call] of routes) {
+      const response = await call();
+      expect(response.status, label).toBe(403);
+      expect(response.body, label).toEqual({
+        error: 'Account action is required before continuing',
+        code: 'ACCOUNT_ACTION_REQUIRED', reason: 'PARENT_ACCOUNT_REQUIRED',
+      });
+    }
+    expect(await prisma.notificationPreference.findUnique({ where: { userId: user.id } })).toBeNull();
+  });
+
+  it('allows teen account access but blocks a new commercial booking at the capability gate', async () => {
+    const email = `teen-${randomUUID()}@example.test`;
+    const dateOfBirth = dateYearsAgo(15);
+    const agent = request.agent(app);
+    const registered = await agent.post('/api/auth/register').send({
+      accountType: 'STUDENT', name: 'Teen Student', username: `teen_${randomUUID().slice(0, 8)}`,
+      email, password: 'Courtly-teen-register-123', dateOfBirth,
+    }).expect(201);
+    tenants.ownUser(registered.body.user.id);
+    expect(registered.body.user).toMatchObject({
+      dateOfBirth, profileVisibility: 'CLUBS_ONLY', ageBand: 'TEEN', needsAgeReview: false,
+      requiredAction: null, accountActionRequired: false,
+    });
+    expect(registered.body.user.capabilities).toEqual({
+      ordinaryAccess: true, familyManagement: false, payments: false, staffAccess: false,
+      directory: true, chat: true, commerce: false, rentals: false, calendar: true,
+      workspace: false, profileEdit: true,
+    });
+    const denied = await agent.post(`/api/public/missing-${randomUUID()}/bookings`)
+      .send({ unexpected: true }).expect(403);
+    expect(denied.body).toEqual({
+      error: 'This account cannot perform that action', code: 'CAPABILITY_REQUIRED',
+      reason: null, capability: 'commerce',
+    });
   });
 
   it('does not expose the retired solo-practice route', async () => {

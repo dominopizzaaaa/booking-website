@@ -107,6 +107,22 @@ describe.sequential('Account chat', () => {
       .send({ username: club.user.username, email: club.user.email }).expect(400);
   });
 
+  it('rejects DOB-known self-managed child targets but keeps DOB-null legacy targets discoverable', async () => {
+    const viewer = await person('Policy Chat Viewer');
+    const hiddenChild = await person('Policy Chat Child');
+    await prisma.user.update({
+      where: { id: hiddenChild.id },
+      data: { dateOfBirth: new Date('2020-01-01T00:00:00.000Z') },
+    });
+    const legacy = await person('Policy Chat Legacy');
+
+    await openConversation(viewer.cookie, hiddenChild.username).expect(404);
+    const opened = await openConversation(viewer.cookie, legacy.username).expect(200);
+    expect(opened.body).toEqual({ threadId: expect.any(String) });
+    expect(await prisma.chatThread.findUniqueOrThrow({ where: { id: opened.body.threadId } }))
+      .toMatchObject({ directKey: [viewer.id, legacy.id].sort().join(':') });
+  });
+
   it('keeps account messages, lists and unread state private while granting one active roster coach access', async () => {
     const student = await person('Private Conversation Student');
     const outsider = await person('Account Chat Outsider');

@@ -36,7 +36,7 @@ describe.sequential('club audit history', () => {
   async function staffCookie(permissions: string[]) {
     const suffix = randomUUID().replaceAll('-', '');
     const user = await prisma.user.create({ data: {
-      name: 'Audit Staff', username: `audit_${suffix.slice(0, 18)}`, email: `audit-${suffix}@example.test`,
+      name: 'Audit Staff', legalName: 'Audit Staff', username: `audit_${suffix.slice(0, 18)}`, email: `audit-${suffix}@example.test`,
       passwordHash: 'not-used', accountType: 'STUDENT',
     } });
     tenants.ownUser(user.id);

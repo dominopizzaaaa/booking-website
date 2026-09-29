@@ -496,9 +496,11 @@ function directoryClubs(
 function ExploreClubCard({
   club,
   onViewPackages,
+  canBook = true,
 }: {
   club: ExploreClub;
   onViewPackages?: (club: ExploreClub) => void;
+  canBook?: boolean;
 }) {
   const { business, directory, known } = club;
   return (
@@ -587,13 +589,14 @@ function ExploreClubCard({
               <WalletCards size={15} /> Packages
             </button>
           )}
-          <Link
-            href={`/book/${encodeURIComponent(business.slug)}`}
-            className={primaryButton}
-            aria-label={`View ${business.name} booking page`}
-          >
-            View booking page <ArrowRight size={15} />
-          </Link>
+          {canBook ? <Link
+              href={`/book/${encodeURIComponent(business.slug)}`}
+              className={primaryButton}
+              aria-label={`View ${business.name} booking page`}
+            >
+              View booking page <ArrowRight size={15} />
+            </Link>
+            : <p className="self-center text-xs leading-relaxed text-[#59675c]">Booking is unavailable for this account.</p>}
         </div>
       </div>
     </article>
@@ -678,7 +681,7 @@ function PackageCard({
 function RentalCard({
   rental, onOpen, onViewPackages,
 }: {
-  rental: RentalListing; onOpen: (rental: RentalListing) => void; onViewPackages: (rental: RentalListing) => void;
+  rental: RentalListing; onOpen: (rental: RentalListing) => void; onViewPackages?: (rental: RentalListing) => void;
 }) {
   return (
     <article className={cn(panel, 'flex flex-col p-5')}>
@@ -704,9 +707,9 @@ function RentalCard({
           <p className="mt-1 text-base font-semibold text-[#34533e]">{money(rental.price, rental.currency)} / hour</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={secondaryButton} onClick={() => onViewPackages(rental)}>
+          {onViewPackages && <button type="button" className={secondaryButton} onClick={() => onViewPackages(rental)}>
             View packages
-          </button>
+          </button>}
           <button type="button" className={primaryButton} onClick={() => onOpen(rental)}>
             View times <ArrowRight size={15} />
           </button>
@@ -1250,11 +1253,14 @@ type BookingDialogProps = {
   paymentMode: PaymentUiMode;
   stripeTestMode: boolean;
   paymentUnavailableReason: string;
+  canRetryPayments: boolean;
   retryPaymentCapabilities: () => void;
   paymentOutcome: 'SUCCEEDED' | 'FAILED';
   setPaymentOutcome: (value: 'SUCCEEDED' | 'FAILED') => void;
   retrySlots: () => void;
   nowMs: number;
+  canUseCommerce: boolean;
+  canUseChat: boolean;
   onOpenChat: (bookingId: string) => void;
 };
 
@@ -1289,11 +1295,14 @@ function BookingDialog({
   paymentMode,
   stripeTestMode,
   paymentUnavailableReason,
+  canRetryPayments,
   retryPaymentCapabilities,
   paymentOutcome,
   setPaymentOutcome,
   retrySlots,
   nowMs,
+  canUseCommerce,
+  canUseChat,
   onOpenChat,
 }: BookingDialogProps) {
   if (!item) return null;
@@ -1326,13 +1335,13 @@ function BookingDialog({
           <span className={cn('rounded-full px-2.5 py-1 text-[10px] font-medium', statusClass(state))}>
             {state}
           </span>
-          <Link
-            href={`/book/${encodeURIComponent(item.business.slug)}`}
-            className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#5d7a52]"
-          >
-            Club booking page <ExternalLink size={11} />
-          </Link>
-          {item.paymentRoute !== 'DIRECT' && !item.participant.cancelled && !item.participant.cancelledAt && (
+          {canUseCommerce && <Link
+              href={`/book/${encodeURIComponent(item.business.slug)}`}
+              className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#5d7a52]"
+            >
+              Club booking page <ExternalLink size={11} />
+            </Link>}
+          {canUseChat && item.paymentRoute !== 'DIRECT' && !item.participant.cancelled && !item.participant.cancelledAt && (
             <button
               type="button"
               onClick={() => onOpenChat(item.booking.id)}
@@ -1513,7 +1522,7 @@ function BookingDialog({
                       ? `Simulate ${money(item.participant.price ?? item.booking.price, item.business.currency)} payment`
                       : 'Continue to secure payment'}
                   </button>
-                  {paymentMode === 'disabled' && (
+                  {paymentMode === 'disabled' && canRetryPayments && (
                     <button type="button" className={secondaryButton} disabled={busy} onClick={retryPaymentCapabilities}>
                       <RefreshCw size={14} /> Check again
                     </button>
@@ -1735,12 +1744,12 @@ function AlertDialog({
 
 function PackageOffersDialog({
   club, offers, loading, error, notice, busyId, paymentMode, stripeTestMode, paymentUnavailableReason, paymentOutcome,
-  onPaymentOutcome, onBuy, onRetryPaymentCapabilities, onClose,
+  onPaymentOutcome, onBuy, canRetryPayments, onRetryPaymentCapabilities, onClose,
 }: {
   club: { business: PackageOfferBusiness } | null; offers: PackageOffer[]; loading: boolean; error: string; notice: string; busyId: string | null;
   paymentMode: PaymentUiMode; stripeTestMode: boolean; paymentUnavailableReason: string;
   paymentOutcome: 'SUCCEEDED' | 'FAILED'; onPaymentOutcome: (value: 'SUCCEEDED' | 'FAILED') => void;
-  onBuy: (offer: PackageOffer) => void; onRetryPaymentCapabilities: () => void; onClose: () => void;
+  onBuy: (offer: PackageOffer) => void; canRetryPayments: boolean; onRetryPaymentCapabilities: () => void; onClose: () => void;
 }) {
   if (!club) return null;
   return (
@@ -1779,7 +1788,7 @@ function PackageOffersDialog({
                 </select>
               </>
             )}
-            {paymentMode === 'disabled' && (
+            {paymentMode === 'disabled' && canRetryPayments && (
               <button type="button" className={cn(secondaryButton, 'mt-4')} onClick={onRetryPaymentCapabilities}>
                 <RefreshCw size={14} /> Check payment availability again
               </button>
@@ -2159,7 +2168,15 @@ export function StudentApp({ slug }: { slug?: string }) {
   const packagesRequestRef = useRef(0);
   const checkoutReturnHandledRef = useRef<string | null>(null);
   const chatOpenedFromListRef = useRef(false);
-  const { unreadThreads: chatUnread, beginUnreadRequest, commitUnreadNow } = useChatUnread(isStudentSession(session));
+  const { unreadThreads: chatUnread, beginUnreadRequest, commitUnreadNow } = useChatUnread(isStudentSession(session) && session?.user.capabilities?.chat !== false);
+  const canUsePayments = !!session && session.user.capabilities?.payments !== false;
+  const canUseCommerce = !!session && session.user.capabilities?.commerce !== false;
+  const canUseRentals = !!session && session.user.capabilities?.rentals !== false;
+  const canSearchPeople = !!session && session.user.capabilities?.directory !== false;
+  const canUseDirectChat = !!session && session.user.capabilities?.chat !== false;
+  const canUseCalendar = !!session && session.user.capabilities?.calendar !== false;
+  const canEditProfile = !!session && session.user.capabilities?.profileEdit !== false;
+  const canUseFamily = session?.user.capabilities?.familyManagement === true;
 
   const tabHref = useCallback((tab: StudentTab) => {
     const params = new URLSearchParams();
@@ -2245,6 +2262,10 @@ export function StudentApp({ slug }: { slug?: string }) {
     setAuthError('');
     try {
       const value = await loadAuthSession();
+      if (value.user.requiredAction) {
+        router.replace('/account/action-required');
+        return;
+      }
       setSession(value);
     } catch (error) {
       setSession(null);
@@ -2301,6 +2322,13 @@ export function StudentApp({ slug }: { slug?: string }) {
   }, [router]);
 
   const refreshPackages = useCallback(async () => {
+    if (!canUseCommerce) {
+      packagesRequestRef.current += 1;
+      setPackages([]);
+      setPackagesLoading(false);
+      setPackagesError('');
+      return;
+    }
     const requestId = ++packagesRequestRef.current;
     setPackagesLoading(true);
     setPackagesError('');
@@ -2314,9 +2342,15 @@ export function StudentApp({ slug }: { slug?: string }) {
     } finally {
       if (packagesRequestRef.current === requestId) setPackagesLoading(false);
     }
-  }, [router]);
+  }, [canUseCommerce, router]);
 
   const refreshPaymentCapabilities = useCallback(async () => {
+    if (!canUsePayments) {
+      setPaymentCapabilities(null);
+      setPaymentCapabilitiesLoading(false);
+      setPaymentCapabilitiesError('');
+      return;
+    }
     setPaymentCapabilitiesLoading(true);
     setPaymentCapabilitiesError('');
     try {
@@ -2332,9 +2366,15 @@ export function StudentApp({ slug }: { slug?: string }) {
     } finally {
       setPaymentCapabilitiesLoading(false);
     }
-  }, [router]);
+  }, [canUsePayments, router]);
 
   const refreshRentals = useCallback(async () => {
+    if (!canUseRentals) {
+      setRentals([]);
+      setRentalsLoading(false);
+      setRentalsError('');
+      return;
+    }
     setRentalsLoading(true);
     setRentalsError('');
     try {
@@ -2356,7 +2396,7 @@ export function StudentApp({ slug }: { slug?: string }) {
     } finally {
       setRentalsLoading(false);
     }
-  }, [router]);
+  }, [canUseRentals, router]);
 
   const refreshNotifications = useCallback(async () => {
     setNotificationsLoading(true);
@@ -2395,7 +2435,13 @@ export function StudentApp({ slug }: { slug?: string }) {
     setProfileSportsText((session!.user.sports ?? []).join(', '));
     setBookingsReady(false);
     void refreshBookings();
-    void refreshClubDirectory();
+    if (session!.user.capabilities?.commerce !== false || session!.user.capabilities?.directory !== false) {
+      void refreshClubDirectory();
+    } else {
+      setClubDirectory([]);
+      setClubDirectoryError('');
+      setClubDirectoryLoading(false);
+    }
     void refreshNotifications();
     void refreshPackages();
     void refreshPaymentCapabilities();
@@ -2403,7 +2449,7 @@ export function StudentApp({ slug }: { slug?: string }) {
   }, [session, refreshBookings, refreshClubDirectory, refreshNotifications, refreshPackages, refreshPaymentCapabilities, refreshRentals]);
 
   useEffect(() => {
-    if (!isStudentSession(session)) return;
+    if (!isStudentSession(session) || !canUsePayments) return;
     const intentId = searchParams.get('checkout_intent');
     if (!intentId || checkoutReturnHandledRef.current === intentId) return;
     checkoutReturnHandledRef.current = intentId;
@@ -2419,7 +2465,7 @@ export function StudentApp({ slug }: { slug?: string }) {
         if (intent?.status === 'SUCCEEDED') {
           setCheckoutReturnStatus({ message: 'Payment confirmed. Your Courtly account is up to date.', error: false });
           void refreshBookings();
-          void refreshPackages();
+          if (canUseCommerce) void refreshPackages();
           void refreshNotifications();
         } else if (intent?.status === 'FAILED' || intent?.status === 'CANCELLED' || intent?.status === 'REFUNDED') {
           setCheckoutReturnStatus({ message: 'The payment was not completed. No Courtly purchase was recorded.', error: true });
@@ -2428,7 +2474,36 @@ export function StudentApp({ slug }: { slug?: string }) {
         }
       })
       .catch((error) => setCheckoutReturnStatus({ message: `We could not check the payment yet. ${messageOf(error)}`, error: true }));
-  }, [refreshBookings, refreshNotifications, refreshPackages, router, searchParams, session]);
+  }, [canUseCommerce, canUsePayments, refreshBookings, refreshNotifications, refreshPackages, router, searchParams, session]);
+
+  useEffect(() => {
+    if (canUseRentals) return;
+    setExploreSegment('classes');
+    setOpenRentalId(null);
+    setRentalDetail(null);
+    setRentalSlots([]);
+    setSelectedRentalSlot(null);
+    setRentalPackageFilterId('');
+  }, [canUseRentals]);
+
+  useEffect(() => {
+    if (canUseCommerce) return;
+    offersRequestRef.current += 1;
+    setOffersClub(null);
+    setLiveCheckout(current => current?.kind === 'PACKAGE' ? null : current);
+    setPackagesExpanded(false);
+    setRentalPackageFilterId('');
+  }, [canUseCommerce]);
+
+  useEffect(() => {
+    if (canUsePayments) return;
+    setLiveCheckout(null);
+  }, [canUsePayments]);
+
+  useEffect(() => {
+    if (canEditProfile) return;
+    setProfileEditorOpen(false);
+  }, [canEditProfile]);
 
   useEffect(() => {
     function updateClock() {
@@ -2461,16 +2536,16 @@ export function StudentApp({ slug }: { slug?: string }) {
 
   const clubs = useMemo(() => knownClubs(bookings, slug, nowMs), [bookings, nowMs, slug]);
   const exploreClubs = useMemo(
-    () => directoryClubs(clubDirectory, clubs, !!clubDirectoryError),
-    [clubDirectory, clubDirectoryError, clubs],
+    () => canUseCommerce ? directoryClubs(clubDirectory, clubs, !!clubDirectoryError) : [],
+    [canUseCommerce, clubDirectory, clubDirectoryError, clubs],
   );
   // Book keeps a previously used or explicitly linked club available even
   // when it is intentionally excluded from public discovery (for example a
   // private demo workspace). The directory remains the source for all other
   // first-time choices.
   const bookClubs = useMemo(
-    () => directoryClubs(clubDirectory, clubs, true),
-    [clubDirectory, clubs],
+    () => canUseCommerce ? directoryClubs(clubDirectory, clubs, true) : [],
+    [canUseCommerce, clubDirectory, clubs],
   );
   const clubSports = useMemo(() => {
     const labels = new Map<string, string>();
@@ -2572,18 +2647,22 @@ export function StudentApp({ slug }: { slug?: string }) {
   const actionBooking = openBookingId
     ? bookings.find((item) => item.booking.id === openBookingId)
     : undefined;
-  const paymentMode: PaymentUiMode = paymentCapabilitiesLoading && !paymentCapabilities
+  const paymentMode: PaymentUiMode = !canUsePayments
+    ? 'disabled'
+    : paymentCapabilitiesLoading && !paymentCapabilities
     ? 'loading'
     : paymentCapabilities?.liveCheckout && paymentCapabilities.publishableKey
       ? 'live'
       : paymentCapabilities?.simulatedCheckout ? 'simulated' : 'disabled';
-  const paymentUnavailableReason = paymentCapabilitiesError
+  const paymentUnavailableReason = !canUsePayments
+    ? 'Payments are unavailable for this account.'
+    : paymentCapabilitiesError
     ? `Payment availability could not be checked. ${paymentCapabilitiesError}`
     : 'Online payment is not enabled for this Courtly deployment.';
   const stripeTestMode = paymentCapabilities?.publishableKey?.startsWith('pk_test_') ?? false;
 
   useEffect(() => {
-    if (!openRentalId) return;
+    if (!canUseRentals || !openRentalId) return;
     let ignore = false;
     setRentalDetailLoading(true);
     setRentalError('');
@@ -2599,10 +2678,10 @@ export function StudentApp({ slug }: { slug?: string }) {
       .catch((error) => { if (!ignore) setRentalError(messageOf(error)); })
       .finally(() => { if (!ignore) setRentalDetailLoading(false); });
     return () => { ignore = true; };
-  }, [openRentalId]);
+  }, [canUseRentals, openRentalId]);
 
   useEffect(() => {
-    if (!rentalDetail || !rentalDate || !rentalDuration) return;
+    if (!canUseRentals || !rentalDetail || !rentalDate || !rentalDuration) return;
     let ignore = false;
     setRentalSlotsLoading(true);
     setRentalError('');
@@ -2614,7 +2693,7 @@ export function StudentApp({ slug }: { slug?: string }) {
       .catch((error) => { if (!ignore) setRentalError(messageOf(error)); })
       .finally(() => { if (!ignore) setRentalSlotsLoading(false); });
     return () => { ignore = true; };
-  }, [rentalDate, rentalDetail, rentalDuration, rentalSlotsVersion, rentalUnitId]);
+  }, [canUseRentals, rentalDate, rentalDetail, rentalDuration, rentalSlotsVersion, rentalUnitId]);
 
   useEffect(() => {
     if (selectedClubSlug && bookClubs.some((club) => club.business.slug === selectedClubSlug)) return;
@@ -2706,6 +2785,7 @@ export function StudentApp({ slug }: { slug?: string }) {
   }
 
   async function openChatForBooking(bookingId: string) {
+    if (!canUseDirectChat) return;
     try {
       const { threadId } = await openBookingChat(bookingId);
       setOpenBookingId(null);
@@ -2866,7 +2946,7 @@ export function StudentApp({ slug }: { slug?: string }) {
   }
 
   function payForBooking() {
-    if (!actionBooking || actionBusy) return;
+    if (!canUsePayments || !actionBooking || actionBusy) return;
     const participantId = actionBooking.participant.id;
     if (paymentMode === 'live') {
       const signature = JSON.stringify([participantId, 'stripe']);
@@ -2940,6 +3020,7 @@ export function StudentApp({ slug }: { slug?: string }) {
   }
 
   function openPackageOffers(club: { business: PackageOfferBusiness }) {
+    if (!canUseCommerce) return;
     const requestId = ++offersRequestRef.current;
     setOffersClub(club);
     setPackageOffers([]);
@@ -2965,7 +3046,7 @@ export function StudentApp({ slug }: { slug?: string }) {
   }
 
   function buyPackage(offer: PackageOffer) {
-    if (offerBusyId) return;
+    if (!canUseCommerce || !canUsePayments || offerBusyId) return;
     if (paymentMode === 'live') {
       const signature = JSON.stringify([offer.id, 'stripe']);
       const idempotencyKey = activeCheckoutKey(packageCheckoutKeysRef.current, 'package', offer.id, signature);
@@ -3042,6 +3123,7 @@ export function StudentApp({ slug }: { slug?: string }) {
   }
 
   function findRentalForPackage(pkg: AccountPackage) {
+    if (!canUseCommerce || !canUseRentals) return;
     setPackagesExpanded(false);
     setRentalPackageFilterId(pkg.id);
     setRentalSport('');
@@ -3061,7 +3143,7 @@ export function StudentApp({ slug }: { slug?: string }) {
   }
 
   function reserveRental() {
-    if (!rentalDetail || !selectedRentalSlot || rentalBookingBusy) return;
+    if (!canUseRentals || (!selectedRentalPackageId && !canUsePayments) || !rentalDetail || !selectedRentalSlot || rentalBookingBusy) return;
     const rentalId = rentalDetail.id;
     const slot = selectedRentalSlot;
     const freeRental = slot.price === 0;
@@ -3174,7 +3256,7 @@ export function StudentApp({ slug }: { slug?: string }) {
 
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!session || profileBusy) return;
+    if (!session || !canEditProfile || profileBusy) return;
     const name = profile.name.trim();
     if (name.length < 2) {
       setProfileError('Please enter your name using at least two characters.');
@@ -3279,11 +3361,14 @@ export function StudentApp({ slug }: { slug?: string }) {
     paymentMode,
     stripeTestMode,
     paymentUnavailableReason,
+    canRetryPayments: canUsePayments,
     retryPaymentCapabilities: () => void refreshPaymentCapabilities(),
     paymentOutcome: bookingPaymentOutcome,
     setPaymentOutcome: setBookingPaymentOutcome,
     retrySlots: () => setSlotsVersion((value) => value + 1),
     nowMs,
+    canUseCommerce,
+    canUseChat: canUseDirectChat,
     onOpenChat: (bookingId: string) => void openChatForBooking(bookingId),
   };
 
@@ -3346,7 +3431,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                 </div>
               }
             >
-              {session.user.email} is signed in as a coach or club account. Switch to your student account to view personal bookings.
+              {session.user.email ?? 'This account'} is signed in as a coach or club account. Switch to your student account to view personal bookings.
             </EmptyState>
           </div>
         </div>
@@ -3427,7 +3512,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                 </h1>
                 <p className="mt-2 text-sm text-[#59675c]">Every club, one calm place.</p>
               </div>
-              {clubs.length > 0 && (
+              {clubs.length > 0 && canUseCommerce && (
                 <button type="button" className={secondaryButton} onClick={() => selectTab('book')}>
                   <Plus size={15} /> Book a session
                 </button>
@@ -3459,12 +3544,12 @@ export function StudentApp({ slug }: { slug?: string }) {
               <SuccessNotice message={notice} noticeRef={successNoticeRef} className="mt-6" />
             )}
 
-            <HomePackageSummary
+            {canUseCommerce && <HomePackageSummary
               loading={packagesLoading}
               error={packagesError}
               packages={activePackages}
               onOpen={() => { setPackagesExpanded(true); selectTab('profile'); }}
-            />
+            />}
 
             {bookingsLoading ? (
               <LoadingScreen text="Gathering your sessions…" />
@@ -3474,7 +3559,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                   icon={<CalendarDays size={23} />}
                   title={slug ? 'Book your first session with this club' : 'Open your club’s booking page'}
                   action={
-                    slug ? (
+                    slug && canUseCommerce ? (
                       <Link href={`/book/${encodeURIComponent(slug)}`} className={primaryButton}>
                         Open booking page <ArrowRight size={15} />
                       </Link>
@@ -3483,9 +3568,11 @@ export function StudentApp({ slug }: { slug?: string }) {
                     )
                   }
                 >
-                  {slug
+                  {slug && canUseCommerce
                     ? 'Choose a session on the club’s booking page. It will appear here after you book.'
-                    : 'Paste the booking link your club sent you to choose a session.'}
+                    : canUseCommerce
+                      ? 'Paste the booking link your club sent you to choose a session.'
+                      : 'Guardian booking and commerce for children are not available.'}
                 </EmptyState>
               </div>
             ) : (
@@ -3612,8 +3699,8 @@ export function StudentApp({ slug }: { slug?: string }) {
             <p className="mt-2 max-w-xl text-sm leading-relaxed text-[#59675c]">
               Find coaching, reserve a venue, or look up people across Courtly.
             </p>
-            <div role="tablist" aria-label="Explore marketplace" aria-orientation="horizontal" className="mt-6 grid grid-cols-2 gap-2 rounded-2xl bg-[#eaf0e5] p-1.5">
-              {([['classes', 'Classes/clubs'], ['rentals', 'Venue rentals']] as const).map(([value, label]) => (
+            <div role="tablist" aria-label="Explore marketplace" aria-orientation="horizontal" className={cn('mt-6 grid gap-2 rounded-2xl bg-[#eaf0e5] p-1.5', canUseRentals ? 'grid-cols-2' : 'grid-cols-1')}>
+              {([['classes', 'Classes/clubs'], ...(canUseRentals ? [['rentals', 'Venue rentals'] as const] : [])] as const).map(([value, label]) => (
                 <button
                   key={value}
                   type="button"
@@ -3624,7 +3711,9 @@ export function StudentApp({ slug }: { slug?: string }) {
                   tabIndex={exploreSegment === value ? 0 : -1}
                   onClick={() => setExploreSegment(value)}
                   onKeyDown={(event) => {
-                    const next = event.key === 'Home'
+                    const next = !canUseRentals
+                      ? event.key === 'Home' || event.key === 'End' ? 'classes' : null
+                      : event.key === 'Home'
                       ? 'classes'
                       : event.key === 'End'
                         ? 'rentals'
@@ -3646,7 +3735,7 @@ export function StudentApp({ slug }: { slug?: string }) {
               ))}
             </div>
 
-            <section className={cn(panel, 'mt-5 p-4 sm:p-5')} aria-labelledby="student-people-search-title">
+            {canSearchPeople && <section className={cn(panel, 'mt-5 p-4 sm:p-5')} aria-labelledby="student-people-search-title">
               <div className="flex items-start gap-3">
                 <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#eef3e8] text-[#4f6847]"><UsersRound size={18} /></span>
                 <div>
@@ -3681,11 +3770,11 @@ export function StudentApp({ slug }: { slug?: string }) {
                   ))}
                 </ul>
               )}
-            </section>
+            </section>}
 
             {exploreSegment === 'classes' ? (
               <div id="student-classes-marketplace" role="tabpanel" aria-labelledby="student-explore-classes-tab">
-            {bookingsReady && linkedSlugIsNew && (
+            {canUseCommerce && bookingsReady && linkedSlugIsNew && (
               <div className="mt-6 flex flex-col gap-3 rounded-2xl border border-[#dfe7d8] bg-[#f0f5ea] p-5 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h2 className="text-sm font-semibold text-[#3d5a41]">A club invited you to book</h2>
@@ -3865,7 +3954,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                       <span className="text-xs text-[#59675c]">{filteredKnownClubs.length} shown</span>
                     </div>
                     <div className="grid gap-4 sm:grid-cols-2">
-                      {filteredKnownClubs.map((club) => <ExploreClubCard key={club.business.slug} club={club} onViewPackages={openPackageOffers} />)}
+                      {filteredKnownClubs.map((club) => <ExploreClubCard key={club.business.slug} club={club} canBook={canUseCommerce} onViewPackages={canUseCommerce ? openPackageOffers : undefined} />)}
                     </div>
                   </section>
                 )}
@@ -3879,14 +3968,14 @@ export function StudentApp({ slug }: { slug?: string }) {
                       <span className="text-xs text-[#59675c]">{filteredDiscoveryClubs.length} shown</span>
                     </div>
                     <div className="grid gap-4 sm:grid-cols-2">
-                      {filteredDiscoveryClubs.map((club) => <ExploreClubCard key={club.business.slug} club={club} onViewPackages={openPackageOffers} />)}
+                      {filteredDiscoveryClubs.map((club) => <ExploreClubCard key={club.business.slug} club={club} canBook={canUseCommerce} onViewPackages={canUseCommerce ? openPackageOffers : undefined} />)}
                     </div>
                   </section>
                 )}
               </div>
             )}
               </div>
-            ) : (
+            ) : canUseRentals ? (
               <div id="student-rentals-marketplace" role="tabpanel" aria-labelledby="student-explore-rentals-tab" className="mt-7">
                 <AccountRentalHistory
                   refreshToken={rentalHistoryVersion}
@@ -3920,12 +4009,12 @@ export function StudentApp({ slug }: { slug?: string }) {
                 <p role="status" aria-live="polite" className="mt-5 text-xs font-medium text-[#59675c]">{rentalsLoading ? 'Loading rentals…' : `${filteredRentals.length} rental${filteredRentals.length === 1 ? '' : 's'} found`}</p>
                 {rentalsError && <div className="mt-5 space-y-3"><ErrorNotice message={rentalsError} /><button type="button" className={secondaryButton} onClick={() => void refreshRentals()}><RefreshCw size={14} /> Try rentals again</button></div>}
                 {rentalsLoading ? <LoadingScreen text="Finding venues…" /> : filteredRentals.length ? (
-                  <div className="mt-6 grid gap-4 sm:grid-cols-2">{filteredRentals.map((rental) => <RentalCard key={rental.id} rental={rental} onViewPackages={(value) => openPackageOffers({ business: { ...value.club, currency: value.currency } })} onOpen={(value) => { setRentalDetail(null); setRentalNotice(''); setRentalError(''); setSelectedRentalPackageId(rentalPackageFilterId); setOpenRentalId(value.id); }} />)}</div>
+                  <div className="mt-6 grid gap-4 sm:grid-cols-2">{filteredRentals.map((rental) => <RentalCard key={rental.id} rental={rental} onViewPackages={canUseCommerce ? (value) => openPackageOffers({ business: { ...value.club, currency: value.currency } }) : undefined} onOpen={(value) => { setRentalDetail(null); setRentalNotice(''); setRentalError(''); setSelectedRentalPackageId(rentalPackageFilterId); setOpenRentalId(value.id); }} />)}</div>
                 ) : !rentalsError && (
                   <div className="mt-6"><EmptyState icon={<MapPin size={23} />} title={rentals.length ? 'No rentals match these filters' : 'No venue rentals are available yet'} action={rentals.length ? <button type="button" className={secondaryButton} onClick={() => { setRentalSearch(''); setRentalSport(''); setRentalPackageFilterId(''); }}>Clear rental filters</button> : undefined}>{rentals.length ? 'Try another venue, amenity, or sport.' : 'Come back soon as clubs make courts available.'}</EmptyState></div>
                 )}
               </div>
-            )}
+            ) : null}
           </section>
         )}
 
@@ -3945,7 +4034,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                   ? 'The club directory could not be loaded.'
                   : `${bookClubs.length} bookable club${bookClubs.length === 1 ? '' : 's'} found.`}
             </p>
-            {linkedSlugIsNew && (
+            {canUseCommerce && linkedSlugIsNew && (
               <div className="mt-6 flex flex-col gap-3 rounded-2xl border border-[#dfe7d8] bg-[#f0f5ea] p-5 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h2 className="text-sm font-semibold text-[#3d5a41]">Book with the club that sent you here</h2>
@@ -3956,7 +4045,9 @@ export function StudentApp({ slug }: { slug?: string }) {
                 </Link>
               </div>
             )}
-            {exploreLoading ? (
+            {!canUseCommerce ? (
+              <div className="mt-8"><EmptyState icon={<ShieldCheck size={23} />} title="Booking is unavailable for this account">Guardian booking and commerce for children are not available.</EmptyState></div>
+            ) : exploreLoading ? (
               <LoadingScreen text="Finding clubs you can book…" />
             ) : clubDirectoryError && bookClubs.length === 0 ? (
               <div className="mt-8">
@@ -4031,7 +4122,7 @@ export function StudentApp({ slug }: { slug?: string }) {
           </section>
         )}
 
-        {activeTab === 'chat' && (
+        {activeTab === 'chat' && canUseDirectChat && (
           <section id="student-chat-panel" aria-label="Chat" className="student-tab-panel student-tab-chat">
             <ChatInbox
               mode="participant"
@@ -4051,6 +4142,10 @@ export function StudentApp({ slug }: { slug?: string }) {
               }}
             />
           </section>
+        )}
+
+        {activeTab === 'chat' && !canUseDirectChat && (
+          <section aria-label="Chat unavailable" className={cn(panel, 'p-8 text-center')}><ShieldCheck size={23} className="mx-auto text-[#71865f]" /><h1 className="mt-4 text-xl font-semibold">Chat is unavailable for this account</h1><p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-[#59675c]">Courtly applies this restriction from the account policy returned by the server.</p></section>
         )}
 
         {activeTab === 'alerts' && (
@@ -4197,7 +4292,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                   <h2 id="student-personal-details" className="text-base font-semibold text-[#304b39]">Personal details</h2>
                   <p className="mt-1 text-xs leading-relaxed text-[#59675c]">Shared only with clubs you book.</p>
                 </div>
-                <button
+                {canEditProfile && <button
                   type="button"
                   className={cn(secondaryButton, '!min-h-10 shrink-0 !px-3 !text-xs')}
                   onClick={() => {
@@ -4215,7 +4310,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                   }}
                 >
                   <Pencil size={14} /> Edit
-                </button>
+                </button>}
               </div>
               <dl className="mt-5 grid gap-5 sm:grid-cols-2">
                 <div>
@@ -4228,8 +4323,8 @@ export function StudentApp({ slug }: { slug?: string }) {
                 </div>
                 <div>
                   <dt className="text-[10px] font-medium uppercase tracking-wider text-[#59675c]">Email address</dt>
-                  <dd className="mt-1.5 break-all text-sm text-[#415244]">{session.user.email}</dd>
-                  <dd className="mt-1 text-[10px] text-[#59675c]">Your sign-in identity; it cannot be changed here.</dd>
+                  <dd className="mt-1.5 break-all text-sm text-[#415244]">{session.user.email ?? 'No independent sign-in email'}</dd>
+                  <dd className="mt-1 text-[10px] text-[#59675c]">{session.user.email ? 'Your sign-in identity; it cannot be changed here.' : 'This profile does not currently have an independent email sign-in.'}</dd>
                 </div>
                 <div>
                   <dt className="text-[10px] font-medium uppercase tracking-wider text-[#59675c]">Phone</dt>
@@ -4259,7 +4354,7 @@ export function StudentApp({ slug }: { slug?: string }) {
               )}
             </section>
 
-            <Dialog
+            {canEditProfile && <Dialog
               open={profileEditorOpen}
               onOpenChange={(open) => { if (!profileBusy) setProfileEditorOpen(open); }}
             >
@@ -4318,7 +4413,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                       <input
                         id="student-profile-email"
                         className={cn(field, '!bg-[#f5f6f3] !text-[#59675c]')}
-                        value={session.user.email}
+                        value={session.user.email ?? ''}
                         readOnly
                         aria-describedby="student-profile-email-note"
                         autoComplete="email"
@@ -4394,16 +4489,18 @@ export function StudentApp({ slug }: { slug?: string }) {
                   </div>
                 </form>
               </DialogContent>
-            </Dialog>
+            </Dialog>}
 
-            <CalendarConnectionCard
+            {canUseFamily && <section className={cn(panel, 'mt-6 p-5 sm:p-6')} aria-labelledby="student-family-heading"><div className="flex items-start gap-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#edf3e7] text-[#4f6847]"><UsersRound size={18} /></span><div className="min-w-0 flex-1"><h2 id="student-family-heading" className="text-sm font-semibold text-[#3f4c42]">Family</h2><p className="mt-1 text-xs leading-relaxed text-[#59675c]">Manage child profiles, privacy, guardian consent, data requests, and verified account handover. Managed children have no email, password, or sign-in.</p></div></div><Link href="/family" className={cn(primaryButton, 'mt-5 w-full sm:w-auto')}>Open Family<ArrowRight size={15} /></Link></section>}
+
+            {canUseCalendar && <CalendarConnectionCard
               accountType={session.user.accountType}
               returnTo="/manage?tab=profile"
               className="mt-6"
-            />
+            />}
             <NotificationPreferencesCard className="mt-6" />
 
-            <section id="student-packages" className="mt-9 scroll-mt-24" aria-labelledby="student-packages-heading">
+            {canUseCommerce && <section id="student-packages" className="mt-9 scroll-mt-24" aria-labelledby="student-packages-heading">
               <div className="flex flex-wrap items-end justify-between gap-3">
                 <div>
                   <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">Credits across clubs</p>
@@ -4432,7 +4529,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                   )}
                 </div>
               )}
-            </section>
+            </section>}
 
             <section className="mt-9" aria-labelledby="profile-booking-history">
               <div>
@@ -4503,8 +4600,8 @@ export function StudentApp({ slug }: { slug?: string }) {
           </section>
         )}
       </main>
-      <BookingDialog item={liveCheckout ? null : actionBooking ?? null} {...bookingDialogProps} />
-      <PackageOffersDialog
+      <BookingDialog item={canUsePayments && liveCheckout ? null : actionBooking ?? null} {...bookingDialogProps} />
+      {canUseCommerce && <PackageOffersDialog
         club={liveCheckout ? null : offersClub}
         offers={packageOffers}
         loading={offersLoading}
@@ -4514,13 +4611,14 @@ export function StudentApp({ slug }: { slug?: string }) {
         paymentMode={paymentMode}
         stripeTestMode={stripeTestMode}
         paymentUnavailableReason={paymentUnavailableReason}
+        canRetryPayments={canUsePayments}
         paymentOutcome={offerPaymentOutcome}
         onPaymentOutcome={setOfferPaymentOutcome}
         onBuy={buyPackage}
         onRetryPaymentCapabilities={() => void refreshPaymentCapabilities()}
         onClose={closePackageOffers}
-      />
-      <LiveCheckoutDialog
+      />}
+      {canUsePayments && <LiveCheckoutDialog
         checkout={liveCheckout}
         publishableKey={paymentCapabilities?.publishableKey ?? ''}
         testMode={stripeTestMode}
@@ -4529,8 +4627,8 @@ export function StudentApp({ slug }: { slug?: string }) {
         onClose={() => setLiveCheckout(null)}
         onSettled={settleLiveCheckout}
         onDefinitiveFailure={() => forgetLiveCheckoutAttempt()}
-      />
-      <RentalDialog
+      />}
+      {canUseRentals && <RentalDialog
         open={!!openRentalId}
         rental={rentalDetail}
         loading={rentalDetailLoading}
@@ -4554,7 +4652,7 @@ export function StudentApp({ slug }: { slug?: string }) {
         onPackage={setSelectedRentalPackageId}
         onPaymentOutcome={setRentalPaymentOutcome}
         onReserve={reserveRental}
-      />
+      />}
       <AlertDialog
         alert={openAlert}
         club={clubs.find((club) => club.business.slug === openAlert?.businessSlug)}

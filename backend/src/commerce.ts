@@ -295,6 +295,7 @@ async function findReplay(tx: Tx, userId: string, idempotencyKey: string) {
 }
 
 commerceRouter.post('/account/package-offers/:id/checkout', requireAuth, requireStudent, asyncRoute(async (req, res) => {
+  if (!req.auth.user.email) throw new HttpError(403, 'An account email is required to purchase a package');
   const input = checkoutInput.parse(req.body);
   const result = await prisma.$transaction(async tx => {
     const existing = await findReplay(tx, req.auth.user.id, input.idempotencyKey);
@@ -325,8 +326,9 @@ commerceRouter.post('/account/package-offers/:id/checkout', requireAuth, require
     let student = await tx.student.findFirst({ where: { businessId: offer.businessId, userId: req.auth.user.id } });
     if (!student) {
       const account = await tx.user.findUniqueOrThrow({ where: { id: req.auth.user.id } });
-      const conflicting = await tx.student.findUnique({
-        where: { businessId_email: { businessId: offer.businessId, email: account.email } }, select: { userId: true },
+      if (!account.email) throw new HttpError(403, 'An account email is required to purchase a package');
+      const conflicting = await tx.student.findFirst({
+        where: { businessId: offer.businessId, email: account.email }, select: { userId: true },
       });
       if (conflicting) throw new HttpError(409, 'Ask the club to connect your existing student record before buying a package');
       student = await tx.student.create({ data: {

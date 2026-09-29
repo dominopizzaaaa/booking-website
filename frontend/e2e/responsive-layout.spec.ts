@@ -143,6 +143,7 @@ test.describe('every screen fits the screen it is on', () => {
     await accountTypes.getByRole('radio', { name: 'Student', exact: true }).check();
     await page.getByLabel('Your full name', { exact: true }).fill('Layout Student');
     await page.getByLabel('Username', { exact: true }).fill(`rls_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-26)}`);
+    await page.getByLabel('Date of birth', { exact: true }).fill('1990-01-01');
     await page.getByLabel('Email address', { exact: true }).fill(studentEmail);
     await page.getByLabel('Password', { exact: true }).fill(password);
     await page.getByRole('button', { name: 'Create student account', exact: true }).click();

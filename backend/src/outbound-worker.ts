@@ -4,11 +4,21 @@ import { prisma } from './db.js';
 import type { EmailProvider } from './email-provider.js';
 import { EmailProviderError } from './email-provider.js';
 import { renderTransactionalEmail, type TransactionalEmailEvent } from './email-templates.js';
+import {
+  FamilyHandoverTokenError,
+  deriveFamilyHandoverToken,
+  familyHandoverClaimUrl,
+  familyHandoverTokenDigest,
+} from './family-handover-token.js';
 
 export type ClaimedDelivery = { id: string; eventType: string; recipientEmail: string; recipientName: string; payload: unknown; attempts: number; leaseToken: string };
 export type DeliveryDb = {
   $queryRaw<T>(query: unknown): Promise<T>;
   outboundDelivery: { updateMany(args: { where: Record<string, unknown>; data: Record<string, unknown> }): Promise<{ count: number }> };
+  childAccountHandover: { findUnique(args: {
+    where: { id: string };
+    select: { status: true; expiresAt: true; destinationEmail: true; tokenHash: true };
+  }): Promise<{ status: string; expiresAt: Date; destinationEmail: string; tokenHash: string } | null> };
 };
 const defaultDb = prisma as unknown as DeliveryDb;
 const maxAttempts = 8;
@@ -38,8 +48,49 @@ export async function claimOutboundDeliveries(db: DeliveryDb = defaultDb, limit 
   return rows.map(row => ({ ...row, leaseToken }));
 }
 
-function payloadOf(delivery: ClaimedDelivery) {
+class SuppressDeliveryError extends Error {
+  constructor(readonly code: string) { super(code); }
+}
+
+async function payloadOf(delivery: ClaimedDelivery, db: DeliveryDb, now: Date) {
   const payload = delivery.payload && typeof delivery.payload === 'object' ? delivery.payload as Record<string, unknown> : {};
+  if (delivery.eventType === 'FAMILY_HANDOVER_SECURITY') {
+    if (typeof payload.handoverId !== 'string' || typeof payload.tokenKeyId !== 'string'
+      || typeof payload.expiresAt !== 'string') {
+      throw new EmailProviderError('Family handover delivery payload is invalid', 'HANDOVER_DELIVERY_INVALID', false);
+    }
+    const expiresAt = new Date(payload.expiresAt);
+    if (!Number.isFinite(expiresAt.getTime())) {
+      throw new EmailProviderError('Family handover delivery payload is invalid', 'HANDOVER_DELIVERY_INVALID', false);
+    }
+    const handover = await db.childAccountHandover.findUnique({
+      where: { id: payload.handoverId },
+      select: { status: true, expiresAt: true, destinationEmail: true, tokenHash: true },
+    });
+    if (!handover || handover.status !== 'PENDING' || handover.expiresAt <= now
+      || handover.expiresAt.getTime() !== expiresAt.getTime()
+      || handover.destinationEmail !== delivery.recipientEmail) {
+      throw new SuppressDeliveryError('HANDOVER_UNAVAILABLE');
+    }
+    let token: string;
+    try {
+      token = deriveFamilyHandoverToken(payload.handoverId, payload.tokenKeyId);
+    } catch (error) {
+      if (error instanceof FamilyHandoverTokenError) {
+        throw new EmailProviderError('Family handover token key is unavailable', 'HANDOVER_TOKEN_KEY_UNAVAILABLE', true);
+      }
+      throw error;
+    }
+    if (familyHandoverTokenDigest(token) !== handover.tokenHash) {
+      throw new EmailProviderError('Family handover token digest does not match', 'HANDOVER_TOKEN_MISMATCH', false);
+    }
+    return {
+      eventType: 'FAMILY_HANDOVER_SECURITY' as const,
+      recipientName: delivery.recipientName,
+      claimUrl: familyHandoverClaimUrl(token),
+      expiresAt,
+    };
+  }
   return { eventType: delivery.eventType as TransactionalEmailEvent, recipientName: delivery.recipientName,
     title: String(payload.title ?? 'Courtly update'), message: String(payload.message ?? ''),
     actionUrl: typeof payload.actionUrl === 'string' ? payload.actionUrl : undefined,
@@ -52,10 +103,17 @@ export async function processOutboundDeliveries(options: { provider: EmailProvid
   const jobs = await claimOutboundDeliveries(db, options.limit);
   for (const job of jobs) {
     try {
-      const rendered = renderTransactionalEmail(payloadOf(job));
+      const rendered = renderTransactionalEmail(await payloadOf(job, db, options.now?.() ?? new Date()));
       const receipt = await options.provider.send({ deliveryId: job.id, to: { email: job.recipientEmail, name: job.recipientName }, from: options.from, replyTo: options.replyTo, ...rendered });
-      await db.outboundDelivery.updateMany({ where: { id: job.id, leaseToken: job.leaseToken }, data: { status: 'ACCEPTED', attempts: { increment: 1 }, acceptedAt: receipt.acceptedAt, providerMessageId: receipt.providerMessageId, leasedUntil: null, leaseToken: null, lastErrorCode: null, lastErrorAt: null } });
+      await db.outboundDelivery.updateMany({ where: { id: job.id, leaseToken: job.leaseToken, status: 'SENDING' }, data: { status: 'ACCEPTED', attempts: { increment: 1 }, acceptedAt: receipt.acceptedAt, providerMessageId: receipt.providerMessageId, leasedUntil: null, leaseToken: null, lastErrorCode: null, lastErrorAt: null } });
     } catch (error) {
+      if (error instanceof SuppressDeliveryError) {
+        await db.outboundDelivery.updateMany({
+          where: { id: job.id, leaseToken: job.leaseToken, status: 'SENDING' },
+          data: { status: 'SUPPRESSED', lastErrorCode: error.code, lastErrorAt: options.now?.() ?? new Date(), leasedUntil: null, leaseToken: null },
+        });
+        continue;
+      }
       const failure = error instanceof EmailProviderError ? error : new EmailProviderError('Email delivery failed', 'EMAIL_SEND_FAILED', true);
       const attempts = job.attempts + 1;
       const retry = failure.transient && attempts < maxAttempts;
@@ -64,7 +122,7 @@ export async function processOutboundDeliveries(options: { provider: EmailProvid
       // A retry remains queued with a future availability timestamp. Keeping
       // one durable queue state makes the database constraint and worker
       // recovery rules agree after a process dies or a lease expires.
-      await db.outboundDelivery.updateMany({ where: { id: job.id, leaseToken: job.leaseToken }, data: { status: retry ? 'QUEUED' : 'FAILED', attempts: { increment: 1 }, availableAt: retry ? new Date(now.getTime() + Math.min(delay, maxDelayMs)) : now, failedAt: retry ? null : now, lastErrorCode: failure.code, lastErrorAt: now, leasedUntil: null, leaseToken: null } });
+      await db.outboundDelivery.updateMany({ where: { id: job.id, leaseToken: job.leaseToken, status: 'SENDING' }, data: { status: retry ? 'QUEUED' : 'FAILED', attempts: { increment: 1 }, availableAt: retry ? new Date(now.getTime() + Math.min(delay, maxDelayMs)) : now, failedAt: retry ? null : now, lastErrorCode: failure.code, lastErrorAt: now, leasedUntil: null, leaseToken: null } });
     }
   }
   return jobs.length;

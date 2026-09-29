@@ -102,7 +102,7 @@ describe.sequential('The HTTP request envelope', () => {
       const email = `${randomUUID()}@example.test`;
       const response = await request(app).post('/api/auth/register').send({
         accountType: 'STUDENT', name: 'Cookie Student', username: `cookie_${randomUUID().slice(0, 8)}`,
-        email, password: 'Courtly-cookie-test-1',
+        email, password: 'Courtly-cookie-test-1', dateOfBirth: '1990-01-01',
       });
       expect(response.status).toBe(201);
       const [cookie] = response.headers['set-cookie'] as unknown as string[];
@@ -134,7 +134,10 @@ describe.sequential('The HTTP request envelope', () => {
   describe('error translation', () => {
     it('turns a duplicate account into a conflict a person can act on', async () => {
       const email = `${randomUUID()}@example.test`;
-      const body = { accountType: 'STUDENT' as const, name: 'Twice Over', username: `twice_${randomUUID().slice(0, 8)}`, email, password: 'Courtly-duplicate-1' };
+      const body = {
+        accountType: 'STUDENT' as const, name: 'Twice Over', username: `twice_${randomUUID().slice(0, 8)}`,
+        email, password: 'Courtly-duplicate-1', dateOfBirth: '1990-01-01',
+      };
       expect((await request(app).post('/api/auth/register').send(body)).status).toBe(201);
       const duplicate = await request(app).post('/api/auth/register').send(body);
       expect(duplicate.status).toBe(409);
@@ -145,7 +148,7 @@ describe.sequential('The HTTP request envelope', () => {
     it('names the first problem when a body fails validation', async () => {
       const response = await request(app).post('/api/auth/register').send({
         accountType: 'STUDENT', name: 'Short Password', username: `short_${randomUUID().slice(0, 8)}`,
-        email: `${randomUUID()}@example.test`, password: 'short',
+        email: `${randomUUID()}@example.test`, password: 'short', dateOfBirth: '1990-01-01',
       });
       expect(response.status).toBe(400);
       expect(response.body.error).toBe('Use a password with at least 12 characters');

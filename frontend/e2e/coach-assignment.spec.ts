@@ -42,11 +42,11 @@ test('a coach accepts a lesson assigned by the club from the booking dialog', as
   const locationName = `Assignment court ${runId}`;
 
   await responseJson(await page.request.post('/api/auth/register', {
-    data: { accountType: 'COACH', name: coachName, username: `ac_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: coachEmail, password },
+    data: { accountType: 'COACH', name: coachName, username: `ac_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: coachEmail, password, dateOfBirth: '1990-01-01' },
   }));
   await logout(page);
   await responseJson(await page.request.post('/api/auth/register', {
-    data: { accountType: 'STUDENT', name: studentName, username: `as_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: studentEmail, password },
+    data: { accountType: 'STUDENT', name: studentName, username: `as_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`, email: studentEmail, password, dateOfBirth: '1990-01-01' },
   }));
   await logout(page);
 

@@ -43,14 +43,19 @@ describe.sequential('Google Calendar account routes', () => {
     await prisma.$disconnect();
   });
 
-  it('returns a sanitized disconnected status for eligible and ineligible accounts', async () => {
+  it('returns a sanitized disconnected status for eligible accounts and rejects accounts without the capability', async () => {
     const student = await request(app).get('/api/calendar/connection').set('Cookie', studentCookie).expect(200);
     expect(student.body).toMatchObject({
       configured: true, eligible: true, provider: 'GOOGLE', state: 'DISCONNECTED', connected: false,
       syncEnabled: false, busyCheckEnabled: false,
     });
-    const club = await request(app).get('/api/calendar/connection').set('Cookie', fixture.cookie).expect(200);
-    expect(club.body).toMatchObject({ configured: true, eligible: false, provider: 'GOOGLE' });
+    const club = await request(app).get('/api/calendar/connection').set('Cookie', fixture.cookie).expect(403);
+    expect(club.body).toEqual({
+      error: 'This account cannot perform that action',
+      code: 'CAPABILITY_REQUIRED',
+      reason: null,
+      capability: 'calendar',
+    });
     expect(JSON.stringify(student.body)).not.toMatch(/token|scope|cipher/i);
   });
 

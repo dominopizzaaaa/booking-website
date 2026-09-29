@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import type { AuthSession, Business, ClubStaffAccess, Membership, User } from '@prisma/client';
+import type { AccountCapability, AccountPolicyDecision } from './children-policy.js';
 
 export type MembershipWithBusiness = Membership & { business: Business };
 export type AuthContext = {
@@ -15,6 +16,8 @@ export type AuthContext = {
   staffAccesses: Array<ClubStaffAccess & { business: Business }>;
   accessMode: 'NONE' | 'CLUB_ACCOUNT' | 'COACH' | 'STAFF';
   permissions: readonly string[];
+  /** Current server-authored account policy, recomputed on every authenticated request. */
+  policy: AccountPolicyDecision;
 };
 export type AuthRequest = Request & { auth: AuthContext };
 export type AccountRequest = AuthRequest;
@@ -25,6 +28,31 @@ export type WorkspaceRequest = Request & {
 export class HttpError extends Error {
   constructor(public status: number, message: string, public details: Record<string, unknown> = {}) { super(message); }
 }
+
+export const requireAccountReady: RequestHandler = (req, _res, next) => {
+  const auth = (req as AccountRequest).auth;
+  if (!auth) return next(new HttpError(401, 'Please sign in to continue'));
+  if (!auth.policy.capabilities.ordinaryAccess) {
+    return next(new HttpError(403, 'Account action is required before continuing', {
+      code: 'ACCOUNT_ACTION_REQUIRED',
+      reason: auth.policy.reason,
+    }));
+  }
+  next();
+};
+
+export const requireAccountCapability = (capability: AccountCapability): RequestHandler => (req, _res, next) => {
+  const auth = (req as AccountRequest).auth;
+  if (!auth) return next(new HttpError(401, 'Please sign in to continue'));
+  if (!auth.policy.capabilities[capability]) {
+    return next(new HttpError(403, 'This account cannot perform that action', {
+      code: auth.policy.accountActionRequired ? 'ACCOUNT_ACTION_REQUIRED' : 'CAPABILITY_REQUIRED',
+      reason: auth.policy.reason,
+      capability,
+    }));
+  }
+  next();
+};
 
 // Provider routers are installed after requireWorkspace. Express cannot carry
 // that middleware refinement through its RequestHandler generic, so callbacks

@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { prisma } from './db.js';
 import { skipRateLimits } from './config.js';
 import { asyncRoute, HttpError, type AccountRequest, type AccountType } from './http.js';
+import { loadAccountPolicy } from './account-policy.js';
 import {
   bookingInput, bookableInstructorWhere, createBookingsInTransaction, evaluateSlot, lockInstructors, schedulingContext, type Tx,
 } from './scheduling.js';
@@ -1243,9 +1244,15 @@ export async function openAccountChat(viewer: ChatViewer, rawInput: unknown) {
   const username = rawUsername.toLowerCase();
   const target = await prisma.user.findUnique({
     where: { username },
-    select: { id: true, name: true, username: true, accountType: true, passwordHash: true },
+    select: {
+      id: true, name: true, username: true, accountType: true, passwordHash: true,
+      dateOfBirth: true, accountControl: true, accountStatus: true, profileVisibility: true,
+    },
   });
-  if (!target?.passwordHash) throw new HttpError(404, 'Account not found');
+  const targetPolicy = target?.passwordHash ? await loadAccountPolicy(target) : null;
+  if (!target || !targetPolicy?.publiclyDiscoverable) {
+    throw new HttpError(404, 'Account not found');
+  }
   if (target.id === viewer.userId) throw new HttpError(400, 'Choose another account to start a conversation');
   const accountIds = [viewer.userId, target.id].sort();
   const directKey = accountIds.join(':');

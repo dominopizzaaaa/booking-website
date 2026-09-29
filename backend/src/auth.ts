@@ -1,20 +1,40 @@
 import { Router, type RequestHandler, type Response } from 'express';
 import { createHash, randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
+import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { rateLimit } from 'express-rate-limit';
 import { prisma } from './db.js';
 import { config, production, skipRateLimits } from './config.js';
-import { asyncRoute, HttpError, type AccountRequest, type MembershipWithBusiness } from './http.js';
+import { asyncRoute, HttpError, requireAccountCapability, type AccountRequest, type MembershipWithBusiness } from './http.js';
 import { authState, isAccessibleWorkspaceMembership, isSupportedWorkspaceMembership } from './serializers.js';
 import { seedBusiness } from './seed.js';
 import { editableClubAccountProfile, editablePersonalProfile, sportsSchema, updatePersonalProfile, usernameSchema } from './account-profile.js';
+import { CHILD_AGE, ageOnSingaporeDate, parseDateOfBirth } from './children-policy.js';
+import { loadAccountPolicy } from './account-policy.js';
+import { lockAccountEmailClaim } from './account-email-claim.js';
 
 const digest = (token: string) => createHash('sha256').update(token).digest('hex');
 const cookieOptions = { httpOnly: true, secure: production, sameSite: 'lax' as const, path: '/' };
 const membershipOrder = [{ createdAt: 'asc' as const }, { id: 'asc' as const }];
 const dummyPasswordHash = '$2b$12$QrsSSNoV/kdmGVRTVVmoIOKhMlSeSPFjGtV8.iKB7MHYFUPprZWyK';
 const bcryptHash = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/;
+const SERIALIZABLE_RETRY_LIMIT = 3;
+
+async function serializableAuthTransaction<T>(
+  operation: (tx: Prisma.TransactionClient) => Promise<T>,
+) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await prisma.$transaction(operation, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      });
+    } catch (error) {
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError)
+        || error.code !== 'P2034' || attempt >= SERIALIZABLE_RETRY_LIMIT) throw error;
+    }
+  }
+}
 
 function selectedMembership(
   accountType: string,
@@ -59,6 +79,7 @@ export async function issueSession(
 }
 
 export const requireAuth: RequestHandler = asyncRoute(async (req, _res, next) => {
+  if ((req as AccountRequest).auth) { next(); return; }
   const token = req.cookies?.[config.sessionCookie];
   if (typeof token !== 'string') throw new HttpError(401, 'Please sign in to continue');
   const session = await prisma.authSession.findUnique({
@@ -92,6 +113,7 @@ export const requireAuth: RequestHandler = asyncRoute(async (req, _res, next) =>
     session.activeStaffAccessId = null;
   }
   const business = membership?.business ?? staffAccess?.business ?? null;
+  const policy = await loadAccountPolicy(user, { sessionCreatedAt: session.createdAt });
   (req as AccountRequest).auth = {
     user,
     session,
@@ -102,6 +124,7 @@ export const requireAuth: RequestHandler = asyncRoute(async (req, _res, next) =>
     staffAccesses,
     accessMode: staffAccess ? 'STAFF' : membership ? user.accountType === 'CLUB' ? 'CLUB_ACCOUNT' : 'COACH' : 'NONE',
     permissions: staffAccess?.permissions ?? [],
+    policy,
   };
   next();
 });
@@ -113,7 +136,7 @@ export const requireWorkspace: RequestHandler = (req, _res, next) => {
   const validMembership = Boolean(membership?.active && membership.userId === user.id && membership.businessId === business?.id);
   const validStaff = Boolean(auth.staffAccess?.active && !auth.staffAccess.revokedAt
     && auth.staffAccess.userId === user.id && auth.staffAccess.businessId === business?.id);
-  if (!user.passwordHash || !business || (!validMembership && !validStaff)
+  if (!auth.policy.capabilities.workspace || !user.passwordHash || !business || (!validMembership && !validStaff)
     || business.kind !== 'CLUB' || business.legacyReadOnly) {
     return next(new HttpError(403, 'Select a business workspace to continue'));
   }
@@ -123,6 +146,11 @@ export const requireWorkspace: RequestHandler = (req, _res, next) => {
 export const requireStudent: RequestHandler = (req, _res, next) => {
   const auth = (req as AccountRequest).auth;
   if (!auth) return next(new HttpError(401, 'Please sign in to continue'));
+  if (!auth.policy.capabilities.ordinaryAccess) {
+    return next(new HttpError(403, 'Account action is required before continuing', {
+      code: 'ACCOUNT_ACTION_REQUIRED', reason: auth.policy.reason,
+    }));
+  }
   if (!auth.user.passwordHash || auth.user.accountType !== 'STUDENT') {
     return next(new HttpError(403, 'A student account is required to book or manage personal bookings'));
   }
@@ -148,6 +176,11 @@ const credentials = z.object({
   email: z.string().trim().max(254).email().transform(value => value.toLowerCase()),
   password: z.string().min(8).max(72).refine(value => Buffer.byteLength(value, 'utf8') <= 72, 'Password must fit within 72 UTF-8 bytes'),
 }).strict();
+const dateOfBirthSchema = z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date of birth must use YYYY-MM-DD')
+  .refine(value => {
+    try { ageOnSingaporeDate(parseDateOfBirth(value)); return true; }
+    catch { return false; }
+  }, 'Date of birth must be a valid date and cannot be in the future');
 const registration = z.object({
   // Account type must always be an explicit choice. Silently creating an
   // club workspace when an older or custom client omits this field is both
@@ -162,9 +195,16 @@ const registration = z.object({
   phone: z.string().trim().max(40).optional(),
   parentName: z.string().trim().max(120).optional(),
   sports: sportsSchema.optional().default([]),
+  dateOfBirth: dateOfBirthSchema.optional(),
 }).strict().superRefine((value, context) => {
   if (value.accountType === 'CLUB' && !value.businessName) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['businessName'], message: 'A club or academy name is required' });
+  }
+  if (value.accountType === 'CLUB' && value.dateOfBirth !== undefined) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['dateOfBirth'], message: 'Club accounts do not have a date of birth' });
+  }
+  if (value.accountType !== 'CLUB' && value.dateOfBirth === undefined) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['dateOfBirth'], message: 'Date of birth is required' });
   }
 });
 const clubProfile = z.object({
@@ -180,12 +220,25 @@ const clubProfile = z.object({
 
 authRouter.post('/register', registrationLimit, asyncRoute(async (req, res) => {
   const body = registration.parse(req.body);
+  const dateOfBirth = body.accountType === 'CLUB' ? null : parseDateOfBirth(body.dateOfBirth!);
+  const age = ageOnSingaporeDate(dateOfBirth);
+  if (age !== null && age < CHILD_AGE) {
+    throw new HttpError(400, 'A parent or guardian must create and manage this child account', {
+      code: 'PARENT_ACCOUNT_REQUIRED',
+    });
+  }
   const passwordHash = await bcrypt.hash(body.password, 12);
-  const result = await prisma.$transaction(async tx => {
+  const result = await serializableAuthTransaction(async tx => {
+    const emailClaim = await lockAccountEmailClaim(tx, body.email);
+    if (emailClaim.pendingHandover) {
+      throw new HttpError(409, 'This record already exists. Please use a different email or username.');
+    }
+    const accountName = body.accountType === 'CLUB' ? body.businessName! : body.name;
     const userData = {
-      name: body.accountType === 'CLUB' ? body.businessName! : body.name,
+      name: accountName, legalName: accountName, dateOfBirth,
       username: body.username, email: body.email, passwordHash, accountType: body.accountType,
       sports: body.sports,
+      profileVisibility: age !== null && age < 18 ? 'CLUBS_ONLY' : 'PUBLIC',
       phone: body.phone ?? '', parentName: body.parentName ?? '',
     };
     if (body.accountType !== 'CLUB') {
@@ -285,7 +338,7 @@ authRouter.get('/me', requireAuth, asyncRoute(async (req, res) => {
   res.json(await authState(req.auth.user.id, req.auth.membership?.id ?? null, req.auth.staffAccess?.id ?? null));
 }));
 
-authRouter.patch('/me', requireAuth, asyncRoute(async (req, res) => {
+authRouter.patch('/me', requireAuth, requireAccountCapability('profileEdit'), asyncRoute(async (req, res) => {
   const input = req.auth.user.accountType === 'CLUB'
     ? editableClubAccountProfile.parse(req.body)
     : editablePersonalProfile.parse(req.body);
@@ -293,7 +346,7 @@ authRouter.patch('/me', requireAuth, asyncRoute(async (req, res) => {
   res.json(await authState(req.auth.user.id, req.auth.membership?.id ?? null, req.auth.staffAccess?.id ?? null));
 }));
 
-authRouter.patch('/club-profile', requireAuth, asyncRoute(async (req, res) => {
+authRouter.patch('/club-profile', requireAuth, requireAccountCapability('workspace'), asyncRoute(async (req, res) => {
   const { user, membership, business } = req.auth;
   if (!user.passwordHash || user.accountType !== 'CLUB' || !membership || !business
     || !isAccessibleWorkspaceMembership(membership) || membership.instructorId !== null
@@ -344,9 +397,9 @@ const switchWorkspace = asyncRoute(async (req, res) => {
   });
   res.json(await authState(req.auth.user.id, membership.id));
 });
-authRouter.post(['/switch-workspace', '/workspace'], requireAuth, switchWorkspace);
+authRouter.post(['/switch-workspace', '/workspace'], requireAuth, requireAccountCapability('workspace'), switchWorkspace);
 
-authRouter.post('/workspace-access', requireAuth, asyncRoute(async (req, res) => {
+authRouter.post('/workspace-access', requireAuth, requireAccountCapability('workspace'), asyncRoute(async (req, res) => {
   const input = z.object({
     source: z.enum(['MEMBERSHIP', 'STAFF']),
     id: z.string().trim().min(1).max(200).nullable(),

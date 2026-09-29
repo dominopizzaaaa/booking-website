@@ -125,12 +125,12 @@ test('a club can bring its coach into an account conversation and plan a session
 
   await responseJson<AuthSession>(await studentAccount.post('/api/auth/register', {
     data: {
-      accountType: 'STUDENT', name: studentName, username: studentUsername, email: studentEmail, password, sports: ['Tennis'],
+      accountType: 'STUDENT', name: studentName, username: studentUsername, email: studentEmail, password, sports: ['Tennis'], dateOfBirth: '1990-01-01',
     },
   }));
   await responseJson<AuthSession>(await coachAccount.post('/api/auth/register', {
     data: {
-      accountType: 'COACH', name: coachName, username: coachUsername, email: coachEmail, password, sports: ['Tennis'],
+      accountType: 'COACH', name: coachName, username: coachUsername, email: coachEmail, password, sports: ['Tennis'], dateOfBirth: '1990-01-01',
     },
   }));
   const clubAuth = await responseJson<AuthSession>(await clubAccount.post('/api/auth/register', {

@@ -11,7 +11,7 @@ import { clubStaffAccessRouter, clubStaffInvitationRouter } from '../src/staff-a
 import { workspaceRouter } from '../src/workspace.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { config } from '../src/config.js';
-import { prisma, TestTenants, verifyTestDatabase } from './fixtures.js';
+import { prisma, requireTestEmail, TestTenants, verifyTestDatabase } from './fixtures.js';
 
 const testApp = express();
 testApp.use(express.json());
@@ -38,10 +38,10 @@ describe.sequential('named club staff access', () => {
       const business = await tx.business.create({ data: {
         id, slug: id, name: 'Staff Test Club', ownerName: 'Club Owner', email: `${id}@example.test`,
       } });
-      const user = await tx.user.create({ data: {
-        name: 'Staff Test Club', username: `club_${id.slice(-12).replace(/-/g, '_')}`,
+      const user = requireTestEmail(await tx.user.create({ data: {
+        name: 'Staff Test Club', legalName: 'Staff Test Club', username: `club_${id.slice(-12).replace(/-/g, '_')}`,
         email: `${id}-club@example.test`, passwordHash: 'not-used', accountType: 'CLUB',
-      } });
+      } }));
       const membership = await tx.membership.create({ data: { userId: user.id, businessId: business.id } });
       return { business, user, membership };
     });
@@ -52,10 +52,10 @@ describe.sequential('named club staff access', () => {
 
   async function localAccount(overrides: { name: string; email: string; accountType?: string }) {
     const identity = randomUUID().replace(/-/g, '');
-    const user = await prisma.user.create({ data: {
-      name: overrides.name, email: overrides.email, username: `staff_${identity.slice(0, 18)}`,
+    const user = requireTestEmail(await prisma.user.create({ data: {
+      name: overrides.name, legalName: overrides.name, email: overrides.email, username: `staff_${identity.slice(0, 18)}`,
       passwordHash: 'not-used', accountType: overrides.accountType ?? 'STUDENT',
-    } });
+    } }));
     tenants.ownUser(user.id);
     return user;
   }

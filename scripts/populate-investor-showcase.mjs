@@ -117,17 +117,17 @@ class Client {
 
 const people = {
   club: { contactName: 'Olivia Hart', username: 'investor_demo_club', email: 'investor.club@courtly.example', accountType: 'CLUB', phone: '+65 8100 1001' },
-  avery: { name: 'Avery Morgan', username: 'investor_demo_avery', email: 'investor.coach3@courtly.example', accountType: 'COACH', phone: '+65 8100 1002' },
-  maya: { name: 'Maya Chen', username: 'investor_demo_maya', email: 'investor.coach@courtly.example', accountType: 'COACH', phone: '+65 8100 1003' },
-  daniel: { name: 'Daniel Brooks', username: 'investor_demo_daniel', email: 'investor.coach2@courtly.example', accountType: 'COACH', phone: '+65 8100 1004' },
-  jamie: { name: 'Jamie Lee', username: 'investor_demo_jamie', email: 'investor.student@courtly.example', accountType: 'STUDENT', phone: '+65 8200 2001' },
-  ethan: { name: 'Ethan Tan', username: 'investor_demo_ethan', email: 'investor.student.ethan@courtly.example', accountType: 'STUDENT', phone: '+65 8200 2002', parentName: 'Michelle Tan' },
-  priya: { name: 'Priya Shah', username: 'investor_demo_priya', email: 'investor.student.priya@courtly.example', accountType: 'STUDENT', phone: '+65 8200 2003' },
-  noah: { name: 'Noah Williams', username: 'investor_demo_noah', email: 'investor.student.noah@courtly.example', accountType: 'STUDENT', phone: '+65 8200 2004', parentName: 'Rachel Williams' },
-  sofia: { name: 'Sofia Martinez', username: 'investor_demo_sofia', email: 'investor.student.sofia@courtly.example', accountType: 'STUDENT', phone: '+65 8200 2005' },
-  grace: { name: 'Grace Kim', username: 'investor_demo_grace', email: 'investor.student.grace@courtly.example', accountType: 'STUDENT', phone: '+65 8200 2006' },
-  lucas: { name: 'Lucas Wong', username: 'investor_demo_lucas', email: 'investor.student.lucas@courtly.example', accountType: 'STUDENT', phone: '+65 8200 2007' },
-  amelia: { name: 'Amelia Chen', username: 'investor_demo_amelia', email: 'investor.student.amelia@courtly.example', accountType: 'STUDENT', phone: '+65 8200 2008', parentName: 'Samantha Chen' },
+  avery: { name: 'Avery Morgan', username: 'investor_demo_avery', email: 'investor.coach3@courtly.example', accountType: 'COACH', dateOfBirth: '1987-04-18', phone: '+65 8100 1002' },
+  maya: { name: 'Maya Chen', username: 'investor_demo_maya', email: 'investor.coach@courtly.example', accountType: 'COACH', dateOfBirth: '1990-08-09', phone: '+65 8100 1003' },
+  daniel: { name: 'Daniel Brooks', username: 'investor_demo_daniel', email: 'investor.coach2@courtly.example', accountType: 'COACH', dateOfBirth: '1988-12-03', phone: '+65 8100 1004' },
+  jamie: { name: 'Jamie Lee', username: 'investor_demo_jamie', email: 'investor.student@courtly.example', accountType: 'STUDENT', dateOfBirth: '1994-02-14', phone: '+65 8200 2001' },
+  ethan: { name: 'Ethan Tan', username: 'investor_demo_ethan', email: 'investor.student.ethan@courtly.example', accountType: 'STUDENT', dateOfBirth: '1998-06-21', phone: '+65 8200 2002', parentName: 'Michelle Tan' },
+  priya: { name: 'Priya Shah', username: 'investor_demo_priya', email: 'investor.student.priya@courtly.example', accountType: 'STUDENT', dateOfBirth: '1992-11-30', phone: '+65 8200 2003' },
+  noah: { name: 'Noah Williams', username: 'investor_demo_noah', email: 'investor.student.noah@courtly.example', accountType: 'STUDENT', dateOfBirth: '1997-01-17', phone: '+65 8200 2004', parentName: 'Rachel Williams' },
+  sofia: { name: 'Sofia Martinez', username: 'investor_demo_sofia', email: 'investor.student.sofia@courtly.example', accountType: 'STUDENT', dateOfBirth: '1995-09-12', phone: '+65 8200 2005' },
+  grace: { name: 'Grace Kim', username: 'investor_demo_grace', email: 'investor.student.grace@courtly.example', accountType: 'STUDENT', dateOfBirth: '1999-03-25', phone: '+65 8200 2006' },
+  lucas: { name: 'Lucas Wong', username: 'investor_demo_lucas', email: 'investor.student.lucas@courtly.example', accountType: 'STUDENT', dateOfBirth: '1993-07-08', phone: '+65 8200 2007' },
+  amelia: { name: 'Amelia Chen', username: 'investor_demo_amelia', email: 'investor.student.amelia@courtly.example', accountType: 'STUDENT', dateOfBirth: '1996-10-19', phone: '+65 8200 2008', parentName: 'Samantha Chen' },
 };
 
 const clients = Object.fromEntries(Object.keys(people).map(key => [key, new Client()]));
@@ -153,6 +153,7 @@ async function ensureAccount(key) {
     username: person.username,
     email: person.email,
     password,
+    ...(person.dateOfBirth ? { dateOfBirth: person.dateOfBirth } : {}),
     phone: person.phone,
     ...(person.parentName ? { parentName: person.parentName } : {}),
   });

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   useCallback,
   useEffect,
@@ -37,10 +38,12 @@ import {
 import {
   ApiError,
   cancelAccountBooking,
+  createFamilyChildBooking,
   createPublicBooking,
   loadAccountBookings,
   loadAccountPackages,
   loadAuthSession,
+  loadFamilyBookingChildren,
   loadPublicBusiness,
   loadSlots,
   loginStudentAccount,
@@ -56,10 +59,14 @@ import type {
   PublicLocation,
   PublicBusiness,
   AccountPackage,
+  FamilyBookingChild,
+  FamilyChildBookingResult,
   Service,
   Slot,
 } from "@/lib/types";
 import { markProductTourPending } from "@/lib/product-tour";
+import { isFamilyBookingAuthorityError } from "@/components/family/family-booking-errors";
+import { singaporeCivilDate, validPastDate } from "@/components/family/family-helpers";
 import { cn, coversWeeklyOccurrences, dateKey, money, shortDate, time } from "@/lib/utils";
 
 const button =
@@ -123,6 +130,15 @@ function conflictList(error: unknown): { date: string; reason: string }[] {
       )
     : [];
 }
+function familyBookingErrorMessage(error: unknown) {
+  if (isFamilyBookingAuthorityError(error)) {
+    return "Your permission to book for this child has changed. Review Family or choose another player.";
+  }
+  if (error instanceof ApiError && error.status === 409) {
+    return "This child or class is no longer available for this guardian booking. Review Family and choose another time if needed.";
+  }
+  return messageOf(error);
+}
 function isPendingVenue(location?: PublicLocation) {
   return !!location?.requiresApproval;
 }
@@ -147,6 +163,7 @@ function isStudentSession(session: AuthSession | null): boolean {
 }
 
 function useAccountSession() {
+  const router = useRouter();
   const [session, setSession] = useState<AuthSession | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -155,14 +172,20 @@ function useAccountSession() {
     setLoading(true);
     setError("");
     try {
-      setSession(await loadAuthSession());
+      const value = await loadAuthSession();
+      if (value.user.requiredAction) {
+        setSession(null);
+        router.replace("/account/action-required");
+        return;
+      }
+      setSession(value);
     } catch (err) {
       setSession(null);
       if (!(err instanceof ApiError) || err.status !== 401) setError(messageOf(err));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [router]);
   useEffect(() => {
     void refresh();
   }, [refresh]);
@@ -190,10 +213,12 @@ function StudentAccountAccess({
   formId: string;
   externalSubmit?: boolean;
 }) {
+  const router = useRouter();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [values, setValues] = useState({
     name: "",
     username: "",
+    dateOfBirth: "",
     email: "",
     password: "",
     phone: "",
@@ -201,10 +226,12 @@ function StudentAccountAccess({
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [familyRequired, setFamilyRequired] = useState(false);
   const tabRefs = useRef<Record<"login" | "register", HTMLButtonElement | null>>({ login: null, register: null });
   function selectMode(next: "login" | "register") {
     setMode(next);
     setError("");
+    setFamilyRequired(false);
   }
   function handleModeKey(event: KeyboardEvent<HTMLButtonElement>, value: "login" | "register") {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -216,8 +243,14 @@ function StudentAccountAccess({
   async function submitAccount(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
+    if (mode === "register" && !validPastDate(values.dateOfBirth)) {
+      setError("Enter your complete date of birth.");
+      setFamilyRequired(false);
+      return;
+    }
     setBusy(true);
     setError("");
+    setFamilyRequired(false);
     try {
       const email = values.email.trim().toLowerCase();
       const session =
@@ -226,6 +259,7 @@ function StudentAccountAccess({
           : await registerStudentAccount({
               name: values.name.trim(),
               username: values.username.trim().toLowerCase(),
+              dateOfBirth: values.dateOfBirth,
               email,
               password: values.password,
               ...(values.phone.trim() ? { phone: values.phone.trim() } : {}),
@@ -233,9 +267,17 @@ function StudentAccountAccess({
                 ? { parentName: values.parentName.trim() }
                 : {}),
             });
+      if (session.user.requiredAction) {
+        router.replace("/account/action-required");
+        return;
+      }
       if (mode === "register") markProductTourPending(session.user.id);
       onAuthenticated(session);
     } catch (err) {
+      const details = err instanceof ApiError && err.details && typeof err.details === "object"
+        ? err.details as { code?: string; reason?: string }
+        : null;
+      setFamilyRequired(details?.code === "PARENT_ACCOUNT_REQUIRED" || details?.reason === "PARENT_ACCOUNT_REQUIRED");
       setError(messageOf(err));
     } finally {
       setBusy(false);
@@ -311,6 +353,21 @@ function StudentAccountAccess({
                   onChange={(event) => setValues({ ...values, username: event.target.value.toLowerCase() })}
                 />
               </div>
+              <div className="sm:col-span-2">
+                <label htmlFor={`${formId}-date-of-birth`}>Date of birth</label>
+                <input
+                  id={`${formId}-date-of-birth`}
+                  className={field}
+                  type="date"
+                  required
+                  min="1900-01-01"
+                  max={singaporeCivilDate()}
+                  autoComplete="bday"
+                  value={values.dateOfBirth}
+                  onChange={(event) => setValues({ ...values, dateOfBirth: event.target.value })}
+                />
+                <p className="!mt-1.5 text-[11px] leading-relaxed text-[#89957f]">Courtly uses this to apply the right account protections. A child under 13 needs an adult-managed Family profile.</p>
+              </div>
             </>
           )}
           <div className={mode === "login" ? "sm:col-span-2" : ""}>
@@ -375,7 +432,7 @@ function StudentAccountAccess({
             </>
           )}
         </div>
-        {error && <ErrorNotice message={error} />}
+        {error && <div><ErrorNotice message={error} />{familyRequired && <p className="!mt-3 text-xs leading-relaxed text-[#6f6044]">Ask a parent or guardian to <Link href="/login?next=%2Ffamily" className="font-semibold underline underline-offset-2">sign in and open Family</Link> to create a managed child profile.</p>}</div>}
         {!externalSubmit && (
           <button type="submit" className={button} disabled={busy}>
             {busy && <LoaderCircle size={16} className="animate-spin" />}
@@ -763,6 +820,11 @@ export function PublicBooking({ slug }: { slug: string }) {
     phone: "",
     parentName: "",
   });
+  const [bookingChildren, setBookingChildren] = useState<FamilyBookingChild[]>([]);
+  const [bookingChildrenLoading, setBookingChildrenLoading] = useState(false);
+  const [bookingChildrenError, setBookingChildrenError] = useState("");
+  const [playerId, setPlayerId] = useState<"self" | string>("self");
+  const [familyBookingActionRequired, setFamilyBookingActionRequired] = useState(false);
   const [address, setAddress] = useState("");
   const [notes, setNotes] = useState("");
   const [repeatWeeks, setRepeatWeeks] = useState(1);
@@ -775,7 +837,7 @@ export function PublicBooking({ slug }: { slug: string }) {
   const [conflicts, setConflicts] = useState<
     { date: string; reason: string }[]
   >([]);
-  const [result, setResult] = useState<BookingResult | null>(null);
+  const [result, setResult] = useState<BookingResult | FamilyChildBookingResult | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const load = useCallback(async () => {
     setLoading(true);
@@ -805,10 +867,75 @@ export function PublicBooking({ slug }: { slug: string }) {
       parentName: session.user.parentName ?? "",
     });
   }, [account.session]);
+  const commerceUnavailable = account.session?.user.capabilities?.commerce === false;
+  const canUseCommerce = !commerceUnavailable;
+  const canManageFamily = account.session?.user.accountType !== "CLUB"
+    && account.session?.user.capabilities?.familyManagement === true;
+  const canBookSelf = isStudentSession(account.session) && canUseCommerce;
+  const selectedChild = playerId === "self"
+    ? null
+    : bookingChildren.find((child) => child.id === playerId) ?? null;
+  const bookingForChild = !!selectedChild;
+  const canBookSelectedPlayer = bookingForChild ? canManageFamily : canBookSelf;
   useEffect(() => {
-    if (!requestedPackageId || !data || account.loading) {
+    if (account.loading || !canManageFamily) {
+      setBookingChildren([]);
+      setBookingChildrenError("");
+      if (!canBookSelf) setPlayerId("self");
+      return;
+    }
+    let ignore = false;
+    setBookingChildrenLoading(true);
+    setBookingChildrenError("");
+    loadFamilyBookingChildren()
+      .then(({ children }) => {
+        if (ignore) return;
+        setBookingChildren(children);
+        setPlayerId((current) => {
+          if (current !== "self" && children.some((child) => child.id === current)) return current;
+          return canBookSelf ? "self" : children[0]?.id ?? "self";
+        });
+      })
+      .catch((error) => {
+        if (ignore) return;
+        setBookingChildren([]);
+        setPlayerId("self");
+        setBookingChildrenError(familyBookingErrorMessage(error));
+      })
+      .finally(() => { if (!ignore) setBookingChildrenLoading(false); });
+    return () => { ignore = true; };
+  }, [account.loading, canBookSelf, canManageFamily]);
+  function selectPlayer(next: "self" | string) {
+    setPlayerId(next);
+    setAgreed(false);
+    setSubmitError("");
+    setFamilyBookingActionRequired(false);
+    if (next !== "self") {
+      setRequestedPackageId("");
       setSelectedPackage(null);
+      setPackageNotice("Class packages cannot be used for a guardian booking. No payment is collected here.");
+      const url = new URL(window.location.href);
+      url.searchParams.delete("packageId");
+      window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+    } else {
       setPackageNotice("");
+    }
+  }
+  useEffect(() => {
+    if (!bookingForChild) return;
+    setRequestedPackageId("");
+    setSelectedPackage(null);
+    setPackageNotice("Class packages cannot be used for a guardian booking. No payment is collected here.");
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("packageId")) {
+      url.searchParams.delete("packageId");
+      window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+    }
+  }, [bookingForChild]);
+  useEffect(() => {
+    if (bookingForChild || !requestedPackageId || !data || account.loading || !canUseCommerce) {
+      setSelectedPackage(null);
+      if (!bookingForChild) setPackageNotice("");
       return;
     }
     if (!isStudentSession(account.session)) {
@@ -845,7 +972,7 @@ export function PublicBooking({ slug }: { slug: string }) {
         }
       });
     return () => { ignore = true; };
-  }, [account.loading, account.session, data, requestedPackageId, repeatWeeks, serviceId]);
+  }, [account.loading, account.session, bookingForChild, canUseCommerce, data, requestedPackageId, repeatWeeks, serviceId]);
 
   const bookingPath = `/book/${encodeURIComponent(slug)}`;
   const shellHomeHref = account.loading
@@ -936,7 +1063,7 @@ export function PublicBooking({ slug }: { slug: string }) {
     ) ?? [];
   const timezone = data?.business.timezone ?? "Asia/Singapore";
   const today = dateKey(new Date(), timezone);
-  const canContinue =
+  const canContinue = (canUseCommerce || canManageFamily) && (
     step === 0
       ? !!serviceId
       : step === 1
@@ -944,14 +1071,21 @@ export function PublicBooking({ slug }: { slug: string }) {
         : step === 2
           ? !!slot && !slotsLoading
           : step === 3
-            ? isStudentSession(account.session)
-            : !selectedPackage || packageCreditsEnough;
+            ? canBookSelectedPlayer
+            : !selectedPackage || packageCreditsEnough
+  );
   const continueHint = step === 0 && !serviceId
     ? "Choose a class above to continue."
     : step === 1 && (!locationId || !instructorId)
       ? "Choose both a place and a coach to continue."
       : step === 2 && !slot
         ? slotsLoading ? "Checking available times…" : "Choose an available time to continue."
+        : step === 3 && bookingChildrenError && !canBookSelf
+          ? bookingChildrenError
+        : step === 3 && !canBookSelectedPlayer
+          ? bookingChildrenLoading
+            ? "Loading children you can book for…"
+            : "Choose an eligible player to continue."
         : step === 4 && selectedPackage && !packageCreditsEnough
           ? packageExpiresBeforeLastClass
             ? "This package expires before the final weekly class. Choose fewer weeks or continue without it."
@@ -989,6 +1123,7 @@ export function PublicBooking({ slug }: { slug: string }) {
                 : `${repeatWeeks} session${repeatWeeks > 1 ? "s" : ""} · ${money(price * repeatWeeks, data?.business.currency)}`;
 
   function goTo(next: number) {
+    if (next > step && !canUseCommerce && !canManageFamily) return;
     setStep(next);
     setSubmitError("");
     setConflicts([]);
@@ -1051,29 +1186,42 @@ export function PublicBooking({ slug }: { slug: string }) {
       !instructor ||
       !slot ||
       !agreed ||
+      !canBookSelectedPlayer ||
       (!!selectedPackage && !packageCreditsEnough) ||
-      !isStudentSession(account.session) ||
+      !account.session ||
       saving
     )
       return;
     setSaving(true);
     setSubmitError("");
+    setFamilyBookingActionRequired(false);
     setConflicts([]);
     try {
-      const value = await createPublicBooking(slug, {
-        serviceId,
-        locationId,
-        instructorId,
-        startAt: slot.startAt,
-        student: {
-          phone: bookingContact.phone.trim(),
-          parentName: bookingContact.parentName.trim(),
-        },
-        repeatWeeks,
-        ...(selectedPackage ? { packageId: selectedPackage.id } : {}),
-        notes: notes.trim(),
-        address: location.type === "HOME" ? address.trim() : undefined,
-      });
+      const value = selectedChild
+        ? await createFamilyChildBooking(selectedChild.id, {
+            businessSlug: slug,
+            serviceId,
+            locationId,
+            instructorId,
+            startAt: slot.startAt,
+            repeatWeeks,
+            notes: notes.trim(),
+            address: location.type === "HOME" ? address.trim() : undefined,
+          })
+        : await createPublicBooking(slug, {
+            serviceId,
+            locationId,
+            instructorId,
+            startAt: slot.startAt,
+            student: {
+              phone: bookingContact.phone.trim(),
+              parentName: bookingContact.parentName.trim(),
+            },
+            repeatWeeks,
+            ...(selectedPackage ? { packageId: selectedPackage.id } : {}),
+            notes: notes.trim(),
+            address: location.type === "HOME" ? address.trim() : undefined,
+          });
       if (!value.bookings?.length) {
         setSubmitError(
           "Your booking could not be completed. Please choose another time.",
@@ -1088,7 +1236,22 @@ export function PublicBooking({ slug }: { slug: string }) {
         await account.refresh();
         setStep(3);
       }
-      setSubmitError(messageOf(error));
+      if (selectedChild && error instanceof ApiError && (isFamilyBookingAuthorityError(error) || error.status === 409)) {
+        setFamilyBookingActionRequired(true);
+        if (isFamilyBookingAuthorityError(error)) {
+          try {
+            const { children } = await loadFamilyBookingChildren();
+            setBookingChildren(children);
+            if (!children.some((child) => child.id === selectedChild.id)) {
+              setPlayerId(canBookSelf ? "self" : children[0]?.id ?? "self");
+            }
+          } catch {
+            // Keep the explicit Family recovery link when the refreshed chooser
+            // cannot be loaded; the failed booking must not be retried implicitly.
+          }
+        }
+      }
+      setSubmitError(selectedChild ? familyBookingErrorMessage(error) : messageOf(error));
       setConflicts(conflictList(error));
     } finally {
       setSaving(false);
@@ -1125,7 +1288,8 @@ export function PublicBooking({ slug }: { slug: string }) {
         <BookingReceipt
           data={data}
           result={result}
-          studentName={account.session?.user.name ?? "Student"}
+          studentName={("bookedFor" in result ? result.bookedFor.displayName : null) ?? account.session?.user.name ?? "Student"}
+          guardianBooking={"bookedFor" in result}
           location={location}
           onBookAgain={() => {
             setResult(null);
@@ -1139,6 +1303,27 @@ export function PublicBooking({ slug }: { slug: string }) {
             setSubmitError("");
           }}
         />
+      </PublicShell>
+    );
+  if (commerceUnavailable && !canManageFamily)
+    return (
+      <PublicShell business={data.business} homeHref={shellHomeHref}>
+        <main className="!mx-auto max-w-xl px-5 py-16 sm:px-8 sm:py-24">
+          <section className={cn(panel, "p-7 sm:p-9")}>
+            <ShieldCheck size={30} className="text-[#93a582]" />
+            <h1 className="!mt-5 !text-2xl">Booking is unavailable for this account</h1>
+            <p className="!mt-3 text-sm leading-relaxed text-[#86947a]">
+              Courtly’s account policy does not allow this account to make new bookings or use packages.
+              Child purchases, rentals, and chat are not available.
+            </p>
+            <Link
+              href="/manage"
+              className={cn(secondary, "!mt-6")}
+            >
+              <ArrowLeft size={15} /> Return to the player app
+            </Link>
+          </section>
+        </main>
       </PublicShell>
     );
 
@@ -1583,13 +1768,12 @@ export function PublicBooking({ slug }: { slug: string }) {
                       }}
                     />
                   </>
-                ) : !isStudentSession(account.session) ? (
+                ) : account.session.user.accountType === "CLUB" || (!isStudentSession(account.session) && !canManageFamily) ? (
                   <section className={cn(panel, "p-5 sm:p-7")}>
                     <ShieldCheck size={26} className="text-[#8da179]" />
-                    <h2 className="!mt-4 !text-base">Use a student account to book</h2>
+                    <h2 className="!mt-4 !text-base">This account cannot make this booking</h2>
                     <p className="!mt-2 text-xs leading-relaxed text-[#89957f]">
-                      You’re signed in as {account.session.user.email}, a coach or club account.
-                      Sign out here, then use or create your personal student account.
+                      Club accounts cannot book a class. Sign out here, then use an eligible personal account.
                     </p>
                     {account.error && <div className="!mt-4"><ErrorNotice message={account.error} /></div>}
                     <button
@@ -1607,6 +1791,7 @@ export function PublicBooking({ slug }: { slug: string }) {
                     id="booking-details"
                     onSubmit={(event) => {
                       event.preventDefault();
+                      if (!canBookSelectedPlayer) return;
                       if (location?.type === "HOME" && !address.trim()) return;
                       goTo(4);
                     }}
@@ -1620,16 +1805,16 @@ export function PublicBooking({ slug }: { slug: string }) {
                           </span>
                           <div>
                             <h2 className="!text-base">{account.session.user.name}</h2>
-                            <p className="!mt-1 break-all text-xs text-[#89957f]">{account.session.user.email}</p>
+                            <p className="!mt-1 break-all text-xs text-[#89957f]">{account.session.user.email ?? "No independent sign-in email"}</p>
                           </div>
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          <Link
+                          {isStudentSession(account.session) && <Link
                             href={`/manage?slug=${encodeURIComponent(slug)}`}
                             className={cn(secondary, "!min-h-9 !px-3 !py-1.5 !text-xs")}
                           >
                             My bookings
-                          </Link>
+                          </Link>}
                           <button
                             type="button"
                             className={cn(secondary, "!min-h-9 !px-3 !py-1.5 !text-xs")}
@@ -1640,8 +1825,43 @@ export function PublicBooking({ slug }: { slug: string }) {
                           </button>
                         </div>
                       </div>
+                      {canManageFamily && (
+                        <fieldset className="!mt-6 border-t border-[#edf0e8] pt-5" aria-describedby="booking-player-help">
+                          <legend className="text-sm font-semibold text-[#304b39]">Who is playing?</legend>
+                          <p id="booking-player-help" className="!mt-1.5 text-xs leading-relaxed text-[#89957f]">
+                            Choose yourself or a child you currently have permission to book for. Child bookings do not use packages or collect payment here.
+                          </p>
+                          {bookingChildrenLoading ? (
+                            <p role="status" className="!mt-4 flex items-center gap-2 text-xs text-[#71806d]"><LoaderCircle size={14} className="animate-spin" />Loading eligible children…</p>
+                          ) : (
+                            <div className="!mt-4 grid gap-2 sm:grid-cols-2">
+                              {canBookSelf && (
+                                <label className={cn("!mb-0 flex min-h-16 cursor-pointer items-center gap-3 rounded-xl border p-3.5 !text-sm transition", playerId === "self" ? "border-[#65885c] bg-[#f1f6eb] ring-1 ring-[#65885c]" : "border-[#e5e9e0] hover:border-[#b2c2a7]")}>
+                                  <input type="radio" name="booking-player" value="self" checked={playerId === "self"} onChange={() => selectPlayer("self")} />
+                                  <span><span className="block font-semibold">{account.session.user.name}</span><span className="mt-0.5 block text-[11px] font-normal text-[#89957f]">Myself</span></span>
+                                </label>
+                              )}
+                              {bookingChildren.map((child) => (
+                                <label key={child.id} className={cn("!mb-0 flex min-h-16 cursor-pointer items-center gap-3 rounded-xl border p-3.5 !text-sm transition", playerId === child.id ? "border-[#65885c] bg-[#f1f6eb] ring-1 ring-[#65885c]" : "border-[#e5e9e0] hover:border-[#b2c2a7]")}>
+                                  <input type="radio" name="booking-player" value={child.id} checked={playerId === child.id} onChange={() => selectPlayer(child.id)} />
+                                  <span className="min-w-0"><span className="block break-words font-semibold">{child.displayName}</span><span className="mt-0.5 block break-all text-[11px] font-normal text-[#89957f]">@{child.username}</span></span>
+                                </label>
+                              ))}
+                            </div>
+                          )}
+                          {!bookingChildrenLoading && bookingChildren.length === 0 && !canBookSelf && (
+                            <div className="!mt-4 rounded-xl border border-[#eadfca] bg-[#fff9ec] p-4 text-xs leading-relaxed text-[#7c6636]">
+                              No child is currently eligible for guardian booking. <Link href="/family" className="font-semibold underline underline-offset-2">Review Family</Link>.
+                            </div>
+                          )}
+                          {!bookingChildrenLoading && bookingChildren.length === 0 && canBookSelf && !bookingChildrenError && (
+                            <p className="!mt-4 text-xs leading-relaxed text-[#89957f]">No managed child is currently eligible for guardian booking. You can continue for yourself or <Link href="/family" className="font-semibold text-[#4f7048] underline underline-offset-2">review Family</Link>.</p>
+                          )}
+                          {bookingChildrenError && <div className="!mt-4"><ErrorNotice message={bookingChildrenError} /></div>}
+                        </fieldset>
+                      )}
                       <div className="!mt-6 grid gap-5 sm:grid-cols-2">
-                        <div>
+                        {!bookingForChild && <div>
                           <label htmlFor="booking-phone">Phone <span className="font-normal text-[#99a28e]">optional</span></label>
                           <input
                             id="booking-phone"
@@ -1653,8 +1873,8 @@ export function PublicBooking({ slug }: { slug: string }) {
                             value={bookingContact.phone}
                             onChange={(event) => setBookingContact({ ...bookingContact, phone: event.target.value })}
                           />
-                        </div>
-                        <div>
+                        </div>}
+                        {!bookingForChild && <div>
                           <label htmlFor="booking-parent">Parent or guardian <span className="font-normal text-[#99a28e]">optional</span></label>
                           <input
                             id="booking-parent"
@@ -1663,10 +1883,13 @@ export function PublicBooking({ slug }: { slug: string }) {
                             value={bookingContact.parentName}
                             onChange={(event) => setBookingContact({ ...bookingContact, parentName: event.target.value })}
                           />
-                        </div>
-                        <p className="sm:col-span-2 text-xs leading-relaxed text-[#89957f]">
+                        </div>}
+                        {!bookingForChild && <p className="sm:col-span-2 text-xs leading-relaxed text-[#89957f]">
                           Changes here are saved to your student profile for future bookings.
-                        </p>
+                        </p>}
+                        {bookingForChild && <div role="status" className="sm:col-span-2 rounded-xl border border-[#dce5d4] bg-[#f2f6ee] p-4 text-xs leading-relaxed text-[#607358]">
+                          You are booking for <strong>{selectedChild.displayName}</strong>. Courtly will not send your phone or guardian-profile fields as the child’s identity. Packages, purchases, rentals, and chat remain unavailable for this managed profile.
+                        </div>}
                         {location?.type === "HOME" && (
                           <div className="sm:col-span-2">
                             <label htmlFor="student-address">Session address <span className="text-[#9aa58f]">*</span></label>
@@ -1735,19 +1958,23 @@ export function PublicBooking({ slug }: { slug: string }) {
                   </div>
                   <div className="!mt-4 flex justify-between gap-4 text-xs text-[#7e8f71]">
                     <span>
-                      {selectedPackage
+                      {bookingForChild
+                        ? `Guardian booking for ${selectedChild.displayName}`
+                        : selectedPackage
                         ? `${packageCreditLabel(packageCreditsNeeded)} from ${selectedPackage.name}`
                         : `${repeatWeeks} session${repeatWeeks > 1 ? "s" : ""} × ${money(price, data.business.currency)}`}
                     </span>
                     <span className="text-right font-semibold text-[#3b5f3a]">
-                      {selectedPackage
+                      {bookingForChild
+                        ? "Pay club separately"
+                        : selectedPackage
                         ? packageCreditsEnough
                           ? "Package applied"
                           : `${packageCreditLabel(packageCreditsAvailable)} left`
                         : money(price * repeatWeeks, data.business.currency)}
                     </span>
                   </div>
-                  {packageSummaryNote && (
+                    {!bookingForChild && packageSummaryNote && (
                     <div className="!mt-2 flex flex-wrap items-center justify-between gap-2">
                       <p className="text-xs leading-relaxed text-[#6c8064]">{packageSummaryNote}</p>
                       {!packageCreditsEnough && <button type="button" className="text-xs font-semibold text-[#4f7048] underline underline-offset-2" onClick={useStandardPrice}>Use standard price instead</button>}
@@ -1760,6 +1987,20 @@ export function PublicBooking({ slug }: { slug: string }) {
             )}
             {step === 4 && (
               <div className="space-y-5">
+                {canManageFamily && <fieldset className={cn(panel, "p-5 sm:p-6")} aria-describedby="review-player-help">
+                  <legend className="px-1 text-sm font-semibold text-[#304b39]">Who is playing?</legend>
+                  <p id="review-player-help" className="!mt-1 text-xs leading-relaxed text-[#89957f]">Confirm the player before placing this booking.</p>
+                  <div className="!mt-4 grid gap-2 sm:grid-cols-2">
+                    {canBookSelf && <label className={cn("!mb-0 flex min-h-14 cursor-pointer items-center gap-3 rounded-xl border p-3 !text-sm transition", playerId === "self" ? "border-[#65885c] bg-[#f1f6eb] ring-1 ring-[#65885c]" : "border-[#e5e9e0] hover:border-[#b2c2a7]")}>
+                      <input type="radio" name="review-booking-player" value="self" checked={playerId === "self"} onChange={() => selectPlayer("self")} />
+                      <span><span className="block font-semibold">{account.session?.user.name}</span><span className="block text-[11px] font-normal text-[#89957f]">Myself</span></span>
+                    </label>}
+                    {bookingChildren.map((child) => <label key={child.id} className={cn("!mb-0 flex min-h-14 cursor-pointer items-center gap-3 rounded-xl border p-3 !text-sm transition", playerId === child.id ? "border-[#65885c] bg-[#f1f6eb] ring-1 ring-[#65885c]" : "border-[#e5e9e0] hover:border-[#b2c2a7]")}>
+                      <input type="radio" name="review-booking-player" value={child.id} checked={playerId === child.id} onChange={() => selectPlayer(child.id)} />
+                      <span className="min-w-0"><span className="block break-words font-semibold">{child.displayName}</span><span className="block break-all text-[11px] font-normal text-[#89957f]">@{child.username}</span></span>
+                    </label>)}
+                  </div>
+                </fieldset>}
                 <section className={cn(panel, "overflow-hidden")}>
                   <div className="flex items-center justify-between border-b border-[#edf0e8] bg-[#fafbf7] px-5 py-4 sm:px-7">
                     <h2 className="!text-base">Your session, at a glance</h2>
@@ -1809,15 +2050,17 @@ export function PublicBooking({ slug }: { slug: string }) {
                           : location?.address}
                       </p>
                     </DetailRow>
-                    <DetailRow icon={<UserRound size={18} />} title="Student">
-                      {account.session?.user.name}
-                      <p className="break-all text-xs text-[#8b9781]">
-                        {account.session?.user.email}
-                      </p>
-                      {bookingContact.phone && (
+                    <DetailRow icon={<UserRound size={18} />} title="Who is playing?">
+                      {selectedChild?.displayName ?? account.session?.user.name}
+                      {selectedChild ? (
+                        <p className="break-all text-xs text-[#8b9781]">@{selectedChild.username} · booked by {account.session?.user.name}</p>
+                      ) : <p className="break-all text-xs text-[#8b9781]">
+                        {account.session?.user.email ?? "No independent sign-in email"}
+                      </p>}
+                      {!selectedChild && bookingContact.phone && (
                         <p className="text-xs text-[#8b9781]">{bookingContact.phone}</p>
                       )}
-                      {bookingContact.parentName && (
+                      {!selectedChild && bookingContact.parentName && (
                         <p className="!mt-1 text-xs text-[#8b9781]">
                           Parent / guardian: {bookingContact.parentName}
                         </p>
@@ -1871,13 +2114,13 @@ export function PublicBooking({ slug }: { slug: string }) {
                   )}
                   <div className="flex justify-between border-t border-[#edf0e8] px-5 py-5 sm:px-7">
                     <span className="text-sm text-[#7b8a70]">
-                      {packageSummaryTitle}
+                      {bookingForChild ? `Total · ${classCountLabel(repeatWeeks)}` : packageSummaryTitle}
                     </span>
                     <span className="text-xl font-semibold tracking-tight text-[#315633]">
-                      {packageSummaryValue}
+                      {bookingForChild ? money(price * repeatWeeks, data.business.currency) : packageSummaryValue}
                     </span>
                   </div>
-                  {packageSummaryNote && (
+                  {!bookingForChild && packageSummaryNote && (
                     <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#edf0e8] px-5 py-4 text-xs leading-relaxed text-[#6c8064] sm:px-7">
                       <span>{packageSummaryNote}</span>
                       {!packageCreditsEnough && <button type="button" className="font-semibold text-[#4f7048] underline underline-offset-2" onClick={useStandardPrice}>Use standard price instead</button>}
@@ -1896,8 +2139,7 @@ export function PublicBooking({ slug }: { slug: string }) {
                         Simple, clear, and good to know
                       </h3>
                       <p className="!mt-1.5 text-xs leading-relaxed text-[#89957f]">
-                        Payment is arranged directly with {data.business.name}.
-                        No payment is collected here. Please cancel or
+                        No payment is collected here. {bookingForChild ? `Contact ${data.business.name} to arrange payment for ${selectedChild.displayName}.` : `Payment is arranged directly with ${data.business.name}.`} Please cancel or
                         reschedule at least {data.business.cancellationHours}{" "}
                         hours before your session.
                       </p>
@@ -1919,18 +2161,23 @@ export function PublicBooking({ slug }: { slug: string }) {
                 {submitError && (
                   <div className="space-y-3">
                     <ErrorNotice message={submitError} conflicts={conflicts} />
-                    <button
-                      type="button"
-                      className="inline-flex min-h-10 items-center gap-1.5 text-xs font-semibold text-[#174c3c]"
-                      onClick={() => {
-                        setSlot(null);
-                        setSlotsVersion((value) => value + 1);
-                        goTo(2);
-                      }}
-                    >
-                      <CalendarDays size={14} />
-                      Choose a different time
-                    </button>
+                    <div className="flex flex-wrap gap-3">
+                      {familyBookingActionRequired && <Link href="/family" className="inline-flex min-h-10 items-center gap-1.5 text-xs font-semibold text-[#174c3c] underline underline-offset-2">
+                        <UsersRound size={14} />Review Family
+                      </Link>}
+                      <button
+                        type="button"
+                        className="inline-flex min-h-10 items-center gap-1.5 text-xs font-semibold text-[#174c3c]"
+                        onClick={() => {
+                          setSlot(null);
+                          setSlotsVersion((value) => value + 1);
+                          goTo(2);
+                        }}
+                      >
+                        <CalendarDays size={14} />
+                        Choose a different time
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1948,17 +2195,17 @@ export function PublicBooking({ slug }: { slug: string }) {
               {step === 3 ? (
                 <button
                   type="submit"
-                  form={isStudentSession(account.session) ? "booking-details" : "student-account"}
+                  form={account.session && account.session.user.accountType !== "CLUB" ? "booking-details" : "student-account"}
                   className={button}
-                  disabled={account.loading || (!!account.session && !isStudentSession(account.session))}
+                  disabled={account.loading || (!!account.session && !canBookSelectedPlayer) || bookingChildrenLoading}
                 >
-                  {isStudentSession(account.session) ? "Review booking" : "Continue with account"} <ArrowRight size={15} />
+                  {account.session ? "Review booking" : "Continue with account"} <ArrowRight size={15} />
                 </button>
               ) : step === 4 ? (
                 <button
                   type="button"
                   className={button}
-                  disabled={!agreed || saving || (!!selectedPackage && !packageCreditsEnough)}
+                  disabled={!agreed || saving || !canBookSelectedPlayer || (!!selectedPackage && !packageCreditsEnough)}
                   onClick={() => void submit()}
                 >
                   {saving ? (
@@ -2051,18 +2298,22 @@ export function PublicBooking({ slug }: { slug: string }) {
               <div className="border-t border-[#edf0e8] bg-[#fafbf7] px-6 py-5">
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-[#849077]">
-                    {selectedPackage
+                  {bookingForChild
+                    ? `Guardian booking for ${selectedChild.displayName}`
+                    : selectedPackage
                       ? packageSummaryTitle
                       : repeatWeeks > 1
                         ? `Total for ${repeatWeeks} sessions`
                         : "Session total"}
                   </span>
                   <span className="text-2xl font-semibold tracking-tight text-[#385838]">
-                    {service ? packageSummaryValue : "—"}
+                    {service ? bookingForChild ? money(price * repeatWeeks, data.business.currency) : packageSummaryValue : "—"}
                   </span>
                 </div>
                 <p className="!mt-2 text-[10px] leading-relaxed text-[#929d86]">
-                  {selectedPackage
+                  {bookingForChild
+                    ? `No payment is collected here. Contact ${data.business.name} to arrange payment.`
+                    : selectedPackage
                     ? packageSummaryNote
                     : service && !mapping
                       ? "Final price depends on your chosen location."
@@ -2117,17 +2368,17 @@ export function PublicBooking({ slug }: { slug: string }) {
               {step === 3 ? (
                 <button
                   type="submit"
-                  form={isStudentSession(account.session) ? "booking-details" : "student-account"}
+                  form={account.session && account.session.user.accountType !== "CLUB" ? "booking-details" : "student-account"}
                   className={cn(button, "!min-h-12 !min-w-0 !flex-1 !px-4")}
-                  disabled={account.loading || (!!account.session && !isStudentSession(account.session))}
+                  disabled={account.loading || (!!account.session && !canBookSelectedPlayer) || bookingChildrenLoading}
                 >
-                  {isStudentSession(account.session) ? "Review booking" : "Continue with account"} <ArrowRight size={15} />
+                  {account.session ? "Review booking" : "Continue with account"} <ArrowRight size={15} />
                 </button>
               ) : step === 4 ? (
                 <button
                   type="button"
                   className={cn(button, "!min-h-12 !min-w-0 !flex-1 !px-4")}
-                  disabled={!agreed || saving || (!!selectedPackage && !packageCreditsEnough)}
+                  disabled={!agreed || saving || !canBookSelectedPlayer || (!!selectedPackage && !packageCreditsEnough)}
                   onClick={() => void submit()}
                 >
                   {saving ? (
@@ -2158,12 +2409,14 @@ function BookingReceipt({
   data,
   result,
   studentName,
+  guardianBooking,
   location,
   onBookAgain,
 }: {
   data: PublicBusiness;
   result: BookingResult;
   studentName: string;
+  guardianBooking: boolean;
   location?: PublicLocation;
   onBookAgain: () => void;
 }) {
@@ -2190,8 +2443,12 @@ function BookingReceipt({
         </h1>
         <p className="!mx-auto mt-3 max-w-md text-sm leading-relaxed text-[#85927a]">
           {pending
-            ? `Thanks, ${studentName.split(" ")[0]}. Your coach will review your request. Check this page for the latest status.`
-            : `Looking forward to seeing you, ${studentName.split(" ")[0]}. Here’s to finding your rhythm, one session at a time.`}
+            ? guardianBooking
+              ? `${studentName}’s booking request is in. The coach will review it.`
+              : `Thanks, ${studentName.split(" ")[0]}. Your coach will review your request. Check this page for the latest status.`
+            : guardianBooking
+              ? `${studentName} is on the calendar. Here’s to finding their rhythm, one session at a time.`
+              : `Looking forward to seeing you, ${studentName.split(" ")[0]}. Here’s to finding your rhythm, one session at a time.`}
         </p>
       </div>
       <div className={cn(panel, "overflow-hidden")}>
@@ -2216,6 +2473,10 @@ function BookingReceipt({
               {result.bookings.length > 1 ? "s" : ""} · {first.locationName}
             </p>
           </DetailRow>
+          {guardianBooking && <DetailRow icon={<UserRound size={19} />} title="Who is playing?">
+            {studentName}
+            <p className="text-xs text-[#8b9780]">Guardian-authorized child booking</p>
+          </DetailRow>}
           <div className="space-y-3">
             {result.bookings.map((booking, i) => (
               <div
@@ -2256,8 +2517,9 @@ function BookingReceipt({
             </span>
           </div>
           <p className="text-[11px] leading-relaxed text-[#8d9881]">
-            No payment was collected while making this booking. You can review
-            {" "}{data.business.name}&rsquo;s available payment options from My bookings.
+            No payment was collected while making this booking. {guardianBooking
+              ? `Contact ${data.business.name} to arrange payment for ${studentName}.`
+              : <>You can review {data.business.name}&rsquo;s available payment options from My bookings.</>}
           </p>
         </div>
       </div>
@@ -2269,7 +2531,7 @@ function BookingReceipt({
           />
         </div>
       ) : null}
-      <div className="!mt-5 rounded-2xl border border-[#dfe7d4] bg-[#eef4e5] p-5 sm:p-6">
+      {!guardianBooking && <div className="!mt-5 rounded-2xl border border-[#dfe7d4] bg-[#eef4e5] p-5 sm:p-6">
         <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
           <div className="flex gap-3">
             <ShieldCheck size={19} className="shrink-0 text-[#8a9e74]" />
@@ -2287,7 +2549,7 @@ function BookingReceipt({
             My bookings <ArrowRight size={14} />
           </Link>
         </div>
-      </div>
+      </div>}
       <div className="!mt-6 flex flex-col justify-center gap-3 sm:flex-row">
         <a
           className={secondary}
@@ -2528,8 +2790,8 @@ export function StudentBookings({ slug }: { slug?: string }) {
             <ShieldCheck size={30} className="text-[#93a582]" />
             <h1 className="!mt-5 !text-2xl">Student account required</h1>
             <p className="!mt-3 text-sm leading-relaxed text-[#86947a]">
-              {account.session.user.email} is signed in as a coach or club account. Switch to
-              your student account to view personal bookings.
+              A coach or club account is signed in. Switch to your student account to view
+              personal bookings.
             </p>
             {account.error && <div className="!mt-5"><ErrorNotice message={account.error} /></div>}
             <button

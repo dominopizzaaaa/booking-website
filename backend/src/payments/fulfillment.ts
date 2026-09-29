@@ -127,14 +127,17 @@ export function providerIntentFromWebhook(event: StripeWebhookEvent): ProviderPa
 
 async function ensureStudent(tx: Tx, businessId: string, userId: string) {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`account-student:${businessId}:${userId}`}, 0))`;
-  const existing = await tx.student.findFirst({ where: { businessId, userId } });
-  if (existing) return existing;
   const account = await tx.user.findUniqueOrThrow({ where: { id: userId } });
   if (account.accountType !== 'STUDENT') {
     throw paidCheckoutConflict('the checkout account can no longer receive a student entitlement');
   }
-  const conflicting = await tx.student.findUnique({
-    where: { businessId_email: { businessId, email: account.email } }, select: { userId: true },
+  if (!account.email) {
+    throw paidCheckoutConflict('the checkout account can no longer receive a student entitlement');
+  }
+  const existing = await tx.student.findFirst({ where: { businessId, userId } });
+  if (existing) return existing;
+  const conflicting = await tx.student.findFirst({
+    where: { businessId, email: account.email }, select: { userId: true },
   });
   if (conflicting) {
     throw paidCheckoutConflict('the club must connect the existing student record before fulfillment');

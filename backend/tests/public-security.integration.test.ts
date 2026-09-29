@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { app } from '../src/app.js';
+import { CURRENT_PRIVACY_POLICY_VERSION, DEFAULT_GUARDIAN_PERMISSIONS } from '../src/children-policy.js';
 import {
   createAccount, createSession, createStudent, prisma, publicInputFor, TestTenants, verifyTestDatabase, type Fixture,
 } from './fixtures.js';
@@ -97,8 +98,8 @@ describe.sequential('Public API security regressions', () => {
     });
     const unclaimedUser = await prisma.user.create({
       data: {
-        name: 'Unclaimed Coach', username: `unclaimed_${randomUUID().replace(/-/g, '').slice(0, 12)}`,
-        email: `${randomUUID()}@unclaimed.courtly.invalid`, accountType: 'COACH',
+        name: 'Unclaimed Coach', legalName: 'Unclaimed Coach', username: `unclaimed_${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+        email: `legacy-instructor-${randomUUID()}@unclaimed.courtly.invalid`, accountType: 'COACH',
       },
     });
     f.tracker.ownUser(unclaimedUser.id);
@@ -124,7 +125,9 @@ describe.sequential('Public API security regressions', () => {
   it('hides active unclaimed instructors and rejects their slots and account bookings', async () => {
     // Model a migrated roster entry: both instructor and membership remain active,
     // but the coach's account behind it has never been claimed with a password.
-    await prisma.user.update({ where: { id: f.coachUser.id }, data: { passwordHash: null } });
+    await prisma.user.update({ where: { id: f.coachUser.id }, data: {
+      passwordHash: null, email: `legacy-instructor-${randomUUID()}@unclaimed.courtly.invalid`,
+    } });
     const { cookie } = await accountSession({ name: 'Registered Player' });
 
     const catalog = await request(app).get(`/api/public/${f.business.slug}`).expect(200);
@@ -357,6 +360,52 @@ describe.sequential('Public API security regressions', () => {
       await request(app).post(`/api/manage/${token}/reschedule`)
         .send({ startAt: f.starts.plus({ days: 4 }).toISO()! }).expect(410);
     }
+  });
+
+  it('does not let a managed child use a legacy management token', async () => {
+    const restricted = await accountSession({ name: 'Managed Legacy Player' });
+    const created = await request(app).post(`/api/public/${f.business.slug}/bookings`)
+      .set('Cookie', restricted.cookie).send(publicInputFor(f)).expect(201);
+    const participantId = created.body.bookings[0].participants[0].id as string;
+    const credential = await attachLegacyToken(participantId);
+
+    const guardian = await createAccount(f, { name: 'Legacy Link Guardian' });
+    await prisma.user.update({
+      where: { id: guardian.id }, data: { dateOfBirth: new Date('1990-01-01T00:00:00.000Z') },
+    });
+    await prisma.$transaction(async tx => {
+      await tx.user.update({
+        where: { id: restricted.account.id },
+        data: {
+          legalName: restricted.account.name, dateOfBirth: new Date('2015-06-15T00:00:00.000Z'),
+          email: null, passwordHash: null, accountControl: 'GUARDIAN_MANAGED',
+          profileVisibility: 'PRIVATE',
+        },
+      });
+      const link = await tx.guardianChildLink.create({
+        data: {
+          guardianUserId: guardian.id, childUserId: restricted.account.id,
+          relationshipType: 'PARENT', permissions: [...DEFAULT_GUARDIAN_PERMISSIONS],
+        },
+      });
+      await tx.childConsentRecord.create({
+        data: {
+          linkId: link.id, guardianUserId: guardian.id, childUserId: restricted.account.id,
+          eventType: 'GRANTED', relationshipType: 'PARENT',
+          privacyPolicyVersion: CURRENT_PRIVACY_POLICY_VERSION,
+          permissions: [...DEFAULT_GUARDIAN_PERMISSIONS],
+        },
+      });
+    });
+
+    await request(app).get(`/api/manage/${credential.token}`).expect(404);
+    await request(app).post(`/api/manage/${credential.token}/cancel`).send({}).expect(404);
+    await request(app).post(`/api/manage/${credential.token}/reschedule`)
+      .send({ startAt: f.starts.plus({ days: 1 }).toISO()! }).expect(404);
+    expect(await prisma.participant.findUniqueOrThrow({ where: { id: participantId } }))
+      .toMatchObject({ cancelledAt: null });
+    expect(await prisma.booking.findUniqueOrThrow({ where: { id: created.body.bookings[0].id } }))
+      .toMatchObject({ startAt: f.starts.toJSDate(), status: 'CONFIRMED' });
   });
 
   it('denies another account access to history, cancellation and rescheduling', async () => {

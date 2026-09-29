@@ -53,7 +53,7 @@ type StaffMembership = Prisma.MembershipGetPayload<{ select: typeof staffSelect 
 type InstructorAffiliation = {
   id: string;
   userId: string;
-  user: { id: string; email: string; passwordHash: string | null; accountType: string };
+  user: { id: string; email: string | null; passwordHash: string | null; accountType: string };
 };
 
 const staffJson = (membership: StaffMembership) => ({
@@ -142,15 +142,18 @@ async function removePlaceholder(
 
 const newInstructor = (
   businessId: string,
-  user: { name: string; email: string },
+  user: { name: string; email: string | null },
   rescheduleNoticeHours?: number,
-) => ({
-  business: { connect: { id: businessId } },
-  name: user.name,
-  email: user.email,
-  initials: initials(user.name),
-  ...(rescheduleNoticeHours === undefined ? {} : { rescheduleNoticeHours }),
-});
+) => {
+  if (!user.email) throw new HttpError(409, 'This coach account does not have an email address');
+  return {
+    business: { connect: { id: businessId } },
+    name: user.name,
+    email: user.email,
+    initials: initials(user.name),
+    ...(rescheduleNoticeHours === undefined ? {} : { rescheduleNoticeHours }),
+  };
+};
 
 const invitationJson = (invitation: {
   id: string; email: string; rescheduleNoticeHours: number; expiresAt: Date; acceptedAt: Date | null;
@@ -167,7 +170,7 @@ const invitationJson = (invitation: {
 async function acceptInvitation(
   tx: Prisma.TransactionClient,
   invitationId: string,
-  user: { id: string; name: string; email: string; accountType: string },
+  user: { id: string; name: string; email: string | null; accountType: string },
 ) {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`courtly:coach-invitation:${invitationId}`}, 0))`;
   const invitation = await tx.coachInvitation.findUnique({
@@ -178,6 +181,7 @@ async function acceptInvitation(
     throw new HttpError(409, 'This coach invitation is no longer available');
   }
   if (user.accountType !== 'COACH') throw new HttpError(403, 'Sign in with a coach account to accept this invitation');
+  if (!user.email) throw new HttpError(403, 'An account email is required to accept a coach invitation');
   if (user.email.toLowerCase() !== invitation.email) {
     throw new HttpError(403, `This invitation was sent to ${invitation.email}. Sign in with that coach account to accept it.`);
   }
@@ -221,6 +225,7 @@ async function acceptInvitation(
 
 coachInvitationRouter.get('/coach-invitations', asyncRoute(async (req, res) => {
   if (req.auth.user.accountType !== 'COACH') throw new HttpError(403, 'Coach invitations are available only to coach accounts');
+  if (!req.auth.user.email) throw new HttpError(403, 'An account email is required to view coach invitations');
   const invitations = await prisma.coachInvitation.findMany({
     where: { email: req.auth.user.email.toLowerCase(), acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } },
     include: { business: { select: { name: true, slug: true } } },
@@ -330,6 +335,8 @@ staffRouter.post('/staff', requireClubPermission('ROSTER_MANAGE'), asyncRoute(as
     if (user.accountType !== 'COACH') {
       throw new HttpError(400, 'Only a coach account can be added to a club. Ask them to register as a coach first.');
     }
+    if (!user.email) throw new HttpError(409, 'This coach account does not have an email address');
+    const coachEmail = user.email;
 
     if (existing) {
       if (!existing.instructorId) {
@@ -349,7 +356,7 @@ staffRouter.post('/staff', requireClubPermission('ROSTER_MANAGE'), asyncRoute(as
       const activated = await tx.instructor.updateMany({
         where: { id: existing.instructorId, businessId },
         data: {
-          active: true, name: user.name, email: user.email, initials: initials(user.name),
+          active: true, name: user.name, email: coachEmail, initials: initials(user.name),
           ...(input.rescheduleNoticeHours === undefined ? {} : { rescheduleNoticeHours: input.rescheduleNoticeHours }),
         },
       });
@@ -382,7 +389,7 @@ staffRouter.post('/staff', requireClubPermission('ROSTER_MANAGE'), asyncRoute(as
       await tx.instructor.update({
         where: { id: created.instructorId },
         data: {
-          active: true, name: created.user.name, email: created.user.email, initials: initials(created.user.name),
+          active: true, name: created.user.name, email: coachEmail, initials: initials(created.user.name),
           ...(input.rescheduleNoticeHours === undefined ? {} : { rescheduleNoticeHours: input.rescheduleNoticeHours }),
         },
       });
@@ -402,6 +409,8 @@ staffRouter.patch('/staff/:membershipId', requireClubPermission('ROSTER_MANAGE')
       select: staffSelect,
     });
     if (!current) throw new HttpError(404, 'Staff membership not found');
+    if (!current.user.email) throw new HttpError(409, 'This coach account does not have an email address');
+    const coachEmail = current.user.email;
     if (current.userId === req.auth.user.id) {
       throw new HttpError(403, 'The club account cannot change its own access here');
     }
@@ -450,7 +459,7 @@ staffRouter.patch('/staff/:membershipId', requireClubPermission('ROSTER_MANAGE')
       if (!linked) throw new HttpError(400, 'Instructor membership must belong to this business');
       await tx.instructor.update({
         where: { id: updated.instructorId },
-        data: { active: true, name: updated.user.name, email: updated.user.email, initials: initials(updated.user.name) },
+        data: { active: true, name: updated.user.name, email: coachEmail, initials: initials(updated.user.name) },
       });
     }
     return updated;

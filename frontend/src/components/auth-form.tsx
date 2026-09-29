@@ -4,20 +4,21 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowRight, CalendarDays, Check, CircleDot, Eye, EyeOff, Layers3, LoaderCircle, LockKeyhole, MapPin, Sparkles, UsersRound } from 'lucide-react';
-import { api, loginAccount, registerAccount } from '@/lib/api';
+import { ApiError, api, loginAccount, registerAccount } from '@/lib/api';
 import { CourtlyLogo } from '@/components/public-booking';
 import type { AccountType, AuthSession } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { markProductTourPending } from '@/lib/product-tour';
+import { singaporeCivilDate, validPastDate } from '@/components/family/family-helpers';
 
 const accountOptions: Array<{ value: AccountType; label: string }> = [
   { value: 'CLUB', label: 'Club or academy' },
   { value: 'COACH', label: 'Coach' },
-  { value: 'STUDENT', label: 'Student' },
+  { value: 'STUDENT', label: 'Player / guardian' },
 ];
 
 const usernamePattern = /^[a-z0-9_]{3,30}$/;
-type AuthValues = { businessName: string; name: string; username: string; sports: string; email: string; password: string };
+type AuthValues = { businessName: string; name: string; username: string; sports: string; dateOfBirth: string; email: string; password: string };
 type AuthField = 'accountType' | keyof AuthValues;
 
 function sportsFromText(value: string): string[] | null {
@@ -64,6 +65,7 @@ function isStudentDestination(destination: string | null) {
 }
 
 function destinationFor(state: AuthSession, requested: string | null) {
+  if (state.user.requiredAction) return '/account/action-required';
   // Staff invitation links must reach the account acceptance screen before
   // any existing coach membership or the student's default app takes over.
   if (requested?.startsWith('/account?staffInvite=')) return requested;
@@ -79,10 +81,11 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
   const router = useRouter();
   const [accountType, setAccountType] = useState<AccountType | null>(null);
   const [redirect, setRedirect] = useState<AuthRedirect | null>(null);
-  const [values, setValues] = useState<AuthValues>({ businessName: '', name: '', username: '', sports: '', email: '', password: '' });
+  const [values, setValues] = useState<AuthValues>({ businessName: '', name: '', username: '', sports: '', dateOfBirth: '', email: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState<'form' | 'demo' | null>(null);
   const [error, setError] = useState('');
+  const [familyRequired, setFamilyRequired] = useState(false);
   const [errorField, setErrorField] = useState<AuthField | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const input = '!min-h-12 !rounded-xl !border-[#dfe5dd] !px-3.5 !text-base placeholder:!text-[#596653]';
@@ -97,6 +100,7 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
   function clearError(field?: AuthField) {
     if (!error || (field && errorField && errorField !== field)) return;
     setError('');
+    setFamilyRequired(false);
     setErrorField(null);
   }
   function update(key: keyof AuthValues, value: string) { setValues(current => ({ ...current, [key]: value })); clearError(key); }
@@ -125,16 +129,25 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
     if (signup && !usernamePattern.test(username)) { validationError('username', 'Choose a username with 3–30 lowercase letters, numbers, or underscores.'); return; }
     const sports = sportsFromText(values.sports);
     if (signup && (!sports || sports.length > 20 || sports.some(sport => sport.length > 40))) { validationError('sports', 'Separate sports with single commas and add up to 20, using no more than 40 characters for each.'); return; }
+    if (signup && accountType !== 'CLUB' && !validPastDate(values.dateOfBirth)) { validationError('dateOfBirth', 'Enter a valid date of birth from 1900 onwards that is not in the future.'); return; }
     if (!/^\S+@\S+\.\S+$/.test(values.email.trim())) { validationError('email', 'Enter a valid email address.'); return; }
     if (!values.password || (signup && values.password.length < 12)) { validationError('password', signup ? 'Use at least 12 characters for your password.' : 'Enter your password.'); return; }
     setBusy('form'); clearError();
     try {
       const result = signup
-        ? await registerAccount({ accountType: accountType!, ...(accountType === 'CLUB' ? { businessName: values.businessName.trim() } : {}), name: values.name.trim(), username, sports: sports!, email: values.email.trim(), password: values.password })
+        ? accountType === 'CLUB'
+          ? await registerAccount({ accountType, businessName: values.businessName.trim(), name: values.name.trim(), username, sports: sports!, email: values.email.trim(), password: values.password })
+          : await registerAccount({ accountType: accountType!, dateOfBirth: values.dateOfBirth, name: values.name.trim(), username, sports: sports!, email: values.email.trim(), password: values.password })
         : await loginAccount({ email: values.email.trim(), password: values.password });
       if (signup) markProductTourPending(result.user.id);
       router.replace(destinationFor(result, redirect?.destination ?? null)); router.refresh();
-    } catch (err) { setError(err instanceof Error ? err.message : 'We couldn’t sign you in. Please try again.'); setErrorField(null); setBusy(null); }
+    } catch (err) {
+      const details = err instanceof ApiError && err.details && typeof err.details === 'object' ? err.details as { code?: string; reason?: string } : null;
+      setFamilyRequired(details?.code === 'PARENT_ACCOUNT_REQUIRED' || details?.reason === 'PARENT_ACCOUNT_REQUIRED');
+      setError(err instanceof Error ? err.message : 'We couldn’t sign you in. Please try again.');
+      setErrorField(null);
+      setBusy(null);
+    }
   }
   async function demo() {
     if (busy) return;
@@ -177,11 +190,12 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
             <div><label htmlFor="auth-name" className="!mb-2 !text-sm !font-medium !text-[#52634b]">{accountType === 'CLUB' ? 'Contact name' : 'Your full name'}</label><input id="auth-name" className={input} value={values.name} onChange={event => update('name', event.target.value)} required minLength={2} maxLength={120} autoComplete="name" placeholder="e.g. Jamie Lee" disabled={!!busy} aria-invalid={errorField === 'name'} aria-describedby={describedBy('name')} />{fieldError('name')}</div>
             <div><label htmlFor="auth-username" className="!mb-2 !text-sm !font-medium !text-[#52634b]">Username</label><input id="auth-username" className={input} value={values.username} onChange={event => update('username', event.target.value.toLowerCase())} required minLength={3} maxLength={30} pattern="[a-z0-9_]{3,30}" autoComplete="username" placeholder="e.g. jamie_lee" disabled={!!busy} aria-invalid={errorField === 'username'} aria-describedby={describedBy('username', 'username-hint')} /><p id="username-hint" className="!mt-2 text-sm text-[#596653]">Lowercase letters, numbers, and underscores.</p>{fieldError('username')}</div>
             <div><label htmlFor="auth-sports" className="!mb-2 !text-sm !font-medium !text-[#52634b]">Sports <span className="font-normal text-[#596653]">optional</span></label><input id="auth-sports" className={input} value={values.sports} onChange={event => update('sports', event.target.value)} maxLength={819} placeholder="Tennis, badminton, padel" disabled={!!busy} aria-invalid={errorField === 'sports'} aria-describedby={describedBy('sports', 'sports-hint')} /><p id="sports-hint" className="!mt-2 text-sm text-[#596653]">Separate multiple sports with commas.</p>{fieldError('sports')}</div>
+            {accountType !== 'CLUB' && <div><label htmlFor="auth-dateOfBirth" className="!mb-2 !text-sm !font-medium !text-[#52634b]">Date of birth</label><input id="auth-dateOfBirth" className={input} type="date" value={values.dateOfBirth} onChange={event => update('dateOfBirth', event.target.value)} required autoComplete="bday" min="1900-01-01" max={singaporeCivilDate()} disabled={!!busy} aria-invalid={errorField === 'dateOfBirth'} aria-describedby={describedBy('dateOfBirth', 'date-of-birth-hint')} /><p id="date-of-birth-hint" className="!mt-2 text-sm leading-relaxed text-[#596653]">Courtly uses your full date of birth to apply the right account protections. A child under 13 cannot create their own login; an adult must sign in and add them from Family.</p>{fieldError('dateOfBirth')}</div>}
           </>}
           <div><label htmlFor="auth-email" className="!mb-2 !text-sm !font-medium !text-[#52634b]">Email address</label><input id="auth-email" className={input} type="email" value={values.email} onChange={event => update('email', event.target.value)} required maxLength={254} autoComplete="email" placeholder="you@example.com" disabled={!!busy} aria-invalid={errorField === 'email'} aria-describedby={describedBy('email')} />{fieldError('email')}</div>
           <div><label htmlFor="auth-password" className="!mb-2 !text-sm !font-medium !text-[#52634b]">Password</label><div className="relative"><input id="auth-password" className={cn(input, '!pr-12')} type={showPassword ? 'text' : 'password'} value={values.password} onChange={event => update('password', event.target.value)} required minLength={signup ? 12 : undefined} maxLength={72} autoComplete={signup ? 'new-password' : 'current-password'} placeholder={signup ? 'Create a password' : 'Your password'} disabled={!!busy} aria-invalid={errorField === 'password'} aria-describedby={describedBy('password', signup ? 'password-hint' : undefined)} /><button type="button" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword} className="absolute inset-y-0 right-0 flex w-12 items-center justify-center rounded-r-xl text-[#596653] transition hover:text-[#49673d]">{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></div>{signup && <p id="password-hint" className="!mt-2 text-sm text-[#596653]">Make it yours. Use at least 12 characters.</p>}{fieldError('password')}</div>
-          {error && !errorField && <div role="alert" aria-live="polite" className="rounded-xl border border-[#e4c7bc] bg-[#fff6f1] p-3.5 text-sm leading-relaxed text-[#8a4937]">{error}</div>}
-          <button type="submit" className={primary} disabled={!!busy}>{busy === 'form' ? <><LoaderCircle size={16} className="animate-spin" />{signup ? 'Creating your account…' : 'Signing you in…'}</> : <>{signup ? accountType === 'CLUB' ? 'Create your workspace' : accountType === 'COACH' ? 'Create coach account' : accountType === 'STUDENT' ? 'Create student account' : 'Create account' : 'Sign in'}<ArrowRight size={16} /></>}</button>
+          {error && !errorField && <div role="alert" aria-live="polite" className="rounded-xl border border-[#e4c7bc] bg-[#fff6f1] p-3.5 text-sm leading-relaxed text-[#8a4937]"><p>{error}</p>{familyRequired && <p className="mt-2">Ask a parent or guardian to <Link className="font-semibold underline underline-offset-2" href="/login?next=%2Ffamily">sign in and open Family</Link> to create a managed child profile.</p>}</div>}
+          <button type="submit" className={primary} disabled={!!busy}>{busy === 'form' ? <><LoaderCircle size={16} className="animate-spin" />{signup ? 'Creating your account…' : 'Signing you in…'}</> : <>{signup ? accountType === 'CLUB' ? 'Create your workspace' : accountType === 'COACH' ? 'Create coach account' : accountType === 'STUDENT' ? 'Create player account' : 'Create account' : 'Sign in'}<ArrowRight size={16} /></>}</button>
         </form>
         {(!signup || accountType === 'CLUB') && <><div className="my-5 flex items-center gap-3 sm:my-6 sm:gap-4"><span className="h-px flex-1 bg-[#e3e7dd]" /><span className="shrink-0 text-[10px] text-[#596653]">or take a little look around</span><span className="h-px flex-1 bg-[#e3e7dd]" /></div><button type="button" disabled={!!busy} onClick={() => void demo()} className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-[#dce4d4] bg-[#f2f5eb] px-4 py-3 text-xs font-semibold text-[#4f6048] transition hover:bg-[#eaf0df] disabled:cursor-wait disabled:opacity-60">{busy === 'demo' ? <LoaderCircle size={16} className="animate-spin" /> : <Sparkles size={15} />}{busy === 'demo' ? 'Preparing your demo…' : 'Explore the demo workspace'}<ArrowRight size={14} /></button><p className="!mt-3 text-center text-[10px] leading-relaxed text-[#596653]">No sign-up needed. A sample club workspace, ready to explore.</p></>}
       </div>

@@ -1,15 +1,34 @@
 import type { TransactionalEmailEvent } from './email-templates.js';
+import { config } from './config.js';
 
 export type OutboundTransaction = {
   outboundDelivery: { create(args: { data: Record<string, unknown> }): Promise<unknown> };
-  notificationPreference?: { findUnique(args: { where: { userId: string } }): Promise<{ emailTransactionalEnabled?: boolean; emailReminderEnabled?: boolean; emailActionNeededEnabled?: boolean } | null> };
+  notificationPreference: { findUnique(args: { where: { userId: string } }): Promise<{
+    emailTransactionalEnabled?: boolean; emailReminderEnabled?: boolean;
+    emailActionNeededEnabled?: boolean; emailMarketingEnabled?: boolean;
+    emailSuppressedAt?: Date | null;
+  } | null> };
 };
 
-export type QueueEmailInput = {
-  eventType: TransactionalEmailEvent; dedupeKey: string; recipientEmail: string; recipientName: string;
+type QueueEmailBase = {
+  dedupeKey: string; recipientEmail: string; recipientName: string;
   recipientUserId?: string | null; businessId?: string | null; bookingId?: string | null;
   notificationId?: string | null; accountNotificationId?: string | null; title: string; message: string;
-  actionUrl?: string; actionLabel?: string; actionNeeded?: boolean; category?: 'TRANSACTIONAL' | 'REMINDER';
+  actionUrl?: string; actionLabel?: string; actionNeeded?: boolean;
+};
+
+export type QueueEmailInput = QueueEmailBase & {
+  eventType: TransactionalEmailEvent;
+  category?: 'TRANSACTIONAL' | 'REMINDER' | 'MARKETING' | 'SECURITY';
+};
+
+export type FamilyHandoverSecurityEmailInput = {
+  handoverId: string;
+  tokenKeyId: string;
+  recipientEmail: string;
+  recipientName: string;
+  expiresAt: Date;
+  recipientUserId?: string | null;
 };
 
 export function normalizedRecipient(email: string) { return email.trim().toLowerCase(); }
@@ -19,24 +38,67 @@ export function isDeliverableEmail(email: string) {
 }
 
 export async function queueOutboundEmail(tx: OutboundTransaction, input: QueueEmailInput) {
+  if ((input.eventType as TransactionalEmailEvent) === 'FAMILY_HANDOVER_SECURITY') {
+    throw new TypeError('Family handover security mail must use its non-secret queue helper');
+  }
+  // Security mail is mandatory when delivery is configured, but it must not
+  // manufacture a queued record in deployments with no sending provider.
+  if (input.category === 'SECURITY' && !config.email.enabled) return null;
   const email = normalizedRecipient(input.recipientEmail);
   let suppressed = !isDeliverableEmail(email);
   let suppressionCode = suppressed ? 'INVALID_RECIPIENT' : null;
-  if (!suppressed && input.recipientUserId && tx.notificationPreference) {
+  if (!suppressed && input.recipientUserId) {
     const preference = await tx.notificationPreference.findUnique({ where: { userId: input.recipientUserId } });
-    const permitted = input.category === 'REMINDER'
-      ? preference?.emailReminderEnabled !== false
-      : input.actionNeeded
-        ? preference?.emailActionNeededEnabled !== false
-        : preference?.emailTransactionalEnabled !== false;
-    if (!permitted) { suppressed = true; suppressionCode = 'USER_PREFERENCE'; }
+    if (preference?.emailSuppressedAt) {
+      suppressed = true; suppressionCode = 'HARD_SUPPRESSION';
+    } else if (input.category !== 'SECURITY') {
+      const permitted = input.category === 'REMINDER'
+        ? preference?.emailReminderEnabled !== false
+        : input.category === 'MARKETING'
+          ? preference?.emailMarketingEnabled === true
+          : input.actionNeeded
+            ? preference?.emailActionNeededEnabled !== false
+            : preference?.emailTransactionalEnabled !== false;
+      if (!permitted) { suppressed = true; suppressionCode = 'USER_PREFERENCE'; }
+    }
   }
   return tx.outboundDelivery.create({ data: {
     channel: 'EMAIL', eventType: input.eventType, eventVersion: 1, dedupeKey: input.dedupeKey,
     recipientKey: email, recipientUserId: input.recipientUserId ?? null, recipientEmail: email,
     recipientName: input.recipientName.trim(), businessId: input.businessId ?? null, bookingId: input.bookingId ?? null,
     notificationId: input.notificationId ?? null, accountNotificationId: input.accountNotificationId ?? null,
-    template: 'transactional-v1', payload: { title: input.title, message: input.message, actionUrl: input.actionUrl, actionLabel: input.actionLabel },
+    template: 'transactional-v1',
+    payload: { title: input.title, message: input.message, actionUrl: input.actionUrl, actionLabel: input.actionLabel },
     status: suppressed ? 'SUPPRESSED' : 'QUEUED', ...(suppressionCode ? { lastErrorCode: suppressionCode } : {}),
+  } });
+}
+
+export async function enqueueFamilyHandoverSecurityEmail(
+  tx: OutboundTransaction,
+  input: FamilyHandoverSecurityEmailInput,
+) {
+  if (!config.email.enabled) return null;
+  const expiresAt = input.expiresAt.toISOString();
+  const email = normalizedRecipient(input.recipientEmail);
+  let suppressed = !isDeliverableEmail(email);
+  let suppressionCode = suppressed ? 'INVALID_RECIPIENT' : null;
+  if (!suppressed && input.recipientUserId) {
+    const preference = await tx.notificationPreference.findUnique({ where: { userId: input.recipientUserId } });
+    if (preference?.emailSuppressedAt) {
+      suppressed = true;
+      suppressionCode = 'HARD_SUPPRESSION';
+    }
+  }
+  return tx.outboundDelivery.create({ data: {
+    channel: 'EMAIL', eventType: 'FAMILY_HANDOVER_SECURITY', eventVersion: 1,
+    dedupeKey: `family-handover:${input.handoverId}:security-claim`,
+    recipientKey: email, recipientUserId: input.recipientUserId ?? null, recipientEmail: email,
+    recipientName: input.recipientName.trim(), businessId: null, bookingId: null,
+    notificationId: null, accountNotificationId: null, template: 'family-handover-security-v1',
+    // Only non-secret derivation inputs are durable. The worker reconstructs
+    // the bearer link in memory immediately before provider dispatch.
+    payload: { handoverId: input.handoverId, tokenKeyId: input.tokenKeyId, expiresAt },
+    status: suppressed ? 'SUPPRESSED' : 'QUEUED',
+    ...(suppressionCode ? { lastErrorCode: suppressionCode } : {}),
   } });
 }

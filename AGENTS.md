@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 3.6.0** · Last updated 2026-09-28
+**Version 4.1.1** · Last updated 2026-09-29
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -23,6 +23,12 @@ types; this is the complete role vocabulary:
 There is no owner or club-admin account type. A `CLUB` account *is the club*,
 not a person, and never teaches. A founder who also coaches uses a separate
 `COACH` account which the club adds to its roster.
+
+`accountType` and `accountControl` are separate. An ordinary person has
+`accountControl: 'SELF'`; a guardian-managed child is still a `STUDENT`, not a
+fourth role. It is a distinct global user with no direct login credentials and
+is operated only through an authorized adult's Family view. See
+`docs/CHILD_ACCOUNTS.md` for the full contract and rollout boundary.
 
 `Membership` is only an affiliation link. It has no role: a club has one
 membership to its own business; a coach has one per club that added them; a
@@ -67,6 +73,10 @@ backend/           Express + Prisma API (TypeScript, ESM)
     app.ts         Express wiring, middleware order, /api/health capabilities
     config.ts      Environment reading; every env var enters here
     auth.ts        Sessions, register/login, profiles, workspace switching
+    children-policy.ts Pure Singapore-date age bands and capability policy
+    account-policy.ts  Loads live consent and derives an account policy
+    family-handover-token.ts Versioned HMAC derivation for handover claims
+    family.ts      Guardian child, consent, booking, export, deletion, handover API
     http.ts        Errors, manager/club guards, coachScope, initials()
     serializers.ts authState, bookingJson, membershipJson, isClubAccount
     scheduling.ts  Slot evaluation, conflict/travel rules, booking creation
@@ -104,7 +114,8 @@ backend/           Express + Prisma API (TypeScript, ESM)
 
 frontend/          Next.js App Router (TypeScript, Tailwind)
   src/app/         Routes: / (workspace), /manage (student), /book/[slug],
-                   /login, /signup, /account, /admin, /manage/[token]
+                   /login, /signup, /account, /account/action-required,
+                   /family, /family/handover, /admin, /manage/[token]
   src/lib/
     types.ts       Shared API contract types — change with the backend
     api.ts         Every API call lives here, typed
@@ -120,6 +131,7 @@ frontend/          Next.js App Router (TypeScript, Tailwind)
     public-booking.tsx      Public booking page for /book/[slug]
     legacy-booking.tsx      Pre-account management links (/manage/[token])
     auth-form.tsx           Login and sign-up
+    family/                 Family dashboard, child form, gate and handover UI
   tests/           Vitest; the pure helpers under the UI, no DOM or server
   e2e/             Playwright; runs in CI against production bundles
 
@@ -151,6 +163,10 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
 | Change live Stripe orchestration | `backend/src/payments/`, then the student checkout UI |
 | Change transactional email | `backend/src/outbound-events.ts`, `outbound-worker.ts`, `email-provider.ts`, and `email-templates.ts` |
 | Change account/session chat, proposals or reminders | `backend/src/chat.ts`, `chat-events.ts`, then `frontend/src/components/chat/` |
+| Change child age, account gates, or capabilities | `backend/src/children-policy.ts`, `account-policy.ts`, `auth.ts`, `http.ts`, then serializers/types |
+| Change guardian consent, child profiles, export, deletion, or handover | `backend/src/family.ts`, `backend/prisma/schema.prisma`, its migration, then `frontend/src/components/family/` |
+| Change guardian-authorized child Class booking | `backend/src/family.ts`, `scheduling.ts`, then `frontend/src/components/public-booking.tsx` and Family booking tests |
+| Change handover security email | `backend/src/family.ts`, `family-handover-token.ts`, `outbound-events.ts`, `outbound-worker.ts`, `email-templates.ts`, then the Family UI |
 | Add an env var | `backend/src/config.ts` + `backend/.env.example` + README |
 
 ---
@@ -160,7 +176,8 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
 - **Money is integer minor units (cents) everywhere.** Never a float.
 - **Usernames are canonical public identity.** Every `User.username` is
   globally unique, lowercase, 3–30 characters, and contains only `a-z`, `0-9`,
-  or `_`. Login remains email + password. Profiles may contain up to 20 sports;
+  or `_`. Self-managed accounts log in with email + password; managed children
+  have neither. Profiles may contain up to 20 sports;
   trim values, reject empties, cap each at 40 characters, and de-duplicate
   case-insensitively while preserving the first display spelling.
 - **Authenticated account search is public-profile discovery, not an email
@@ -249,6 +266,116 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
   does not need booking history or a pasted club URL. Provider Explore is the
   grouped workspace tool hub, with owned-venue discovery under the named
   **Rent a court** destination.
+
+### Child identity, guardian authority, and age policy
+
+Courtly's child-account contract is documented in `docs/CHILD_ACCOUNTS.md`. The
+invariants most likely to affect implementation work are:
+
+- A guardian-managed child is its own global `User`: `accountType: 'STUDENT'`,
+  `accountControl: 'GUARDIAN_MANAGED'`, a unique immutable ID and username, and
+  separate legal/display names, DOB, profile, and history. It has no email,
+  verified email, password, phone, or direct session. Never use the guardian's
+  email, name plus DOB, `parentName`, or a club-local `Student` row as the
+  child's identity. `Student.email` is nullable for a linked managed child.
+- Guardian authority comes from the authenticated adult's `GuardianChildLink`
+  and its permission snapshot. It is not a `Membership`, staff grant, teaching
+  affiliation, or new account type. Ordinary child reads and writes require an
+  active link and the exact permission. The dashboard exposes full child data
+  only through active `PROFILE_MANAGE`; a withdrawn `CONSENT_MANAGE` link gets
+  only the minimum renewal projection. Explicit handover cancellation requires
+  an active link with `HANDOVER_MANAGE`. Never authorize a browser-supplied child ID on
+  its own. One guardian can link to several children, and the model must continue
+  to permit several guardians for one child even though co-guardian UI is not
+  implemented.
+- `ChildConsentRecord` is append-only evidence. Grant, renewal, withdrawal,
+  deletion, and handover lifecycle changes append rows containing guardian,
+  child, relationship, policy version, permission snapshot, evidence timestamp,
+  and a database-assigned monotonic `sequence`. Current consent is derived from
+  the consent decision with the greatest sequence for each active link, not
+  from `createdAt`, transaction time, a caller-supplied order, or a client
+  boolean. PostgreSQL serializes assignment and replaces any supplied sequence
+  so concurrent transactions cannot invert the effective decision.
+- DOB is a PostgreSQL `date`, parsed as strict `YYYY-MM-DD` without host-zone
+  reinterpretation, and immutable after its one-time assignment. Age changes at
+  midnight in `Asia/Singapore`: under 13 is `CHILD`, 13–17 is `TEEN`, and 18+
+  is `ADULT`; a leap-day birthday advances on 1 March in a non-leap year. Keep
+  the thresholds and capability decisions in `children-policy.ts`; React may
+  display the server result but must not recreate authorization age math.
+- Account capabilities are server-owned and intersect ordinary role, ownership,
+  workspace, and staff permission checks; they never replace those checks. A
+  self-managed child gets profile remediation only, a teen gets ordinary
+  non-commercial profile/directory/chat/Calendar access, an adult gets normal
+  role-appropriate access, and a managed child gets no direct capabilities.
+  Only a ready, self-managed `PUBLIC` account is publicly discoverable.
+- Required-account errors use stable code `ACCOUNT_ACTION_REQUIRED`. Reason
+  precedence is deletion, stale managed session, adult handover, consent, then
+  parent account. Recompute policy from current database state on every
+  authenticated request; never trust a stale token claim. Allow only the narrow
+  remediation endpoints when ordinary access is denied.
+- Family creation is parent-first. An eligible adult creates a credential-free
+  child, active link, and `GRANTED` event atomically after confirming guardian
+  authority and the current privacy policy. Child visibility is conservative:
+  only `PRIVATE` or `CLUBS_ONLY`; DOB, exact age, contact details, presence, and
+  guardian data are never public. Username collisions fail at the database
+  uniqueness boundary and require another username.
+- Family exposes one deliberately bounded on-behalf action: an eligible adult
+  may book a public club Class for a linked managed child.
+  `GET /api/family/booking-children` returns only the minimal eligible-child
+  chooser projection; `POST /api/family/children/:id/bookings` creates the
+  booking. In the booking transaction, the server must reselect the exact
+  authenticated guardian's `ACTIVE` link, require `BOOKINGS_MANAGE`, derive
+  current-policy consent for that same link, and require the child to remain an
+  active, under-18, guardian-managed `STUDENT`. A browser-supplied child ID, a
+  different guardian's consent, or a stale chooser response is never enough.
+- Guardian booking preserves the child's identity boundary. Scheduling creates
+  or reuses a club-local `Student` linked to the child's immutable `User.id`;
+  its email remains null and the guardian's contact fields are not copied into
+  the child. The resulting booking follows the ordinary public club schedule,
+  conflict, capacity, coach, venue, and series rules, snapshots
+  `paymentRoute: 'CLUB'`, and is unpaid with no package attached. Courtly
+  collects no payment in this flow; payment is arranged with the club. It does
+  not enable child package purchase, payment, rental, Calendar, directory, or
+  chat access. The guardian does not become a participant or session-chat
+  member and gains no child self-service cancellation or reschedule authority.
+  Booking provenance stores the guardian's user ID and actual account type in
+  `Booking.createdByUserId` and `Booking.createdByRole` (`STUDENT` or `COACH`);
+  never label every guardian-created booking as student-created.
+- Consent withdrawal appends evidence, withdraws that guardian's link, and
+  revokes child sessions. It cancels that guardian's own pending handover. It
+  may cancel a pending handover initiated by another guardian only when the
+  withdrawing link also has `HANDOVER_MANAGE`; consent authority alone must not
+  disclose, cancel, or suppress another guardian's request. It restricts the
+  child to `CONSENT_REQUIRED` only when no active link retains current consent.
+  Renewal
+  appends current-policy evidence and reactivates the withdrawn link. Deletion
+  restricts the child, cancels a pending handover, and revokes sessions, but is
+  a request for reviewed retention processing rather than an automatic purge.
+  Outside the bounded Class-booking route, a guardian cannot pay, purchase a
+  package, reserve a rental, connect Calendar, or chat as the child.
+- Handover is guardian-initiated once a managed child is at least 13. At 18, a
+  still-managed identity enters `HANDOVER_REQUIRED`; automatic transfer,
+  notification, and escalation are not implemented. The Family UI offers the
+  start action for eligible `TEEN` and `ADULT` profiles, and that adulthood path
+  needs explicit release validation and an operational escalation policy. One
+  pending request per child carries a
+  normalized unique destination email, digest-only handover record, and
+  seven-day expiry. `OutboundDelivery.payload` stores only its handover ID,
+  expiry, and HMAC key ID; the worker derives the claim URL in memory. Until
+  atomic completion, the child remains managed. Completion verifies freshness
+  and email uniqueness again, sets the email/password on the same user, marks
+  the email verified, changes control to `SELF`, ends active links, appends the
+  event, and revokes sessions. Cancelled, expired, replayed, and competing
+  attempts must fail closed.
+- Handover initiation commits only when its delivery is atomically `QUEUED`;
+  that is not proof of send or delivery. It has no raw-token/manual fallback and
+  is unavailable unless transactional email and its dedicated HMAC keyring are
+  both configured. Creation has a 60-second per-child cooldown whose 429 JSON
+  includes `retryAfterSeconds`, but
+  no dedicated resend/destination-change endpoint or HTTP `Retry-After` header.
+  Account recovery, parent email verification, co-guardian invitations,
+  delivery/bounce remediation, and the broader child journey remain in
+  `TODO.md`.
 
 ### Package offers and payment checkout
 
@@ -438,18 +565,41 @@ still use strict bodies. OAuth return targets are restricted to `/account`,
 Email is disabled unless `EMAIL_PROVIDER` is `capture` (non-production only)
 or `resend`. Enabling it also requires `EMAIL_FROM_ADDRESS`; Resend additionally
 requires `EMAIL_API_KEY`. `PUBLIC_APP_ORIGIN` supplies the canonical base for
-message links and falls back to the first `APP_ORIGIN`. The API process runs
-the leased delivery worker; it retries transient failures with bounded backoff
-and several API replicas may safely claim different jobs.
+message links and falls back to the first `APP_ORIGIN`. Family handover also
+requires `FAMILY_HANDOVER_TOKEN_KEYS` and `FAMILY_HANDOVER_TOKEN_ACTIVE_KEY_ID`.
+`/api/health` reports `capabilities.familyHandover: "configured"` only when
+email and that dedicated keyring are both enabled; `transactionalEmail` alone
+is not a handover-readiness signal, and neither capability proves provider
+delivery.
+The API process runs the leased delivery worker; it retries transient failures
+with bounded backoff and several API replicas may safely claim different jobs.
 
 Enqueue `OutboundDelivery` in the same transaction as its source mutation and
 give it a stable dedupe key. Respect `NotificationPreference`; never put
-provider responses, credentials, tokens, or arbitrary user HTML into a delivery
-payload. Currently only booking-lifecycle and booking-payment student alerts
-flow through `createBookingAccountAlerts()` and enqueue email. Package/rental
-receipts, Chat, staff/coach invitation links, and reminder emails are not wired.
-`ACCEPTED` means Resend accepted the request; there is no delivery/bounce webhook
-or suppression-management console. SMS, push, and WhatsApp are unsupported.
+provider responses, credentials, raw tokens, claim URLs, or arbitrary user HTML
+into a delivery payload. Family handover stores only non-secret derivation
+metadata in the outbox and a SHA-256 token digest in `ChildAccountHandover`. The
+worker uses the referenced dedicated HMAC key to reconstruct the URL in memory,
+after revalidating the live request. Keep retired keys for at least the claim
+lifetime plus maximum delivery-retry window; never log or serialize the URL.
+
+Booking-lifecycle and booking-payment student alerts flow through
+`createBookingAccountAlerts()`. Handover security mail bypasses optional mail
+preferences, does not queue when email or its token keyring is unavailable, and
+creation rolls back unless the row is actually `QUEUED`. The Family route uses
+`recipientUserId: null`, so it does not consult an existing account's hard-
+suppression record. Explicit cancellation, deletion, an observed expiry, and a
+consent withdrawal authorized to cancel that particular handover directly mark
+matching `QUEUED` or `SENDING` rows `SUPPRESSED`; the worker
+also suppresses invalid work when its pre-dispatch recheck runs. Provider requests already in flight or
+`ACCEPTED` cannot be recalled, although their invalidated claims fail. The worker
+leases as `SENDING`, retries transient errors via `QUEUED`, and records provider
+acceptance as `ACCEPTED` or a terminal failure as `FAILED`; `DELIVERED` exists
+but no webhook sets it. Never expose a raw-token fallback or call queue/acceptance
+delivery. Package/rental receipts, Chat, staff/coach invitation links, reminder
+emails, recovery, and co-guardian mail are not wired. There is no delivery/bounce
+webhook or suppression-management console. SMS, push, and WhatsApp are
+unsupported.
 
 ### Account conversations and session chat
 
@@ -606,6 +756,27 @@ duplicated into either alert store.
 - **Comments explain *why*, not *what*.** Match the density already present.
 - Errors are user-facing sentences, thrown as `HttpError(status, message)`.
 - Zod `.strict()` on every request body; unknown fields are a 400.
+- Never trust client-provided DOB-derived ages, age bands, consent state,
+  guardian authority, capabilities, or privacy-policy versions. Ordinary Family
+  operations require an active guardian-child link and exact permission. The
+  withdrawn-link renewal projection is the narrow exception; explicit handover
+  cancellation still requires active `HANDOVER_MANAGE`. Use a transaction for
+  lifecycle changes and append a new consent event rather than mutating evidence.
+- Never order consent state by timestamps. The database assigns the monotonic
+  `ChildConsentRecord.sequence`; select the greatest sequence within the link.
+  During consent withdrawal, a guardian without `HANDOVER_MANAGE` may cancel
+  only a pending handover they initiated, not another guardian's request.
+- Guardian booking must authorize and create inside one transaction: exact
+  `ACTIVE` guardian-child link, `BOOKINGS_MANAGE`, current consent on that link,
+  and an active under-18 guardian-managed `STUDENT`. Use the child's `User.id`
+  to resolve its nullable-email club `Student`; never copy guardian identity,
+  accept a client-selected student row, attach a package, collect payment, or
+  grant the guardian child self-service or session-chat membership. Persist the
+  authenticated guardian as `createdByUserId` and their actual `STUDENT` or
+  `COACH` account type as `createdByRole`.
+- Never issue or retain a direct session for a guardian-managed child. Apply
+  `requireAccountReady` / `requireAccountCapability()` to authenticated routes
+  and preserve the narrowly allowlisted Family remediation paths.
 - Provider routes are mounted behind `requireAuth` + `requireWorkspace`;
   use `requireClubAccount` for club-only management and `coachScope()` to keep
   a coach working in a club in their lane.
@@ -640,6 +811,11 @@ duplicated into either alert store.
 - A new application table must be added to the Elever provisioner's
   `TRUNCATE` list and its integration test, or the fixture reset fails on the
   new foreign key.
+- Family schema changes also require schema-health coverage and focused tests
+  for 13/18 birthdays, Singapore midnight, leap day, stale sessions, cross-family
+  IDOR, database-sequenced concurrent consent decisions, permission-scoped
+  cross-guardian withdrawal, email collision, expiry, cancellation, concurrent/
+  replayed handover, session revocation, and disabled-email behavior.
 - The two alert stores share one vocabulary. A new alert type added in
   `notifications.ts` or `account-notifications.ts` needs a matching entry in
   `frontend/src/lib/alerts.ts`; `frontend/tests/alerts.test.ts` reads both
@@ -714,6 +890,26 @@ control-file errors require the prerequisite to be installed, not a longer lock
 wait. Its credit-balance audit reports invalid historical `LessonPackage` IDs
 before any schema change; repair those counters before retrying.
 
+`20260929000000_guardian_child_accounts` is a coordinated identity migration.
+It backfills `User.legalName` from `name`, leaves existing email verification
+state and DOBs unknown, makes email
+nullable only so managed children need no synthetic credential, and adds the
+guardian link, append-only consent with database-assigned monotonic ordering,
+and digest-only handover models. Its checks
+must preserve `SELF`/`GUARDIAN_MANAGED`, status, visibility, permission, adult
+guardian, managed-child, immutable-DOB, and one-pending-handover invariants. Add
+the tables to teardown/provisioning order and schema-health checks. Applying the
+migration does **not** authorize a production age backfill, account transition,
+lock, deletion, or bulk communication; those require a backup, production-shaped
+dry run, reviewed support/rollback plan, and separate explicit approval.
+It is not safe as an ordinary mixed-version rolling release. The compatibility
+trigger lets an old writer omit `legalName`, but an old API neither understands
+nullable child credentials nor enforces the new policy, and the old/new personal
+registration bodies disagree about required DOB. Pause personal registration
+and Family writes, apply the migration, replace and drain all old API replicas,
+verify `schema: ready`, deploy the matching frontend, smoke-test, and only then
+restore writes. Keep the compatibility trigger until no old writer can run.
+
 The consequence is that a deploy fails fast (`P3009`) rather than half-applying.
 `20260917205000_single_club_account_per_club` exists to make the audit pass on
 real data, because the old model allowed an `OWNER` *and* one or more `ADMIN`s
@@ -732,6 +928,7 @@ npx prisma migrate resolve --rolled-back 20260917240000_financial_target_invaria
 npx prisma migrate resolve --rolled-back 20260917250000_core_tenancy_invariants
 npx prisma migrate resolve --rolled-back 20260925150000_enable_btree_gist
 npx prisma migrate resolve --rolled-back 20260925200000_marketplace_packages_rentals
+npx prisma migrate resolve --rolled-back 20260929000000_guardian_child_accounts
 npx prisma migrate deploy
 ```
 
@@ -759,6 +956,8 @@ with real data, since only the second exercises repair and historical audits.
 | `EMAIL_PROVIDER` | backend | `disabled`, `resend`, or non-production-only `capture` |
 | `EMAIL_API_KEY` | backend | Resend credential; required when `EMAIL_PROVIDER=resend` |
 | `EMAIL_FROM_ADDRESS`, `EMAIL_FROM_NAME`, `EMAIL_REPLY_TO` | backend | Transactional-email sender identity; address is required when enabled |
+| `FAMILY_HANDOVER_TOKEN_KEYS` | backend | Dedicated versioned `keyId:base64` HMAC keys for deriving one-use handover tokens without persisting them |
+| `FAMILY_HANDOVER_TOKEN_ACTIVE_KEY_ID` | backend | Key ID for new handovers; retain older keys through claim lifetime plus delivery retries |
 | `GOOGLE_MAPS_API_KEY` | backend | **Optional.** Enables Places venue search |
 | `GOOGLE_CALENDAR_CLIENT_ID`, `GOOGLE_CALENDAR_CLIENT_SECRET` | backend | Optional Google OAuth web-client credentials |
 | `GOOGLE_CALENDAR_REDIRECT_URI` | backend | Exact public `/api/calendar/google/callback` URI registered with Google |
@@ -786,9 +985,21 @@ quickest way to tell which mode a deployment is in.
 - `legacy-booking.tsx` and `/manage/[token]` serve management links issued
   before account-only booking. No new tokens are minted.
 - Transactional email currently covers booking-lifecycle and booking-payment
-  account alerts only. Package/rental receipts, Chat, staff/coach invitations,
-  and reminder email are not wired; there is no SMS/push/WhatsApp provider or
-  delivery/bounce webhook.
+  account alerts plus the child-handover security claim when email and its
+  dedicated token keyring are enabled. Handover is unavailable otherwise.
+  Package/rental receipts, Chat,
+  staff/coach invitations, reminder and recovery email, co-guardian invitations,
+  dedicated handover resend/destination change, and delivery-failure remediation
+  are not wired; creation has only a 60-second per-child cooldown. There is no
+  SMS/push/WhatsApp provider or delivery/bounce webhook.
+- Family manages a child's identity, privacy, consent, bounded public club Class
+  booking, export, deletion request, and verified handover. Guardian bookings
+  are unpaid `CLUB`-route bookings with no package; payment is arranged with the
+  club. Family still cannot pay, buy packages, reserve rentals, connect Calendar,
+  or chat on behalf of a child, and it grants no guardian cancellation or
+  reschedule self-service. Managed children have no direct login. Deletion
+  processing, production legacy-account transition, and co-guardian UI are
+  deferred; see `TODO.md`.
 - Live Stripe orchestration and the student Stripe Elements UI cover package
   and Class checkout only and require externally provisioned connected-account
   rows. Rentals remain simulated. Stripe-backed reversal and eligible rental
@@ -804,6 +1015,33 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 4.1.1 — 2026-09-29
+
+Clarified that effective consent follows PostgreSQL's monotonic sequence rather
+than timestamps, that consent withdrawal needs `HANDOVER_MANAGE` to cancel a
+different guardian's pending handover, and that guardian-created bookings retain
+the authenticated guardian's real `STUDENT` or `COACH` actor role.
+
+### 4.1.0 — 2026-09-29
+
+Added the bounded guardian-authorized public club Class flow. An eligible adult
+can choose a linked managed child on the public booking page, while the server
+atomically rechecks the exact active link, `BOOKINGS_MANAGE`, current per-link
+consent, and the child's managed under-18 state. The child's separate identity
+and nullable-email club projection are preserved; bookings are unpaid,
+package-free `CLUB` routes, and guardian access does not extend to payments,
+rentals, chat, cancellation, or rescheduling.
+
+### 4.0.0 — 2026-09-29
+
+Added the guardian-managed child identity model, Singapore-date age and
+capability policy, parent-first Family lifecycle, append-only consent evidence,
+required-account remediation gate, and verified same-account handover. Preserved
+the three-account-type vocabulary and bounded the initial release before the
+guardian-authorized Class extension in 4.1.0: no commerce, rental, payment, or
+chat; no production backfill; and no handover unless transactional email and the
+dedicated token keyring are configured.
 
 ### 3.5.5 — 2026-09-28
 

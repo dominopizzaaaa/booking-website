@@ -253,6 +253,7 @@ clubStaffAccessRouter.delete('/staff-access/invitations/:invitationId', requireS
 
 clubStaffInvitationRouter.get('/club-staff-invitations', asyncRoute(async (req, res) => {
   if (req.auth.user.accountType === 'CLUB') throw new HttpError(403, 'Club accounts cannot accept named staff access');
+  if (!req.auth.user.email) throw new HttpError(403, 'An account email is required to view staff invitations');
   const invitations = await prisma.clubStaffInvitation.findMany({
     where: { email: req.auth.user.email.toLowerCase(), acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } },
     select: invitationSelect, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -263,6 +264,8 @@ clubStaffInvitationRouter.get('/club-staff-invitations', asyncRoute(async (req, 
 clubStaffInvitationRouter.post('/club-staff-invitations/accept', asyncRoute(async (req, res) => {
   const input = acceptSchema.parse(req.body);
   if (req.auth.user.accountType === 'CLUB') throw new HttpError(403, 'Club accounts cannot accept named staff access');
+  if (!req.auth.user.email) throw new HttpError(403, 'An account email is required to accept a staff invitation');
+  const accountEmail = req.auth.user.email;
   const invitationId = 'invitationId' in input ? input.invitationId
     : (await prisma.clubStaffInvitation.findUnique({ where: { tokenHash: digest(input.token) }, select: { id: true } }))?.id;
   if (!invitationId) throw new HttpError(404, 'Staff invitation not found');
@@ -274,7 +277,7 @@ clubStaffInvitationRouter.post('/club-staff-invitations/accept', asyncRoute(asyn
     if (!invitation || invitation.acceptedAt || invitation.revokedAt || invitation.expiresAt <= new Date()) {
       throw new HttpError(409, 'This staff invitation is no longer available');
     }
-    if (invitation.email !== req.auth.user.email.toLowerCase()) {
+    if (invitation.email !== accountEmail.toLowerCase()) {
       throw new HttpError(403, `This invitation was sent to ${invitation.email}. Sign in with that account to accept it.`);
     }
     if (invitation.business.kind !== 'CLUB' || invitation.business.legacyReadOnly) throw new HttpError(409, 'This club is no longer accepting staff invitations');

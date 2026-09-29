@@ -1,6 +1,8 @@
 import type { Business, ClubStaffAccess, Membership, Prisma, User } from '@prisma/client';
 import { prisma } from './db.js';
 import { effectiveClubPermissions, type AccountType } from './http.js';
+import { loadAccountPolicy } from './account-policy.js';
+import type { AccountPolicyDecision } from './children-policy.js';
 
 export const bookingInclude = { service: true, instructor: true, location: true, participants: { include: { student: true } } } satisfies Prisma.BookingInclude;
 export type FullBooking = Prisma.BookingGetPayload<{ include: typeof bookingInclude }>;
@@ -30,6 +32,9 @@ export const publicLocation = (location: any) => ({
 export const userJson = (user: User) => ({
   id: user.id, name: user.name, username: user.username, email: user.email, sports: user.sports,
   phone: user.phone, parentName: user.parentName,
+  legalName: user.legalName, dateOfBirth: user.dateOfBirth?.toISOString().slice(0, 10) ?? null,
+  accountControl: user.accountControl, accountStatus: user.accountStatus,
+  profileVisibility: user.profileVisibility,
   accountType: user.accountType as AccountType,
 });
 export const workspaceUserJson = (user: User, membership: Pick<Membership, 'instructorId'> | null) => ({
@@ -60,7 +65,13 @@ export const isAccessibleWorkspaceMembership = (membership: MembershipWithBusine
   membership.active && isSupportedWorkspaceMembership(membership);
 
 export type AuthState = {
-  user: ReturnType<typeof userJson>;
+  user: ReturnType<typeof userJson> & {
+    ageBand: AccountPolicyDecision['ageBand'];
+    needsAgeReview: boolean;
+    requiredAction: AccountPolicyDecision['reason'];
+    accountActionRequired: boolean;
+    capabilities: AccountPolicyDecision['capabilities'];
+  };
   membership: ReturnType<typeof membershipJson> | null;
   business: ReturnType<typeof publicBusiness> | null;
   memberships: ReturnType<typeof membershipJson>[];
@@ -102,8 +113,13 @@ export async function authState(
       ? null
       : staffAccesses.find(candidate => candidate.id === activeStaffAccessId && candidate.userId === account.id) ?? null;
   const business = selected?.business ?? selectedStaff?.business ?? null;
+  const policy = await loadAccountPolicy(user);
   return {
-    user: userJson(user),
+    user: {
+      ...userJson(user), ageBand: policy.ageBand, needsAgeReview: policy.needsAgeReview,
+      requiredAction: policy.reason, accountActionRequired: policy.accountActionRequired,
+      capabilities: policy.capabilities,
+    },
     membership: selected ? membershipJson(selected) : null,
     staffAccess: selectedStaff ? staffAccessJson(selectedStaff) : null,
     business: business ? publicBusiness(business) : null,

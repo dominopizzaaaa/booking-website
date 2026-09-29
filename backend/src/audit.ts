@@ -1,4 +1,5 @@
 import type { Prisma, User } from '@prisma/client';
+import { HttpError } from './http.js';
 
 export type AuditAccessKind = 'CLUB_ACCOUNT' | 'CLUB_STAFF' | 'COACH' | 'SYSTEM';
 
@@ -53,6 +54,7 @@ export function recordBusinessAudit(tx: Prisma.TransactionClient, input: Busines
 }
 
 export function institutionalClubActor(user: Pick<User, 'id' | 'name' | 'email' | 'accountType'>): BusinessAuditActor {
+  if (!user.email) throw new HttpError(409, 'An account email is required for club administration');
   return {
     userId: user.id, name: user.name, email: user.email, accountType: user.accountType,
     accessKind: 'CLUB_ACCOUNT', permissions: [],
@@ -63,6 +65,7 @@ export function namedStaffActor(
   user: Pick<User, 'id' | 'name' | 'email' | 'accountType'>,
   access: { id: string; accessLevel: string; permissions: readonly string[] },
 ): BusinessAuditActor {
+  if (!user.email) throw new HttpError(409, 'An account email is required for club administration');
   return {
     userId: user.id, name: user.name, email: user.email, accountType: user.accountType,
     accessKind: 'CLUB_STAFF', staffAccessId: access.id, accessLevel: access.accessLevel,
