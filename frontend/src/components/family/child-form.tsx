@@ -3,7 +3,9 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Check, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import Link from 'next/link';
 import type { FamilyChild, FamilyChildInput, FamilyChildUpdateInput, ProfileVisibility } from '@/lib/types';
+import { POLICY_PATHS } from '@/lib/policies';
 import { familySports, familyUsernamePattern, singaporeCivilDate, validPastDate } from './family-helpers';
 
 const field = '!min-h-12 !rounded-xl !border-[#dfe5df] !px-3.5 !text-base sm:!text-sm';
@@ -56,8 +58,8 @@ export function ChildForm({ child, policyVersion, busy, onSubmit, onCancel }: {
     </div>
     {!editing && <div className="space-y-3 rounded-xl border border-[#dfe7d8] bg-[#f3f7ef] p-4">
       <label className="flex cursor-pointer items-start gap-3 text-sm font-medium text-[#304b39]"><input type="checkbox" name="legalGuardianConfirmed" required disabled={busy} className="mt-1" /><span>I confirm that I am this child’s parent or legal guardian and may manage their Courtly profile.</span></label>
-      <label className="flex cursor-pointer items-start gap-3 text-sm font-medium text-[#304b39]"><input type="checkbox" name="policyConsent" required disabled={busy} className="mt-1" /><span>I consent to the current child privacy policy ({policyVersion}) and understand I can withdraw consent later.</span></label>
-      <p className="text-xs leading-relaxed text-[#59675c]">A managed child has no email, password, or sign-in. Family currently manages identity, privacy, consent, exports, deletion requests, and verified handover; it does not let you book or buy on the child’s behalf.</p>
+      <label className="flex cursor-pointer items-start gap-3 text-sm font-medium text-[#304b39]"><input type="checkbox" name="policyConsent" required disabled={busy} className="mt-1" /><span>I consent to the current <Link href={POLICY_PATHS.childPrivacy} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">Child Privacy Notice</Link> (version {policyVersion}) and understand I can withdraw consent later.</span></label>
+      <p className="text-xs leading-relaxed text-[#59675c]">A managed child has no email, password, or sign-in. Family manages identity, privacy, consent, exports, deletion requests, verified handover, and guardian-authorized Class booking. It does not let you buy Packages, reserve rentals, or make other purchases on the child’s behalf.</p>
     </div>}
     {error && <div ref={alertRef} tabIndex={-1} role="alert" className="rounded-xl border border-[#e4c7bc] bg-[#fff6f1] p-3.5 text-sm text-[#8a4937] outline-none">{error}</div>}
     <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">{onCancel && <Button type="button" variant="ghost" disabled={busy} onClick={onCancel}>Cancel</Button>}<Button type="submit" disabled={busy}>{busy ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}{editing ? 'Save profile' : 'Add child'}</Button></div>

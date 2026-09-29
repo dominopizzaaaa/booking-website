@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 4.1.1** · Last updated 2026-09-29
+**Version 4.2.0** · Last updated 2026-09-29
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -74,6 +74,7 @@ backend/           Express + Prisma API (TypeScript, ESM)
     config.ts      Environment reading; every env var enters here
     auth.ts        Sessions, register/login, profiles, workspace switching
     children-policy.ts Pure Singapore-date age bands and capability policy
+    legal-policy.ts Canonical published policy versions, hashes, paths, and DPO contact
     account-policy.ts  Loads live consent and derives an account policy
     family-handover-token.ts Versioned HMAC derivation for handover claims
     family.ts      Guardian child, consent, booking, export, deletion, handover API
@@ -115,7 +116,7 @@ backend/           Express + Prisma API (TypeScript, ESM)
 frontend/          Next.js App Router (TypeScript, Tailwind)
   src/app/         Routes: / (workspace), /manage (student), /book/[slug],
                    /login, /signup, /account, /account/action-required,
-                   /family, /family/handover, /admin, /manage/[token]
+                   /family, /family/handover, /legal/*, /admin, /manage/[token]
   src/lib/
     types.ts       Shared API contract types — change with the backend
     api.ts         Every API call lives here, typed
@@ -167,6 +168,8 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
 | Change guardian consent, child profiles, export, deletion, or handover | `backend/src/family.ts`, `backend/prisma/schema.prisma`, its migration, then `frontend/src/components/family/` |
 | Change guardian-authorized child Class booking | `backend/src/family.ts`, `scheduling.ts`, then `frontend/src/components/public-booking.tsx` and Family booking tests |
 | Change handover security email | `backend/src/family.ts`, `family-handover-token.ts`, `outbound-events.ts`, `outbound-worker.ts`, `email-templates.ts`, then the Family UI |
+| Change public legal content or versions | `frontend/src/content/policies.json`, `frontend/src/lib/policies.ts`, and `backend/src/legal-policy.ts`; keep content hashes and tests aligned |
+| Change the Singapore operating baseline | `docs/compliance/README.md`, then the relevant register or runbook; unresolved facts stay explicit blockers |
 | Add an env var | `backend/src/config.ts` + `backend/.env.example` + README |
 
 ---
@@ -266,6 +269,21 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
   does not need booking history or a pasted club URL. Provider Explore is the
   grouped workspace tool hub, with owned-venue discovery under the named
   **Rent a court** destination.
+
+### Legal publication and compliance records
+
+The public policy set is authored once in `frontend/src/content/policies.json`
+and exposed at stable `/legal/*` routes. `frontend/src/lib/policies.ts` and
+`backend/src/legal-policy.ts` must agree on each published version and exact
+content hash; changing policy text therefore requires an intentional version
+and hash update plus the policy tests. The public DPO contact is
+`domksj23@gmail.com`.
+
+`docs/compliance/` is Courtly's Singapore operating register and runbook set.
+It is an engineering and operational baseline, not legal advice or a claim of
+certification. Keep unknown entity, vendor, tax, safeguarding, insurance, and
+response-ownership facts marked `BLOCKED` or `OPEN`; do not turn draft wording
+or a technical gate into evidence that an accountable person approved it.
 
 ### Child identity, guardian authority, and age policy
 
@@ -1015,6 +1033,14 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 4.2.0 — 2026-09-29
+
+Published a canonical, versioned legal-policy set with stable public routes,
+the supplied DPO contact, and a Singapore compliance register covering privacy,
+incidents, vendors, retention, marketing/DNC, seller/GST, coach operations, and
+launch blockers. The documents are operational baselines and do not claim
+legal certification.
 
 ### 4.1.1 — 2026-09-29
 

@@ -8,10 +8,12 @@
  * the family routes from an active GuardianChildLink instead.
  */
 
+import { CURRENT_CHILD_PRIVACY_POLICY_VERSION } from './legal-policy.js';
+
 export const CHILD_AGE = 13;
 export const ADULT_AGE = 18;
 export const SINGAPORE_TIME_ZONE = 'Asia/Singapore' as const;
-export const CURRENT_PRIVACY_POLICY_VERSION = '2026-09-29' as const;
+export const CURRENT_PRIVACY_POLICY_VERSION = CURRENT_CHILD_PRIVACY_POLICY_VERSION;
 export const ACCOUNT_ACTION_REQUIRED = 'ACCOUNT_ACTION_REQUIRED' as const;
 
 export type AccountType = 'STUDENT' | 'COACH' | 'CLUB';
