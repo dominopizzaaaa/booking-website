@@ -9,6 +9,7 @@ import {
   CalendarPlus,
   CalendarX2,
   Check,
+  Flag,
   Info,
   Loader2,
   LockKeyhole,
@@ -23,6 +24,7 @@ import {
   Undo2,
   UserRoundCheck,
   UserRoundMinus,
+  UserRoundX,
   UsersRound,
   X,
 } from 'lucide-react';
@@ -32,16 +34,20 @@ import {
   ApiError,
   adminChatThread,
   adminChatThreads,
+  blockChatAccount,
   counterChatProposal,
   loadChatThread,
   loadChatThreads,
   markChatRead,
   proposeChatSession,
+  reportChatMessage,
   respondToChatProposal,
   sendChatMessage,
+  unblockChatAccount,
 } from '@/lib/api';
 import {
   chatBadge,
+  blockedComposerMessage,
   chatListTime,
   chatMemberSummary,
   chatPreview,
@@ -70,6 +76,8 @@ import { cn, initials, money, time } from '@/lib/utils';
 import { ManageConversationCoachDialog } from './manage-conversation-coach-dialog';
 import { NewConversationDialog } from './new-conversation-dialog';
 import { ProposeSessionDialog } from './propose-session-dialog';
+import { BlockAccountDialog } from '@/components/safeguarding/block-account-dialog';
+import { ReportMessageDialog } from '@/components/safeguarding/report-message-dialog';
 
 type ChatMode = 'participant' | 'admin';
 
@@ -318,7 +326,20 @@ function SystemMessage({ message, timezone }: { message: ChatMessage; timezone: 
   </li>;
 }
 
-function TextMessage({ message, timezone, showSender, showTime }: { message: ChatMessage; timezone: string; showSender: boolean; showTime: boolean }) {
+function MessageReportButton({ message, onReport }: { message: ChatMessage; onReport: (message: ChatMessage) => void }) {
+  if (!message.canReport && !message.reportedByViewer) return null;
+  return <button
+    type="button"
+    disabled={message.reportedByViewer}
+    onClick={() => onReport(message)}
+    aria-label={message.reportedByViewer ? `Message from ${message.senderName} reported` : `Report message from ${message.senderName}`}
+    className="inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-[11px] font-semibold text-[#6c5a52] transition hover:bg-[#f7f2ee] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8f4938] focus-visible:ring-offset-2 disabled:text-[#788079]"
+  >
+    <Flag size={13} aria-hidden="true" />{message.reportedByViewer ? 'Reported' : 'Report'}
+  </button>;
+}
+
+function TextMessage({ message, timezone, showSender, showTime, onReport }: { message: ChatMessage; timezone: string; showSender: boolean; showTime: boolean; onReport: (message: ChatMessage) => void }) {
   const role = message.senderRole === 'SYSTEM' ? null : roleLabel[message.senderRole];
   return <li className={cn('flex px-1', message.mine ? 'justify-end' : 'justify-start')}>
     <div className={cn('flex max-w-[82%] flex-col sm:max-w-[70%]', message.mine ? 'items-end' : 'items-start')}>
@@ -328,18 +349,22 @@ function TextMessage({ message, timezone, showSender, showTime }: { message: Cha
         'whitespace-pre-wrap break-words rounded-[20px] px-3.5 py-2 text-sm leading-relaxed [overflow-wrap:anywhere]',
         message.mine ? 'rounded-br-md bg-[#214e3e] text-white' : 'rounded-bl-md border border-[#e3e8df] bg-white text-[#263a30]',
       )}>{message.body}</p>
-      {showTime && <time dateTime={message.createdAt} className={cn('mt-1 text-[11px] text-[#59675c]', message.mine ? 'mr-1' : 'ml-1')}>{time(message.createdAt, timezone)}</time>}
+      {(showTime || message.canReport || message.reportedByViewer) && <div className={cn('flex min-h-11 items-center gap-1', message.mine ? 'mr-1' : 'ml-1')}>
+        {showTime && <time dateTime={message.createdAt} className="text-[11px] text-[#59675c]">{time(message.createdAt, timezone)}</time>}
+        <MessageReportButton message={message} onReport={onReport} />
+      </div>}
     </div>
   </li>;
 }
 
-function ProposalMessage({ message, proposal, busy, onAct, onCounter, onOpenBooking }: {
+function ProposalMessage({ message, proposal, busy, onAct, onCounter, onOpenBooking, onReport }: {
   message: ChatMessage;
   proposal: SessionProposal;
   busy: boolean;
   onAct: (proposal: SessionProposal, action: ChatProposalAction) => void;
   onCounter: (proposal: SessionProposal) => void;
   onOpenBooking?: (bookingId: string) => void;
+  onReport: (message: ChatMessage) => void;
 }) {
   const zone = proposal.timezone;
   const summaryId = useId();
@@ -379,7 +404,7 @@ function ProposalMessage({ message, proposal, busy, onAct, onCounter, onOpenBook
           {proposal.responses.map(response => <li key={`${response.studentName}-${response.createdAt}`}>{proposalResponseLabel(proposal, response)}</li>)}
         </ul>}
       </div>
-      {(proposal.actions.accept || proposal.actions.withdraw || (bookingId && onOpenBooking)) && <div className="border-t border-[#eef1ea] p-3">
+      {(proposal.actions.accept || proposal.actions.withdraw || (bookingId && onOpenBooking) || message.canReport || message.reportedByViewer) && <div className="border-t border-[#eef1ea] p-3">
         {proposal.actions.accept && <div className="grid grid-cols-3 gap-2">
           <button type="button" disabled={busy} onClick={() => onAct(proposal, 'accept')} aria-describedby={summaryId}
             className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-[#214e3e] px-2 text-xs font-semibold text-white transition hover:bg-[#173b2e] disabled:opacity-60">
@@ -402,6 +427,7 @@ function ProposalMessage({ message, proposal, busy, onAct, onCounter, onOpenBook
           className="inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-xl border border-[#dfe5df] px-3 text-xs font-semibold text-[#33443b] transition hover:bg-[#f2f5f1]">
           <CalendarCheck2 size={13} aria-hidden="true" />View booked session
         </button>}
+        {(message.canReport || message.reportedByViewer) && <div className="mt-1 flex justify-end"><MessageReportButton message={message} onReport={onReport} /></div>}
       </div>}
     </article>
   </li>;
@@ -432,6 +458,9 @@ function ChatThreadPane({ threadId, mode, fullscreen, singlePane, onBack, beginU
   const [busyProposalId, setBusyProposalId] = useState<string | null>(null);
   const [dialog, setDialog] = useState<null | { counterTo: SessionProposal | null }>(null);
   const [coachDialogOpen, setCoachDialogOpen] = useState(false);
+  const [reportMessage, setReportMessage] = useState<ChatMessage | null>(null);
+  const [blockDialogOpen, setBlockDialogOpen] = useState(false);
+  const [blockBusy, setBlockBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -477,6 +506,9 @@ function ChatThreadPane({ threadId, mode, fullscreen, singlePane, onBack, beginU
     setDraft('');
     setDialog(null);
     setCoachDialogOpen(false);
+    setReportMessage(null);
+    setBlockDialogOpen(false);
+    setBlockBusy(false);
     setSending(false);
     setBusyProposalId(null);
     lastReadMessage.current = null;
@@ -726,6 +758,40 @@ function ChatThreadPane({ threadId, mode, fullscreen, singlePane, onBack, beginU
     }
   }
 
+  async function submitReport(input: Parameters<typeof reportChatMessage>[1]) {
+    const reportedId = input.messageId;
+    await reportChatMessage(threadId, input);
+    if (reportedId) {
+      setDetail(current => current ? {
+        ...current,
+        messages: current.messages.map(message => message.id === reportedId
+          ? { ...message, canReport: false, reportedByViewer: true }
+          : message),
+      } : current);
+      setEarlier(current => current.map(message => message.id === reportedId
+        ? { ...message, canReport: false, reportedByViewer: true }
+        : message));
+    }
+    toast.success('Report sent to the safeguarding team');
+  }
+
+  async function updateBlock(block: boolean) {
+    if (blockBusy) return;
+    setBlockBusy(true);
+    try {
+      const next = block ? await blockChatAccount(threadId) : await unblockChatAccount(threadId);
+      invalidateContentRequests();
+      apply(next);
+      onActivity(next);
+      setBlockDialogOpen(false);
+      toast.success(block ? 'Account blocked' : 'Account unblocked');
+    } catch (cause) {
+      toast.error(messageOf(cause));
+    } finally {
+      setBlockBusy(false);
+    }
+  }
+
   if (state === 'loading' || !detail) {
     return <div className={cn('chat-thread-pane', fullscreen && 'chat-thread-fullscreen')}>
       {state === 'error'
@@ -776,14 +842,21 @@ function ChatThreadPane({ threadId, mode, fullscreen, singlePane, onBack, beginU
         className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl border border-[#dfe5df] px-3 text-xs font-semibold text-[#33443b] transition hover:bg-[#f2f5f1]">
         <CalendarClock size={14} aria-hidden="true" /><span className="max-[420px]:sr-only">Session</span>
       </button>}
+      {mode === 'participant' && detail.safety.blockTarget && (detail.safety.canBlock || detail.safety.canUnblock) && <button type="button" disabled={blockBusy}
+        onClick={() => detail.safety.canUnblock ? void updateBlock(false) : setBlockDialogOpen(true)}
+        aria-label={`${detail.safety.canUnblock ? 'Unblock' : 'Block'} ${detail.safety.blockTarget.name}`}
+        className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl border border-[#eadbd5] px-3 text-xs font-semibold text-[#7b493d] transition hover:bg-[#fff5f1] disabled:opacity-60">
+        {blockBusy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <UserRoundX size={14} aria-hidden="true" />}
+        <span className="max-[520px]:sr-only">{detail.safety.canUnblock ? 'Unblock' : 'Block'}</span>
+      </button>}
     </header>
 
     <div ref={scrollRef} onScroll={trackScroll} className="chat-messages min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-4 sm:px-4">
       <p className="!mx-auto !mb-6 max-w-md text-balance text-center text-[11px] leading-relaxed text-[#59675c]">
         <LockKeyhole size={12} className="mr-1 inline-block align-[-1px]" aria-hidden="true" />
         {session
-          ? 'Visible to the coach, the students and the club in this session, and to Courtly’s platform admins for safety.'
-          : `Visible to the people in this conversation${conversation?.assignedCoach ? `, including ${conversation.assignedCoach.name}` : ''}, and to Courtly’s platform admins for safety.`}
+          ? 'Visible to the coach, students, and club in this session. Courtly does not monitor every message; authorized reviewers can review relevant context after a report.'
+          : `Visible to the people in this conversation${conversation?.assignedCoach ? `, including ${conversation.assignedCoach.name}` : ''}. Courtly does not monitor every message; authorized reviewers can review relevant context after a report.`}
       </p>
       {canLoadEarlier && <div className="mb-4 flex justify-center">
         <button type="button" onClick={() => void loadEarlier()} disabled={loadingEarlier} className="inline-flex min-h-11 items-center gap-2 rounded-full border border-[#dfe5df] bg-white px-4 text-xs font-semibold text-[#33443b] hover:bg-[#f2f5f1] disabled:opacity-60">
@@ -801,17 +874,22 @@ function ChatThreadPane({ threadId, mode, fullscreen, singlePane, onBack, beginU
                   busy={busyProposalId === message.proposal.id}
                   onAct={(proposal, action) => void act(proposal, action)}
                   onCounter={proposal => setDialog({ counterTo: proposal })}
-                  onOpenBooking={mode === 'participant' ? onOpenBooking : undefined} />;
+                  onOpenBooking={mode === 'participant' ? onOpenBooking : undefined}
+                  onReport={setReportMessage} />;
               }
               return <TextMessage key={message.id} message={message} timezone={zone}
-                showSender={startsChatRun(dayGroup.messages, index)} showTime={endsChatRun(dayGroup.messages, index)} />;
+                showSender={startsChatRun(dayGroup.messages, index)} showTime={endsChatRun(dayGroup.messages, index)} onReport={setReportMessage} />;
             })}
           </ol>
         </section>)}
       </div>
     </div>
 
-    {detail.viewer.canPost ? <form onSubmit={event => void send(event)} className="chat-composer flex items-end gap-2 border-t border-[#e6eae3] bg-white px-2.5 pt-2.5 sm:px-3">
+    {detail.safety.messagingBlocked ? <div className="chat-composer flex flex-wrap items-center justify-center gap-2 border-t border-[#e6eae3] bg-white px-3 pt-3 text-center text-xs text-[#59675c]">
+      <LockKeyhole size={13} aria-hidden="true" />
+      <span>{blockedComposerMessage(detail.safety.blockedByViewer, detail.safety.reason)}</span>
+      {detail.safety.canUnblock && detail.safety.blockTarget && <button type="button" disabled={blockBusy} onClick={() => void updateBlock(false)} className="min-h-11 rounded-lg px-3 font-semibold text-[#214e3e] underline underline-offset-2 disabled:opacity-60">Unblock</button>}
+    </div> : detail.viewer.canPost ? <form onSubmit={event => void send(event)} className="chat-composer flex items-end gap-2 border-t border-[#e6eae3] bg-white px-2.5 pt-2.5 sm:px-3">
       {detail.viewer.canPropose && <button type="button" disabled={sending || !!busyProposalId} onClick={() => setDialog({ counterTo: null })} aria-label={session ? 'Propose the next session' : 'Propose a session'} title={session ? 'Propose the next session' : 'Propose a session'}
         className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[#e8efe0] text-[#214e3e] transition hover:bg-[#dce8d1]">
         <Plus size={21} strokeWidth={2.2} aria-hidden="true" />
@@ -858,6 +936,8 @@ function ChatThreadPane({ threadId, mode, fullscreen, singlePane, onBack, beginU
         toast.success(thread.conversation?.assignedCoach ? 'Conversation coach updated' : 'Coach removed from conversation');
       }}
     />}
+    <ReportMessageDialog message={reportMessage} onClose={() => setReportMessage(null)} onSubmit={submitReport} />
+    <BlockAccountDialog target={blockDialogOpen ? detail.safety.blockTarget : null} busy={blockBusy} onClose={() => setBlockDialogOpen(false)} onConfirm={() => void updateBlock(true)} />
   </div>;
 }
 

@@ -10,6 +10,7 @@ import { PackagesView, PaymentsView } from './management-finance';
 import { AvailabilityView, SettingsView } from './management-operations';
 import { Empty, PageHeading, Stat, type ManagementProps } from './management-ui';
 import { AuditLog } from './audit-log';
+import { SafeguardingReportQueue } from '@/components/safeguarding/safeguarding-report-queue';
 
 export function ManagementView({ view, data, refresh }: { view: string; data: WorkspaceResponse; refresh: () => Promise<void> }) {
   const accessMode = data.accessMode ?? (data.user.accountType === 'CLUB' ? 'CLUB_ACCOUNT' : 'COACH');
@@ -28,7 +29,7 @@ export function ManagementView({ view, data, refresh }: { view: string; data: Wo
       : view === 'students' ? permitted('STUDENTS_VIEW', 'STUDENTS_MANAGE')
         : view === 'packages' ? permitted('PACKAGES_VIEW', 'PACKAGES_MANAGE')
           : view === 'payments' ? permitted('PAYMENTS_VIEW')
-            : view === 'insights' ? permitted('PAYMENTS_VIEW', 'AUDIT_VIEW')
+            : view === 'insights' ? permitted('PAYMENTS_VIEW', 'AUDIT_VIEW', 'SAFEGUARDING_VIEW')
             : view === 'team' ? permitted('ROSTER_VIEW', 'ROSTER_MANAGE')
               : view === 'settings' ? permitted('SETTINGS_MANAGE')
                 : view === 'availability' ? permitted('AVAILABILITY_MANAGE') : true;
@@ -52,9 +53,12 @@ function InsightsView({ data }: ManagementProps) {
   const accessMode = data.accessMode ?? (data.user.accountType === 'CLUB' ? 'CLUB_ACCOUNT' : 'STAFF');
   const canViewFinancialInsights = accessMode === 'CLUB_ACCOUNT' || data.permissions?.includes('PAYMENTS_VIEW');
   const canViewAudit = accessMode === 'CLUB_ACCOUNT' || data.permissions?.includes('AUDIT_VIEW');
+  const canViewSafeguarding = accessMode === 'CLUB_ACCOUNT' || data.permissions?.includes('SAFEGUARDING_VIEW');
+  const canReviewSafeguarding = accessMode === 'CLUB_ACCOUNT' || data.permissions?.includes('SAFEGUARDING_REVIEW');
   if (!canViewFinancialInsights) return <>
-    <PageHeading title="Insights" description="Review the club's immutable history of sensitive access changes." />
-    {canViewAudit && <AuditLog timezone={data.business.timezone} />}
+    <PageHeading title="Insights" description={canViewSafeguarding ? "Review the club's safety reports and permitted operational history." : "Review the club's immutable history of sensitive access changes."} />
+    {canViewSafeguarding && <SafeguardingReportQueue mode="club" canReview={canReviewSafeguarding} />}
+    {canViewAudit && <div className={canViewSafeguarding ? 'mt-5' : undefined}><AuditLog timezone={data.business.timezone} /></div>}
   </>;
   const today = dateKey();
   const dayOfWeek = new Date(`${today}T12:00:00+08:00`).getUTCDay();
@@ -85,7 +89,8 @@ function InsightsView({ data }: ManagementProps) {
   }).filter(s => s.count > 0).sort((a, b) => b.count - a.count);
   const reversedWeeks = [...weeks].reverse();
   return <>
-    <PageHeading title="Insights" description={canViewAudit ? "Reporting and an immutable history of sensitive club access changes." : "A quieter look at the bigger picture. Real lessons, real attendance, and the payments you have recorded."} />
+    <PageHeading title="Insights" description={canViewSafeguarding ? "Reporting, safety cases, and the club records you are authorized to review." : canViewAudit ? "Reporting and an immutable history of sensitive club access changes." : "A quieter look at the bigger picture. Real lessons, real attendance, and the payments you have recorded."} />
+    {canViewSafeguarding && <div className="mb-5"><SafeguardingReportQueue mode="club" canReview={canReviewSafeguarding} /></div>}
     <div className="mb-2 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e5e9e0] bg-white p-3 sm:px-4">
       <p className="text-xs text-stone-500">{shortDate(periodStart + 'T12:00:00+08:00')} – {shortDate(today + 'T12:00:00+08:00')} <span className="text-[#59675c]">· Singapore time</span></p>
       <select aria-label="Insights reporting period" value={weekCount} onChange={e => setWeekCount(Number(e.target.value))} className="text-xs max-sm:w-full sm:max-w-44"><option value="4">Last 4 weeks</option><option value="8">Last 8 weeks</option><option value="12">Last 12 weeks</option></select>

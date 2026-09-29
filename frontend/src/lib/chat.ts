@@ -2,11 +2,38 @@ import { formatInTimeZone } from 'date-fns-tz';
 import type {
   ChatMember,
   ChatMessage,
+  ChatReportCategory,
+  SafeguardingReportSeverity,
+  SafeguardingReportStatus,
   ChatSession,
   ChatThreadContext,
   SessionProposal,
   SessionProposalResponse,
 } from './types';
+
+export const chatReportCategories: ReadonlyArray<{ value: ChatReportCategory; label: string }> = [
+  { value: 'GROOMING_SEXUAL', label: 'Grooming or sexual behaviour' },
+  { value: 'HARASSMENT', label: 'Harassment or threats' },
+  { value: 'SELF_HARM_IMMEDIATE_DANGER', label: 'Self-harm or immediate danger' },
+  { value: 'SPAM_OTHER', label: 'Spam or another concern' },
+];
+
+export const safeguardingSeverityOrder: readonly SafeguardingReportSeverity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+export const safeguardingStatusOrder: readonly SafeguardingReportStatus[] = ['OPEN', 'IN_REVIEW', 'REFERRED_TO_PLATFORM', 'ACTION_TAKEN', 'CLOSED_NO_ACTION'];
+export const safeguardingSeverityLabel = (severity: SafeguardingReportSeverity) => ({
+  CRITICAL: 'Critical', HIGH: 'High', MEDIUM: 'Medium', LOW: 'Low',
+})[severity];
+export const safeguardingStatusLabel = (status: SafeguardingReportStatus) => ({
+  OPEN: 'Open', IN_REVIEW: 'In review', REFERRED_TO_PLATFORM: 'Referred to platform',
+  ACTION_TAKEN: 'Action taken', CLOSED_NO_ACTION: 'Closed — no action',
+})[status];
+export const chatReportCategoryLabel = (category: ChatReportCategory) =>
+  chatReportCategories.find(option => option.value === category)?.label ?? category;
+export const blockedComposerMessage = (blockedByViewer: boolean, reason: null | 'BLOCKED' | 'ACCOUNT_CHAT_RESTRICTED' = 'BLOCKED') => {
+  if (blockedByViewer) return 'You blocked this account. Unblock them to send direct messages. Message history remains available.';
+  if (reason === 'ACCOUNT_CHAT_RESTRICTED') return 'Direct messaging is unavailable because Courtly has restricted chat access. Message history remains available.';
+  return 'Direct messaging is unavailable because one of these accounts has blocked the other. Message history remains available.';
+};
 import { addDaysKey, dateKey } from './utils';
 
 const minute = 60_000;
