@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  alertsButtonLabel, chatBadge, chatListTime, chatMemberSummary, chatPreview, chatSessionLine, chatTabLabel,
+  alertsButtonLabel, blockedComposerMessage, chatBadge, chatListTime, chatMemberSummary, chatPreview, chatReportCategories, chatReportCategoryLabel, chatSessionLine, chatTabLabel,
   chatThreadAvatar, chatThreadSubtitle, chatThreadTimezone, chatThreadTitle, endsChatRun, groupChatDays, listNames,
-  nextSessionDate, proposalResponseLabel, proposalStatusLine, startsChatRun,
+  nextSessionDate, proposalResponseLabel, proposalStatusLine, safeguardingSeverityOrder, safeguardingStatusLabel, safeguardingStatusOrder, startsChatRun,
 } from '../src/lib/chat';
 import type { ChatMessage, ChatThreadSummary, SessionProposal } from '../src/lib/types';
 
@@ -12,7 +12,8 @@ const now = Date.parse('2026-10-14T02:00:00.000Z');
 
 const message = (overrides: Partial<ChatMessage> = {}): ChatMessage => ({
   id: overrides.id ?? 'message', kind: 'TEXT', event: null, senderRole: 'COACH', senderName: 'Marcus Tan',
-  body: 'See you soon', createdAt: '2026-10-14T01:00:00.000Z', mine: false, proposalId: null, ...overrides,
+  body: 'See you soon', createdAt: '2026-10-14T01:00:00.000Z', mine: false, proposalId: null,
+  canReport: false, reportedByViewer: false, ...overrides,
 });
 
 const proposal = (overrides: Partial<SessionProposal> = {}): SessionProposal => ({
@@ -55,6 +56,29 @@ describe('labels that carry a number', () => {
   it('keep the visual badge to two characters', () => {
     expect(chatBadge(3)).toBe('3');
     expect(chatBadge(10)).toBe('9+');
+  });
+});
+
+describe('chat safeguarding wording', () => {
+  it('keeps the four report choices explicit and in a stable order', () => {
+    expect(chatReportCategories).toEqual([
+      { value: 'GROOMING_SEXUAL', label: 'Grooming or sexual behaviour' },
+      { value: 'HARASSMENT', label: 'Harassment or threats' },
+      { value: 'SELF_HARM_IMMEDIATE_DANGER', label: 'Self-harm or immediate danger' },
+      { value: 'SPAM_OTHER', label: 'Spam or another concern' },
+    ]);
+    expect(chatReportCategoryLabel('SELF_HARM_IMMEDIATE_DANGER')).toBe('Self-harm or immediate danger');
+  });
+
+  it('orders cases by urgency and exposes readable status labels', () => {
+    expect(safeguardingSeverityOrder).toEqual(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']);
+    expect(safeguardingStatusOrder).toEqual(['OPEN', 'IN_REVIEW', 'REFERRED_TO_PLATFORM', 'ACTION_TAKEN', 'CLOSED_NO_ACTION']);
+    expect(safeguardingStatusLabel('REFERRED_TO_PLATFORM')).toBe('Referred to platform');
+  });
+
+  it('explains both blocked-composer states without hiding history', () => {
+    expect(blockedComposerMessage(true)).toBe('You blocked this account. Unblock them to send direct messages. Message history remains available.');
+    expect(blockedComposerMessage(false)).toBe('Direct messaging is unavailable because one of these accounts has blocked the other. Message history remains available.');
   });
 });
 

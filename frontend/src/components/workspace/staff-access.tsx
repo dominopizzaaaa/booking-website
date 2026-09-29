@@ -155,7 +155,7 @@ const accessLevels: Array<{ value: ClubAccessLevel; label: string; description: 
   { value: 'OPERATIONS', label: 'Operations', description: 'Bookings, students, catalogue, availability, and coach roster.' },
   { value: 'FRONT_DESK', label: 'Front desk', description: 'Bookings, students, and recording incoming payments.' },
   { value: 'FINANCE', label: 'Finance', description: 'Packages, payments, payouts, reversals, and audit visibility.' },
-  { value: 'SAFEGUARDING', label: 'Safeguarding', description: 'Bookings, students, integrity review, and audit visibility.' },
+  { value: 'SAFEGUARDING', label: 'Safeguarding', description: 'Safety-report review, relevant booking and student context, integrity review, and audit visibility.' },
   { value: 'READ_ONLY', label: 'Read only', description: 'View core operations without making changes.' },
   { value: 'CUSTOM', label: 'Custom', description: 'Choose individual permissions for this person.' },
 ];
@@ -180,6 +180,7 @@ const permissionGroups: Array<{ label: string; permissions: Array<{ value: ClubP
   ] },
   { label: 'Trust and administration', permissions: [
     { value: 'INTEGRITY_VIEW', label: 'View integrity cases' }, { value: 'INTEGRITY_REVIEW', label: 'Review integrity cases' },
+    { value: 'SAFEGUARDING_VIEW', label: 'View safety reports' }, { value: 'SAFEGUARDING_REVIEW', label: 'Review safety reports' },
     { value: 'SETTINGS_MANAGE', label: 'Manage settings' }, { value: 'STAFF_MANAGE', label: 'Manage staff access' },
     { value: 'AUDIT_VIEW', label: 'View audit history' },
   ] },
@@ -190,7 +191,7 @@ const presetPermissions: Record<Exclude<ClubAccessLevel, 'CUSTOM'>, readonly Clu
   OPERATIONS: ['BOOKINGS_VIEW', 'BOOKINGS_MANAGE', 'STUDENTS_VIEW', 'STUDENTS_MANAGE', 'CATALOG_VIEW', 'CATALOG_MANAGE', 'AVAILABILITY_MANAGE', 'ROSTER_VIEW', 'ROSTER_MANAGE', 'RENTALS_VIEW', 'RENTALS_MANAGE'],
   FRONT_DESK: ['BOOKINGS_VIEW', 'BOOKINGS_MANAGE', 'STUDENTS_VIEW', 'STUDENTS_MANAGE', 'PAYMENTS_VIEW', 'PAYMENTS_RECORD'],
   FINANCE: ['PACKAGES_VIEW', 'PACKAGES_MANAGE', 'PAYMENTS_VIEW', 'PAYMENTS_RECORD', 'PAYMENTS_REVERSE', 'PAYOUTS_RECORD', 'AUDIT_VIEW'],
-  SAFEGUARDING: ['BOOKINGS_VIEW', 'STUDENTS_VIEW', 'INTEGRITY_VIEW', 'INTEGRITY_REVIEW', 'AUDIT_VIEW'],
+  SAFEGUARDING: ['BOOKINGS_VIEW', 'STUDENTS_VIEW', 'INTEGRITY_VIEW', 'INTEGRITY_REVIEW', 'SAFEGUARDING_VIEW', 'SAFEGUARDING_REVIEW', 'AUDIT_VIEW'],
   READ_ONLY: ['BOOKINGS_VIEW', 'STUDENTS_VIEW', 'CATALOG_VIEW', 'ROSTER_VIEW', 'PACKAGES_VIEW', 'RENTALS_VIEW'],
 };
 
@@ -270,10 +271,13 @@ function NamedStaffEditor({ person, inviteLink, onInviteLink, availableAccessLev
   const toggle = (permission: ClubPermission) => setPermissions(current => {
     if (current.includes(permission)) {
       if (permission === 'CATALOG_MANAGE') return current.filter(item => item !== permission && item !== 'RENTALS_MANAGE');
+      if (permission === 'SAFEGUARDING_VIEW') return current.filter(item => item !== permission && item !== 'SAFEGUARDING_REVIEW');
       return current.filter(item => item !== permission);
     }
     return permission === 'RENTALS_MANAGE'
       ? [...new Set<ClubPermission>([...current, 'CATALOG_MANAGE', permission])]
+      : permission === 'SAFEGUARDING_REVIEW'
+        ? [...new Set<ClubPermission>([...current, 'SAFEGUARDING_VIEW', permission])]
       : [...current, permission];
   });
   const values = (): ClubStaffAccessInput => level === 'CUSTOM' ? { accessLevel: level, permissions } : { accessLevel: level };

@@ -4,7 +4,7 @@ import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from './db.js';
 import { asyncRoute, effectiveClubPermissions, HttpError, type AuthRequest } from './http.js';
-import { institutionalClubActor, namedStaffActor, recordBusinessAudit } from './audit.js';
+import { institutionalClubActor, namedStaffActor, recordBusinessAudit, type BusinessAuditActor } from './audit.js';
 
 export const CLUB_PERMISSIONS = [
   'BOOKINGS_VIEW', 'BOOKINGS_MANAGE', 'STUDENTS_VIEW', 'STUDENTS_MANAGE',
@@ -12,7 +12,7 @@ export const CLUB_PERMISSIONS = [
   'ROSTER_MANAGE', 'PACKAGES_VIEW', 'PACKAGES_MANAGE', 'PAYMENTS_VIEW',
   'PAYMENTS_RECORD', 'PAYMENTS_REVERSE', 'PAYOUTS_RECORD', 'INTEGRITY_VIEW',
   'INTEGRITY_REVIEW', 'RENTALS_VIEW', 'RENTALS_MANAGE', 'SETTINGS_MANAGE',
-  'STAFF_MANAGE', 'AUDIT_VIEW',
+  'STAFF_MANAGE', 'AUDIT_VIEW', 'SAFEGUARDING_VIEW', 'SAFEGUARDING_REVIEW',
 ] as const;
 export type ClubPermission = typeof CLUB_PERMISSIONS[number];
 
@@ -21,7 +21,7 @@ export const CLUB_ACCESS_PRESETS = {
   OPERATIONS: ['BOOKINGS_VIEW', 'BOOKINGS_MANAGE', 'STUDENTS_VIEW', 'STUDENTS_MANAGE', 'CATALOG_VIEW', 'CATALOG_MANAGE', 'AVAILABILITY_MANAGE', 'ROSTER_VIEW', 'ROSTER_MANAGE', 'RENTALS_VIEW', 'RENTALS_MANAGE'],
   FRONT_DESK: ['BOOKINGS_VIEW', 'BOOKINGS_MANAGE', 'STUDENTS_VIEW', 'STUDENTS_MANAGE', 'PAYMENTS_VIEW', 'PAYMENTS_RECORD'],
   FINANCE: ['PACKAGES_VIEW', 'PACKAGES_MANAGE', 'PAYMENTS_VIEW', 'PAYMENTS_RECORD', 'PAYMENTS_REVERSE', 'PAYOUTS_RECORD', 'AUDIT_VIEW'],
-  SAFEGUARDING: ['BOOKINGS_VIEW', 'STUDENTS_VIEW', 'INTEGRITY_VIEW', 'INTEGRITY_REVIEW', 'AUDIT_VIEW'],
+  SAFEGUARDING: ['BOOKINGS_VIEW', 'STUDENTS_VIEW', 'INTEGRITY_VIEW', 'INTEGRITY_REVIEW', 'SAFEGUARDING_VIEW', 'SAFEGUARDING_REVIEW', 'AUDIT_VIEW'],
   READ_ONLY: ['BOOKINGS_VIEW', 'STUDENTS_VIEW', 'CATALOG_VIEW', 'ROSTER_VIEW', 'PACKAGES_VIEW', 'RENTALS_VIEW'],
 } as const satisfies Record<string, readonly ClubPermission[]>;
 export type ClubAccessLevel = keyof typeof CLUB_ACCESS_PRESETS | 'CUSTOM';
@@ -120,6 +120,47 @@ const accessJson = (access: Prisma.ClubStaffAccessGetPayload<{ select: typeof ac
   revokedByUserId: access.revokedByUserId, createdAt: access.createdAt.toISOString(), updatedAt: access.updatedAt.toISOString(),
 });
 
+async function lockStaffAccess(tx: Prisma.TransactionClient, accessId: string, businessId: string) {
+  await tx.$queryRaw`
+    SELECT "id" FROM "ClubStaffAccess"
+    WHERE "id" = ${accessId} AND "businessId" = ${businessId}
+    FOR UPDATE
+  `;
+}
+
+async function clearSafeguardingAssignments(
+  tx: Prisma.TransactionClient, input: {
+    businessId: string; userId: string; actor: BusinessAuditActor;
+    action: 'ASSIGNMENT_CLEARED_PERMISSION_REMOVED' | 'ASSIGNMENT_CLEARED_ACCESS_REVOKED';
+    note: string;
+  },
+) {
+  const reports = await tx.$queryRaw<Array<{
+    id: string; status: string; severity: string; assignedTo: string | null;
+  }>>`
+    SELECT "id", "status", "severity", "assignedTo"
+    FROM "ChatSafetyReport"
+    WHERE "businessId" = ${input.businessId}
+      AND "assignedClubUserId" = ${input.userId}
+    ORDER BY "id"
+    FOR UPDATE
+  `;
+  if (!reports.length) return;
+  // Insert the immutable attribution first; the report-table guard then admits
+  // only this matching, same-transaction assignment change.
+  await tx.chatSafetyAuditEvent.createMany({ data: reports.map(report => ({
+    reportId: report.id, actorKind: input.actor.accessKind, actorUserId: input.actor.userId,
+    actorName: input.actor.name, action: input.action, note: input.note,
+    fromStatus: report.status, toStatus: report.status, fromSeverity: report.severity,
+    toSeverity: report.severity, assignedTo: null, assignedClubUserId: null,
+  })) });
+  await tx.$executeRaw`SELECT set_config('courtly.safeguarding_audited_reports', ${reports.map(report => report.id).join(',')}, true)`;
+  await tx.chatSafetyReport.updateMany({
+    where: { businessId: input.businessId, assignedClubUserId: input.userId },
+    data: { assignedClubUserId: null, assignedTo: null },
+  });
+}
+
 const invitationSelect = {
   id: true, businessId: true, email: true, accessLevel: true, permissions: true, invitedByUserId: true,
   expiresAt: true, acceptedAt: true, acceptedByUserId: true, revokedAt: true, revokedByUserId: true, createdAt: true,
@@ -197,6 +238,7 @@ clubStaffAccessRouter.patch('/staff-access/:accessId', requireStaffAdministratio
   const { businessId, actor } = administration;
   requireAssignableAccess(administration, resolved);
   const updated = await prisma.$transaction(async tx => {
+    await lockStaffAccess(tx, accessId, businessId);
     const current = await tx.clubStaffAccess.findFirst({ where: { id: accessId, businessId }, select: accessSelect });
     if (!current) throw new HttpError(404, 'Staff access not found');
     if (!current.active) throw new HttpError(409, 'Staff access has been revoked');
@@ -205,6 +247,12 @@ clubStaffAccessRouter.patch('/staff-access/:accessId', requireStaffAdministratio
     }
     requireTargetWithinStaffAuthority(administration, current);
     const access = await tx.clubStaffAccess.update({ where: { id: current.id }, data: resolved, select: accessSelect });
+    if (!effectiveClubPermissions(access.permissions).includes('SAFEGUARDING_REVIEW')) {
+      await clearSafeguardingAssignments(tx, {
+        businessId, userId: current.userId, actor, action: 'ASSIGNMENT_CLEARED_PERMISSION_REMOVED',
+        note: 'Assignment cleared because safeguarding review permission was removed.',
+      });
+    }
     await recordBusinessAudit(tx, { businessId, actor, action: 'STAFF_ACCESS_UPDATED', resourceType: 'ClubStaffAccess',
       resourceId: access.id, summary: `Updated access for ${access.user.name}`, metadata: {
         before: { accessLevel: current.accessLevel, permissions: current.permissions }, after: resolved,
@@ -219,6 +267,7 @@ clubStaffAccessRouter.delete('/staff-access/:accessId', requireStaffAdministrati
   const administration = administrationContext(req);
   const { businessId, actor } = administration;
   await prisma.$transaction(async tx => {
+    await lockStaffAccess(tx, accessId, businessId);
     const current = await tx.clubStaffAccess.findFirst({ where: { id: accessId, businessId }, select: accessSelect });
     if (!current) throw new HttpError(404, 'Staff access not found');
     if (!current.active) throw new HttpError(409, 'Staff access has already been revoked');
@@ -227,6 +276,10 @@ clubStaffAccessRouter.delete('/staff-access/:accessId', requireStaffAdministrati
     const now = new Date();
     await tx.authSession.updateMany({ where: { activeStaffAccessId: current.id }, data: { activeStaffAccessId: null } });
     await tx.clubStaffAccess.update({ where: { id: current.id }, data: { active: false, revokedAt: now, revokedByUserId: req.auth.user.id } });
+    await clearSafeguardingAssignments(tx, {
+      businessId, userId: current.userId, actor, action: 'ASSIGNMENT_CLEARED_ACCESS_REVOKED',
+      note: 'Assignment cleared because staff access was revoked.',
+    });
     await recordBusinessAudit(tx, { businessId, actor, action: 'STAFF_ACCESS_REVOKED', resourceType: 'ClubStaffAccess',
       resourceId: current.id, summary: `Revoked access for ${current.user.name}`, metadata: { accessLevel: current.accessLevel, permissions: current.permissions } });
   });

@@ -63,7 +63,7 @@ const explorePermissions: Partial<Record<ExploreViewId, ClubPermission[]>> = {
   services: ['CATALOG_VIEW', 'CATALOG_MANAGE'], locations: ['CATALOG_VIEW', 'CATALOG_MANAGE'],
   team: ['ROSTER_VIEW', 'ROSTER_MANAGE'], availability: ['AVAILABILITY_MANAGE'],
   rentals: ['RENTALS_VIEW', 'RENTALS_MANAGE'], packages: ['PACKAGES_VIEW', 'PACKAGES_MANAGE'],
-  payments: ['PAYMENTS_VIEW'], insights: ['PAYMENTS_VIEW', 'AUDIT_VIEW'],
+  payments: ['PAYMENTS_VIEW'], insights: ['PAYMENTS_VIEW', 'AUDIT_VIEW', 'SAFEGUARDING_VIEW'],
 };
 
 type AccessContext = {
@@ -162,7 +162,7 @@ const managerExploreItems: ManagerExploreItem[] = [
   { id: 'team', label: 'My coaches', description: 'Add coaches to your roster and keep their details together.', icon: UsersRound, detail: data => `${data.instructors.filter(instructor => instructor.active).length} active` },
   { id: 'packages', label: 'Packages', description: 'Track class and rental credits and student commitments.', icon: Ticket, detail: data => `${data.packages.length} package${data.packages.length === 1 ? '' : 's'}` },
   { id: 'payments', label: 'Payments', description: 'Review online and offline receipts, payouts, and unpaid classes.', icon: CreditCard, detail: data => `${data.payments.length} recorded` },
-  { id: 'insights', label: 'Insights', description: 'Review reporting and the club audit log.', icon: ChartNoAxesCombined, detail: data => workspaceAccessMode(data) === 'STAFF' && !data.permissions?.includes('PAYMENTS_VIEW') ? 'Audit history' : `${data.bookings.filter(booking => booking.status === 'COMPLETED').length} completed lessons` },
+  { id: 'insights', label: 'Insights', description: 'Review reporting, safety cases, and the club audit log.', icon: ChartNoAxesCombined, detail: data => workspaceAccessMode(data) === 'STAFF' && data.permissions?.includes('SAFEGUARDING_VIEW') && !data.permissions?.includes('PAYMENTS_VIEW') ? 'Safety reports' : workspaceAccessMode(data) === 'STAFF' && !data.permissions?.includes('PAYMENTS_VIEW') ? 'Audit history' : `${data.bookings.filter(booking => booking.status === 'COMPLETED').length} completed lessons` },
 ];
 const exploreItems = [...sharedExploreItems, ...managerExploreItems];
 

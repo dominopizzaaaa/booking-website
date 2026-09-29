@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Router, type RequestHandler } from 'express';
 import { Prisma, type ChatMessage } from '@prisma/client';
 import { DateTime } from 'luxon';
@@ -7,6 +8,7 @@ import { prisma } from './db.js';
 import { skipRateLimits } from './config.js';
 import { asyncRoute, HttpError, type AccountRequest, type AccountType } from './http.js';
 import { loadAccountPolicy } from './account-policy.js';
+import { ageOnSingaporeDate } from './children-policy.js';
 import {
   bookingInput, bookableInstructorWhere, createBookingsInTransaction, evaluateSlot, lockInstructors, schedulingContext, type Tx,
 } from './scheduling.js';
@@ -23,6 +25,7 @@ export type ChatViewer = {
   userId: string;
   name: string;
   accountType: AccountType;
+  safetyStatus: string;
   /** The club businesses this account operates; empty for people. */
   clubBusinessIds: string[];
 };
@@ -32,6 +35,7 @@ export function chatViewerFor(auth: AccountRequest['auth']): ChatViewer {
     userId: auth.user.id,
     name: auth.user.name,
     accountType: auth.user.accountType as AccountType,
+    safetyStatus: auth.user.safetyStatus,
     clubBusinessIds: auth.user.accountType === 'CLUB'
       ? auth.memberships
         .filter(membership => membership.active && membership.instructorId === null && membership.userId === auth.user.id)
@@ -75,7 +79,7 @@ const threadInclude = {
   members: {
     orderBy: [{ joinedAt: 'asc' as const }, { userId: 'asc' as const }],
     include: {
-      user: { select: { id: true, name: true, username: true, accountType: true, sports: true } },
+      user: { select: { id: true, name: true, username: true, accountType: true, sports: true, safetyStatus: true } },
       membership: {
         select: {
           id: true, userId: true, businessId: true, active: true, instructorId: true,
@@ -99,6 +103,47 @@ const proposalInclude = {
 type FullProposal = Prisma.SessionProposalGetPayload<{ include: typeof proposalInclude }>;
 
 const messagePageSize = 100;
+const reportContextRadius = 2;
+
+const reportCategory = z.enum([
+  'GROOMING_SEXUAL',
+  'HARASSMENT',
+  'SELF_HARM_IMMEDIATE_DANGER',
+  'SPAM_OTHER',
+]);
+type ReportCategory = z.infer<typeof reportCategory>;
+
+const reportInput = z.object({
+  category: reportCategory,
+  description: z.string().trim().max(2000).default(''),
+  messageId: z.string().trim().min(1).max(200).optional(),
+}).strict();
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object).sort().map(key => `${JSON.stringify(key)}:${stableJson(object[key])}`).join(',')}}`;
+}
+
+function evidenceHash(evidence: Prisma.InputJsonObject) {
+  return createHash('sha256').update(stableJson(evidence)).digest('hex');
+}
+
+function initialReportSeverity(category: ReportCategory, childInvolved: boolean) {
+  if (category === 'SELF_HARM_IMMEDIATE_DANGER') return 'CRITICAL';
+  if (category === 'GROOMING_SEXUAL') return childInvolved ? 'CRITICAL' : 'HIGH';
+  if (category === 'HARASSMENT') return childInvolved ? 'HIGH' : 'MEDIUM';
+  return childInvolved ? 'MEDIUM' : 'LOW';
+}
+
+function evidenceMessage(message: ChatMessage) {
+  return {
+    id: message.id, kind: message.kind, event: message.event || null,
+    senderUserId: message.senderUserId, senderRole: message.senderRole, senderName: message.senderName,
+    body: message.body, proposalId: message.proposalId, createdAt: message.createdAt.toISOString(),
+  };
+}
 
 /** Students with a registered account who still hold a place in the session. */
 const activeStudents = (booking: ChatBooking): Student[] => booking.participants.flatMap(participant =>
@@ -116,6 +161,164 @@ function activeAccountMembers(thread: LoadedThread) {
       && member.membership.businessId === thread.businessId && member.membership.active
       && !!member.membership.instructorId && !!member.membership.instructor?.active;
   });
+}
+
+function directAccountMembers(thread: LoadedThread) {
+  return thread.members.filter(member => member.removedAt === null
+    && (member.source === 'INITIATOR' || member.source === 'TARGET'));
+}
+
+function exactDirectPair(thread: LoadedThread) {
+  if (thread.kind !== 'ACCOUNT') return null;
+  const members = directAccountMembers(thread);
+  if (members.length !== 2 || members[0]!.userId === members[1]!.userId) return null;
+  return members;
+}
+
+function directPairForViewer(thread: LoadedThread, viewer: ChatViewer) {
+  const pair = exactDirectPair(thread);
+  if (!pair || !pair.some(member => member.userId === viewer.userId)) return null;
+  const target = pair.find(member => member.userId !== viewer.userId);
+  return target ? { pair, target } : null;
+}
+
+function pairKey(userIds: readonly string[]) {
+  return [...userIds].sort().join(':');
+}
+
+async function lockAccountSafetyPair(tx: Tx, userIds: readonly string[]) {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`account-chat-safety:${pairKey(userIds)}`}, 0))`;
+}
+
+function accountContactUserIds(thread: LoadedThread, viewerUserId: string) {
+  return [...new Set(activeAccountMembers(thread)
+    .filter(member => member.userId !== viewerUserId)
+    .map(member => member.userId))].sort();
+}
+
+async function lockAccountSafetyEdges(tx: Tx, viewerUserId: string, contactUserIds: readonly string[]) {
+  // A club-assigned coach is a real recipient of everything posted in the
+  // room. Lock every viewer/recipient edge in canonical order so a block and a
+  // concurrent send/assignment cannot pass one another.
+  for (const contactUserId of [...contactUserIds].sort()) {
+    await lockAccountSafetyPair(tx, [viewerUserId, contactUserId]);
+  }
+}
+
+function blockEdges(viewerUserId: string, contactUserIds: readonly string[]): Prisma.ChatAccountBlockWhereInput {
+  return { OR: contactUserIds.flatMap(contactUserId => [
+    { blockerUserId: viewerUserId, blockedUserId: contactUserId },
+    { blockerUserId: contactUserId, blockedUserId: viewerUserId },
+  ]) };
+}
+
+function safetyRestrictionReason(statuses: readonly string[]) {
+  if (statuses.includes('ACCOUNT_CHAT_RESTRICTED')) return 'ACCOUNT_CHAT_RESTRICTED' as const;
+  return null;
+}
+
+async function accountMessagingState(
+  thread: LoadedThread, viewer: ChatViewer | null, db: Tx | typeof prisma = prisma,
+) {
+  const pair = exactDirectPair(thread);
+  if (!viewer || !pair) return {
+    blocked: false, blockedByViewer: false, canBlock: false, canUnblock: false,
+    reason: null as 'BLOCKED' | 'ACCOUNT_CHAT_RESTRICTED' | null, blockTarget: null,
+  };
+  const participant = viewer ? directPairForViewer(thread, viewer) : null;
+  const contactUserIds = accountContactUserIds(thread, viewer.userId);
+  const statusUserIds = [...new Set([viewer.userId, ...contactUserIds])];
+  const [blocks, users] = await Promise.all([
+    db.chatAccountBlock.findMany({
+      where: blockEdges(viewer.userId, contactUserIds),
+      select: { blockerUserId: true, blockedUserId: true },
+    }),
+    db.user.findMany({ where: { id: { in: statusUserIds } }, select: { id: true, safetyStatus: true } }),
+  ]);
+  // A direct-chat restriction contains contact involving the subject in both
+  // directions. It does not affect SESSION conversations.
+  const restriction = safetyRestrictionReason(users.map(user => user.safetyStatus));
+  const blockedByViewer = !!viewer && blocks.some(block => block.blockerUserId === viewer.userId);
+  // Only the person who placed a block is told that it is their own control.
+  // Everyone else receives the same generic restriction state as platform
+  // containment, so the API is not a block-status oracle.
+  const reason = blockedByViewer ? 'BLOCKED' as const
+    : blocks.length || restriction ? 'ACCOUNT_CHAT_RESTRICTED' as const : null;
+  return {
+    blocked: reason !== null,
+    blockedByViewer,
+    canBlock: !!participant && !blockedByViewer,
+    canUnblock: blockedByViewer,
+    reason,
+    blockTarget: participant
+      ? { name: participant.target.user.name, username: participant.target.user.username }
+      : null,
+  };
+}
+
+async function assertAccountMessagingAllowed(tx: Tx, viewer: ChatViewer, thread: LoadedThread) {
+  if (thread.kind !== 'ACCOUNT') return;
+  const pair = exactDirectPair(thread);
+  if (!pair) throw new HttpError(403, 'Messaging is unavailable in this account conversation');
+  const contactUserIds = accountContactUserIds(thread, viewer.userId);
+  const statusUserIds = [...new Set([viewer.userId, ...contactUserIds])].sort();
+  await lockAccountSafetyEdges(tx, viewer.userId, contactUserIds);
+  // Serialize with the platform restriction's FOR UPDATE lock. Whichever
+  // transaction wins is authoritative: a completed message precedes the
+  // restriction, while a later writer observes the restriction and fails.
+  const users = await tx.$queryRaw<Array<{ id: string; safetyStatus: string }>>(Prisma.sql`
+    SELECT "id", "safetyStatus" FROM "User"
+    WHERE "id" IN (${Prisma.join(statusUserIds)})
+    ORDER BY "id" FOR SHARE`);
+  const blocks = await tx.chatAccountBlock.findMany({
+    where: blockEdges(viewer.userId, contactUserIds), select: { blockerUserId: true },
+  });
+  const blockedByViewer = blocks.some(block => block.blockerUserId === viewer.userId);
+  const reason = blockedByViewer ? 'BLOCKED' as const
+    : blocks.length || safetyRestrictionReason(users.map(user => user.safetyStatus))
+      ? 'ACCOUNT_CHAT_RESTRICTED' as const : null;
+  if (reason) {
+    throw new HttpError(403, 'Messaging is unavailable in this account conversation', {
+      code: 'CHAT_MESSAGING_BLOCKED', reason,
+    });
+  }
+}
+
+async function assertProspectiveAccountMemberAllowed(
+  tx: Tx, thread: LoadedThread, prospectiveUserId: string,
+) {
+  const contactUserIds = [...new Set(activeAccountMembers(thread)
+    .filter(member => member.userId !== prospectiveUserId)
+    .map(member => member.userId))].sort();
+  await lockAccountSafetyEdges(tx, prospectiveUserId, contactUserIds);
+  const userIds = [...new Set([prospectiveUserId, ...contactUserIds])].sort();
+  const users = await tx.$queryRaw<Array<{ safetyStatus: string }>>(Prisma.sql`
+    SELECT "safetyStatus" FROM "User"
+    WHERE "id" IN (${Prisma.join(userIds)})
+    ORDER BY "id" FOR SHARE`);
+  const blocks = await tx.chatAccountBlock.count({ where: blockEdges(prospectiveUserId, contactUserIds) });
+  if (blocks > 0 || safetyRestrictionReason(users.map(user => user.safetyStatus))) {
+    throw new HttpError(403, 'This coach cannot be assigned to this conversation');
+  }
+}
+
+async function assertDirectPairMessagingAllowed(tx: Tx, viewer: ChatViewer, otherUserId: string) {
+  const userIds = [viewer.userId, otherUserId];
+  await lockAccountSafetyPair(tx, userIds);
+  const users = await tx.$queryRaw<Array<{ id: string; safetyStatus: string }>>(Prisma.sql`
+    SELECT "id", "safetyStatus" FROM "User"
+    WHERE "id" IN (${Prisma.join([...userIds].sort())})
+    ORDER BY "id" FOR SHARE`);
+  const blocks = await tx.chatAccountBlock.count({ where: { OR: [
+    { blockerUserId: viewer.userId, blockedUserId: otherUserId },
+    { blockerUserId: otherUserId, blockedUserId: viewer.userId },
+  ] } });
+  const reason = blocks > 0 ? 'BLOCKED' : safetyRestrictionReason(users.map(user => user.safetyStatus));
+  if (reason) {
+    throw new HttpError(403, 'Messaging is unavailable for these accounts', {
+      code: 'CHAT_MESSAGING_BLOCKED', reason,
+    });
+  }
 }
 
 function accountRoleIn(viewer: ChatViewer, thread: LoadedThread): ChatRole | null {
@@ -589,6 +792,24 @@ async function buildThreadDetail(
   })]));
   const viewerId = viewer?.userId ?? null;
   const participant = role === 'STUDENT' || role === 'COACH' || role === 'CLUB';
+  const [messaging, viewerReports] = await Promise.all([
+    accountMessagingState(thread, viewer, db),
+    viewer && messages.length ? db.chatSafetyReport.findMany({
+      where: { reporterUserId: viewer.userId, messageId: { in: messages.map(message => message.id) } },
+      select: { messageId: true },
+    }) : [],
+  ]);
+  const reportedMessageIds = new Set(viewerReports.flatMap(report => report.messageId ? [report.messageId] : []));
+  const messagingAllowed = thread.kind !== 'ACCOUNT' || !messaging.blocked;
+  const safety = {
+    canReport: participant,
+    blockTarget: messaging.blockTarget,
+    blockedByViewer: messaging.blockedByViewer,
+    messagingBlocked: messaging.blocked,
+    canBlock: messaging.canBlock,
+    canUnblock: messaging.canUnblock,
+    reason: messaging.reason,
+  };
   return {
     id: thread.id,
     kind: thread.kind as 'SESSION' | 'ACCOUNT',
@@ -599,10 +820,10 @@ async function buildThreadDetail(
     members: thread.booking ? membersJson(thread.booking, viewerId) : accountMembersJson(thread, viewerId),
     viewer: {
       role,
-      canPost: participant,
+      canPost: participant && messagingAllowed,
       // Coaches and students plan their next session here; the club reads
       // along but books through its own workspace.
-      canPropose: (role === 'STUDENT' || role === 'COACH') && students.length > 0
+      canPropose: messagingAllowed && (role === 'STUDENT' || role === 'COACH') && students.length > 0
         && conversation.schedulingOptions.length > 0,
       canAssignCoach: thread.kind === 'ACCOUNT' && role === 'CLUB' && !!thread.businessId
         && !!viewer?.clubBusinessIds.includes(thread.businessId)
@@ -611,7 +832,16 @@ async function buildThreadDetail(
     messages: messages.map(message => ({
       ...messageJson(message, viewerId),
       proposal: message.proposalId ? proposalById.get(message.proposalId) ?? null : null,
+      canReport: !!viewer && participant && message.kind !== 'SYSTEM'
+        && !!message.senderUserId && message.senderUserId !== viewer.userId,
+      reportedByViewer: reportedMessageIds.has(message.id),
     })),
+    safety,
+    messaging: {
+      blocked: messaging.blocked, blockedByViewer: messaging.blockedByViewer,
+      canBlock: messaging.canBlock, canUnblock: messaging.canUnblock, reason: messaging.reason,
+    },
+    blockTarget: messaging.blockTarget,
     hasEarlier,
   };
 }
@@ -906,6 +1136,7 @@ export async function proposeNextSession(viewer: ChatViewer, threadId: string, r
   return prisma.$transaction(async tx => {
     await lockThreadAccessForWrite(tx, viewer, threadId);
     const { thread, role } = await loadAccessibleThread(viewer, threadId, tx);
+    await assertAccountMessagingAllowed(tx, viewer, thread);
     if (role !== 'STUDENT' && role !== 'COACH') {
       throw new HttpError(403, 'Only a coach and student in this conversation can propose a time');
     }
@@ -970,6 +1201,7 @@ async function lockAndLoadProposal(tx: Tx, viewer: ChatViewer, proposalId: strin
     if (error instanceof HttpError && error.status === 404) throw new HttpError(404, 'Proposal not found');
     throw error;
   });
+  await assertAccountMessagingAllowed(tx, viewer, thread);
   return { proposal, thread, role };
 }
 
@@ -1258,6 +1490,7 @@ export async function openAccountChat(viewer: ChatViewer, rawInput: unknown) {
   const directKey = accountIds.join(':');
   return prisma.$transaction(async tx => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`account-chat:${directKey}`}, 0))`;
+    await assertDirectPairMessagingAllowed(tx, viewer, target.id);
     const existing = await tx.chatThread.findUnique({ where: { directKey }, select: { id: true } });
     if (existing) return existing.id;
     const clubUserId = [
@@ -1313,6 +1546,7 @@ export async function assignConversationCoach(viewer: ChatViewer, threadId: stri
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`account-chat-coach:${threadId}`}, 0))`;
     const { thread, role } = await loadAccessibleThread(viewer, threadId, tx);
     assertCoachAssignableRoom(viewer, thread, role);
+    await assertAccountMessagingAllowed(tx, viewer, thread);
     const membership = await tx.membership.findFirst({
       where: {
         id: input.membershipId, businessId: thread.businessId!, active: true,
@@ -1322,6 +1556,7 @@ export async function assignConversationCoach(viewer: ChatViewer, threadId: stri
       select: { id: true, userId: true, user: { select: { name: true } } },
     });
     if (!membership) throw new HttpError(404, 'Coach not found');
+    await assertProspectiveAccountMemberAllowed(tx, thread, membership.userId);
     const current = activeAccountMembers(thread).find(member => member.source === 'CLUB_ASSIGNED');
     if (current?.membershipId === membership.id) return thread.id;
     const now = new Date();
@@ -1365,6 +1600,154 @@ export async function removeConversationCoach(viewer: ChatViewer, threadId: stri
   });
 }
 
+function reportReceipt(report: {
+  id: string; category: string; status: string; severity: string; childInvolved: boolean; createdAt: Date;
+}) {
+  return {
+    id: report.id, category: report.category, status: report.status, severity: report.severity,
+    childInvolved: report.childInvolved, createdAt: report.createdAt.toISOString(),
+  };
+}
+
+function threadUserSnapshots(thread: LoadedThread) {
+  if (thread.kind === 'ACCOUNT') return activeAccountMembers(thread).map(member => ({
+    userId: member.userId, name: member.user.name, username: member.user.username,
+    role: member.user.accountType as ChatRole, assigned: member.source === 'CLUB_ASSIGNED',
+  }));
+  if (!thread.booking) return [];
+  const booking = thread.booking;
+  const coach = booking.instructor.membership?.active ? [{
+    userId: booking.instructor.membership.userId, name: booking.instructor.name,
+    username: booking.instructor.membership.user.username, role: 'COACH' as const, assigned: true,
+  }] : [];
+  const students = activeStudents(booking).map(student => ({
+    userId: student.userId, name: student.name, username: student.username ?? '',
+    role: 'STUDENT' as const, assigned: false,
+  }));
+  const club = booking.business.memberships[0]?.user;
+  return [...coach, ...students, ...(club ? [{
+    userId: club.id, name: booking.business.name, username: club.username,
+    role: 'CLUB' as const, assigned: false,
+  }] : [])];
+}
+
+async function nearbyReportContext(tx: Tx, threadId: string, message: ChatMessage) {
+  const earlier = await tx.chatMessage.findMany({
+    where: { threadId, OR: [
+      { createdAt: { lt: message.createdAt } },
+      { createdAt: message.createdAt, id: { lt: message.id } },
+    ] },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: reportContextRadius,
+  });
+  const later = await tx.chatMessage.findMany({
+    where: { threadId, OR: [
+      { createdAt: { gt: message.createdAt } },
+      { createdAt: message.createdAt, id: { gt: message.id } },
+    ] },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: reportContextRadius,
+  });
+  return [...earlier.reverse(), message, ...later].map(evidenceMessage);
+}
+
+export async function reportChatSafetyConcern(viewer: ChatViewer, threadId: string, rawInput: unknown) {
+  const input = reportInput.parse(rawInput);
+  return prisma.$transaction(async tx => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`chat-report:${viewer.userId}:${threadId}:${input.messageId ?? 'thread'}:${input.category}`}, 0))`;
+    const { thread } = await loadAccessibleThread(viewer, threadId, tx);
+    const pair = exactDirectPair(thread);
+    if (!input.messageId && (thread.kind !== 'ACCOUNT' || !pair || !pair.some(member => member.userId === viewer.userId))) {
+      throw new HttpError(400, 'Choose a message to report in this conversation');
+    }
+    const message = input.messageId ? await tx.chatMessage.findFirst({
+      where: { id: input.messageId, threadId },
+    }) : null;
+    if (input.messageId && !message) throw new HttpError(400, 'That message is not part of this chat');
+    if (message && (message.kind === 'SYSTEM' || !message.senderUserId)) {
+      throw new HttpError(400, 'System messages cannot be reported');
+    }
+    if (message?.senderUserId === viewer.userId) throw new HttpError(400, 'You cannot report your own message');
+
+    const subjectUserId = message?.senderUserId
+      ?? pair?.find(member => member.userId !== viewer.userId)?.userId
+      ?? null;
+    if (!subjectUserId || subjectUserId === viewer.userId) throw new HttpError(400, 'Choose another account to report');
+
+    const duplicate = await tx.chatSafetyReport.findFirst({
+      where: {
+        threadId, messageId: input.messageId ?? null, reporterUserId: viewer.userId, category: input.category,
+      },
+      select: { id: true, category: true, status: true, severity: true, childInvolved: true, createdAt: true },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    if (duplicate) return { report: reportReceipt(duplicate), created: false };
+
+    const memberSnapshots = threadUserSnapshots(thread);
+    const userIds = [...new Set([viewer.userId, subjectUserId, ...memberSnapshots.map(member => member.userId)])];
+    const users = await tx.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, name: true, username: true, accountType: true, dateOfBirth: true, accountControl: true, accountStatus: true },
+    });
+    const userById = new Map(users.map(user => [user.id, user]));
+    const reporter = userById.get(viewer.userId);
+    const subject = userById.get(subjectUserId);
+    if (!reporter || !subject) throw new HttpError(409, 'A conversation account is no longer available');
+    const childInvolved = users.some(user => user.accountType === 'STUDENT'
+      && (user.accountControl === 'GUARDIAN_MANAGED'
+        || (ageOnSingaporeDate(user.dateOfBirth) ?? Number.POSITIVE_INFINITY) < 18));
+    const severity = initialReportSeverity(input.category, childInvolved);
+    const context = message ? await nearbyReportContext(tx, threadId, message) : [];
+    const evidence = {
+      version: 1, capturedAt: new Date().toISOString(),
+      thread: { id: thread.id, kind: thread.kind },
+      business: thread.business ? { id: thread.business.id, name: thread.business.name, slug: thread.business.slug } : null,
+      session: thread.booking ? {
+        bookingId: thread.booking.id, serviceName: thread.booking.service.name,
+        startAt: thread.booking.startAt.toISOString(), timezone: thread.booking.business.timezone,
+      } : null,
+      reporter: { userId: reporter.id, name: reporter.name, username: reporter.username, accountType: reporter.accountType },
+      subject: { userId: subject.id, name: subject.name, username: subject.username, accountType: subject.accountType },
+      members: memberSnapshots.map(member => ({
+        userId: member.userId, name: member.name, username: member.username, role: member.role, assigned: member.assigned,
+      })),
+      reportedMessage: message ? evidenceMessage(message) : null,
+      context,
+    } satisfies Prisma.InputJsonObject;
+    const report = await tx.chatSafetyReport.create({
+      data: {
+        threadId: thread.id, messageId: message?.id ?? null, businessId: thread.businessId, bookingId: thread.bookingId,
+        reporterUserId: viewer.userId, subjectUserId, category: input.category, status: 'OPEN', severity, childInvolved,
+        description: input.description, evidence, evidenceHash: evidenceHash(evidence),
+        auditEvents: { create: {
+          actorKind: 'ACCOUNT', actorUserId: viewer.userId, actorName: viewer.name, action: 'REPORT_CREATED',
+          toStatus: 'OPEN', toSeverity: severity,
+        } },
+      },
+      select: { id: true, category: true, status: true, severity: true, childInvolved: true, createdAt: true },
+    });
+    return { report: reportReceipt(report), created: true };
+  });
+}
+
+export async function setChatAccountBlock(viewer: ChatViewer, threadId: string, blocked: boolean) {
+  return prisma.$transaction(async tx => {
+    const { thread } = await loadAccessibleThread(viewer, threadId, tx);
+    if (thread.kind !== 'ACCOUNT') throw new HttpError(400, 'Only direct account conversations can be blocked');
+    const direct = directPairForViewer(thread, viewer);
+    if (!direct) throw new HttpError(403, 'Only the two direct participants can block this conversation');
+    await lockAccountSafetyPair(tx, direct.pair.map(member => member.userId));
+    const key = { blockerUserId: viewer.userId, blockedUserId: direct.target.userId };
+    if (blocked) {
+      await tx.chatAccountBlock.upsert({
+        where: { blockerUserId_blockedUserId: key }, create: key, update: {},
+      });
+    } else {
+      const removed = await tx.chatAccountBlock.deleteMany({ where: key });
+      if (!removed.count) throw new HttpError(403, 'You can only remove a block that you placed');
+    }
+    return threadDetailInTransaction(tx, viewer, threadId);
+  });
+}
+
 export async function postChatMessage(viewer: ChatViewer, threadId: string, rawInput: unknown) {
   const input = z.object({
     body: z.string().trim().min(1, 'Write a message first').max(2000, 'Keep messages under 2,000 characters'),
@@ -1372,6 +1755,7 @@ export async function postChatMessage(viewer: ChatViewer, threadId: string, rawI
   return prisma.$transaction(async tx => {
     await lockThreadAccessForWrite(tx, viewer, threadId);
     const { thread, role } = await loadAccessibleThread(viewer, threadId, tx);
+    await assertAccountMessagingAllowed(tx, viewer, thread);
     const createdAt = new Date();
     const message = await tx.chatMessage.create({
       data: {
@@ -1524,6 +1908,13 @@ const chatCreateLimit = rateLimit({
   message: { error: 'You are starting conversations too quickly. Please wait a moment.' },
 });
 
+const chatReportLimit = rateLimit({
+  windowMs: 15 * 60_000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false,
+  skip: skipRateLimits,
+  keyGenerator: req => (req as AccountRequest).auth?.user.id ?? 'unauthenticated',
+  message: { error: 'You are sending reports too quickly. Please wait before trying again.' },
+});
+
 export const chatRouter = Router();
 chatRouter.use(requireChatAccount);
 
@@ -1577,6 +1968,29 @@ chatRouter.get('/:threadId', asyncRoute(async (req, res) => {
 
 chatRouter.post('/:threadId/messages', chatWriteLimit, asyncRoute(async (req, res) => {
   res.status(201).json({ message: await postChatMessage(chatViewerFor(req.auth), chatId.parse(req.params.threadId), req.body) });
+}));
+
+chatRouter.post('/:threadId/reports', chatReportLimit, asyncRoute(async (req, res) => {
+  const result = await reportChatSafetyConcern(chatViewerFor(req.auth), chatId.parse(req.params.threadId), req.body);
+  const guidance = result.report.severity === 'CRITICAL' ? {
+    immediateDanger: true as const,
+    police: { label: 'Singapore Police' as const, phone: '999' as const },
+    policeSms: { label: 'Police Emergency SMS' as const, phone: '70999' as const },
+    navh: { label: 'National Anti-Violence and Sexual Harassment Helpline' as const, phone: '1800-777-0000' as const },
+  } : undefined;
+  res.status(result.created ? 201 : 200).json({ report: result.report, ...(guidance ? { guidance } : {}) });
+}));
+
+chatRouter.post('/:threadId/block', chatWriteLimit, asyncRoute(async (req, res) => {
+  emptyInput.parse(req.body ?? {});
+  const viewer = chatViewerFor(req.auth);
+  res.json({ thread: await setChatAccountBlock(viewer, chatId.parse(req.params.threadId), true) });
+}));
+
+chatRouter.delete('/:threadId/block', chatWriteLimit, asyncRoute(async (req, res) => {
+  emptyInput.parse(req.body ?? {});
+  const viewer = chatViewerFor(req.auth);
+  res.json({ thread: await setChatAccountBlock(viewer, chatId.parse(req.params.threadId), false) });
 }));
 
 chatRouter.post('/:threadId/coach', chatWriteLimit, asyncRoute(async (req, res) => {

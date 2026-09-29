@@ -8,6 +8,7 @@ import { prisma } from './db.js';
 import { config, production, skipRateLimits } from './config.js';
 import { asyncRoute, HttpError } from './http.js';
 import { adminChatListQuery, chatThreadForAdmin, listChatThreadsForAdmin, threadQuery } from './chat.js';
+import { adminSafeguardingRouter } from './safeguarding.js';
 
 // The platform admin console is separate from provider (business) logins.
 // Production admits only explicitly configured named operators. A shared
@@ -115,6 +116,7 @@ export const requireNamedAdmin: RequestHandler = asyncRoute(async (req, _res, ne
   (req as unknown as AdminRequest).admin = session;
   next();
 });
+adminRouter.use('/admin/safeguarding', requireAdmin, requireNamedAdmin, adminSafeguardingRouter);
 
 adminRouter.get('/admin/session', asyncRoute(async (req, res) => {
   const mode = adminAuthMode();

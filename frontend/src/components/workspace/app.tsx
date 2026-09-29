@@ -87,7 +87,7 @@ const staffViewPermissions: Partial<Record<string, ClubPermission[]>> = {
   rentals: ['RENTALS_VIEW', 'RENTALS_MANAGE'],
   packages: ['PACKAGES_VIEW', 'PACKAGES_MANAGE'],
   payments: ['PAYMENTS_VIEW', 'PAYMENTS_RECORD', 'PAYMENTS_REVERSE', 'PAYOUTS_RECORD'],
-  insights: ['PAYMENTS_VIEW', 'AUDIT_VIEW'],
+  insights: ['PAYMENTS_VIEW', 'AUDIT_VIEW', 'SAFEGUARDING_VIEW'],
   settings: ['SETTINGS_MANAGE'],
 };
 
