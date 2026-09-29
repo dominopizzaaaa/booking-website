@@ -6,11 +6,14 @@ import request from 'supertest';
 import { app } from '../src/app.js';
 import { config } from '../src/config.js';
 import { createAccount, createSession, prisma, TestTenants, verifyTestDatabase } from './fixtures.js';
+import { currentSignupAcceptance } from './helpers/legal.js';
 
 const originalConfig = {
   adminPassword: config.adminPassword,
   demoEnabled: config.demoEnabled,
+  familyFeatureEnabled: config.familyFeatureEnabled,
   googleMapsApiKey: config.googleMapsApiKey,
+  realBusinessDeletionEnabled: config.realBusinessDeletionEnabled,
 };
 
 beforeAll(verifyTestDatabase, 15_000);
@@ -33,7 +36,9 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
   afterEach(async () => {
     config.adminPassword = originalConfig.adminPassword;
     config.demoEnabled = originalConfig.demoEnabled;
+    config.familyFeatureEnabled = originalConfig.familyFeatureEnabled;
     config.googleMapsApiKey = originalConfig.googleMapsApiKey;
+    config.realBusinessDeletionEnabled = originalConfig.realBusinessDeletionEnabled;
     await tenants.cleanup();
   });
 
@@ -83,6 +88,7 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
         bookingExport: true,
         payments: config.payments.mode,
         transactionalEmail: config.email.enabled ? 'configured' : 'disabled',
+        family: config.familyFeatureEnabled ? 'enabled' : 'disabled',
         familyHandover: config.email.enabled && config.familyHandoverTokens.enabled
           ? 'configured'
           : 'disabled',
@@ -164,7 +170,7 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
     const missingClubNameEmail = `${randomUUID()}@example.test`;
     const missingClubName = await request(app).post('/api/auth/register').send({
       accountType: 'CLUB', name: 'Club Contact', username: `club_${randomUUID().slice(0, 8)}`,
-      email: missingClubNameEmail, password,
+      email: missingClubNameEmail, password, ...currentSignupAcceptance,
     }).expect(400);
     expect(missingClubName.body.error).toBe('A club or academy name is required');
 
@@ -172,7 +178,7 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
     await request(app).post('/api/auth/register').send({
       accountType: 'STUDENT', name: 'Strict Registration', username: `strict_${randomUUID().slice(0, 8)}`,
       email: unknownRegistrationEmail, password, dateOfBirth: adultDateOfBirth,
-      businessKind: 'SOLO',
+      ...currentSignupAcceptance, businessKind: 'SOLO',
     }).expect(400);
     expect(await prisma.user.count({
       where: { email: { in: [missingTypeEmail, missingClubNameEmail, unknownRegistrationEmail] } },
@@ -182,7 +188,7 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
     const username = `http_${randomUUID().slice(0, 8)}`;
     const registered = await request(app).post('/api/auth/register').send({
       accountType: 'STUDENT', name: 'HTTP Student', username: username.toUpperCase(),
-      email: email.toUpperCase(), password, dateOfBirth: adultDateOfBirth,
+      email: email.toUpperCase(), password, dateOfBirth: adultDateOfBirth, ...currentSignupAcceptance,
     }).expect(201);
     tenants.ownUser(registered.body.user.id);
     expect(registered.body.user).toMatchObject({
@@ -212,6 +218,7 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
       const response = await request(app).post('/api/auth/register').send({
         accountType, name: `${accountType} Missing DOB`,
         username: `missing_${randomUUID().slice(0, 8)}`, email, password: 'Courtly-missing-dob-123',
+        ...currentSignupAcceptance,
       }).expect(400);
       expect(response.body.error).toBe('Date of birth is required');
       expect(await prisma.user.findUnique({ where: { email } })).toBeNull();
@@ -227,7 +234,7 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
     const email = `invalid-dob-${randomUUID()}@example.test`;
     const response = await request(app).post('/api/auth/register').send({
       accountType: 'STUDENT', name: 'Invalid DOB', username: `invalid_${randomUUID().slice(0, 8)}`,
-      email, password: 'Courtly-invalid-dob-123', dateOfBirth,
+      email, password: 'Courtly-invalid-dob-123', dateOfBirth, ...currentSignupAcceptance,
     }).expect(400);
     expect(response.body.error).toBe(error);
     expect(await prisma.user.findUnique({ where: { email } })).toBeNull();
@@ -239,6 +246,7 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
       const response = await request(app).post('/api/auth/register').send({
         accountType, name: 'Under Thirteen', username: `child_${randomUUID().slice(0, 8)}`,
         email, password: 'Courtly-child-register-123', dateOfBirth: dateYearsAgo(10),
+        ...currentSignupAcceptance,
       }).expect(400);
       expect(response.body).toEqual({
         error: 'A parent or guardian must create and manage this child account',
@@ -253,7 +261,7 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
     const rejected = await request(app).post('/api/auth/register').send({
       accountType: 'CLUB', businessName: 'DOB Club', name: 'Club Contact',
       username: `club_${randomUUID().slice(0, 8)}`, email: rejectedEmail,
-      password: 'Courtly-club-dob-123', dateOfBirth: adultDateOfBirth,
+      password: 'Courtly-club-dob-123', dateOfBirth: adultDateOfBirth, ...currentSignupAcceptance,
     }).expect(400);
     expect(rejected.body.error).toBe('Club accounts do not have a date of birth');
     expect(await prisma.user.findUnique({ where: { email: rejectedEmail } })).toBeNull();
@@ -262,6 +270,7 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
     const registered = await request(app).post('/api/auth/register').send({
       accountType: 'CLUB', businessName: 'No DOB Academy', name: 'Club Contact',
       username: `club_${randomUUID().slice(0, 8)}`, email, password: 'Courtly-club-no-dob-123',
+      ...currentSignupAcceptance,
     }).expect(201);
     tenants.own(registered.body.business.id);
     tenants.ownUser(registered.body.user.id);
@@ -285,6 +294,20 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
       needsAgeReview: true, requiredAction: null, accountActionRequired: false,
     });
     expect(account.body.user.capabilities).toEqual(adultCapabilities);
+  });
+
+  it('removes Family from the authenticated capability contract while the deployment gate is closed', async () => {
+    const { agent } = await credentialedStudent(adultDateOfBirth);
+
+    config.familyFeatureEnabled = false;
+    const disabled = await agent.get('/api/auth/me').expect(200);
+    expect(disabled.body.user.capabilities).toEqual({
+      ...adultCapabilities, familyManagement: false,
+    });
+
+    config.familyFeatureEnabled = true;
+    const enabled = await agent.get('/api/auth/me').expect(200);
+    expect(enabled.body.user.capabilities.familyManagement).toBe(true);
   });
 
   it('gates every embedded account route for a credentialed under-13 SELF legacy row', async () => {
@@ -326,11 +349,11 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
     const agent = request.agent(app);
     const registered = await agent.post('/api/auth/register').send({
       accountType: 'STUDENT', name: 'Teen Student', username: `teen_${randomUUID().slice(0, 8)}`,
-      email, password: 'Courtly-teen-register-123', dateOfBirth,
+      email, password: 'Courtly-teen-register-123', dateOfBirth, ...currentSignupAcceptance,
     }).expect(201);
     tenants.ownUser(registered.body.user.id);
     expect(registered.body.user).toMatchObject({
-      dateOfBirth, profileVisibility: 'CLUBS_ONLY', ageBand: 'TEEN', needsAgeReview: false,
+      dateOfBirth, profileVisibility: 'PRIVATE', ageBand: 'TEEN', needsAgeReview: false,
       requiredAction: null, accountActionRequired: false,
     });
     expect(registered.body.user.capabilities).toEqual({
@@ -390,6 +413,7 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
 
   it('requires a strict admin login body and clears the admin session on logout', async () => {
     config.adminPassword = 'http-admin-password-123';
+    config.realBusinessDeletionEnabled = false;
     const agent = request.agent(app);
 
     await agent.post('/api/admin/login').send({
@@ -397,16 +421,18 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
     }).expect(400);
 
     const login = await agent.post('/api/admin/login').send({ password: config.adminPassword }).expect(200);
-    expect(login.body).toEqual({ ok: true });
+    expect(login.body).toEqual({ ok: true, authMode: 'legacy', operator: null });
     expect((await agent.get('/api/admin/session').expect(200)).body).toEqual({
-      configured: true, authenticated: true,
+      configured: true, authenticated: true, authMode: 'legacy', operator: null, sensitiveAccess: false,
+      businessDeletionMode: 'demo-only',
     });
 
     const logout = await agent.post('/api/admin/logout').send({}).expect(200);
     expect(logout.body).toEqual({ ok: true });
     expect(logout.headers['set-cookie']?.join(';')).toContain(`${config.adminCookie}=;`);
     expect((await agent.get('/api/admin/session').expect(200)).body).toEqual({
-      configured: true, authenticated: false,
+      configured: true, authenticated: false, authMode: 'legacy', operator: null, sensitiveAccess: false,
+      businessDeletionMode: 'demo-only',
     });
   });
 });
