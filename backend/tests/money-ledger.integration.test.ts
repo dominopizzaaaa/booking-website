@@ -10,6 +10,28 @@ import {
 beforeAll(verifyTestDatabase, 15_000);
 afterAll(async () => { await prisma.$disconnect(); });
 
+type CheckoutPolicyKind = 'TERMS' | 'CANCELLATION_REFUNDS' | 'PACKAGE_TERMS';
+type CheckoutReviewWire = {
+  reviewHash: string;
+  policies: Array<{ kind: CheckoutPolicyKind; version: string }>;
+};
+
+async function packageCheckoutAcceptance(cookie: string, targetId: string) {
+  const response = await request(app).get('/api/payments/checkout-review')
+    .set('Cookie', cookie).query({ kind: 'PACKAGE', targetId }).expect(200);
+  const review = response.body.review as CheckoutReviewWire;
+  const policyVersion = (kind: CheckoutPolicyKind) => {
+    const policy = review.policies.find(candidate => candidate.kind === kind);
+    if (!policy) throw new Error(`Checkout review omitted ${kind}`);
+    return policy.version;
+  };
+  return {
+    accepted: true as const, reviewHash: review.reviewHash, termsVersion: policyVersion('TERMS'),
+    cancellationRefundPolicyVersion: policyVersion('CANCELLATION_REFUNDS'),
+    packageTermsVersion: policyVersion('PACKAGE_TERMS'),
+  };
+}
+
 describe.sequential('The money ledger', () => {
   let tenants: TestTenants;
   let f: Fixture;
@@ -44,8 +66,9 @@ describe.sequential('The money ledger', () => {
       services: { create: { serviceId: f.service.id } },
       ...(rentalLocationId ? { rentalLocations: { create: { locationId: rentalLocationId } } } : {}),
     } });
+    const acceptance = await packageCheckoutAcceptance(cookie, offer.id);
     const checkout = await request(app).post(`/api/account/package-offers/${offer.id}/checkout`)
-      .set('Cookie', cookie).send({ idempotencyKey: randomUUID(), simulatedOutcome: 'SUCCEEDED' });
+      .set('Cookie', cookie).send({ idempotencyKey: randomUUID(), simulatedOutcome: 'SUCCEEDED', acceptance });
     expect(checkout.status).toBe(201);
     const payment = await prisma.payment.findUniqueOrThrow({
       where: { paymentIntentId: checkout.body.paymentIntent.id },

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { app } from '../src/app.js';
+import { CHECKOUT_POLICY_VERSION } from '../src/payments/compliance.js';
 import { createBookings } from '../src/scheduling.js';
 import {
   createAccount, createPackage, createSession, createStudent, inputFor, prisma, publicInputFor, TestTenants, verifyTestDatabase, type Fixture,
@@ -9,6 +10,39 @@ import {
 
 beforeAll(verifyTestDatabase, 15_000);
 afterAll(async () => { await prisma.$disconnect(); });
+
+type CheckoutKind = 'PACKAGE' | 'BOOKING';
+type CheckoutPolicyKind = 'TERMS' | 'CANCELLATION_REFUNDS' | 'PACKAGE_TERMS';
+type CheckoutReviewWire = {
+  kind: CheckoutKind;
+  reviewHash: string;
+  policies: Array<{ kind: CheckoutPolicyKind; version: string }>;
+};
+
+async function checkoutAcceptance(cookie: string, kind: CheckoutKind, targetId: string) {
+  const response = await request(app).get('/api/payments/checkout-review')
+    .set('Cookie', cookie).query({ kind, targetId }).expect(200);
+  const review = response.body.review as CheckoutReviewWire;
+  const policyVersion = (policyKind: CheckoutPolicyKind) => {
+    const policy = review.policies.find(candidate => candidate.kind === policyKind);
+    if (!policy) throw new Error(`Checkout review omitted ${policyKind}`);
+    return policy.version;
+  };
+  return {
+    accepted: true as const, reviewHash: review.reviewHash,
+    termsVersion: policyVersion('TERMS'),
+    cancellationRefundPolicyVersion: policyVersion('CANCELLATION_REFUNDS'),
+    packageTermsVersion: review.kind === 'PACKAGE' ? policyVersion('PACKAGE_TERMS') : null,
+  };
+}
+
+function dummyCheckoutAcceptance(kind: CheckoutKind) {
+  return {
+    accepted: true as const, reviewHash: '0'.repeat(64),
+    termsVersion: CHECKOUT_POLICY_VERSION, cancellationRefundPolicyVersion: CHECKOUT_POLICY_VERSION,
+    packageTermsVersion: kind === 'PACKAGE' ? CHECKOUT_POLICY_VERSION : null,
+  };
+}
 
 describe.sequential('Package offers and simulated checkout', () => {
   let tenants: TestTenants;
@@ -130,8 +164,11 @@ describe.sequential('Package offers and simulated checkout', () => {
       offers: [{ id: offer.id, active: true }],
     });
 
+    const acceptance = await checkoutAcceptance(seat.cookie, 'PACKAGE', offer.id);
     const checkout = await request(app).post(`/api/account/package-offers/${offer.id}/checkout`)
-      .set('Cookie', seat.cookie).send({ idempotencyKey: `package-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED' }).expect(201);
+      .set('Cookie', seat.cookie).send({
+        idempotencyKey: `package-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED', acceptance,
+      }).expect(201);
     expect(checkout.body).toMatchObject({
       paymentIntent: { kind: 'PACKAGE', status: 'SUCCEEDED', amount: 42_000, currency: 'SGD' },
       package: { offerId: offer.id, name: 'Six lesson pass', totalCredits: 6, usedCredits: 0, remainingCredits: 6, paid: true, state: 'ACTIVE', serviceIds: [club.service.id] },
@@ -179,9 +216,10 @@ describe.sequential('Package offers and simulated checkout', () => {
   it('keeps the sold price fixed while allowing other package offer edits', async () => {
     const offer = await createOffer().then(response => response.body);
     const seat = await studentSeat();
+    const acceptance = await checkoutAcceptance(seat.cookie, 'PACKAGE', offer.id);
     await request(app).post(`/api/account/package-offers/${offer.id}/checkout`)
       .set('Cookie', seat.cookie).send({
-        idempotencyKey: `sold-price-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED',
+        idempotencyKey: `sold-price-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED', acceptance,
       }).expect(201);
 
     const priceChange = await request(app).patch(`/api/package-offers/${offer.id}`)
@@ -199,9 +237,10 @@ describe.sequential('Package offers and simulated checkout', () => {
   it('preserves the business currency after successful and refunded checkouts while allowing a no-op', async () => {
     const offer = await createOffer().then(response => response.body);
     const seat = await studentSeat();
+    const acceptance = await checkoutAcceptance(seat.cookie, 'PACKAGE', offer.id);
     const checkout = await request(app).post(`/api/account/package-offers/${offer.id}/checkout`)
       .set('Cookie', seat.cookie).send({
-        idempotencyKey: `currency-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED',
+        idempotencyKey: `currency-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED', acceptance,
       }).expect(201);
     const payment = await prisma.payment.findUniqueOrThrow({
       where: { paymentIntentId: checkout.body.paymentIntent.id },
@@ -237,8 +276,9 @@ describe.sequential('Package offers and simulated checkout', () => {
     const offer = await createOffer().then(response => response.body);
     const seat = await studentSeat();
     const key = `refunded-package-${randomUUID()}`;
+    const acceptance = await checkoutAcceptance(seat.cookie, 'PACKAGE', offer.id);
     const checkout = await request(app).post(`/api/account/package-offers/${offer.id}/checkout`)
-      .set('Cookie', seat.cookie).send({ idempotencyKey: key, simulatedOutcome: 'SUCCEEDED' }).expect(201);
+      .set('Cookie', seat.cookie).send({ idempotencyKey: key, simulatedOutcome: 'SUCCEEDED', acceptance }).expect(201);
     const payment = await prisma.payment.findUniqueOrThrow({
       where: { paymentIntentId: checkout.body.paymentIntent.id },
     });
@@ -247,14 +287,14 @@ describe.sequential('Package offers and simulated checkout', () => {
       .send({ reason: 'Package no longer needed' }).expect(200);
 
     const replay = await request(app).post(`/api/account/package-offers/${offer.id}/checkout`)
-      .set('Cookie', seat.cookie).send({ idempotencyKey: key, simulatedOutcome: 'SUCCEEDED' }).expect(200);
+      .set('Cookie', seat.cookie).send({ idempotencyKey: key, simulatedOutcome: 'SUCCEEDED', acceptance }).expect(200);
     expect(replay.body).toMatchObject({
       paymentIntent: { id: checkout.body.paymentIntent.id, kind: 'PACKAGE', status: 'REFUNDED' },
       package: { id: checkout.body.package.id, paid: false, state: 'UNPAID' },
       participant: null,
     });
     await request(app).post(`/api/account/package-offers/${offer.id}/checkout`)
-      .set('Cookie', seat.cookie).send({ idempotencyKey: key, simulatedOutcome: 'FAILED' }).expect(409);
+      .set('Cookie', seat.cookie).send({ idempotencyKey: key, simulatedOutcome: 'FAILED', acceptance }).expect(409);
     expect(await prisma.paymentIntent.count({ where: { userId: seat.account.id, idempotencyKey: key } })).toBe(1);
     expect(await prisma.lessonPackage.count({ where: { id: checkout.body.package.id } })).toBe(1);
     expect(await prisma.payment.count({ where: { paymentIntentId: checkout.body.paymentIntent.id } })).toBe(1);
@@ -265,7 +305,8 @@ describe.sequential('Package offers and simulated checkout', () => {
     const secondOffer = await createOffer({ name: 'Second pass' }).then(response => response.body);
     const seat = await studentSeat();
     const key = `failure-${randomUUID()}`;
-    const body = { idempotencyKey: key, simulatedOutcome: 'FAILED' as const };
+    const acceptance = await checkoutAcceptance(seat.cookie, 'PACKAGE', firstOffer.id);
+    const body = { idempotencyKey: key, simulatedOutcome: 'FAILED' as const, acceptance };
     const failed = await request(app).post(`/api/account/package-offers/${firstOffer.id}/checkout`)
       .set('Cookie', seat.cookie).send(body).expect(201);
     expect(failed.body).toMatchObject({ paymentIntent: { kind: 'PACKAGE', status: 'FAILED' }, package: null, participant: null });
@@ -297,8 +338,11 @@ describe.sequential('Package offers and simulated checkout', () => {
       dayOfWeek, startTime: '08:00', endTime: '20:00',
     })) });
     const offer = await createOffer().then(response => response.body);
+    const acceptance = await checkoutAcceptance(seat.cookie, 'PACKAGE', offer.id);
     const checkout = await request(app).post(`/api/account/package-offers/${offer.id}/checkout`)
-      .set('Cookie', seat.cookie).send({ idempotencyKey: `scope-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED' }).expect(201);
+      .set('Cookie', seat.cookie).send({
+        idempotencyKey: `scope-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED', acceptance,
+      }).expect(201);
     const packageId = checkout.body.package.id as string;
     await expect(prisma.lessonPackageService.create({ data: {
       packageId, businessId: club.business.id, serviceId: otherService.id,
@@ -334,9 +378,10 @@ describe.sequential('Package offers and simulated checkout', () => {
     } });
     const offer = await createOffer().then(response => response.body);
     const seat = await studentSeat();
+    const acceptance = await checkoutAcceptance(seat.cookie, 'PACKAGE', offer.id);
     const checkout = await request(app).post(`/api/account/package-offers/${offer.id}/checkout`)
       .set('Cookie', seat.cookie).send({
-        idempotencyKey: `group-package-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED',
+        idempotencyKey: `group-package-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED', acceptance,
       }).expect(201);
     const packageId = checkout.body.package.id as string;
 
@@ -383,8 +428,9 @@ describe.sequential('Package offers and simulated checkout', () => {
       amount: 3000, kind: 'STUDENT_TO_CLUB', method: 'CASH',
     } });
     const key = `booking-${randomUUID()}`;
+    const acceptance = await checkoutAcceptance(seat.cookie, 'BOOKING', participantId);
     const paid = await request(app).post(`/api/account/bookings/${participantId}/checkout`)
-      .set('Cookie', seat.cookie).send({ idempotencyKey: key, simulatedOutcome: 'SUCCEEDED' }).expect(201);
+      .set('Cookie', seat.cookie).send({ idempotencyKey: key, simulatedOutcome: 'SUCCEEDED', acceptance }).expect(201);
     expect(paid.body).toMatchObject({
       paymentIntent: { kind: 'BOOKING', status: 'SUCCEEDED', amount: 5000 },
       package: null, participant: { id: participantId, bookingId: created.bookings[0]!.id, paid: true },
@@ -393,17 +439,20 @@ describe.sequential('Package offers and simulated checkout', () => {
       .toMatchObject({ amount: 5000, method: 'SIMULATED_STRIPE', kind: 'STUDENT_TO_CLUB' });
 
     const replay = await request(app).post(`/api/account/bookings/${participantId}/checkout`)
-      .set('Cookie', seat.cookie).send({ idempotencyKey: key, simulatedOutcome: 'SUCCEEDED' }).expect(200);
+      .set('Cookie', seat.cookie).send({ idempotencyKey: key, simulatedOutcome: 'SUCCEEDED', acceptance }).expect(200);
     expect(replay.body.paymentIntent.id).toBe(paid.body.paymentIntent.id);
     await request(app).post(`/api/account/bookings/${participantId}/checkout`).set('Cookie', seat.cookie)
-      .send({ idempotencyKey: key, simulatedOutcome: 'FAILED' }).expect(409);
+      .send({ idempotencyKey: key, simulatedOutcome: 'FAILED', acceptance }).expect(409);
     await request(app).post(`/api/account/bookings/${participantId}/checkout`).set('Cookie', seat.cookie)
-      .send({ idempotencyKey: `already-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED' }).expect(409);
+      .send({ idempotencyKey: `already-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED', acceptance }).expect(409);
 
     const stranger = await createAccount(club);
     const strangerSession = await createSession(club, stranger.id);
     await request(app).post(`/api/account/bookings/${participantId}/checkout`).set('Cookie', strangerSession.cookie)
-      .send({ idempotencyKey: `cross-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED' }).expect(404);
+      .send({
+        idempotencyKey: `cross-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED',
+        acceptance: dummyCheckoutAcceptance('BOOKING'),
+      }).expect(404);
   });
 
   it('replays a refunded booking checkout as the original successful request', async () => {
@@ -413,8 +462,9 @@ describe.sequential('Package offers and simulated checkout', () => {
     }));
     const participantId = created.bookings[0]!.participants[0]!.id;
     const key = `refunded-booking-${randomUUID()}`;
+    const acceptance = await checkoutAcceptance(seat.cookie, 'BOOKING', participantId);
     const checkout = await request(app).post(`/api/account/bookings/${participantId}/checkout`)
-      .set('Cookie', seat.cookie).send({ idempotencyKey: key, simulatedOutcome: 'SUCCEEDED' }).expect(201);
+      .set('Cookie', seat.cookie).send({ idempotencyKey: key, simulatedOutcome: 'SUCCEEDED', acceptance }).expect(201);
     const payment = await prisma.payment.findUniqueOrThrow({
       where: { paymentIntentId: checkout.body.paymentIntent.id },
     });
@@ -423,14 +473,14 @@ describe.sequential('Package offers and simulated checkout', () => {
       .send({ reason: 'Booking payment refunded' }).expect(200);
 
     const replay = await request(app).post(`/api/account/bookings/${participantId}/checkout`)
-      .set('Cookie', seat.cookie).send({ idempotencyKey: key, simulatedOutcome: 'SUCCEEDED' }).expect(200);
+      .set('Cookie', seat.cookie).send({ idempotencyKey: key, simulatedOutcome: 'SUCCEEDED', acceptance }).expect(200);
     expect(replay.body).toMatchObject({
       paymentIntent: { id: checkout.body.paymentIntent.id, kind: 'BOOKING', status: 'REFUNDED' },
       package: null,
       participant: { id: participantId, bookingId: created.bookings[0]!.id, paid: false },
     });
     await request(app).post(`/api/account/bookings/${participantId}/checkout`)
-      .set('Cookie', seat.cookie).send({ idempotencyKey: key, simulatedOutcome: 'FAILED' }).expect(409);
+      .set('Cookie', seat.cookie).send({ idempotencyKey: key, simulatedOutcome: 'FAILED', acceptance }).expect(409);
     expect(await prisma.paymentIntent.count({ where: { userId: seat.account.id, idempotencyKey: key } })).toBe(1);
     expect(await prisma.payment.count({ where: { paymentIntentId: checkout.body.paymentIntent.id } })).toBe(1);
   });
@@ -441,8 +491,11 @@ describe.sequential('Package offers and simulated checkout', () => {
       studentId: seat.student.id, student: undefined, startAt: club.starts.plus({ days: 3 }).toISO()!,
     }));
     const participantId = created.bookings[0]!.participants[0]!.id;
+    const acceptance = await checkoutAcceptance(seat.cookie, 'BOOKING', participantId);
     const failed = await request(app).post(`/api/account/bookings/${participantId}/checkout`)
-      .set('Cookie', seat.cookie).send({ idempotencyKey: `booking-fail-${randomUUID()}`, simulatedOutcome: 'FAILED' }).expect(201);
+      .set('Cookie', seat.cookie).send({
+        idempotencyKey: `booking-fail-${randomUUID()}`, simulatedOutcome: 'FAILED', acceptance,
+      }).expect(201);
     expect(failed.body).toMatchObject({ paymentIntent: { kind: 'BOOKING', status: 'FAILED', amount: 8000 } });
     expect(await prisma.payment.count({ where: { bookingId: created.bookings[0]!.id } })).toBe(0);
     expect(await prisma.participant.findUniqueOrThrow({ where: { id: participantId } })).toMatchObject({ paid: false });
@@ -460,10 +513,12 @@ describe.sequential('Package offers and simulated checkout', () => {
     await request(app).post(`/api/account/package-offers/${offer.id}/checkout`)
       .set('Cookie', seat.cookie).send({
         idempotencyKey: `demo-package-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED',
+        acceptance: dummyCheckoutAcceptance('PACKAGE'),
       }).expect(404);
     const bookingCheckout = await request(app).post(`/api/account/bookings/${participantId}/checkout`)
       .set('Cookie', seat.cookie).send({
         idempotencyKey: `demo-booking-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED',
+        acceptance: dummyCheckoutAcceptance('BOOKING'),
       }).expect(409);
     expect(bookingCheckout.body.error).toBe('This historical booking is read-only and cannot receive a new payment');
 

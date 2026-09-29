@@ -8,6 +8,11 @@ import { asyncRoute, HttpError, initials, requireClubPermission } from './http.j
 import { notifyWorkspace } from './notifications.js';
 import { createBookingAccountAlerts } from './account-notifications.js';
 import { lockInstructors } from './scheduling.js';
+import { assertLegalAcceptanceEnabled } from './legal-policy-gate.js';
+import {
+  acceptedCheckoutData, assertCheckoutAcceptance, assertStoredCheckoutAcceptance,
+  bookingCheckoutReview, checkoutAcceptanceEvidence, checkoutAcceptanceSchema, packageCheckoutReview,
+} from './payments/compliance.js';
 
 export const commerceRouter = Router();
 
@@ -57,10 +62,16 @@ const accountOffersQuery = z.object({ businessSlug: z.string().trim().min(1).max
 const checkoutInput = z.object({
   idempotencyKey: z.string().trim().min(8).max(200),
   simulatedOutcome: z.enum(['SUCCEEDED', 'FAILED']),
+  acceptance: checkoutAcceptanceSchema,
 }).strict();
 
 const offerInclude = {
-  business: { select: { name: true, slug: true, currency: true, kind: true, isDemo: true, legacyReadOnly: true } },
+  business: { select: {
+    id: true, name: true, slug: true, currency: true, timezone: true, cancellationHours: true,
+    kind: true, isDemo: true, legacyReadOnly: true, legalName: true, registrationNumber: true,
+    supportEmail: true, supportAddress: true, gstRegistrationStatus: true,
+    gstRegistrationNumber: true, pricesIncludeGst: true,
+  } },
   services: { include: { service: { select: { id: true, name: true } } }, orderBy: { serviceId: 'asc' as const } },
   rentalLocations: { include: { location: { select: { id: true, name: true } } }, orderBy: { locationId: 'asc' as const } },
 } satisfies Prisma.PackageOfferInclude;
@@ -295,6 +306,7 @@ async function findReplay(tx: Tx, userId: string, idempotencyKey: string) {
 }
 
 commerceRouter.post('/account/package-offers/:id/checkout', requireAuth, requireStudent, asyncRoute(async (req, res) => {
+  assertLegalAcceptanceEnabled();
   if (!req.auth.user.email) throw new HttpError(403, 'An account email is required to purchase a package');
   const input = checkoutInput.parse(req.body);
   const result = await prisma.$transaction(async tx => {
@@ -302,6 +314,7 @@ commerceRouter.post('/account/package-offers/:id/checkout', requireAuth, require
     const target = { kind: 'PACKAGE' as const, packageOfferId: req.params.id, participantId: null };
     if (existing) {
       assertMatchingReplay(existing, target, input.simulatedOutcome);
+      assertStoredCheckoutAcceptance(existing, input.acceptance);
       return { replay: true, body: await replayResult(tx, existing) };
     }
     await tx.$queryRaw`SELECT id FROM "PackageOffer" WHERE id = ${req.params.id} FOR UPDATE`;
@@ -309,6 +322,18 @@ commerceRouter.post('/account/package-offers/:id/checkout', requireAuth, require
     if (!offer || offer.business.kind !== 'CLUB' || offer.business.isDemo || offer.business.legacyReadOnly) {
       throw new HttpError(404, 'Package offer not found');
     }
+    const review = packageCheckoutReview({
+      purchaser: { name: req.auth.user.name, email: req.auth.user.email! },
+      business: offer.business, offer,
+      scopeNames: [
+        ...offer.services.map(scope => `Class: ${scope.service.name}`),
+        ...offer.rentalLocations.map(scope => `Court rental: ${scope.location.name}`),
+      ],
+    });
+    assertCheckoutAcceptance(review, input.acceptance);
+    const acceptanceEvidence = acceptedCheckoutData(review, input.acceptance, checkoutAcceptanceEvidence({
+      sessionId: req.auth.session.id, ip: req.ip, userAgent: req.get('user-agent'),
+    }));
     await validateOfferScopes(
       tx, offer.businessId, offer.services.map(scope => scope.serviceId),
       offer.rentalLocations.map(scope => scope.locationId),
@@ -318,7 +343,12 @@ commerceRouter.post('/account/package-offers/:id/checkout', requireAuth, require
       const intent = await tx.paymentIntent.create({ data: {
         userId: req.auth.user.id, businessId: offer.businessId, kind: 'PACKAGE', packageOfferId: offer.id,
         amount: offer.price, currency: offer.business.currency, status: 'FAILED', providerReference: `sim_pi_${randomUUID()}`,
-        idempotencyKey: input.idempotencyKey, failedAt: now,
+        idempotencyKey: input.idempotencyKey, failedAt: now, checkoutSnapshot: {
+          kind: 'PACKAGE', name: offer.name, totalCredits: offer.totalCredits, validityDays: offer.validityDays,
+          serviceIds: offer.services.map(scope => scope.serviceId),
+          rentalLocationIds: offer.rentalLocations.map(scope => scope.locationId), review,
+        },
+        ...acceptanceEvidence,
       } });
       return { replay: false, body: await replayResult(tx, intent) };
     }
@@ -347,7 +377,12 @@ commerceRouter.post('/account/package-offers/:id/checkout', requireAuth, require
     const intent = await tx.paymentIntent.create({ data: {
       userId: req.auth.user.id, businessId: offer.businessId, kind: 'PACKAGE', packageOfferId: offer.id, packageId: pkg.id,
       amount: offer.price, currency: offer.business.currency, status: 'SUCCEEDED', providerReference: `sim_pi_${randomUUID()}`,
-      idempotencyKey: input.idempotencyKey, confirmedAt: now,
+      idempotencyKey: input.idempotencyKey, confirmedAt: now, checkoutSnapshot: {
+        kind: 'PACKAGE', name: offer.name, totalCredits: offer.totalCredits, validityDays: offer.validityDays,
+        serviceIds: offer.services.map(scope => scope.serviceId),
+        rentalLocationIds: offer.rentalLocations.map(scope => scope.locationId), review,
+      },
+      ...acceptanceEvidence,
     } });
     await tx.payment.create({ data: {
       businessId: offer.businessId, studentId: student.id, packageId: pkg.id, paymentIntentId: intent.id,
@@ -367,12 +402,14 @@ commerceRouter.post('/account/package-offers/:id/checkout', requireAuth, require
 }));
 
 commerceRouter.post('/account/bookings/:participantId/checkout', requireAuth, requireStudent, asyncRoute(async (req, res) => {
+  assertLegalAcceptanceEnabled();
   const input = checkoutInput.parse(req.body);
   const result = await prisma.$transaction(async tx => {
     const existing = await findReplay(tx, req.auth.user.id, input.idempotencyKey);
     const target = { kind: 'BOOKING' as const, packageOfferId: null, participantId: req.params.participantId };
     if (existing) {
       assertMatchingReplay(existing, target, input.simulatedOutcome);
+      assertStoredCheckoutAcceptance(existing, input.acceptance);
       return { replay: true, body: await replayResult(tx, existing) };
     }
     const initial = await tx.participant.findFirst({
@@ -390,7 +427,9 @@ commerceRouter.post('/account/bookings/:participantId/checkout', requireAuth, re
       where: { id: req.params.participantId, studentId: initial.studentId, student: { userId: req.auth.user.id } },
       include: {
         student: true,
-        booking: { include: { business: { select: { name: true, currency: true, kind: true, isDemo: true, legacyReadOnly: true } } } },
+        booking: { include: {
+          business: true, service: true, instructor: true, location: true,
+        } },
       },
     });
     if (!participant) throw new HttpError(404, 'Booking participant not found');
@@ -414,12 +453,26 @@ commerceRouter.post('/account/bookings/:participantId/checkout', requireAuth, re
     });
     const outstanding = participant.price - (collected._sum.amount ?? 0);
     if (outstanding <= 0) throw new HttpError(409, 'This booking is already paid');
+    const review = bookingCheckoutReview({
+      purchaser: { name: req.auth.user.name, email: req.auth.user.email! },
+      business: participant.booking.business, booking: participant.booking, participant, amount: outstanding,
+      service: participant.booking.service, instructor: participant.booking.instructor,
+      location: participant.booking.location,
+    });
+    assertCheckoutAcceptance(review, input.acceptance);
+    const acceptanceEvidence = acceptedCheckoutData(review, input.acceptance, checkoutAcceptanceEvidence({
+      sessionId: req.auth.session.id, ip: req.ip, userAgent: req.get('user-agent'),
+    }));
     const now = new Date();
     if (input.simulatedOutcome === 'FAILED') {
       const intent = await tx.paymentIntent.create({ data: {
         userId: req.auth.user.id, businessId: participant.booking.businessId, kind: 'BOOKING', participantId: participant.id,
         amount: outstanding, currency: participant.booking.business.currency, status: 'FAILED',
         providerReference: `sim_pi_${randomUUID()}`, idempotencyKey: input.idempotencyKey, failedAt: now,
+        checkoutSnapshot: {
+          kind: 'BOOKING', bookingId: participant.bookingId, studentId: participant.studentId, review,
+        },
+        ...acceptanceEvidence,
       } });
       return { replay: false, body: await replayResult(tx, intent) };
     }
@@ -427,6 +480,10 @@ commerceRouter.post('/account/bookings/:participantId/checkout', requireAuth, re
       userId: req.auth.user.id, businessId: participant.booking.businessId, kind: 'BOOKING', participantId: participant.id,
       amount: outstanding, currency: participant.booking.business.currency, status: 'SUCCEEDED',
       providerReference: `sim_pi_${randomUUID()}`, idempotencyKey: input.idempotencyKey, confirmedAt: now,
+      checkoutSnapshot: {
+        kind: 'BOOKING', bookingId: participant.bookingId, studentId: participant.studentId, review,
+      },
+      ...acceptanceEvidence,
     } });
     await tx.payment.create({ data: {
       businessId: participant.booking.businessId, studentId: participant.studentId, bookingId: participant.bookingId,

@@ -5,20 +5,30 @@ import { config } from '../config.js';
 import { prisma } from '../db.js';
 import { requireAuth, requireStudent } from '../auth.js';
 import { asyncRoute, hasClubPermission, HttpError } from '../http.js';
-import { createOrResumeProviderCheckout, checkoutIntentJson, prepareCheckout } from './checkout.js';
+import { checkoutReviewFor, createOrResumeProviderCheckout, checkoutIntentJson, prepareCheckout } from './checkout.js';
+import { checkoutAcceptanceSchema, liveCheckoutBlockReasons } from './compliance.js';
 import { applyProviderPaymentIntent, providerIntentFromWebhook } from './fulfillment.js';
 import { disabledPaymentProvider, PaymentProviderError, type PaymentProvider } from './provider.js';
 import { StripePaymentProvider } from './stripe.js';
 import { assertStripeEventMode, constructStripeWebhookEvent, paymentProviderEventRecord, type StripeWebhookEvent } from './webhooks.js';
 import { applyProviderRefundWebhook, providerRefundFromWebhook } from './refunds.js';
+import { applyProviderRiskCaseWebhook, providerRiskCaseFromWebhook } from './risk.js';
 
 const checkoutInput = z.object({
   kind: z.enum(['PACKAGE', 'BOOKING']),
   targetId: z.string().trim().min(1).max(200),
   idempotencyKey: z.string().trim().min(8).max(200),
+  acceptance: checkoutAcceptanceSchema,
 }).strict();
+const checkoutReviewQuery = checkoutInput.pick({ kind: true, targetId: true });
 
 const accountQuery = z.object({ businessId: z.string().trim().min(1).max(200) }).strict();
+const firstQueryValue = (value: unknown) => Array.isArray(value) ? value[0] : value;
+const riskCasesQuery = z.object({
+  kind: z.preprocess(firstQueryValue, z.enum(['DISPUTE', 'INQUIRY', 'EARLY_FRAUD_WARNING']).optional()),
+  status: z.preprocess(firstQueryValue, z.string().trim().regex(/^[A-Z][A-Z0-9_]{0,63}$/u).optional()),
+  limit: z.preprocess(firstQueryValue, z.coerce.number().int().min(1).max(100).default(50)),
+}).strict();
 
 export type PaymentRuntime = {
   mode: 'disabled' | 'stripe' | 'simulated';
@@ -60,11 +70,13 @@ export function createPaymentsRouter(runtime: PaymentRuntime = configuredPayment
   const router = Router();
 
   router.get('/payments/capabilities', requireAuth, asyncRoute(async (_req, res) => {
+    const blockedReasons = liveCheckoutBlockReasons();
     res.json({
       mode: runtime.mode, enabled: runtime.mode !== 'disabled',
-      liveCheckout: runtime.mode === 'stripe' && runtime.provider.enabled,
+      liveCheckout: runtime.mode === 'stripe' && runtime.provider.enabled && blockedReasons.length === 0,
       simulatedCheckout: runtime.mode === 'simulated',
       publishableKey: runtime.mode === 'stripe' ? runtime.publishableKey : null,
+      blockedReasons,
     });
   }));
 
@@ -86,6 +98,35 @@ export function createPaymentsRouter(runtime: PaymentRuntime = configuredPayment
     });
   }));
 
+  router.get('/payments/risk-cases', requireAuth, asyncRoute(async (req, res) => {
+    if (!req.auth.business || !hasClubPermission(req.auth, 'PAYMENTS_VIEW')) {
+      throw new HttpError(403, 'Select a club with payments view permission to continue');
+    }
+    const query = riskCasesQuery.parse(req.query);
+    const cases = await prisma.paymentRiskCase.findMany({
+      where: { businessId: req.auth.business.id, kind: query.kind, status: query.status },
+      select: {
+        id: true, paymentIntentId: true, providerCaseId: true, kind: true, status: true, reason: true,
+        amount: true, currency: true, responseDueAt: true, providerCreatedAt: true,
+        lastProviderEventAt: true, resolvedAt: true, owner: { select: { name: true, username: true } },
+      },
+      orderBy: [{ lastProviderEventAt: 'desc' }, { id: 'desc' }],
+      take: query.limit,
+    });
+    res.json({ riskCases: cases.map(item => ({
+      ...item, responseDueAt: item.responseDueAt?.toISOString() ?? null,
+      providerCreatedAt: item.providerCreatedAt?.toISOString() ?? null,
+      lastProviderEventAt: item.lastProviderEventAt.toISOString(),
+      resolvedAt: item.resolvedAt?.toISOString() ?? null,
+    })) });
+  }));
+
+  router.get('/payments/checkout-review', requireAuth, requireStudent, asyncRoute(async (req, res) => {
+    const input = checkoutReviewQuery.parse(req.query);
+    const review = await checkoutReviewFor({ userId: req.auth.user.id, ...input });
+    res.json({ review });
+  }));
+
   router.post('/payments/checkout-intents', requireAuth, requireStudent, asyncRoute(async (req, res) => {
     if (runtime.mode !== 'stripe' || !runtime.provider.enabled) {
       throw new HttpError(503, runtime.mode === 'simulated'
@@ -93,7 +134,10 @@ export function createPaymentsRouter(runtime: PaymentRuntime = configuredPayment
         : 'Online payments are not configured');
     }
     const input = checkoutInput.parse(req.body);
-    const preparation = await prepareCheckout({ userId: req.auth.user.id, ...input });
+    const preparation = await prepareCheckout({
+      userId: req.auth.user.id, ...input, sessionId: req.auth.session.id,
+      ip: req.ip, userAgent: req.get('user-agent'),
+    });
     try {
       const result = await createOrResumeProviderCheckout(runtime.provider, preparation);
       res.status(result.replay ? 200 : 201).json({
@@ -102,6 +146,7 @@ export function createPaymentsRouter(runtime: PaymentRuntime = configuredPayment
         // browser needs this public account identifier when initializing
         // Stripe.js so it can confirm the returned client secret.
         connectedAccountId: preparation.providerAccountReference,
+        review: preparation.review,
       });
     } catch (error) { providerHttpError(error); }
   }));
@@ -162,6 +207,11 @@ export async function processStripeWebhookEvent(event: StripeWebhookEvent) {
       });
     }
     await applyProviderPaymentIntent(intent.id, providerIntent, event.createdAt ?? new Date());
+    return;
+  }
+  const providerRiskCase = providerRiskCaseFromWebhook(event);
+  if (providerRiskCase) {
+    await applyProviderRiskCaseWebhook(event, providerRiskCase);
     return;
   }
   await updateConnectedAccount(event);

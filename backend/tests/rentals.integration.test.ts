@@ -10,6 +10,28 @@ import {
 beforeAll(verifyTestDatabase, 15_000);
 afterAll(async () => { await prisma.$disconnect(); });
 
+type CheckoutPolicyKind = 'TERMS' | 'CANCELLATION_REFUNDS' | 'PACKAGE_TERMS';
+type CheckoutReviewWire = {
+  reviewHash: string;
+  policies: Array<{ kind: CheckoutPolicyKind; version: string }>;
+};
+
+async function packageCheckoutAcceptance(cookie: string, targetId: string) {
+  const response = await request(app).get('/api/payments/checkout-review')
+    .set('Cookie', cookie).query({ kind: 'PACKAGE', targetId }).expect(200);
+  const review = response.body.review as CheckoutReviewWire;
+  const policyVersion = (kind: CheckoutPolicyKind) => {
+    const policy = review.policies.find(candidate => candidate.kind === kind);
+    if (!policy) throw new Error(`Checkout review omitted ${kind}`);
+    return policy.version;
+  };
+  return {
+    accepted: true as const, reviewHash: review.reviewHash, termsVersion: policyVersion('TERMS'),
+    cancellationRefundPolicyVersion: policyVersion('CANCELLATION_REFUNDS'),
+    packageTermsVersion: policyVersion('PACKAGE_TERMS'),
+  };
+}
+
 const configBody = {
   sport: 'Badminton', rules: 'Non-marking shoes only.', amenities: ['Showers', 'Racket hire'],
   unitLabel: 'Court', price: 2_400, startInterval: 30, minDuration: 60, durationIncrement: 30,
@@ -396,9 +418,10 @@ describe.sequential('venue rentals', () => {
       name: 'Four court visits', description: 'Use on the club courts', price: 8_000,
       totalCredits: 4, validityDays: 90, serviceIds: [], rentalLocationIds: [club.location.id],
     }).expect(201);
+    const acceptance = await packageCheckoutAcceptance(student.cookie, offer.body.id);
     const checkout = await request(app).post(`/api/account/package-offers/${offer.body.id}/checkout`)
       .set('Cookie', student.cookie).send({
-        idempotencyKey: `rental-package-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED',
+        idempotencyKey: `rental-package-${randomUUID()}`, simulatedOutcome: 'SUCCEEDED', acceptance,
       }).expect(201);
     const packageId = checkout.body.package.id as string;
     const startAt = futureStart().toUTC().toISO();

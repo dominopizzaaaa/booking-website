@@ -862,7 +862,7 @@ async function createReservation(req: AccountRequest, locationId: string, input:
       } });
     }
     // The legacy Payment ledger only represents a student payer or a coach
-    // payee. For coach and club renters the intent is therefore the complete
+    // payout recipient. For coach and club renters the intent is therefore the complete
     // financial audit record; fabricating a Student row would corrupt identity.
     return { replay: false, reservation, paymentIntent: intent };
   }, { timeout: 30_000 });

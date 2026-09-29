@@ -43,6 +43,10 @@ const exceptionJson = (exception: AvailabilityException) => ({ id: exception.id,
 const businessJson = (business: Business) => ({ id: business.id, name: business.name, slug: business.slug,
   ownerName: business.ownerName, email: business.email, timezone: business.timezone, currency: business.currency,
   color: business.color, tagline: business.tagline, cancellationHours: business.cancellationHours,
+  legalName: business.legalName, registrationNumber: business.registrationNumber,
+  supportEmail: business.supportEmail, supportAddress: business.supportAddress,
+  gstRegistrationStatus: business.gstRegistrationStatus, gstRegistrationNumber: business.gstRegistrationNumber,
+  pricesIncludeGst: business.pricesIncludeGst,
   kind: business.kind, isDemo: business.isDemo });
 function studentJson(student: StudentWithBookings) {
   const lastBookingAt = student.participants.reduce<Date | null>((latest, participant) =>
@@ -611,16 +615,32 @@ crudRouter.delete('/exceptions/:id', requireCoachOrClubPermission('AVAILABILITY_
   res.json({ ok: true });
 }));
 
+const optionalMerchantText = (maximum: number) => z.string().trim().max(maximum);
+const nullableMerchantText = (maximum: number) => z.string().trim().max(maximum)
+  .transform(value => value || null).nullable();
+const merchantSupportEmail = z.string().trim().max(254).refine(
+  value => !value || z.string().email().safeParse(value).success, 'Use a valid support email',
+).transform(value => value.toLowerCase());
 const businessSchema = z.object({ name: nameSchema.optional(), ownerName: nameSchema.optional(), email: emailSchema.optional(),
   timezone: z.string().trim().max(100).refine(zone => IANAZone.isValidZone(zone), 'Choose a valid IANA timezone').optional(),
   currency: z.string().trim().regex(/^[A-Za-z]{3}$/, 'Use a three-letter currency code').transform(value => value.toUpperCase()).optional(),
   color: colorSchema.optional(), tagline: z.string().trim().max(500).optional(),
-  cancellationHours: z.number().int().min(0).max(720).optional() }).strict();
+  cancellationHours: z.number().int().min(0).max(720).optional(),
+  legalName: optionalMerchantText(200).optional(),
+  registrationNumber: nullableMerchantText(120).optional(),
+  supportEmail: merchantSupportEmail.optional(),
+  supportAddress: optionalMerchantText(1000).optional(),
+  gstRegistrationStatus: z.enum(['NOT_DECLARED', 'NOT_REGISTERED', 'REGISTERED']).optional(),
+  gstRegistrationNumber: nullableMerchantText(120).optional(),
+  pricesIncludeGst: z.boolean().nullable().optional(),
+}).strict();
 crudRouter.patch('/business', requireClubPermission('SETTINGS_MANAGE'), asyncRoute(async (req, res) => {
   const input = businessSchema.parse(req.body);
   const businessId = req.auth.business.id;
   const business = await prisma.$transaction(async tx => {
-    const current = await tx.business.findUniqueOrThrow({ where: { id: businessId }, select: { currency: true } });
+    const current = await tx.business.findUniqueOrThrow({ where: { id: businessId }, select: {
+      currency: true, gstRegistrationStatus: true, gstRegistrationNumber: true, pricesIncludeGst: true,
+    } });
     if (input.currency !== undefined && input.currency !== current.currency) {
       const completedCheckout = await tx.paymentIntent.findFirst({
         where: { businessId, status: { in: ['SUCCEEDED', 'REFUNDED'] } },
@@ -629,6 +649,17 @@ crudRouter.patch('/business', requireClubPermission('SETTINGS_MANAGE'), asyncRou
       if (completedCheckout) {
         throw new HttpError(409, 'Currency cannot change after a checkout has succeeded or been refunded');
       }
+    }
+    const gstRegistrationStatus = input.gstRegistrationStatus ?? current.gstRegistrationStatus;
+    const gstRegistrationNumber = input.gstRegistrationNumber === undefined
+      ? current.gstRegistrationNumber : input.gstRegistrationNumber;
+    const pricesIncludeGst = input.pricesIncludeGst === undefined
+      ? current.pricesIncludeGst : input.pricesIncludeGst;
+    if (gstRegistrationStatus === 'REGISTERED' && (!gstRegistrationNumber || pricesIncludeGst === null)) {
+      throw new HttpError(400, 'GST-registered clubs must provide their GST number and displayed-price treatment');
+    }
+    if (gstRegistrationStatus !== 'REGISTERED' && (gstRegistrationNumber !== null || pricesIncludeGst !== null)) {
+      throw new HttpError(400, 'GST number and price treatment apply only to GST-registered clubs');
     }
     const updated = await tx.business.update({ where: { id: businessId }, data: input });
     if (req.auth.user.accountType === 'CLUB' && input.name !== undefined) {
