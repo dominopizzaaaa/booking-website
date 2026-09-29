@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
+import bcrypt from 'bcryptjs';
 import { app } from '../src/app.js';
 import { config } from '../src/config.js';
 import { createBookings, cancelBooking } from '../src/scheduling.js';
@@ -451,14 +452,16 @@ describe.sequential('Session chat', () => {
 
   it('lets a platform admin read every chat without posting', async () => {
     const original = config.adminPassword;
+    const originalOperators = config.adminOperators;
     config.adminPassword = 'test-admin-password-chat';
+    config.adminOperators = [{ id: 'chat_operator', name: 'Chat Operator', email: 'chat.operator@example.test', passwordHash: await bcrypt.hash(config.adminPassword, 12) }];
     try {
       const ivy = await student('Ivy Admin View');
       const thread = await threadFor(await bookFor(ivy));
       await request(app).post(`/api/chats/${thread.id}/messages`).set('Cookie', ivy.cookie).send({ body: 'Hello coach' });
 
       expect((await request(app).get('/api/admin/chats')).status).toBe(401);
-      const login = await request(app).post('/api/admin/login').send({ password: 'test-admin-password-chat' });
+      const login = await request(app).post('/api/admin/login').send({ email: 'chat.operator@example.test', password: 'test-admin-password-chat' });
       const admin = login.headers['set-cookie'];
       const list = await request(app).get('/api/admin/chats').query({ q: 'Ivy Admin' }).set('Cookie', admin);
       expect(list.status).toBe(200);
@@ -469,6 +472,7 @@ describe.sequential('Session chat', () => {
       expect(detail.body.messages.map((message: { body: string }) => message.body)).toContain('Hello coach');
     } finally {
       config.adminPassword = original;
+      config.adminOperators = originalOperators;
     }
   });
 });

@@ -281,7 +281,7 @@ async function expectNoWcagViolations(page: Page) {
 
 async function mockAdmin(page: Page) {
   const businesses = [adminBusiness, adminDemoBusiness];
-  await page.route('**/api/admin/session', route => route.fulfill({ json: { configured: true, authenticated: true } }));
+  await page.route('**/api/admin/session', route => route.fulfill({ json: { configured: true, authenticated: true, authMode: 'named', sensitiveAccess: true, operator: { id: 'ops_a11y', name: 'A11y Operator', email: 'a11y@example.test' } } }));
   await page.route('**/api/admin/overview', route => route.fulfill({
     json: {
       generatedAt: '2026-09-19T08:00:00.000Z',
@@ -365,7 +365,7 @@ async function freezeClock(page: Page) {
 test.describe('automated WCAG checks', () => {
   test('unconfigured admin state has no detectable WCAG A or AA violations', async ({ page }) => {
     await page.route('**/api/admin/session', route => route.fulfill({
-      json: { configured: false, authenticated: false },
+      json: { configured: false, authenticated: false, authMode: 'disabled', operator: null, sensitiveAccess: false },
     }));
 
     await page.goto('/admin');
@@ -375,20 +375,21 @@ test.describe('automated WCAG checks', () => {
 
   test('admin login and error states have no detectable WCAG A or AA violations', async ({ page }) => {
     await page.route('**/api/admin/session', route => route.fulfill({
-      json: { configured: true, authenticated: false },
+      json: { configured: true, authenticated: false, authMode: 'named', operator: null, sensitiveAccess: false },
     }));
     await page.route('**/api/admin/login', route => route.fulfill({
       status: 401,
-      json: { error: 'Incorrect admin password.' },
+      json: { error: 'Incorrect admin email or password.' },
     }));
 
     await page.goto('/admin');
     await expect(page.getByRole('heading', { name: 'Admin sign in' })).toBeVisible();
     await expectNoWcagViolations(page);
 
-    await page.getByLabel('Admin password').fill('incorrect-password');
-    await page.getByRole('button', { name: 'Unlock admin console' }).click();
-    await expect(page.getByRole('alert').filter({ hasText: 'Incorrect admin password.' })).toHaveText('Incorrect admin password.');
+    await page.getByLabel('Operator email').fill('operator@example.test');
+    await page.getByLabel('Password').fill('incorrect-password');
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'Incorrect admin email or password.' })).toHaveText('Incorrect admin email or password.');
     await expectNoWcagViolations(page);
   });
 

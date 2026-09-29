@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
+import bcrypt from 'bcryptjs';
 import { app } from '../src/app.js';
 import { config } from '../src/config.js';
 import {
@@ -310,13 +311,15 @@ describe.sequential('Account chat', () => {
 
   it('includes account conversations in the read-only admin console without leaking account identifiers', async () => {
     const original = config.adminPassword;
+    const originalOperators = config.adminOperators;
     config.adminPassword = 'test-admin-password-account-chat';
+    config.adminOperators = [{ id: 'account_chat_operator', name: 'Account Chat Operator', email: 'account.chat@example.test', passwordHash: await bcrypt.hash(config.adminPassword, 12) }];
     try {
       const student = await person('Admin Account Chat');
       const threadId = (await openConversation(student.cookie, club.user.username).expect(200)).body.threadId as string;
       await request(app).post(`/api/chats/${threadId}/messages`).set('Cookie', student.cookie)
         .send({ body: 'Admin-visible account message' }).expect(201);
-      const login = await request(app).post('/api/admin/login').send({ password: config.adminPassword }).expect(200);
+      const login = await request(app).post('/api/admin/login').send({ email: 'account.chat@example.test', password: config.adminPassword }).expect(200);
       const admin = login.headers['set-cookie'];
       expect((await request(app).get('/api/admin/chats').query({ q: student.username }).set('Cookie', admin).expect(200)).body)
         .toMatchObject({ threads: [], accountChatAvailable: false });
@@ -335,6 +338,7 @@ describe.sequential('Account chat', () => {
       }
     } finally {
       config.adminPassword = original;
+      config.adminOperators = originalOperators;
     }
   });
 });

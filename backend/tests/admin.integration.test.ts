@@ -1,13 +1,13 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
+import bcrypt from 'bcryptjs';
 import { app } from '../src/app.js';
 import { config } from '../src/config.js';
 import { createStudent, inputFor, prisma, TestTenants, verifyTestDatabase } from './fixtures.js';
 import { createBookings } from '../src/scheduling.js';
 
-// The admin console is gated by a single ADMIN_PASSWORD held only in the host
-// environment. config.adminPassword is read at request time, so the suite sets
-// it directly rather than depending on process start-up order.
+// Production admin sessions identify an environment-configured named operator.
+// The suite installs one directly so it does not depend on process start-up order.
 const PASSWORD = 'test-admin-password-123';
 beforeAll(verifyTestDatabase, 15_000);
 afterAll(async () => { await prisma.$disconnect(); });
@@ -15,12 +15,20 @@ afterAll(async () => { await prisma.$disconnect(); });
 describe.sequential('Platform admin console', () => {
   let tenants: TestTenants;
   const original = config.adminPassword;
+  const originalOperators = config.adminOperators;
 
-  beforeEach(() => { config.adminPassword = PASSWORD; tenants = new TestTenants(); });
-  afterEach(async () => { config.adminPassword = original; await tenants.cleanup(); });
+  beforeEach(async () => {
+    config.adminPassword = PASSWORD;
+    config.adminOperators = [{
+      id: 'admin_test_operator', name: 'Admin Test Operator', email: 'admin@example.test',
+      passwordHash: await bcrypt.hash(PASSWORD, 12),
+    }];
+    tenants = new TestTenants();
+  });
+  afterEach(async () => { config.adminPassword = original; config.adminOperators = originalOperators; await tenants.cleanup(); });
 
   const signIn = async () => {
-    const res = await request(app).post('/api/admin/login').send({ password: PASSWORD });
+    const res = await request(app).post('/api/admin/login').send({ email: 'admin@example.test', password: PASSWORD });
     expect(res.status).toBe(200);
     return res.headers['set-cookie'];
   };
@@ -72,7 +80,7 @@ describe.sequential('Platform admin console', () => {
   });
 
   it('rejects an incorrect password and rate-limits nothing on success', async () => {
-    const wrong = await request(app).post('/api/admin/login').send({ password: 'nope' });
+    const wrong = await request(app).post('/api/admin/login').send({ email: 'admin@example.test', password: 'nope' });
     expect(wrong.status).toBe(401);
     const cookie = await signIn();
     const authed = await request(app).get('/api/admin/session').set('Cookie', cookie);
@@ -302,7 +310,7 @@ describe.sequential('Platform admin console', () => {
 
   it('treats a session as invalid once the password is rotated', async () => {
     const cookie = await signIn();
-    config.adminPassword = 'a-different-password-entirely';
+    config.adminOperators = [{ ...config.adminOperators[0]!, passwordHash: await bcrypt.hash('a-different-password-entirely', 12) }];
     const res = await request(app).get('/api/admin/overview').set('Cookie', cookie);
     expect(res.status).toBe(401);
   });

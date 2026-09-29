@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
+import bcrypt from 'bcryptjs';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { app } from '../src/app.js';
 import { config } from '../src/config.js';
@@ -13,19 +14,25 @@ describe.sequential('The platform business directory', () => {
   let tenants: TestTenants;
   let f: Fixture;
   let cookie: string[];
-  const original = config.adminPassword;
+  const originalAdminPassword = config.adminPassword;
+  const originalAdminOperators = config.adminOperators;
+  const originalRealBusinessDeletionEnabled = config.realBusinessDeletionEnabled;
 
   beforeEach(async () => {
     config.adminPassword = PASSWORD;
+    config.adminOperators = [{ id: 'directory_operator', name: 'Directory Operator', email: 'directory@example.test', passwordHash: await bcrypt.hash(PASSWORD, 12) }];
+    config.realBusinessDeletionEnabled = true;
     tenants = new TestTenants();
     f = await tenants.fixture();
-    const signIn = await request(app).post('/api/admin/login').send({ password: PASSWORD });
+    const signIn = await request(app).post('/api/admin/login').send({ email: 'directory@example.test', password: PASSWORD });
     expect(signIn.status).toBe(200);
     cookie = signIn.headers['set-cookie'] as unknown as string[];
   });
 
   afterEach(async () => {
-    config.adminPassword = original;
+    config.adminPassword = originalAdminPassword;
+    config.adminOperators = originalAdminOperators;
+    config.realBusinessDeletionEnabled = originalRealBusinessDeletionEnabled;
     await tenants.cleanup();
   });
 
@@ -117,8 +124,19 @@ describe.sequential('The platform business directory', () => {
 
   it('refuses the directory without an admin session and once the password rotates', async () => {
     expect((await request(app).get('/api/admin/businesses')).status).toBe(401);
-    config.adminPassword = 'a-different-admin-password';
+    config.adminOperators = [{ ...config.adminOperators[0]!, passwordHash: await bcrypt.hash('a-different-admin-password', 12) }];
     expect((await list()).status).toBe(401);
+  });
+
+  it('reports whether business deletion is unrestricted or limited to demos', async () => {
+    const unrestricted = await request(app).get('/api/admin/session').set('Cookie', cookie);
+    expect(unrestricted.status).toBe(200);
+    expect(unrestricted.body).toMatchObject({ authenticated: true, businessDeletionMode: 'all' });
+
+    config.realBusinessDeletionEnabled = false;
+    const demoOnly = await request(app).get('/api/admin/session').set('Cookie', cookie);
+    expect(demoOnly.status).toBe(200);
+    expect(demoOnly.body).toMatchObject({ authenticated: true, businessDeletionMode: 'demo-only' });
   });
 
   it('refuses a search longer than the console can send', async () => {
@@ -131,6 +149,46 @@ describe.sequential('The platform business directory', () => {
       .delete(`/api/admin/businesses/${randomUUID()}`).set('Cookie', cookie);
     expect(response.status).toBe(404);
     expect(response.body.error).toBe('Business not found');
+  });
+
+  it('fails closed for a real business when deletion is limited to demos', async () => {
+    config.realBusinessDeletionEnabled = false;
+
+    const response = await request(app)
+      .delete(`/api/admin/businesses/${f.business.id}`).set('Cookie', cookie);
+
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({ error: 'Only demo businesses can be deleted in this environment' });
+    expect(await prisma.business.count({ where: { id: f.business.id } })).toBe(1);
+    expect(await prisma.user.count({ where: { id: f.user.id } })).toBe(1);
+    expect(await prisma.membership.count({ where: { id: f.membership.id } })).toBe(1);
+  });
+
+  it('still permits individual demo deletion when real business deletion is disabled', async () => {
+    const demo = await tenants.fixture();
+    await prisma.business.update({ where: { id: demo.business.id }, data: { isDemo: true } });
+    config.realBusinessDeletionEnabled = false;
+
+    const response = await request(app)
+      .delete(`/api/admin/businesses/${demo.business.id}`).set('Cookie', cookie);
+
+    expect(response.status).toBe(200);
+    expect(await prisma.business.count({ where: { id: demo.business.id } })).toBe(0);
+    expect(await prisma.user.count({ where: { id: demo.user.id } })).toBe(0);
+    expect(await prisma.user.count({ where: { id: demo.coachUser.id } })).toBe(1);
+  });
+
+  it('still permits bulk demo purge when real business deletion is disabled', async () => {
+    const demo = await tenants.fixture();
+    await prisma.business.update({ where: { id: demo.business.id }, data: { isDemo: true } });
+    config.realBusinessDeletionEnabled = false;
+
+    const response = await request(app).post('/api/admin/purge-demos').set('Cookie', cookie);
+
+    expect(response.status).toBe(200);
+    expect(response.body.deleted).toBeGreaterThanOrEqual(1);
+    expect(await prisma.business.count({ where: { id: demo.business.id } })).toBe(0);
+    expect(await prisma.business.count({ where: { id: f.business.id } })).toBe(1);
   });
 
   // A club account is the club, not a portable person, so deleting the club

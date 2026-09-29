@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import { createHash } from 'node:crypto';
+import { z } from 'zod';
 export const production = process.env.NODE_ENV === 'production';
 if (!process.env.DATABASE_URL) {
   if (production) throw new Error('DATABASE_URL is required in production');
@@ -7,6 +9,62 @@ if (!process.env.DATABASE_URL) {
 
 export type CalendarTokenKey = { id: string; key: Buffer };
 export type FamilyHandoverTokenKey = { id: string; key: Buffer };
+export type AdminOperatorCredential = {
+  id: string;
+  name: string;
+  email: string;
+  passwordHash: string;
+};
+
+const adminOperatorSchema = z.object({
+  id: z.string().trim().min(3).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/,
+    'Admin operator id must contain only letters, numbers, underscores, or hyphens'),
+  name: z.string().trim().min(1).max(120).refine(value => !/[\u0000-\u001f\u007f]/u.test(value),
+    'Admin operator name must not contain control characters'),
+  email: z.string().trim().toLowerCase().email().max(320),
+  passwordHash: z.string().regex(/^\$2[aby]\$12\$[./A-Za-z0-9]{53}$/,
+    'Admin operator passwordHash must be a bcrypt hash with cost 12'),
+}).strict().refine(operator => Buffer.byteLength(` <${operator.email}> [${operator.id}]`, 'utf8') < 120, {
+  message: 'Admin operator id and email are too long for audit attribution',
+});
+
+export function adminOperatorConfiguration(raw = process.env.ADMIN_OPERATORS_JSON): AdminOperatorCredential[] {
+  const encoded = (raw || '').trim();
+  if (!encoded) return [];
+  let parsed: unknown;
+  try { parsed = JSON.parse(encoded); }
+  catch { throw new Error('ADMIN_OPERATORS_JSON must be a valid JSON array'); }
+  const operators = z.array(adminOperatorSchema).min(1).max(100).parse(parsed);
+  const ids = new Set<string>();
+  const emails = new Set<string>();
+  for (const operator of operators) {
+    if (ids.has(operator.id)) throw new Error(`ADMIN_OPERATORS_JSON contains duplicate id: ${operator.id}`);
+    if (emails.has(operator.email)) throw new Error(`ADMIN_OPERATORS_JSON contains duplicate email: ${operator.email}`);
+    ids.add(operator.id);
+    emails.add(operator.email);
+  }
+  return operators;
+}
+
+function adminSessionKeyConfiguration(): { key: Buffer; configured: boolean; valid: boolean } {
+  const encoded = (process.env.ADMIN_SESSION_SECRET || '').trim();
+  const decoded = encoded ? Buffer.from(encoded, 'base64') : Buffer.alloc(0);
+  if (encoded && (decoded.length !== 32 || decoded.toString('base64') !== encoded)) {
+    if (production) {
+      return {
+        key: createHash('sha256').update('courtly-invalid-production-admin-session').digest(),
+        configured: true, valid: false,
+      };
+    }
+    throw new Error('ADMIN_SESSION_SECRET must be exactly 32 bytes encoded as base64');
+  }
+  return {
+    key: decoded.length === 32
+      ? decoded
+      : createHash('sha256').update('courtly-local-admin-session-only').digest(),
+    configured: decoded.length === 32, valid: true,
+  };
+}
 
 function familyHandoverTokenConfiguration() {
   const activeKeyId = (process.env.FAMILY_HANDOVER_TOKEN_ACTIVE_KEY_ID || '').trim();
@@ -117,11 +175,24 @@ function emailConfiguration() {
   return { mode: requested as 'disabled' | 'capture' | 'resend', enabled: requested !== 'disabled', apiKey, fromAddress, fromName, replyTo };
 }
 
+let adminOperators: AdminOperatorCredential[] = [];
+let adminOperatorsValid = true;
+try { adminOperators = adminOperatorConfiguration(); }
+catch (error) {
+  if (!production) throw error;
+  adminOperatorsValid = false;
+}
+const adminSession = adminSessionKeyConfiguration();
+
 export const config = {
   port: Number(process.env.PORT || 4000),
   sessionCookie: production ? '__Host-courtly_session' : 'courtly_session',
   adminCookie: production ? '__Host-courtly_admin' : 'courtly_admin',
-  adminPassword: (process.env.ADMIN_PASSWORD || '').trim(),
+  adminOperators,
+  adminSessionSecret: adminSession.key,
+  adminSessionSecretConfigured: adminSession.configured,
+  adminConfigurationValid: adminOperatorsValid && adminSession.valid,
+  adminPassword: production ? '' : (process.env.ADMIN_PASSWORD || '').trim(),
   adminSessionHours: 12,
   // Optional. Enables server-side Google Places venue lookup; the key never
   // reaches the browser. Without it, venues are added by pasting a Maps link
@@ -131,6 +202,7 @@ export const config = {
   payments: paymentConfiguration(),
   email: emailConfiguration(),
   familyHandoverTokens: familyHandoverTokenConfiguration(),
+  realBusinessDeletionEnabled: !production,
   publicAppOrigin: (process.env.PUBLIC_APP_ORIGIN || process.env.APP_ORIGIN?.split(',')[0] || 'http://localhost:3000').trim().replace(/\/$/, ''),
   // Public policy publication and signup acceptance are production-disabled
   // until an accountable owner records approval of this exact version and
