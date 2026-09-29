@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 4.2.0** · Last updated 2026-09-29
+**Version 4.3.0** · Last updated 2026-09-29
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -72,7 +72,8 @@ backend/           Express + Prisma API (TypeScript, ESM)
   src/
     app.ts         Express wiring, middleware order, /api/health capabilities
     config.ts      Environment reading; every env var enters here
-    auth.ts        Sessions, register/login, profiles, workspace switching
+    auth.ts        Sessions, signup evidence, email verification, profiles, workspace switching
+    email-verification-token.ts Digest-only, versioned verification claims
     children-policy.ts Pure Singapore-date age bands and capability policy
     legal-policy.ts Canonical published policy versions, hashes, paths, and DPO contact
     account-policy.ts  Loads live consent and derives an account policy
@@ -89,6 +90,8 @@ backend/           Express + Prisma API (TypeScript, ESM)
     chat.ts        Account + session chat, scheduling proposals, reminder worker
     chat-events.ts Thread creation and lifecycle system lines (no scheduling imports)
     integrity.ts   Club safeguard: detection + review routes
+    privacy.ts     Public DPO metadata and tracked data-subject requests
+    safeguarding.ts  Club/platform safeguarding review queues
     notifications.ts  Typed workspace alerts (notifyWorkspace)
     account-notifications.ts  Student profile, alerts, and /api/account/*
     bookings.ts    Bookings, coach acceptance, payments, payouts, reversal
@@ -104,13 +107,13 @@ backend/           Express + Prisma API (TypeScript, ESM)
     account-directory.ts  Privacy-safe authenticated account search
     commerce.ts    Package offers, My Packages, and simulated checkout fallback
     rentals.ts     Rental discovery, inventory, slots, and reservations
-    payments/      Stripe provider adapter, checkout orchestration, webhooks
+    payments/      Stripe provider adapter, checkout evidence, risk cases, webhooks
     outbound-events.ts  Durable transactional-email enqueueing
     outbound-worker.ts  Leased retrying email delivery worker
     email-provider.ts   Disabled, capture, and Resend providers
     workspace.ts   The single GET /api/workspace payload
     public.ts      Public booking page + student self-service
-    admin.ts       Platform console (ADMIN_PASSWORD gated; not an account type)
+    admin.ts       Named-operator platform console; not an account type
   tests/           Vitest; integration tests need a local PostgreSQL
 
 frontend/          Next.js App Router (TypeScript, Tailwind)
@@ -170,6 +173,11 @@ scripts/           Local PostgreSQL helper, investor-showcase builder
 | Change handover security email | `backend/src/family.ts`, `family-handover-token.ts`, `outbound-events.ts`, `outbound-worker.ts`, `email-templates.ts`, then the Family UI |
 | Change public legal content or versions | `frontend/src/content/policies.json`, `frontend/src/lib/policies.ts`, and `backend/src/legal-policy.ts`; keep content hashes and tests aligned |
 | Change the Singapore operating baseline | `docs/compliance/README.md`, then the relevant register or runbook; unresolved facts stay explicit blockers |
+| Change signup acceptance or email verification | `backend/src/auth.ts`, `email-verification-token.ts`, `outbound-worker.ts`, then the verification UI |
+| Change privacy-request handling | `backend/src/privacy.ts`, its migration, then `frontend/src/components/privacy/` |
+| Change checkout disclosures or payment risk handling | `backend/src/payments/compliance.ts`, `risk.ts`, the payment routes, then checkout UI/types |
+| Change chat safety reporting or review | `backend/src/chat.ts`, `safeguarding.ts`, its migration, then the chat and review UI |
+| Change platform-admin authentication | `backend/src/admin.ts`, `config.ts`, then `frontend/src/components/admin-console.tsx` |
 | Add an env var | `backend/src/config.ts` + `backend/.env.example` + README |
 
 ---
@@ -285,6 +293,48 @@ certification. Keep unknown entity, vendor, tax, safeguarding, insurance, and
 response-ownership facts marked `BLOCKED` or `OPEN`; do not turn draft wording
 or a technical gate into evidence that an accountable person approved it.
 
+Production registration, online checkout, and Family consent writes remain
+closed until `LEGAL_DOCUMENTS_APPROVED_VERSION` and
+`LEGAL_DOCUMENTS_APPROVED_HASH` match the exact current policy set. The gate is
+technical evidence of a configured approval decision, not legal certification.
+Marketing is hard-disabled in code: no account preference or environment value
+may make a `MARKETING` delivery queueable until the consent, unsubscribe, DNC,
+campaign-approval, and suppression design is implemented and reviewed.
+
+### Signup acceptance and email verification
+
+Every registration must submit the exact current Terms version, Privacy Notice
+version, and policy-set content hash. `SignupAcceptanceEvidence` is append-only
+and mirrors the immutable version, timestamp, and hash fields on `User`; child
+consent remains a separate record. Production signup fails closed unless
+transactional email, a canonical HTTPS `PUBLIC_APP_ORIGIN`, and the active
+`EMAIL_VERIFICATION_TOKEN_KEYS` key are usable.
+
+Email-verification claims store only a digest and key ID. The worker derives the
+bearer immediately before dispatch, links place it in a URL fragment, and the
+browser removes that fragment before making the verification request. Claims
+are single-use, expiring, rate-limited, and superseded by a later resend. Keep
+retired keys through the claim lifetime plus the maximum delivery retry window.
+
+### Privacy-request operations
+
+Authenticated, email-verified people can create and track access, correction,
+deletion, consent-withdrawal, restriction, and objection requests. Creating a
+request records a case; it does not promise automatic erasure or fulfilment. A
+subject may cancel only their own live request. Operator transitions require a
+named platform session, a note, and an external controlled-case reference.
+`PrivacyRequestEvent` is append-only and snapshots the actor; retention holds,
+delays, partial outcomes, and refusals must be recorded explicitly.
+
+### Platform administration
+
+Production `/admin` access uses `ADMIN_OPERATORS_JSON` plus an independent
+`ADMIN_SESSION_SECRET`. Sessions are signed, expire, and are bound to the named
+operator's current credential hash. `ADMIN_PASSWORD` is a non-production
+compatibility path whose sessions cannot access privacy, safeguarding, platform
+chat, or destructive routes. Production permits deletion only for demo
+businesses; there is no configuration override for deleting a real business.
+
 ### Child identity, guardian authority, and age policy
 
 Courtly's child-account contract is documented in `docs/CHILD_ACCOUNTS.md`. The
@@ -337,6 +387,11 @@ invariants most likely to affect implementation work are:
   only `PRIVATE` or `CLUBS_ONLY`; DOB, exact age, contact details, presence, and
   guardian data are never public. Username collisions fail at the database
   uniqueness boundary and require another username.
+- Family is additionally controlled by `FAMILY_FEATURE_ENABLED`: it defaults
+  off in production and on outside production. While off, public handover paths
+  answer 404, authenticated Family routes answer 503, and account capabilities
+  omit Family management. Enable it only after the coordinated schema, backend,
+  frontend, and health checks complete.
 - Family exposes one deliberately bounded on-behalf action: an eligible adult
   may book a public club Class for a linked managed child.
   `GET /api/family/booking-children` returns only the minimal eligible-child
@@ -413,6 +468,14 @@ provisioned `BusinessPaymentAccount` for the club whose connected account has
 `chargesEnabled`; Courtly has no Connect onboarding or account-provisioning API.
 The student package and Class payment surfaces select live Stripe Elements in
 Stripe mode and retain the explicit simulated flow only in simulated mode.
+Production live checkout also requires exact legal-publication approval and an
+independent `PAYMENT_COMMERCIAL_APPROVED_VERSION` match. The server creates an
+authoritative purchaser/merchant/item/price/policy review, requires affirmative
+acceptance of its content hash, and persists the versioned evidence on the
+intent. Merchant identity and GST declarations must be complete and are
+reloaded before provider work, but completeness is not independent verification
+and does not decide seller, supplier, payment-recipient, refund-owner, or tax
+roles. Never infer those legal conclusions from `paymentRoute` or Stripe setup.
 
 Stripe webhooks use the raw body, verify the signature, and idempotently persist
 provider events before fulfillment. A successful result creates exactly one
@@ -426,6 +489,11 @@ business subscription billing are not implemented.
 Only one retryable Stripe checkout intent may exist per booking participant;
 the application serializes creation and a partial unique index protects writes
 that bypass the normal route. Webhook `livemode` must match the configured key.
+Dispute, inquiry, and early-fraud-warning webhooks create or update bounded
+`PaymentRiskCase` records linked to exactly one local connected-account intent.
+Do not persist raw provider evidence or card data, overwrite a locally assigned
+owner, reopen a terminal case with stale delivery, or let same-second conflicting
+terminal events make webhook arrival order decide the outcome.
 
 ### Finite booking series and operational views
 
@@ -583,8 +651,9 @@ still use strict bodies. OAuth return targets are restricted to `/account`,
 Email is disabled unless `EMAIL_PROVIDER` is `capture` (non-production only)
 or `resend`. Enabling it also requires `EMAIL_FROM_ADDRESS`; Resend additionally
 requires `EMAIL_API_KEY`. `PUBLIC_APP_ORIGIN` supplies the canonical base for
-message links and falls back to the first `APP_ORIGIN`. Family handover also
-requires `FAMILY_HANDOVER_TOKEN_KEYS` and `FAMILY_HANDOVER_TOKEN_ACTIVE_KEY_ID`.
+message links; production email requires an explicit canonical HTTPS origin.
+Signup verification requires `EMAIL_VERIFICATION_TOKEN_KEYS` and its active key
+ID. Family handover uses the separate `FAMILY_HANDOVER_TOKEN_KEYS` keyring.
 `/api/health` reports `capabilities.familyHandover: "configured"` only when
 email and that dedicated keyring are both enabled; `transactionalEmail` alone
 is not a handover-readiness signal, and neither capability proves provider
@@ -602,8 +671,9 @@ after revalidating the live request. Keep retired keys for at least the claim
 lifetime plus maximum delivery-retry window; never log or serialize the URL.
 
 Booking-lifecycle and booking-payment student alerts flow through
-`createBookingAccountAlerts()`. Handover security mail bypasses optional mail
-preferences, does not queue when email or its token keyring is unavailable, and
+`createBookingAccountAlerts()`. Signup verification and handover security mail
+bypass optional mail preferences. Handover mail does not queue when email or
+its token keyring is unavailable, and
 creation rolls back unless the row is actually `QUEUED`. The Family route uses
 `recipientUserId: null`, so it does not consult an existing account's hard-
 suppression record. Explicit cancellation, deletion, an observed expiry, and a
@@ -702,6 +772,24 @@ session thread per start time within 24 hours of a confirmed or venue-pending
 session, locking the thread row so several API processes cannot double-post.
 Tests must pass `businessIds` to `sendDueSessionReminders()` so a sweep never
 writes into another tenant's data in a shared database.
+
+### Chat safeguarding
+
+People may report a message or conversation and may directionally block the
+other direct-account participant. Reporting snapshots bounded context and
+creates retained `ChatSafetyReport` evidence plus append-only audit history; it
+does not expose a reporter or another party's block choice back through chat.
+Blocks stop account-chat messaging and scheduling proposals without rewriting
+the transcript. A non-blocking party receives the generic
+`ACCOUNT_CHAT_RESTRICTED` reason so blocker identity is not disclosed.
+
+Club reviewers need `SAFEGUARDING_VIEW` or `SAFEGUARDING_REVIEW`, can see only
+redacted SESSION cases for the selected club, and can self-assign or refer a
+case to the platform. Platform review requires a named admin operator and may
+restrict or restore account chat with an attributable audit event. Emergency
+guidance is user-facing help, not a claim that Courtly contacted authorities.
+Follow `docs/CHAT_SAFEGUARDING_OPERATIONS.md`; staffing, escalation ownership,
+screening, and incident exercises remain operational release requirements.
 
 ### Payments and intents are auditable, never deleted
 
@@ -965,15 +1053,22 @@ with real data, since only the second exercises repair and historical audits.
 | --- | --- | --- |
 | `DATABASE_URL` | backend | PostgreSQL connection (Railway provides it) |
 | `APP_ORIGIN` | backend | Comma-separated allowed browser origins |
-| `PUBLIC_APP_ORIGIN` | backend | Canonical frontend origin for transactional-email links; defaults to the first `APP_ORIGIN` |
+| `PUBLIC_APP_ORIGIN` | backend | Canonical frontend origin for transactional-email links; production email requires an explicit non-loopback HTTPS origin |
 | `DEMO_ENABLED` | backend | `false` in production to stop demo workspaces |
 | `E2E_DISABLE_RATE_LIMITS` | backend | Explicit non-production-only bypass for the full browser suite; never deploy |
-| `ADMIN_PASSWORD` | backend | Unlocks `/admin`; unset disables it entirely |
+| `LEGAL_DOCUMENTS_APPROVED_VERSION`, `LEGAL_DOCUMENTS_APPROVED_HASH` | backend | Exact production approval gate for the current policy set |
+| `ADMIN_OPERATORS_JSON` | backend | Production named-operator IDs, names, emails, and bcrypt cost-12 hashes |
+| `ADMIN_SESSION_SECRET` | backend | Independent 32-byte base64 HMAC key for named-admin cookies |
+| `ADMIN_PASSWORD` | backend | Non-production compatibility login only; never grants sensitive admin access |
 | `PAYMENTS_MODE` | backend | `disabled`, `stripe`, or non-production-only `simulated` |
+| `PAYMENT_COMMERCIAL_APPROVED_VERSION` | backend | Independent production seller/payment/refund/GST decision gate for live checkout |
 | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` | backend | Required together for Stripe checkout and signed webhook processing |
 | `EMAIL_PROVIDER` | backend | `disabled`, `resend`, or non-production-only `capture` |
 | `EMAIL_API_KEY` | backend | Resend credential; required when `EMAIL_PROVIDER=resend` |
 | `EMAIL_FROM_ADDRESS`, `EMAIL_FROM_NAME`, `EMAIL_REPLY_TO` | backend | Transactional-email sender identity; address is required when enabled |
+| `EMAIL_VERIFICATION_TOKEN_KEYS` | backend | Versioned `keyId:base64` HMAC keys for digest-only email-verification claims |
+| `EMAIL_VERIFICATION_TOKEN_ACTIVE_KEY_ID` | backend | Key ID used for newly issued email-verification claims |
+| `FAMILY_FEATURE_ENABLED` | backend | Production-default-off rollout gate for all Family routes and capabilities |
 | `FAMILY_HANDOVER_TOKEN_KEYS` | backend | Dedicated versioned `keyId:base64` HMAC keys for deriving one-use handover tokens without persisting them |
 | `FAMILY_HANDOVER_TOKEN_ACTIVE_KEY_ID` | backend | Key ID for new handovers; retain older keys through claim lifetime plus delivery retries |
 | `GOOGLE_MAPS_API_KEY` | backend | **Optional.** Enables Places venue search |
@@ -1033,6 +1128,13 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 4.3.0 — 2026-09-29
+
+Documented the completed Singapore compliance hardening: exact signup
+acceptance and digest-only email verification, named platform operators,
+tracked privacy requests, merchant and checkout evidence, payment-risk cases,
+chat safeguarding, and the production Family rollout gate.
 
 ### 4.2.0 — 2026-09-29
 
