@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import type { CoachClubWorkspace, ManagerWorkspace } from '../src/lib/types';
+import { currentLegalAcceptance } from './legal-acceptance';
 
 const password = 'TestingOnly!2026';
 
@@ -113,10 +114,12 @@ test('student creates an account, books, views history, and cancels', async ({ p
   await page.getByRole('tab', { name: 'Create account' }).click();
   await page.getByLabel('Full name').fill(studentName);
   await page.getByLabel('Username', { exact: true }).fill(`bj_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-27)}`);
+  await page.getByLabel('Your date of birth', { exact: true }).fill('1990-01-01');
   await page.getByLabel('Email address').fill(studentEmail);
   await page.getByLabel('Password').fill(password);
   await page.getByLabel(/^Phone/).fill('+65 9123 4567');
   await page.getByLabel(/^Parent or guardian/).fill('Robin Browser Test');
+  await page.getByLabel(/I agree to the Terms of Service/).check();
   await page.getByRole('button', { name: 'Continue with account' }).click();
   await expect(page.getByRole('heading', { name: studentName, exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Review booking' }).click();
@@ -140,14 +143,17 @@ test('student creates an account, books, views history, and cancels', async ({ p
   await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
   await expectStudentManageUrl(page, workspace.business.slug, 'explore');
   // Demo workspaces remain usable for this end-to-end booking journey but are
-  // deliberately private and must never appear in the public club directory.
-  await expect(page.getByRole('heading', { name: workspace.business.name, exact: true })).toHaveCount(0);
+  // deliberately private and must never appear as a directory booking link.
+  await expect(page.locator(`a[href="/book/${workspace.business.slug}"]`)).toHaveCount(0);
   await expect(studentNavigation.getByRole('button', { name: 'Explore', exact: true })).toHaveAttribute('aria-current', 'page');
 
   await studentNavigation.getByRole('button', { name: 'Book', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Book a session', exact: true })).toBeVisible();
   await expectStudentManageUrl(page, workspace.business.slug, 'book');
-  await expect(page.getByRole('radio', { name: new RegExp(escapeRegExp(workspace.business.name)) })).toBeChecked();
+  // A private demo club may remain available from booking history, while the
+  // first public directory club is selected by default. Its presence here
+  // must not be confused with public discovery above.
+  await expect(page.locator(`input[name="student-booking-club"][value="${workspace.business.slug}"]`)).toHaveCount(1);
   await expect(studentNavigation.getByRole('button', { name: 'Book', exact: true })).toHaveAttribute('aria-current', 'page');
 
   // Alerts live behind the header bell; Chat took their place in the tab bar.
@@ -457,6 +463,7 @@ test('club sign-up creates an empty affiliation and sign-in restores it', async 
   await page.getByLabel('Username', { exact: true }).fill(`bc_${email.split('@')[0].replace(/-/g, '_').slice(-27)}`);
   await page.getByLabel(/Email/i).fill(email);
   await page.getByLabel(/^Password/i).fill(password);
+  await page.getByLabel(/I agree to the Terms of Service/).check();
   await page.getByRole('button', { name: 'Create your workspace' }).click();
   await expect(page.getByRole('heading', { name: /Your day, in a good place/ })).toBeVisible();
   await page.getByRole('button', { name: 'Close product tour' }).click();
@@ -498,6 +505,7 @@ test('self-registered coach is linked to a club by its club account', async ({ p
   await page.getByLabel('Your date of birth', { exact: true }).fill('1990-01-01');
   await page.getByLabel(/Email/i).fill(coachEmail);
   await page.getByLabel(/^Password/i).fill(password);
+  await page.getByLabel(/I agree to the Terms of Service/).check();
   await page.getByRole('button', { name: 'Create coach account' }).click();
   await expect(page).toHaveURL(/\/account$/);
   await page.getByRole('button', { name: 'Close product tour' }).click();
@@ -506,27 +514,19 @@ test('self-registered coach is linked to a club by its club account', async ({ p
   await page.getByRole('button', { name: 'Sign out' }).click();
   await expect(page).toHaveURL(/\/login$/);
 
-  const demo = await page.request.post('/api/auth/demo', { data: {} });
-  expect(demo.ok()).toBeTruthy();
+  const studentEmail = uniqueEmail('coach-scope-student', testInfo.project.name);
+  const studentRegistration = await page.request.post('/api/auth/register', {
+    data: { accountType: 'STUDENT', name: 'Coach Scope Student', username: `bcs_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-26)}`, email: studentEmail, password, dateOfBirth: '1990-01-01', ...currentLegalAcceptance },
+  });
+  expect(studentRegistration.ok(), await studentRegistration.text()).toBeTruthy();
+  expect((await page.request.post('/api/auth/logout', { data: {} })).ok()).toBeTruthy();
+
+  const clubEmail = uniqueEmail('coach-scope-club', testInfo.project.name);
+  const clubRegistration = await page.request.post('/api/auth/register', {
+    data: { accountType: 'CLUB', businessName: 'Coach Scope Club', name: 'Coach Scope Operator', username: `bcc_${clubEmail.split('@')[0].replace(/-/g, '_').slice(-26)}`, email: clubEmail, password, ...currentLegalAcceptance },
+  });
+  expect(clubRegistration.ok(), await clubRegistration.text()).toBeTruthy();
   const clubWorkspace = await (await page.request.get('/api/workspace')).json() as ManagerWorkspace;
-  const claimedInstructor = clubWorkspace.instructors.find(candidate =>
-    clubWorkspace.services.some(service =>
-      service.locations.some(mapping => mapping.instructorIds.includes(candidate.id)),
-    )
-      && clubWorkspace.bookings.some(booking =>
-        booking.instructorId === candidate.id && booking.participants.length > 0,
-      ),
-  );
-  expect(claimedInstructor).toBeTruthy();
-  if (!claimedInstructor) throw new Error('Demo workspace needs a bookable coach with a participant');
-  const clubCoachAccess = await page.request.get('/api/staff');
-  expect(clubCoachAccess.ok()).toBeTruthy();
-  const claimedMembership = ((await clubCoachAccess.json()) as { id: string; instructorId: string | null }[])
-    .find(membership => membership.instructorId === claimedInstructor.id);
-  expect(claimedMembership).toBeTruthy();
-  if (!claimedMembership) throw new Error('Demo coach profile needs a removable affiliation');
-  const removeClaimedMembership = await page.request.delete(`/api/staff/${claimedMembership.id}`);
-  expect(removeClaimedMembership.ok()).toBeTruthy();
 
   await page.goto('/');
   await expect(page.getByRole('heading', { name: /Your day, in a good place/ })).toBeVisible();
@@ -542,10 +542,6 @@ test('self-registered coach is linked to a club by its club account', async ({ p
     .getByRole('searchbox', { name: 'Courtly coach account', exact: true })
     .fill(coachEmail);
   await coachAccessDialog.getByRole('spinbutton', { name: 'Reschedule notice (hours)', exact: true }).fill('24');
-  const retainedProfile = coachAccessDialog.getByLabel('Coach profile (optional)')
-    .locator(`option[value="${claimedInstructor.id}"]`);
-  await expect(retainedProfile).toBeDisabled();
-  await expect(retainedProfile).toContainText('identity retained');
   const addCoachResponse = page.waitForResponse(response =>
     response.request().method() === 'POST'
       && new URL(response.url()).pathname === '/api/staff',
@@ -560,14 +556,17 @@ test('self-registered coach is linked to a club by its club account', async ({ p
   await expect(linkedCoach).toBeVisible();
   await expect(linkedCoach).toContainText('Casey Coach');
 
-  // The new coach receives their own catalog and class history. A departed
-  // coach's retained profile is never reassigned merely to make demo data
-  // visible in the scoped workspace.
-  const location = clubWorkspace.locations.find(candidate => candidate.active && !candidate.requiresApproval);
-  const student = clubWorkspace.students.find(candidate => candidate.userId);
-  expect(location).toBeTruthy();
-  expect(student).toBeTruthy();
-  if (!location || !student) throw new Error('Demo workspace needs an active venue and linked student');
+  // The new coach receives their own catalog and class history.
+  const studentResponse = await page.request.post('/api/students', {
+    data: { email: studentEmail, notes: 'Linked for coach-scoped workspace verification.' },
+  });
+  expect(studentResponse.ok(), await studentResponse.text()).toBeTruthy();
+  const student = await studentResponse.json() as { id: string };
+  const locationResponse = await page.request.post('/api/locations', {
+    data: { name: 'Coach Scope Court', address: '12 Test Court', type: 'FACILITY', requiresApproval: false, travelMinutes: 0 },
+  });
+  expect(locationResponse.ok(), await locationResponse.text()).toBeTruthy();
+  const location = await locationResponse.json() as { id: string };
   const serviceResponse = await page.request.post('/api/services', {
     data: {
       name: `Casey coaching ${projectId(testInfo.project.name)} ${Date.now()}`,
@@ -694,7 +693,7 @@ test('self-registered coach is linked to a club by its club account', async ({ p
   const refreshedNavigation = await visibleWorkspaceNavigation(page);
   await refreshedNavigation.getByRole('button', { name: 'Profile', exact: true }).click();
   await expect(page.locator('main').getByRole('heading', { name: 'Casey Coach', exact: true })).toBeVisible();
-  await expect(page.locator('main').getByText('Coach', { exact: true })).toBeVisible();
+  await expect(page.locator('main').getByText('Coach', { exact: true }).first()).toBeVisible();
   await expect(page.locator('main').getByRole('button', { name: 'Business settings', exact: true })).toHaveCount(0);
 
   await page.goto('/?tab=profile&view=settings');

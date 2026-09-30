@@ -581,7 +581,7 @@ test('admin login, discovery, and destructive actions remain safe and usable at 
       counts: { ...counts, students: 8, bookings: 12 },
     },
   ];
-  const loginCredentials: Array<{ email: string; password: string }> = [];
+  const loginCredentials: Array<{ email: string; password: string; totpCode: string }> = [];
   const loginMethods: string[] = [];
   const purgeRequests: Array<{ method: string; body: unknown }> = [];
   const deleteRequests: Array<{ method: string; path: string }> = [];
@@ -589,11 +589,11 @@ test('admin login, discovery, and destructive actions remain safe and usable at 
   let deleteAttempts = 0;
 
   await page.route('**/api/admin/session', route => route.fulfill({
-    json: { configured: true, authenticated: false, authMode: 'named', operator: null, sensitiveAccess: false },
+    json: { configured: true, authenticated: false, authMode: 'named', operator: null, sensitiveAccess: false, businessDeletionMode: 'all' },
   }));
   await page.route('**/api/admin/login', async route => {
     loginMethods.push(route.request().method());
-    const body = route.request().postDataJSON() as { email: string; password: string };
+    const body = route.request().postDataJSON() as { email: string; password: string; totpCode: string };
     loginCredentials.push(body);
     if (body.password === 'wrong-admin') {
       await route.fulfill({ status: 401, json: { error: 'Incorrect admin email or password' } });
@@ -666,10 +666,12 @@ test('admin login, discovery, and destructive actions remain safe and usable at 
   await expect(page.getByRole('heading', { name: 'Admin sign in', exact: true })).toBeVisible();
   const email = page.getByLabel('Operator email', { exact: true });
   const password = page.getByLabel('Password', { exact: true });
+  const totpCode = page.getByLabel('6-digit authenticator code', { exact: true });
   const unlock = page.getByRole('button', { name: 'Sign in', exact: true });
   await expect(unlock).toBeDisabled();
   await email.fill('operator@example.test');
   await password.fill('wrong-admin');
+  await totpCode.fill('123456');
   await unlock.click();
   const loginError = page.getByRole('alert').filter({ hasText: 'Incorrect admin email or password' });
   await expect(loginError).toHaveText('Incorrect admin email or password');
@@ -768,8 +770,8 @@ test('admin login, discovery, and destructive actions remain safe and usable at 
   await expect(page.getByText('No businesses match your filters yet.', { exact: true })).toBeVisible();
   await expect(page.getByText('0 real · 0 demo', { exact: true })).toBeVisible();
   expect(loginCredentials).toEqual([
-    { email: 'operator@example.test', password: 'wrong-admin' },
-    { email: 'operator@example.test', password: 'correct-admin' },
+    { email: 'operator@example.test', password: 'wrong-admin', totpCode: '123456' },
+    { email: 'operator@example.test', password: 'correct-admin', totpCode: '123456' },
   ]);
   expect(loginMethods).toEqual(['POST', 'POST']);
   expect(purgeAttempts).toBe(2);

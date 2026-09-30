@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import type { AccountBooking, AccountPackage, AuthSession, RentalDetail, RentalListing, RentalReservation } from '../src/lib/types';
+import type { AccountBooking, AccountPackage, AuthSession, CheckoutKind, CheckoutReview, RentalDetail, RentalListing, RentalReservation } from '../src/lib/types';
 
 const business = {
   name: 'Riverside Rackets',
@@ -78,6 +78,38 @@ const purchasedPackage: AccountPackage = {
   rentalLocations: [{ id: 'location-pickleball', name: 'River Pickleball Hall' }],
 };
 
+function checkoutReview(kind: Extract<CheckoutKind, 'PACKAGE' | 'BOOKING'>): CheckoutReview {
+  const packageCheckout = kind === 'PACKAGE';
+  return {
+    reviewHash: 'a'.repeat(64), kind,
+    merchant: {
+      businessId: 'business-1', tradingName: business.name, legalName: 'Riverside Rackets Pte. Ltd.',
+      registrationNumber: '202600001R', supportEmail: 'payments@riverside.example',
+      supportAddress: '1 Club Lane, Singapore', gstRegistrationStatus: 'NOT_REGISTERED',
+      gstRegistrationNumber: null, pricesIncludeGst: null, identityReady: true, missingFields: [],
+    },
+    platform: { name: 'Courtly', role: 'Courtly records the selected club and its configured payment route without deciding the legal seller or GST supplier.' },
+    purchaser: { name: session.user.name, email: session.user.email },
+    item: packageCheckout
+      ? { label: 'Flexible five', description: 'Five credits for classes or courts.', serviceName: null, coachName: null, venueName: null, venueAddress: null, startAt: null, endAt: null, timezone: null, totalCredits: 5, validityDays: 90, scopeNames: ['Private tennis', 'River Pickleball Hall'] }
+      : { label: unpaidBooking.booking.serviceName, description: null, serviceName: unpaidBooking.booking.serviceName, coachName: unpaidBooking.booking.instructorName, venueName: unpaidBooking.booking.locationName, venueAddress: unpaidBooking.booking.address, startAt: unpaidBooking.booking.startAt, endAt: unpaidBooking.booking.endAt, timezone: business.timezone, totalCredits: null, validityDays: null, scopeNames: [] },
+    amount: packageCheckout ? purchasedPackage.price : unpaidBooking.participant.price, currency: business.currency,
+    cancellation: { deadline: null, rule: 'Contact the identified club as the first operational contact.' },
+    policies: [
+      { kind: 'TERMS', version: '2026-09-29', hash: 'b'.repeat(64), path: '/legal/terms', label: 'Terms of Service' },
+      { kind: 'CANCELLATION_REFUNDS', version: '2026-09-29', hash: 'c'.repeat(64), path: '/legal/cancellation-refunds', label: 'Cancellation & Refund Policy' },
+      ...(packageCheckout ? [{ kind: 'PACKAGE_TERMS' as const, version: '2026-09-29', hash: 'd'.repeat(64), path: '/legal/package-terms', label: 'Package Terms' }] : []),
+    ],
+  };
+}
+
+async function acceptCheckoutReview(page: Page) {
+  const review = page.getByRole('dialog', { name: 'Review before payment' });
+  await expect(review).toBeVisible();
+  await review.getByRole('checkbox').check();
+  await review.getByRole('button', { name: 'Continue to demo payment', exact: true }).click();
+}
+
 async function mockMarketplace(page: Page, options: {
   bookings?: AccountBooking[]; initialPackages?: AccountPackage[]; rentalReplayRefundedAfterLostResponse?: boolean;
   initialReservations?: RentalReservation[]; emptyClubDirectory?: boolean; freeRental?: boolean;
@@ -100,6 +132,10 @@ async function mockMarketplace(page: Page, options: {
       publishableKey: null,
     },
   }));
+  await page.route(/\/api\/payments\/checkout-review(?:\?.*)?$/, route => {
+    const kind = new URL(route.request().url()).searchParams.get('kind');
+    return route.fulfill({ json: { review: checkoutReview(kind === 'PACKAGE' ? 'PACKAGE' : 'BOOKING') } });
+  });
   await page.route('**/api/auth/me', async route => {
     if (route.request().method() === 'PATCH') {
       const update = route.request().postDataJSON() as Partial<AuthSession['user']>;
@@ -217,6 +253,7 @@ test('student can search accounts, buy an offer, and see package eligibility', a
   await expect(offersDialog).toContainText('Five credits for classes or courts.');
   await expect(offersDialog).toContainText('Private tennis, River Pickleball Hall');
   await offersDialog.getByRole('button', { name: 'Buy with simulated Stripe' }).click();
+  await acceptCheckoutReview(page);
   await expect(offersDialog.getByRole('status')).toContainText('no real card was charged');
   await offersDialog.getByRole('button', { name: 'Close dialog' }).click();
 
@@ -357,12 +394,12 @@ test('unpaid class checkout is simulated and the marketplace does not overflow o
 
   await page.getByRole('button', { name: `Open details for ${unpaidBooking.booking.serviceName} at ${business.name}` }).click();
   const dialog = page.getByRole('dialog');
-  await expect(dialog).toContainText(`Payment is due to ${business.name}, who pays your coach`);
+  await expect(dialog).toContainText(`Payment options are associated with ${business.name}`);
   await expect(dialog).toContainText('does not charge a real card');
   await dialog.getByRole('button', { name: /Simulate .* payment/ }).click();
-  await expect(dialog.getByRole('status')).toContainText(`Paid to ${business.name}`);
+  await acceptCheckoutReview(page);
+  await expect(dialog.getByRole('status')).toContainText(`Simulated Stripe payment completed for ${business.name}`);
   await expect(dialog.getByRole('status')).toContainText('no real card was charged');
-  await expect(dialog).toContainText(`Paid to ${business.name}`);
   expect(state.bookingPaymentRequest()).toMatchObject({ simulatedOutcome: 'SUCCEEDED' });
 
   await dialog.getByRole('button', { name: 'Close dialog' }).click();
