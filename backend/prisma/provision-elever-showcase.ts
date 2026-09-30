@@ -44,15 +44,17 @@ if (new Set(Object.values(credentials).map(credential => credential.password)).s
 const allApplicationTables = [
   'AccountNotification', 'BusinessAuditEvent', 'BusinessPaymentAccount', 'CalendarBusyInterval', 'CalendarEventProjection', 'CalendarOAuthAttempt',
   'CalendarRevocationJob', 'CalendarSyncJob', 'CalendarConnection', 'CoachInvitation', 'AuthSession', 'Availability',
-  'ChildConsentRecord', 'ChildAccountHandover', 'GuardianChildLink', 'EmailVerificationClaim', 'SignupAcceptanceEvidence',
+  'AccountSecurityEvent', 'AccountMfaRecoveryCode', 'MfaLoginChallenge', 'AccountMfaEnrollment',
+  'AccountMfaCredential', 'PasswordResetClaim', 'EmailChangeClaim', 'ChildConsentRecord',
+  'ChildAccountHandover', 'GuardianChildLink', 'EmailVerificationClaim', 'SignupAcceptanceEvidence',
   'ClubStaffAccess', 'ClubStaffInvitation',
   'ChatSafetyAuditEvent', 'ChatSafetyReport', 'ChatAccountBlock',
   'ChatMessage', 'ChatReadState', 'ChatThreadMember', 'ChatThread', 'SessionProposal', 'SessionProposalResponse',
   'AvailabilityException', 'Booking', 'BookingSeries', 'BookingSeriesMember', 'Business', 'Instructor', 'IntegrityFlag', 'LessonPackage',
   'LessonPackageLocation', 'LessonPackageService', 'Location', 'Membership', 'Notification', 'PackageOffer',
   'NotificationPreference', 'OutboundDelivery', 'PackageOfferLocation', 'PackageOfferService', 'Participant',
-  'Payment', 'PaymentIntent', 'PaymentProviderEvent', 'PaymentRefund', 'PaymentRiskCase', 'PaymentSettlement',
-  'PrivacyRequestEvent', 'PrivacyRequest', 'RescheduleRequest',
+  'Payment', 'PaymentIntent', 'PaymentProviderEvent', 'PaymentReceipt', 'PaymentRefund', 'PaymentRiskCase', 'PaymentSettlement',
+  'PrivacyRequestEvent', 'PrivacyRequest', 'RateLimitCounter', 'RescheduleRequest',
   'Service', 'ServiceInstructor', 'ServiceLocation', 'Student', 'User', 'VenueOpeningHour', 'VenueReservation',
   'VenueUnit', 'VenueUnitAllocation',
 ] as const;
@@ -63,6 +65,8 @@ const allApplicationTables = [
 // tables' access-exclusive locks. ALTER TABLE is transactional in PostgreSQL:
 // a failed reset rolls the trigger state back together with every data change.
 const retainedHistoryResetTriggers = [
+  { table: 'AccountSecurityEvent', trigger: 'AccountSecurityEvent_truncate_guard' },
+  { table: 'PaymentReceipt', trigger: 'PaymentReceipt_truncate_guard' },
   { table: 'ChildConsentRecord', trigger: 'ChildConsentRecord_append_only_truncate' },
   { table: 'ChildAccountHandover', trigger: 'ChildAccountHandover_history_delete_guard' },
   { table: 'PrivacyRequestEvent', trigger: 'PrivacyRequestEvent_append_only_truncate' },
@@ -160,6 +164,8 @@ async function main() {
       JOIN pg_namespace AS table_namespace ON table_namespace.oid = table_class.relnamespace
       WHERE table_namespace.nspname = current_schema()
         AND (table_class.relname, trigger_row.tgname) IN (
+          ('AccountSecurityEvent', 'AccountSecurityEvent_truncate_guard'),
+          ('PaymentReceipt', 'PaymentReceipt_truncate_guard'),
           ('ChildConsentRecord', 'ChildConsentRecord_append_only_truncate'),
           ('ChildAccountHandover', 'ChildAccountHandover_history_delete_guard'),
           ('PrivacyRequestEvent', 'PrivacyRequestEvent_append_only_truncate'),
