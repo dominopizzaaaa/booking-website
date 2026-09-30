@@ -8,6 +8,65 @@ permissions:
   contents: read
 
 jobs:
+  codeql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+      packages: read
+      actions: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+
+      - name: Analyze JavaScript and TypeScript
+        uses: github/codeql-action/analyze@v3
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install dependency trees
+        run: |
+          npm ci --prefix backend
+          npm ci --prefix frontend
+
+      - name: Audit production dependencies
+        # High-severity production advisories block launch. Development-only
+        # findings remain visible without conflating build tooling with the
+        # deployed dependency graph.
+        run: npm run security:dependencies
+
+      - name: Scan tracked files for secrets and unsafe runtime constructs
+        run: npm run security:static
+
+      - name: Scan repository history for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   build-and-test:
     runs-on: ubuntu-latest
     timeout-minutes: 25
