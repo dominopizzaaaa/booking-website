@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import type { AuthSession, Business, ClubStaffAccess, Membership, User } from '@prisma/client';
 import type { AccountCapability, AccountPolicyDecision } from './children-policy.js';
+import { config } from './config.js';
 
 export type MembershipWithBusiness = Membership & { business: Business };
 export type AuthContext = {
@@ -49,6 +50,22 @@ export const requireAccountCapability = (capability: AccountCapability): Request
       code: auth.policy.accountActionRequired ? 'ACCOUNT_ACTION_REQUIRED' : 'CAPABILITY_REQUIRED',
       reason: auth.policy.reason,
       capability,
+    }));
+  }
+  next();
+};
+
+/** Reusable step-up guard for high-impact credential, staff, ledger, merchant,
+ * guardian, cancellation/refund, checkout, integration, and export actions.
+ * Creating a privacy-rights request intentionally remains reachable without
+ * this extra gate so the control cannot obstruct exercise of those rights. */
+export const requireRecentAuth: RequestHandler = (req, _res, next) => {
+  const auth = (req as AccountRequest).auth;
+  if (!auth) return next(new HttpError(401, 'Please sign in to continue'));
+  const authenticatedAt = auth.session.recentAuthAt;
+  if (!authenticatedAt || Date.now() - authenticatedAt.getTime() > config.recentAuthMinutes * 60_000) {
+    return next(new HttpError(428, 'Confirm your identity to continue', {
+      code: 'RECENT_AUTH_REQUIRED',
     }));
   }
   next();

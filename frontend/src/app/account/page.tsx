@@ -3,11 +3,11 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowRight, Building2, Check, Compass, HelpCircle, Loader2, LogOut, MapPin, Pencil, RefreshCw, Search, ShieldCheck, UserRound, UsersRound, X } from 'lucide-react';
+import { ArrowRight, Building2, Check, Compass, HelpCircle, KeyRound, Loader2, LogOut, MapPin, Pencil, RefreshCw, Search, ShieldCheck, UserRound, UsersRound, X } from 'lucide-react';
 import { CalendarConnectionCard } from '@/components/calendar-connection-card';
 import { EmailVerificationNotice } from '@/components/email-verification-notice';
 import { PrivacyRequestsPanel } from '@/components/privacy/privacy-requests-panel';
-import { AccountRentalDialog } from '@/components/account-rental-dialog';
+import { AccountRentalDialog, AccountRentalHistory } from '@/components/account-rental-dialog';
 import { CourtlyLogo } from '@/components/public-booking';
 import { Button } from '@/components/ui/button';
 import { acceptClubStaffInvitation, acceptCoachInvitation, ApiError, loadAuthSession, loadClubStaffInvitations, loadCoachInvitations, loadRentals, mutate, searchAccounts, switchWorkspaceAccess, updateAuthAccount, updateClubProfile } from '@/lib/api';
@@ -405,9 +405,9 @@ export default function AccountPage() {
 
   return <main className="min-h-screen bg-[#f6f7f4] px-5 py-6 text-[#1c3029] sm:px-10 sm:py-9">
     <div className="mx-auto max-w-3xl">
-      <header className="flex items-center justify-between gap-4">
+      <header className="flex min-w-0 items-center justify-between gap-2 sm:gap-4">
         <Link href={state?.business && state.accessMode !== 'NONE' ? '/' : state?.user.accountType === 'STUDENT' ? '/manage' : '/account'} aria-label="Courtly home"><CourtlyLogo /></Link>
-        {state && <div className="flex items-center gap-1">{coachAccount && <Button variant="ghost" onClick={replayProductTour}><HelpCircle size={15} />Take the tour</Button>}<Button variant="ghost" onClick={() => { void logout(); }}><LogOut size={15} />Sign out</Button></div>}
+        {state && <div className="flex shrink-0 items-center gap-1">{coachAccount && <Button variant="ghost" size="icon" className="sm:w-auto sm:px-4" aria-label="Take the tour" onClick={replayProductTour}><HelpCircle size={15} /><span className="hidden sm:inline">Take the tour</span></Button>}<Button variant="ghost" size="icon" className="sm:w-auto sm:px-4" aria-label="Sign out" onClick={() => { void logout(); }}><LogOut size={15} /><span className="hidden sm:inline">Sign out</span></Button></div>}
       </header>
 
       <section className="mx-auto mt-12 max-w-2xl sm:mt-20">
@@ -470,6 +470,10 @@ export default function AccountPage() {
               {canUseStaffAccess && (staffInvitationError || invitationBusy === 'staff-link' || staffInvitations.length > 0) && <section className="rounded-2xl border border-[#dbe5d4] bg-[#f2f6ee] p-5 shadow-sm sm:p-6" aria-labelledby="staff-invitations-heading"><div className="flex items-start gap-3"><ShieldCheck size={19} className="mt-0.5 shrink-0 text-[#66805a]" /><div><h2 id="staff-invitations-heading" className="text-base text-[#405941]">Staff invitations</h2><p className="mt-1 text-xs leading-relaxed text-stone-500">Named staff access lets a person help run a specific club with assigned permissions. Accepting it does not change that person’s account type or coach affiliations.</p></div></div>{invitationBusy === 'staff-link' && <p role="status" className="mt-4 flex items-center gap-2 text-xs text-stone-500"><Loader2 size={14} className="animate-spin" />Checking your staff invitation…</p>}{staffInvitationError && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-3 text-xs text-red-700">{staffInvitationError}</p>}<ul className="mt-4 space-y-2">{staffInvitations.map(invitation => <li key={invitation.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#dce5d6] bg-white p-4"><div><p className="text-sm font-semibold text-[#344b39]">{invitation.business.name}</p><p className="mt-1 text-xs text-stone-500">{invitation.accessLevel.toLowerCase().replaceAll('_', ' ')} staff access · {invitation.permissions.length} permission{invitation.permissions.length === 1 ? '' : 's'}</p></div><Button type="button" disabled={!!invitationBusy} onClick={() => void acceptStaffInvitation(invitation)}>{invitationBusy === `staff:${invitation.id}` && <Loader2 size={14} className="animate-spin" />}Accept and open</Button></li>)}</ul></section>}
 
               {canUseCalendar && <CalendarConnectionCard accountType={state.user.accountType} returnTo="/account" />}
+
+              {state.user.accountControl !== 'GUARDIAN_MANAGED' && <section className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-security-heading"><div className="flex items-start gap-3"><KeyRound size={19} className="mt-0.5 shrink-0 text-[#66805a]" /><div className="min-w-0 flex-1"><h2 id="account-security-heading" className="text-base text-[#405941]">Account security</h2><p className="mt-1 text-xs leading-relaxed text-stone-500">Change your verified sign-in email, set up an authenticator, save recovery codes, and review active devices.</p></div></div><Button asChild variant="outline" className="mt-5 w-full sm:w-auto"><Link href="/account/security">Open security settings<ArrowRight size={14} /></Link></Button></section>}
+
+              {clubAccount && <AccountRentalHistory />}
 
               <PrivacyRequestsPanel emailVerified={state.user.emailVerified} />
 

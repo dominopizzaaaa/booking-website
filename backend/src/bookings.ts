@@ -1,8 +1,11 @@
-import { Router } from 'express';
+import { Router, type RequestHandler } from 'express';
 import { DateTime } from 'luxon';
 import { z } from 'zod';
 import { prisma } from './db.js';
-import { asyncRoute, coachScope, coachScoped, hasClubPermission, requireClubPermission, requireCoachOrClubPermission, HttpError } from './http.js';
+import {
+  asyncRoute, coachScope, coachScoped, hasClubPermission, requireClubPermission,
+  requireCoachOrClubPermission, requireRecentAuth, HttpError,
+} from './http.js';
 import { assertWritableClubBooking, bookingInput, cancelBooking, createBookings, lockInstructors, rescheduleBooking, type BookingInput } from './scheduling.js';
 import { bookingInclude, bookingJson, paymentJson, withoutBookingFinancials } from './serializers.js';
 import { createBookingAccountAlerts } from './account-notifications.js';
@@ -32,6 +35,8 @@ const hidesFinancials = (auth: Parameters<typeof coachScoped>[0]) =>
   coachScoped(auth) || !hasClubPermission(auth, 'PAYMENTS_VIEW');
 const bookingStatus = z.enum(['CONFIRMED', 'PENDING', 'CANCELLED', 'COMPLETED']);
 type BookingStatus = z.infer<typeof bookingStatus>;
+const requireRecentAuthForCancellation: RequestHandler = (req, res, next) =>
+  req.body?.status === 'CANCELLED' ? requireRecentAuth(req, res, next) : next();
 
 // At endAt the reserved lesson is over: completion can begin, while actions
 // that would release the slot or refund its package credit are closed.
@@ -134,7 +139,7 @@ const localCalendarDayCount = (from: Date, exclusiveTo: Date, timezone: string) 
   return lastDay.diff(firstDay, 'days').days + 1;
 };
 
-bookingsRouter.get('/bookings/export.csv', requireCoachOrClubPermission('BOOKINGS_VIEW'), asyncRoute(async (req, res) => {
+bookingsRouter.get('/bookings/export.csv', requireCoachOrClubPermission('BOOKINGS_VIEW'), requireRecentAuth, asyncRoute(async (req, res) => {
   const coach = coachScoped(req.auth);
   const query = parseBookingListQuery({ ...req.query, cursor: undefined, limit: 100 }, req.auth.business.timezone);
   if (!query.from || !query.to) throw new HttpError(400, 'Choose a start and end date for export');
@@ -177,7 +182,7 @@ bookingsRouter.get('/bookings/:id', requireCoachOrClubPermission('BOOKINGS_VIEW'
   res.json({ booking: hidesFinancials(req.auth) ? withoutBookingFinancials(json) : json });
 }));
 
-bookingsRouter.patch('/bookings/:id', requireCoachOrClubPermission('BOOKINGS_MANAGE'), asyncRoute(async (req, res) => {
+bookingsRouter.patch('/bookings/:id', requireCoachOrClubPermission('BOOKINGS_MANAGE'), requireRecentAuthForCancellation, asyncRoute(async (req, res) => {
   const body = z.object({ status: bookingStatus.optional(), notes: z.string().max(2000).optional() }).strict().parse(req.body);
   const result = await prisma.$transaction(async tx => {
     const initial = await tx.booking.findFirst({ where: { id: req.params.id, businessId: req.auth.business.id } });
@@ -275,7 +280,7 @@ bookingsRouter.post('/bookings/:id/accept', asyncRoute(async (req, res) => {
   res.json(hidesFinancials(req.auth) ? withoutBookingFinancials(json) : json);
 }));
 
-bookingsRouter.post('/bookings/:id/decline', asyncRoute(async (req, res) => {
+bookingsRouter.post('/bookings/:id/decline', requireRecentAuth, asyncRoute(async (req, res) => {
   const body = acceptanceDecision.parse(req.body ?? {});
   if (!coachScoped(req.auth) || !req.auth.membership?.instructorId) {
     throw new HttpError(403, 'Only the assigned coach can decline this lesson');
@@ -435,7 +440,7 @@ bookingsRouter.post('/bookings/:id/reschedule', requireCoachOrClubPermission('BO
   }, { timeout: 30_000 });
   res.json(hidesFinancials(req.auth) ? withoutBookingFinancials(result) : result);
 }));
-bookingsRouter.post('/payments', requireClubPermission('PAYMENTS_RECORD'), asyncRoute(async (req, res) => {
+bookingsRouter.post('/payments', requireClubPermission('PAYMENTS_RECORD'), requireRecentAuth, asyncRoute(async (req, res) => {
   const input = z.object({ studentId: z.string().min(1), bookingId: z.string().min(1).optional(), packageId: z.string().min(1).optional(), participantId: z.string().min(1).optional(), amount: z.number().int().positive().max(100_000_000), method: z.enum(['CASH', 'BANK_TRANSFER', 'OTHER']), note: z.string().max(1000).default('') }).strict().refine(x => !(x.bookingId && x.packageId), { message: 'Record a payment against a booking or a package, not both' }).parse(req.body);
   const result = await prisma.$transaction(async tx => {
     const student = await tx.student.findFirst({ where: { id: input.studentId, businessId: req.auth.business.id } });
@@ -492,7 +497,7 @@ bookingsRouter.post('/payments', requireClubPermission('PAYMENTS_RECORD'), async
 // Recording a payment is a human action and humans mistype. A reversal undoes
 // the balance it created and flips the participant or package back to unpaid,
 // while keeping both rows so the correction stays visible in the ledger.
-bookingsRouter.delete('/payments/:id', requireClubPermission('PAYMENTS_REVERSE'), asyncRoute(async (req, res) => {
+bookingsRouter.delete('/payments/:id', requireClubPermission('PAYMENTS_REVERSE'), requireRecentAuth, asyncRoute(async (req, res) => {
   const reason = z.object({ reason: z.string().trim().max(500).default('') }).strict().parse(req.body ?? {});
   const result = await prisma.$transaction(async tx => {
     const initial = await tx.payment.findFirst({
@@ -664,7 +669,7 @@ bookingsRouter.delete('/payments/:id', requireClubPermission('PAYMENTS_REVERSE')
 // The second leg of a club lesson: the club paying the coach for work already
 // done. Kept in the same ledger so a club can see, per coach, what it has
 // collected and what it still owes.
-bookingsRouter.post('/payouts', requireClubPermission('PAYOUTS_RECORD'), asyncRoute(async (req, res) => {
+bookingsRouter.post('/payouts', requireClubPermission('PAYOUTS_RECORD'), requireRecentAuth, asyncRoute(async (req, res) => {
   const input = z.object({
     instructorId: z.string().trim().min(1).max(200),
     amount: z.number().int().positive().max(100_000_000),

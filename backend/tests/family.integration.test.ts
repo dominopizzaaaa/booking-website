@@ -76,6 +76,7 @@ async function sessionFor(userId: string) {
     data: {
       id: createHash('sha256').update(token).digest('hex'),
       userId,
+      recentAuthAt: new Date(),
       expiresAt: new Date(Date.now() + 3_600_000),
     },
   });

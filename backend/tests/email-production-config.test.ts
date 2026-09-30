@@ -15,6 +15,7 @@ const environmentKeys = [
   'PAYMENT_COMMERCIAL_APPROVED_VERSION',
   'ADMIN_OPERATORS_JSON',
   'ADMIN_SESSION_SECRET',
+  'RATE_LIMIT_HASH_KEY',
 ] as const;
 
 const originalEnvironment = Object.fromEntries(
@@ -35,8 +36,10 @@ async function loadProductionConfig(overrides: Partial<Record<(typeof environmen
     ADMIN_OPERATORS_JSON: JSON.stringify([{
       id: 'legal-config-test', name: 'Legal Config Test', email: 'legal-config@example.test',
       passwordHash: '$2b$12$QrsSSNoV/kdmGVRTVVmoIOKhMlSeSPFjGtV8.iKB7MHYFUPprZWyK',
+      totpSecret: 'JBSWY3DPEHPK3PXP',
     }]),
     ADMIN_SESSION_SECRET: Buffer.alloc(32, 24).toString('base64'),
+    RATE_LIMIT_HASH_KEY: Buffer.alloc(32, 31).toString('base64'),
   });
   for (const [name, value] of Object.entries(overrides)) {
     if (value === undefined) delete process.env[name];

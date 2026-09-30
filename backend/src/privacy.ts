@@ -2,7 +2,7 @@ import { Router, type RequestHandler } from 'express';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from './db.js';
-import { asyncRoute, HttpError } from './http.js';
+import { asyncRoute, HttpError, requireRecentAuth } from './http.js';
 import {
   CURRENT_CHILD_PRIVACY_POLICY_VERSION, CURRENT_LEGAL_POLICY_SET_HASH, CURRENT_PRIVACY_NOTICE_VERSION,
   CURRENT_TERMS_VERSION, DATA_PROTECTION_OFFICER, LEGAL_DOCUMENTS_APPROVED, LEGAL_ROUTES,
@@ -228,7 +228,7 @@ privacyRouter.post('/requests', asyncRoute(async (req, res) => {
   res.status(201).json({ request: requestJson(created) });
 }));
 
-privacyRouter.post('/requests/:id/cancel', asyncRoute(async (req, res) => {
+privacyRouter.post('/requests/:id/cancel', requireRecentAuth, asyncRoute(async (req, res) => {
   empty.parse(req.body ?? {});
   const { id } = idParam.parse(req.params);
   const updated = await prisma.$transaction(async tx => {

@@ -1,7 +1,7 @@
 import { Router } from 'express';
-import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { config, skipRateLimits } from './config.js';
+import { sharedRateLimit } from './rate-limit.js';
 import { asyncRoute, HttpError, requireCoachOrClubPermission } from './http.js';
 
 export const venuesRouter = Router();
@@ -16,7 +16,8 @@ export type VenueCandidate = {
   source: 'GOOGLE_MAPS' | 'MANUAL';
 };
 
-const searchLimit = rateLimit({
+const searchLimit = sharedRateLimit({
+  name: 'venue-search',
   windowMs: 5 * 60_000, limit: 60, standardHeaders: 'draft-8', legacyHeaders: false,
   skip: skipRateLimits,
   message: { error: 'Too many venue searches. Please wait a moment.' },

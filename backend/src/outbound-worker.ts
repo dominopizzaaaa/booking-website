@@ -15,6 +15,9 @@ import {
   emailVerificationTokenDigest,
   emailVerificationUrl,
 } from './email-verification-token.js';
+import {
+  deriveSecurityClaimToken, emailChangeUrl, passwordResetUrl, securityTokenDigest,
+} from './account-security-crypto.js';
 
 export type ClaimedDelivery = { id: string; eventType: string; recipientEmail: string; recipientName: string; payload: unknown; attempts: number; leaseToken: string };
 export type DeliveryDb = {
@@ -28,6 +31,14 @@ export type DeliveryDb = {
     where: { id: string };
     select: { email: true; expiresAt: true; tokenHash: true; tokenKeyId: true; consumedAt: true; revokedAt: true };
   }): Promise<{ email: string; expiresAt: Date; tokenHash: string; tokenKeyId: string; consumedAt: Date | null; revokedAt: Date | null } | null> };
+  passwordResetClaim?: { findUnique(args: {
+    where: { id: string };
+    select: { email: true; expiresAt: true; tokenHash: true; tokenKeyId: true; consumedAt: true; revokedAt: true };
+  }): Promise<{ email: string; expiresAt: Date; tokenHash: string; tokenKeyId: string; consumedAt: Date | null; revokedAt: Date | null } | null> };
+  emailChangeClaim?: { findUnique(args: {
+    where: { id: string };
+    select: { newEmail: true; expiresAt: true; tokenHash: true; tokenKeyId: true; consumedAt: true; revokedAt: true };
+  }): Promise<{ newEmail: string; expiresAt: Date; tokenHash: string; tokenKeyId: string; consumedAt: Date | null; revokedAt: Date | null } | null> };
 };
 const defaultDb = prisma as unknown as DeliveryDb;
 const maxAttempts = 8;
@@ -131,6 +142,31 @@ async function payloadOf(delivery: ClaimedDelivery, db: DeliveryDb, now: Date) {
       eventType: 'EMAIL_VERIFICATION' as const, recipientName: delivery.recipientName,
       verificationUrl: emailVerificationUrl(token), expiresAt,
     };
+  }
+  if (delivery.eventType === 'PASSWORD_RESET' || delivery.eventType === 'EMAIL_CHANGE_VERIFICATION') {
+    if (typeof payload.claimId !== 'string' || typeof payload.tokenKeyId !== 'string'
+      || typeof payload.expiresAt !== 'string') {
+      throw new EmailProviderError('Account security delivery payload is invalid', 'ACCOUNT_SECURITY_DELIVERY_INVALID', false);
+    }
+    const expiresAt = new Date(payload.expiresAt);
+    if (!Number.isFinite(expiresAt.getTime())) {
+      throw new EmailProviderError('Account security delivery payload is invalid', 'ACCOUNT_SECURITY_DELIVERY_INVALID', false);
+    }
+    const passwordReset = delivery.eventType === 'PASSWORD_RESET';
+    const claim = passwordReset
+      ? await db.passwordResetClaim?.findUnique({ where: { id: payload.claimId }, select: { email: true, expiresAt: true, tokenHash: true, tokenKeyId: true, consumedAt: true, revokedAt: true } })
+      : await db.emailChangeClaim?.findUnique({ where: { id: payload.claimId }, select: { newEmail: true, expiresAt: true, tokenHash: true, tokenKeyId: true, consumedAt: true, revokedAt: true } });
+    const claimEmail = claim && ('email' in claim ? claim.email : claim.newEmail);
+    if (!claim || claim.consumedAt || claim.revokedAt || claim.expiresAt <= now
+      || claim.expiresAt.getTime() !== expiresAt.getTime() || claimEmail !== delivery.recipientEmail
+      || claim.tokenKeyId !== payload.tokenKeyId) throw new SuppressDeliveryError('ACCOUNT_SECURITY_CLAIM_UNAVAILABLE');
+    let token: string;
+    try { token = deriveSecurityClaimToken(passwordReset ? 'password-reset' : 'email-change', payload.claimId, payload.tokenKeyId); }
+    catch { throw new EmailProviderError('Account security key is unavailable', 'ACCOUNT_SECURITY_KEY_UNAVAILABLE', true); }
+    if (securityTokenDigest(token) !== claim.tokenHash) throw new SuppressDeliveryError('ACCOUNT_SECURITY_TOKEN_MISMATCH');
+    return passwordReset
+      ? { eventType: 'PASSWORD_RESET' as const, recipientName: delivery.recipientName, resetUrl: passwordResetUrl(token), expiresAt }
+      : { eventType: 'EMAIL_CHANGE_VERIFICATION' as const, recipientName: delivery.recipientName, confirmationUrl: emailChangeUrl(token), expiresAt };
   }
   return { eventType: delivery.eventType as TransactionalEmailEvent, recipientName: delivery.recipientName,
     title: String(payload.title ?? 'Courtly update'), message: String(payload.message ?? ''),

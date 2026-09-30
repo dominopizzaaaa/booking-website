@@ -50,7 +50,7 @@ const applicationTables = [
   'AvailabilityException', 'Booking', 'BookingSeries', 'BookingSeriesMember', 'Business', 'CoachInvitation', 'Instructor', 'IntegrityFlag', 'LessonPackage',
   'LessonPackageLocation', 'LessonPackageService', 'Location', 'Membership', 'Notification', 'PackageOffer',
   'NotificationPreference', 'OutboundDelivery', 'PackageOfferLocation', 'PackageOfferService', 'Participant',
-  'Payment', 'PaymentIntent', 'PaymentProviderEvent', 'PaymentRefund', 'PaymentRiskCase', 'PaymentSettlement',
+  'Payment', 'PaymentIntent', 'PaymentProviderEvent', 'PaymentReceipt', 'PaymentRefund', 'PaymentRiskCase', 'PaymentSettlement',
   'PrivacyRequestEvent', 'PrivacyRequest', 'RescheduleRequest',
   'Service', 'ServiceInstructor', 'ServiceLocation', 'Student', 'User', 'VenueOpeningHour', 'VenueReservation',
   'VenueUnit', 'VenueUnitAllocation',
@@ -75,7 +75,7 @@ const expectedApplicationCounts: Record<(typeof applicationTables)[number], numb
   LessonPackageLocation: 1, LessonPackageService: 3, Location: 2, Membership: 3, Notification: 4,
   NotificationPreference: 0, OutboundDelivery: 0, PackageOffer: 3, PackageOfferLocation: 2,
   PackageOfferService: 3, Participant: 138, Payment: 110, PaymentIntent: 8, PaymentProviderEvent: 0,
-  PaymentRefund: 0, PaymentRiskCase: 0, PaymentSettlement: 0, PrivacyRequestEvent: 0, PrivacyRequest: 0,
+  PaymentReceipt: 0, PaymentRefund: 0, PaymentRiskCase: 0, PaymentSettlement: 0, PrivacyRequestEvent: 0, PrivacyRequest: 0,
   RescheduleRequest: 0, Service: 2, ServiceInstructor: 4,
   ServiceLocation: 2, Student: 20, User: 23, VenueOpeningHour: 7, VenueReservation: 4,
   VenueUnit: 4, VenueUnitAllocation: 0,
@@ -144,7 +144,8 @@ async function retainedHistoryGuardStates(db: PrismaClient) {
         'ChatSafetyReport_decision_audit_guard',
         'ChatSafetyReport_retained_truncate',
         'ChatSafetyAuditEvent_append_only',
-        'ChatSafetyAuditEvent_append_only_truncate'
+        'ChatSafetyAuditEvent_append_only_truncate',
+        'PaymentReceipt_truncate_guard'
       )
       AND NOT trigger_row.tgisinternal
     ORDER BY table_class.relname, trigger_row.tgname
@@ -159,6 +160,7 @@ const enabledRetainedHistoryGuards = [
   { tableName: 'ChildAccountHandover', triggerName: 'ChildAccountHandover_history_delete_guard', enabled: 'O' },
   { tableName: 'ChildConsentRecord', triggerName: 'ChildConsentRecord_append_only', enabled: 'O' },
   { tableName: 'ChildConsentRecord', triggerName: 'ChildConsentRecord_append_only_truncate', enabled: 'O' },
+  { tableName: 'PaymentReceipt', triggerName: 'PaymentReceipt_truncate_guard', enabled: 'O' },
   { tableName: 'PrivacyRequestEvent', triggerName: 'PrivacyRequestEvent_append_only', enabled: 'O' },
   { tableName: 'PrivacyRequestEvent', triggerName: 'PrivacyRequestEvent_append_only_truncate', enabled: 'O' },
   { tableName: 'SignupAcceptanceEvidence', triggerName: 'SignupAcceptanceEvidence_append_only_truncate', enabled: 'O' },
@@ -307,6 +309,8 @@ describe.sequential('Elever showcase provisioner integration', () => {
       .rejects.toThrow(/Child handover history cannot be deleted/);
     await expect(database.$executeRawUnsafe('TRUNCATE TABLE "SignupAcceptanceEvidence"'))
       .rejects.toThrow(/Signup acceptance evidence is append-only/);
+    await expect(database.$executeRawUnsafe('TRUNCATE TABLE "PaymentReceipt"'))
+      .rejects.toThrow(/Payment receipt history cannot be truncated/);
 
     const businesses = await database.business.findMany();
     expect(businesses).toHaveLength(1);

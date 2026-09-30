@@ -82,6 +82,27 @@ export type AuthSession = {
   permissions?: ClubPermission[];
 };
 
+export type MfaMethod = 'TOTP' | 'RECOVERY_CODE';
+export type MfaLoginChallenge = {
+  mfaRequired: true; challengeId: string; methods: MfaMethod[]; expiresAt: string;
+};
+export type LoginResult = AuthSession | MfaLoginChallenge;
+export type AccountSecuritySession = {
+  id: string; current: boolean; createdAt: string; lastSeenAt: string; expiresAt: string;
+  ipAddress?: string | null; userAgent?: string | null; deviceLabel?: string | null;
+};
+export type RecentAuthentication = { authenticatedAt: string | null; expiresAt: string | null };
+export type AccountMfaStatus = {
+  enabled: boolean; verifiedAt: string | null; recoveryCodesRemaining: number;
+};
+export type AccountSecurity = {
+  email: string | null; emailVerified: boolean; mfa: AccountMfaStatus;
+  sessions: AccountSecuritySession[]; recentAuth: RecentAuthentication;
+};
+export type TotpEnrollment = {
+  enrollmentId: string; secret: string; otpauthUri: string; expiresAt: string;
+};
+
 export type FamilyPermission = 'PROFILE_MANAGE' | 'BOOKINGS_MANAGE' | 'CREDENTIAL_RESET' | 'PRIVACY_MANAGE' | 'DATA_EXPORT' | 'CONSENT_MANAGE' | 'DELETION_REQUEST' | 'HANDOVER_MANAGE';
 export type GuardianLinkStatus = 'ACTIVE' | 'WITHDRAWN' | 'ENDED';
 export type FamilyHandoverStatus = 'PENDING' | 'COMPLETED' | 'CANCELLED' | 'EXPIRED';

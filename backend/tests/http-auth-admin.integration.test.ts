@@ -82,6 +82,9 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
         accountDirectory: true,
         sessionChat: true,
         accountChat: true,
+        accountSecurity: config.accountSecurityKeys.enabled
+          ? (config.email.enabled ? 'configured' : 'recovery-disabled')
+          : 'disabled',
         namedClubStaff: true,
         bookingSeries: true,
         operationalInbox: true,
@@ -141,6 +144,10 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
   it('reuses one demo session and revokes it on logout', async () => {
     config.demoEnabled = true;
     const club = await tenants.fixture();
+    await prisma.authSession.update({
+      where: { id: club.session.id },
+      data: { recentAuthAt: null },
+    });
 
     const reused = await request(app).post('/api/auth/demo')
       .set('Cookie', club.cookie).send({}).expect(200);
@@ -150,6 +157,9 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
       business: { id: club.business.id, isDemo: false },
     });
     expect(await prisma.authSession.count({ where: { userId: club.user.id } })).toBe(1);
+    // Entering the demo route while already signed in to a real account must
+    // not become a passwordless recent-authentication bypass.
+    expect((await prisma.authSession.findFirstOrThrow({ where: { userId: club.user.id } })).recentAuthAt).toBeNull();
 
     const logout = await request(app).post('/api/auth/logout')
       .set('Cookie', club.cookie).send({}).expect(200);

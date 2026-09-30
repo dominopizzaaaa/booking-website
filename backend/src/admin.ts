@@ -3,12 +3,13 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
-import { rateLimit } from 'express-rate-limit';
 import { prisma } from './db.js';
 import { config, production, skipRateLimits } from './config.js';
+import { sharedRateLimit } from './rate-limit.js';
 import { asyncRoute, HttpError } from './http.js';
 import { adminChatListQuery, chatThreadForAdmin, listChatThreadsForAdmin, threadQuery } from './chat.js';
 import { adminSafeguardingRouter } from './safeguarding.js';
+import { verifyTotp } from './account-security-crypto.js';
 
 // The platform admin console is separate from provider (business) logins.
 // Production admits only explicitly configured named operators. A shared
@@ -16,7 +17,8 @@ import { adminSafeguardingRouter } from './safeguarding.js';
 // deliberately excluded from sensitive reads and every enforcement mutation.
 export const adminRouter = Router();
 const adminCookieOptions = { httpOnly: true, secure: production, sameSite: 'lax' as const, path: '/' };
-const adminLimit = rateLimit({
+const adminLimit = sharedRateLimit({
+  name: 'admin-login',
   windowMs: 15 * 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false,
   skip: skipRateLimits,
   message: { error: 'Too many attempts. Please try again later.' },
@@ -44,7 +46,11 @@ type AdminSessionPayload = {
 };
 
 const DUMMY_BCRYPT_HASH = '$2b$12$iqhVwv9QRpq.hKuJLYeuHOuO5.J3oBTOj5BSn5lUbyZp1KiVkRfsC';
-const namedLoginBody = z.object({ email: z.string().trim().toLowerCase().email().max(320), password: z.string().min(1).max(200) }).strict();
+const namedLoginBody = z.object({
+  email: z.string().trim().toLowerCase().email().max(320),
+  password: z.string().min(1).max(200),
+  totpCode: z.string().trim().regex(/^\d{6}$/).optional(),
+}).strict();
 const legacyLoginBody = z.object({ password: z.string().min(1).max(200) }).strict();
 
 function adminAuthMode(): 'named' | 'legacy' | 'disabled' {
@@ -62,7 +68,10 @@ function sign(value: string) {
 function issueAdminSession(res: Response, context: AdminSessionContext) {
   const expiresAt = Date.now() + config.adminSessionHours * 3600_000;
   const credentials = context.mode === 'named'
-    ? config.adminOperators.find(operator => operator.id === context.operator.id)?.passwordHash ?? ''
+    ? (() => {
+      const configured = config.adminOperators.find(operator => operator.id === context.operator.id);
+      return `${configured?.passwordHash ?? ''}:${configured?.totpSecret ?? ''}`;
+    })()
     : config.adminPassword;
   const payload: AdminSessionPayload = {
     v: 1, mode: context.mode, expiresAt, credentialVersion: credentialVersion(credentials),
@@ -92,7 +101,7 @@ function readAdminSession(token: unknown): AdminSessionContext | null {
     if (!payload.operatorId || !payload.operatorName || !payload.operatorEmail) return null;
     const configured = config.adminOperators.find(operator => operator.id === payload.operatorId);
     if (!configured || payload.operatorName !== configured.name || payload.operatorEmail !== configured.email
-      || !safeEqual(payload.credentialVersion, credentialVersion(configured.passwordHash))) return null;
+      || !safeEqual(payload.credentialVersion, credentialVersion(`${configured.passwordHash}:${configured.totpSecret ?? ''}`))) return null;
     return { mode: 'named', operator: { id: configured.id, name: configured.name, email: configured.email } };
   }
   if (production || !config.adminPassword
@@ -131,10 +140,12 @@ adminRouter.post('/admin/login', adminLimit, asyncRoute(async (req, res) => {
   const mode = adminAuthMode();
   if (mode === 'disabled') throw new HttpError(503, 'Admin console is not configured');
   if (mode === 'named') {
-    const { email, password } = namedLoginBody.parse(req.body);
+    const { email, password, totpCode } = namedLoginBody.parse(req.body);
     const configured = config.adminOperators.find(operator => operator.email === email);
     const matches = await bcrypt.compare(password, configured?.passwordHash ?? DUMMY_BCRYPT_HASH);
-    if (!configured || !matches) throw new HttpError(401, 'Incorrect admin email or password');
+    const mfaMatches = !configured?.totpSecret
+      || (typeof totpCode === 'string' && verifyTotp(configured.totpSecret, totpCode) !== null);
+    if (!configured || !matches || !mfaMatches) throw new HttpError(401, 'Incorrect admin credentials');
     const operator = { id: configured.id, name: configured.name, email: configured.email };
     issueAdminSession(res, { mode: 'named', operator });
     res.json({ ok: true, authMode: 'named', operator });
@@ -280,7 +291,8 @@ async function deleteBusinessDeep(tx: Prisma.TransactionClient, businessId: stri
   }
   // Provider reconciliation and the shared venue ledger use restrictive links
   // so history cannot disappear accidentally. Explicit whole-business teardown
-  // removes those children first, in dependency order.
+  // removes those children first, in dependency order. Payment receipts reject
+  // independent deletion and cascade from the payment removed below.
   await tx.paymentRefund.deleteMany({ where: { businessId } });
   await tx.paymentSettlement.deleteMany({ where: { paymentIntent: { businessId } } });
   await tx.payment.deleteMany({ where: { businessId } });

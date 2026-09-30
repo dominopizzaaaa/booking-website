@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import type { Prisma } from '@prisma/client';
 import { DateTime } from 'luxon';
-import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { skipRateLimits } from './config.js';
+import { sharedRateLimit } from './rate-limit.js';
 import { prisma } from './db.js';
 import { requireAuth } from './auth.js';
 import { asyncRoute, HttpError, type AccountRequest } from './http.js';
@@ -50,7 +50,8 @@ function discoverableAccountWhere(now: Date): Prisma.UserWhereInput {
   };
 }
 
-const accountDirectoryLimit = rateLimit({
+const accountDirectoryLimit = sharedRateLimit({
+  name: 'account-directory',
   windowMs: 5 * 60_000, limit: 60, standardHeaders: 'draft-8', legacyHeaders: false,
   skip: skipRateLimits,
   // Authentication runs first, so a shared network does not make one user's

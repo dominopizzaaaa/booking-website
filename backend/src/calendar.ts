@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from './db.js';
 import { config } from './config.js';
-import { asyncRoute, HttpError, type AuthRequest } from './http.js';
+import { asyncRoute, HttpError, requireRecentAuth, type AuthRequest } from './http.js';
 import { calendarSecretAad, decryptCalendarSecret, encryptCalendarSecret } from './calendar-crypto.js';
 import {
   exchangeGoogleAuthorizationCode,
@@ -108,7 +108,7 @@ calendarRouter.get('/connection', asyncRoute(async (req, res) => {
   res.json(await connectionStatus(req));
 }));
 
-calendarRouter.post('/google/connect', asyncRoute(async (req, res) => {
+calendarRouter.post('/google/connect', requireRecentAuth, asyncRoute(async (req, res) => {
   assertConfigured();
   assertEligible(req);
   const { returnTo } = connectInput.parse(req.body);
@@ -350,7 +350,7 @@ calendarRouter.post('/sync', asyncRoute(async (req, res) => {
   res.status(202).json(await connectionStatus(req, updated));
 }));
 
-calendarRouter.delete('/connection', asyncRoute(async (req, res) => {
+calendarRouter.delete('/connection', requireRecentAuth, asyncRoute(async (req, res) => {
   z.object({}).strict().parse(req.body ?? {});
   assertEligible(req);
   const updated = await disconnectCalendarConnection(req.auth.user.id);

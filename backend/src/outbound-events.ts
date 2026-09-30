@@ -40,6 +40,11 @@ export type EmailVerificationSecurityEmailInput = {
   expiresAt: Date;
 };
 
+type AccountSecurityClaimEmailInput = {
+  claimId: string; tokenKeyId: string; recipientEmail: string; recipientName: string;
+  recipientUserId: string; expiresAt: Date;
+};
+
 export function normalizedRecipient(email: string) { return email.trim().toLowerCase(); }
 export function isDeliverableEmail(email: string) {
   const value = normalizedRecipient(email);
@@ -49,6 +54,9 @@ export function isDeliverableEmail(email: string) {
 export async function queueOutboundEmail(tx: OutboundTransaction, input: QueueEmailInput) {
   if ((input.eventType as TransactionalEmailEvent) === 'FAMILY_HANDOVER_SECURITY') {
     throw new TypeError('Family handover security mail must use its non-secret queue helper');
+  }
+  if (['PASSWORD_RESET', 'EMAIL_CHANGE_VERIFICATION'].includes(input.eventType)) {
+    throw new TypeError('Bearer-bearing account security mail must use its non-secret queue helper');
   }
   // Security mail is mandatory when delivery is configured, but it must not
   // manufacture a queued record in deployments with no sending provider.
@@ -144,3 +152,35 @@ export async function enqueueEmailVerificationSecurityEmail(
     ...(suppressionCode ? { lastErrorCode: suppressionCode } : {}),
   } });
 }
+
+async function enqueueAccountSecurityClaimEmail(
+  tx: OutboundTransaction,
+  input: AccountSecurityClaimEmailInput,
+  kind: 'password-reset' | 'email-change',
+) {
+  if (!config.email.enabled) return null;
+  const email = normalizedRecipient(input.recipientEmail);
+  let suppressed = !isDeliverableEmail(email);
+  let suppressionCode = suppressed ? 'INVALID_RECIPIENT' : null;
+  if (!suppressed) {
+    const preference = await tx.notificationPreference.findUnique({ where: { userId: input.recipientUserId } });
+    if (preference?.emailSuppressedAt) { suppressed = true; suppressionCode = 'HARD_SUPPRESSION'; }
+  }
+  const eventType = kind === 'password-reset' ? 'PASSWORD_RESET' : 'EMAIL_CHANGE_VERIFICATION';
+  return tx.outboundDelivery.create({ data: {
+    channel: 'EMAIL', eventType, eventVersion: 1,
+    dedupeKey: `${kind}:${input.claimId}`, recipientKey: email,
+    recipientUserId: input.recipientUserId, recipientEmail: email,
+    recipientName: input.recipientName.trim(), businessId: null, bookingId: null,
+    notificationId: null, accountNotificationId: null, template: `${kind}-v1`,
+    payload: { claimId: input.claimId, tokenKeyId: input.tokenKeyId, expiresAt: input.expiresAt.toISOString() },
+    status: suppressed ? 'SUPPRESSED' : 'QUEUED',
+    ...(suppressionCode ? { lastErrorCode: suppressionCode } : {}),
+  } });
+}
+
+export const enqueuePasswordResetSecurityEmail = (tx: OutboundTransaction, input: AccountSecurityClaimEmailInput) =>
+  enqueueAccountSecurityClaimEmail(tx, input, 'password-reset');
+
+export const enqueueEmailChangeSecurityEmail = (tx: OutboundTransaction, input: AccountSecurityClaimEmailInput) =>
+  enqueueAccountSecurityClaimEmail(tx, input, 'email-change');

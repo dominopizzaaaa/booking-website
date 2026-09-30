@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Router } from 'express';
-import { rateLimit } from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from './db.js';
 import { config, skipRateLimits } from './config.js';
-import { asyncRoute, HttpError, type AccountRequest } from './http.js';
+import { sharedRateLimit } from './rate-limit.js';
+import { asyncRoute, HttpError, requireRecentAuth, type AccountRequest } from './http.js';
 import { authState } from './serializers.js';
 import { initials } from './http.js';
 import { sportsSchema, usernameSchema } from './account-profile.js';
@@ -514,7 +514,8 @@ async function cancelPendingChildHandover(
   });
 }
 
-const publicHandoverLimit = rateLimit({
+const publicHandoverLimit = sharedRateLimit({
+  name: 'family-handover-public',
   windowMs: 15 * 60_000,
   limit: 40,
   standardHeaders: 'draft-8',
@@ -523,7 +524,8 @@ const publicHandoverLimit = rateLimit({
   message: { error: 'Too many handover attempts. Please try again later.' },
 });
 
-const familyMutationLimit = rateLimit({
+const familyMutationLimit = sharedRateLimit({
+  name: 'family-mutation',
   windowMs: 15 * 60_000,
   limit: 20,
   standardHeaders: 'draft-8',
@@ -748,7 +750,7 @@ familyRouter.patch('/children/:id', asyncRoute(async (req, res) => {
   res.json({ child });
 }));
 
-familyRouter.post('/children/:id/consent/withdraw', asyncRoute(async (req, res) => {
+familyRouter.post('/children/:id/consent/withdraw', requireRecentAuth, asyncRoute(async (req, res) => {
   const { id } = childParams.parse(req.params);
   emptyBody.parse(req.body ?? {});
   const child = await prisma.$transaction(async tx => {
@@ -779,7 +781,7 @@ familyRouter.post('/children/:id/consent/withdraw', asyncRoute(async (req, res) 
   res.json({ child });
 }));
 
-familyRouter.post('/children/:id/consent/renew', asyncRoute(async (req, res) => {
+familyRouter.post('/children/:id/consent/renew', requireRecentAuth, asyncRoute(async (req, res) => {
   const { id } = childParams.parse(req.params);
   const body = renewConsentBody.parse(req.body);
   assertCurrentPrivacyPolicy(body.privacyPolicyVersion);
@@ -814,7 +816,7 @@ familyRouter.post('/children/:id/consent/renew', asyncRoute(async (req, res) => 
   res.json({ child });
 }));
 
-familyRouter.post('/children/:id/deletion-request', asyncRoute(async (req, res) => {
+familyRouter.post('/children/:id/deletion-request', requireRecentAuth, asyncRoute(async (req, res) => {
   const { id } = childParams.parse(req.params);
   emptyBody.parse(req.body ?? {});
   const child = await prisma.$transaction(async tx => {
@@ -833,7 +835,7 @@ familyRouter.post('/children/:id/deletion-request', asyncRoute(async (req, res) 
   res.json({ child });
 }));
 
-familyRouter.post('/children/:id/handovers', asyncRoute(async (req, res) => {
+familyRouter.post('/children/:id/handovers', requireRecentAuth, asyncRoute(async (req, res) => {
   const { id } = childParams.parse(req.params);
   const body = createHandoverBody.parse(req.body);
   if (!config.email.enabled || !config.familyHandoverTokens.enabled) {
@@ -950,7 +952,7 @@ familyRouter.post('/children/:id/handovers', asyncRoute(async (req, res) => {
   });
 }));
 
-familyRouter.delete('/children/:id/handovers/:handoverId', asyncRoute(async (req, res) => {
+familyRouter.delete('/children/:id/handovers/:handoverId', requireRecentAuth, asyncRoute(async (req, res) => {
   const { id, handoverId } = handoverParams.parse(req.params);
   emptyBody.parse(req.body ?? {});
   await prisma.$transaction(async tx => {
@@ -998,7 +1000,7 @@ familyRouter.delete('/children/:id/handovers/:handoverId', asyncRoute(async (req
   res.json({ ok: true });
 }));
 
-familyRouter.get('/children/:id/export', asyncRoute(async (req, res) => {
+familyRouter.get('/children/:id/export', requireRecentAuth, asyncRoute(async (req, res) => {
   emptyQuery.parse(req.query);
   const { id } = childParams.parse(req.params);
   const child = await prisma.$transaction(async tx => {

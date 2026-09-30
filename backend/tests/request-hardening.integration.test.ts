@@ -58,7 +58,10 @@ describe.sequential('The HTTP request envelope', () => {
     });
 
     it('publishes the remaining request budget', async () => {
-      const response = await request(app).get('/api/health');
+      // Health, liveness, and metrics are intentionally outside the global
+      // quota so infrastructure probes cannot consume customer capacity. A
+      // normal API request still exposes the standard combined header.
+      const response = await request(app).get('/api/auth/me');
       expect(response.headers).toHaveProperty('ratelimit');
     });
   });

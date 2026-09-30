@@ -5,8 +5,12 @@ import {
   loadAccountBookings, loadAccountClubs, loadAdminPrivacyRequestEvents, loadAdminPrivacyRequests, loadAdminSafeguardingReport, loadAdminSafeguardingReports, loadCalendarConnection, loadChatThread, loadChatThreads, loadClubSafeguardingReport, loadPrivacyRequests, loadSlots, loadWorkspace,
   normalizeCalendarConnection, proposeChatSession, removeChatCoach, reportChatMessage, respondToRescheduleRequest, reversePayment, searchVenues,
   syncGoogleCalendar, unblockChatAccount, updateAdminSafeguardingReport, updateCalendarConnection, updateClubSafeguardingReport,
+  completeMfaLogin, confirmAccountEmailChange, confirmTotpEnrollment, disableAccountMfa, isMfaLoginChallenge,
+  loadAccountSecurity, loginAccount, reauthenticateAccount, regenerateMfaRecoveryCodes, requestAccountEmailChange,
+  requestPasswordReset, resetAccountPassword, revokeAccountSecuritySession, revokeOtherAccountSecuritySessions, startTotpEnrollment,
   resendAccountEmailVerification, updateAdminPrivacyRequest, verifyAccountEmail,
 } from '../src/lib/api';
+import { registerRecentAuthHandler } from '../src/lib/recent-auth-coordinator';
 import { isCoachClubWorkspace, isManagerWorkspace, type WorkspaceResponse, type WorkspaceWireResponse } from '../src/lib/types';
 
 type Call = { url: string; init: RequestInit };
@@ -97,6 +101,19 @@ describe('api', () => {
     respond({}, { status: 500 });
     await expect(api('/workspace')).rejects.toMatchObject({ message: 'Something went wrong. Please try again.' });
   });
+
+  it('prompts once and retries a recent-auth-protected request once', async () => {
+    respondResults([
+      { body: { error: 'Confirm your identity to continue', code: 'RECENT_AUTH_REQUIRED' }, status: 428 },
+      { body: { ok: true }, status: 200 },
+    ]);
+    const prompt = vi.fn(async () => undefined);
+    const unregister = registerRecentAuthHandler(prompt);
+    await expect(api('/protected', { method: 'POST', body: '{}' })).resolves.toEqual({ ok: true });
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(2);
+    unregister();
+  });
 });
 
 describe('verifyAccountEmail', () => {
@@ -114,6 +131,83 @@ describe('verifyAccountEmail', () => {
     expect(calls[0].url).toBe('/api/auth/email-verification/resend');
     expect(calls[0].init.method).toBe('POST');
     expect(JSON.parse(String(calls[0].init.body))).toEqual({});
+  });
+});
+
+describe('account security helpers', () => {
+  it('preserves a successful MFA challenge instead of treating it as an auth session', async () => {
+    const challenge = { mfaRequired: true, challengeId: 'challenge-1', methods: ['TOTP'], expiresAt: '2099-01-01T00:00:00.000Z' };
+    respond(challenge);
+    const result = await loginAccount({ email: 'player@example.test', password: 'secret' });
+    expect(isMfaLoginChallenge(result)).toBe(true);
+    expect(result).toEqual(challenge);
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ email: 'player@example.test', password: 'secret' });
+  });
+
+  it('keeps reset and email-change bearers in JSON request bodies', async () => {
+    respond({ ok: true });
+    await requestPasswordReset('player@example.test');
+    expect(calls[0]).toMatchObject({ url: '/api/auth/password-reset/request', init: { method: 'POST', body: '{"email":"player@example.test"}' } });
+
+    respond({ ok: true });
+    await resetAccountPassword('reset/bearer', 'a-new-secure-password');
+    expect(calls[0]).toMatchObject({ url: '/api/auth/password-reset/confirm', init: { method: 'POST' } });
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ token: 'reset/bearer', password: 'a-new-secure-password' });
+
+    respond({ ok: true, email: 'new@example.test' });
+    await confirmAccountEmailChange('email-change-bearer');
+    expect(calls[0].url).toBe('/api/auth/email-change/confirm');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ token: 'email-change-bearer' });
+  });
+
+  it('uses the typed MFA enrollment and challenge endpoints', async () => {
+    respond({ secret: 'SECRET', otpauthUri: 'otpauth://totp/Courtly', expiresAt: '2099-01-01T00:00:00.000Z' });
+    await startTotpEnrollment();
+    expect(calls[0]).toMatchObject({ url: '/api/account/security/mfa/enrollment', init: { method: 'POST', body: '{}' } });
+
+    respond({ ok: true, recoveryCodes: ['one'] });
+    await confirmTotpEnrollment('enrollment-1', '123456');
+    expect(calls[0].url).toBe('/api/account/security/mfa/enable');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ enrollmentId: 'enrollment-1', code: '123456' });
+
+    respond({
+      user: { id: 'u1', name: 'Player One', email: 'player@example.test', accountType: 'STUDENT' },
+      membership: null, business: null, memberships: [],
+    });
+    await completeMfaLogin('challenge-1', 'RECOVERY_CODE', 'recovery-code');
+    expect(calls[0].url).toBe('/api/auth/mfa/challenge');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ challengeId: 'challenge-1', method: 'RECOVERY_CODE', code: 'recovery-code' });
+  });
+
+  it('uses recent auth, email change, MFA recovery, and session revocation contracts', async () => {
+    respondSequence([{ email: 'old@example.test', emailVerified: true, mfa: { enabled: false, enabledAt: null, recoveryCodesRemaining: 0 }, sessions: 1, recentAuthUntil: null }, { sessions: [] }]);
+    await loadAccountSecurity();
+    expect(calls.map(call => call.url)).toEqual(['/api/account/security', '/api/account/security/sessions']);
+
+    respond({ ok: true });
+    await requestAccountEmailChange('new@example.test');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ email: 'new@example.test' });
+
+    respond({ ok: true });
+    await reauthenticateAccount({ password: 'password', method: 'TOTP', code: '123456' });
+    expect(calls[0].url).toBe('/api/account/security/recent-auth');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ password: 'password', method: 'TOTP', code: '123456' });
+
+    respond({ recoveryCodes: [] });
+    await regenerateMfaRecoveryCodes();
+    expect(calls[0]).toMatchObject({ url: '/api/account/security/mfa/recovery-codes', init: { method: 'POST' } });
+
+    respond({ ok: true });
+    await disableAccountMfa();
+    expect(calls[0]).toMatchObject({ url: '/api/account/security/mfa', init: { method: 'DELETE', body: '{}' } });
+
+    respond({ ok: true });
+    await revokeAccountSecuritySession('session/1');
+    expect(calls[0].url).toBe('/api/account/security/sessions/session%2F1');
+
+    respond({ ok: true });
+    await revokeOtherAccountSecuritySessions();
+    expect(calls[0]).toMatchObject({ url: '/api/account/security/sessions/revoke-others', init: { method: 'POST', body: '{}' } });
   });
 });
 
@@ -774,9 +868,9 @@ describe('request construction', () => {
 
   it('sends the exact credential shape for named and legacy admin login', async () => {
     respond({ ok: true, authMode: 'named', operator: { id: 'ops_1', name: 'Ada', email: 'ada@example.test' } });
-    await adminLogin({ email: 'ada@example.test', password: 'named-secret' });
+    await adminLogin({ email: 'ada@example.test', password: 'named-secret', totpCode: '123456' });
     expect(calls[0]).toMatchObject({
-      url: '/api/admin/login', init: { method: 'POST', body: JSON.stringify({ email: 'ada@example.test', password: 'named-secret' }) },
+      url: '/api/admin/login', init: { method: 'POST', body: JSON.stringify({ email: 'ada@example.test', password: 'named-secret', totpCode: '123456' }) },
     });
 
     respond({ ok: true, authMode: 'legacy', operator: null });

@@ -21,6 +21,7 @@ async function sessionFor(userId: string) {
   const token = randomBytes(32).toString('base64url');
   await prisma.authSession.create({ data: {
     id: createHash('sha256').update(token).digest('hex'), userId,
+    recentAuthAt: new Date(),
     expiresAt: new Date(Date.now() + 3_600_000),
   } });
   return `${config.sessionCookie}=${token}`;

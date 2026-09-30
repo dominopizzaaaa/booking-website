@@ -2,7 +2,6 @@ import express, { type ErrorRequestHandler } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
-import { rateLimit } from 'express-rate-limit';
 import { ZodError } from 'zod';
 import { Prisma } from '@prisma/client';
 import { config, production, skipRateLimits } from './config.js';
@@ -32,19 +31,30 @@ import { auditRouter } from './audit-routes.js';
 import { familyPublicRouter, familyRouter } from './family.js';
 import { privacyAdminRouter, privacyPublicRouter, privacyRouter } from './privacy.js';
 import { safeguardingRouter } from './safeguarding.js';
+import { accountSecurityPublicRouter, accountSecurityRouter } from './account-security.js';
+import { logUnexpectedRequestError, metricsHandler, requestObservability } from './observability.js';
+import { sharedRateLimit } from './rate-limit.js';
 export const app = express();
 app.disable('x-powered-by');
 if (production) app.set('trust proxy', 1);
+app.use(requestObservability({ enabled: config.observability.httpLogging }));
 app.use(helmet());
 app.use(cors({ credentials: true, origin(origin, cb) { cb(null, !origin || config.origins.includes(origin)); } }));
+// Liveness is deliberately independent of PostgreSQL and the worker loops.
+// Readiness remains /api/health, which checks the database schema contract.
+app.get('/api/live', (_req, res) => res.set('Cache-Control', 'no-store').json({ ok: true, service: 'courtly' }));
 // Signature verification must receive the exact bytes Stripe signed. This is
 // the only endpoint that bypasses the normal JSON parser.
 app.post('/api/payments/webhooks/stripe', express.raw({ type: 'application/json', limit: '256kb' }), stripeWebhookHandler);
 app.use(express.json({ limit: '100kb' }));
 app.use(cookieParser());
-app.use('/api', rateLimit({
+app.use('/api', sharedRateLimit({
+  name: 'api-global',
+  // Preserve health and ordinary API availability during a database incident;
+  // narrower authentication and mutation policies below remain fail-closed.
+  failureMode: 'open',
   windowMs: 60_000, limit: 600, standardHeaders: 'draft-8', legacyHeaders: false,
-  skip: skipRateLimits,
+  skip: req => skipRateLimits() || ['/health', '/live', '/metrics'].includes(req.path),
   message: { error: 'Too many requests. Please slow down.' },
 }));
 app.use('/api', (req, res, next) => {
@@ -58,6 +68,7 @@ app.use('/api', (req, res, next) => {
   }
   next();
 });
+app.get('/api/metrics', metricsHandler(config.observability.metricsToken));
 app.get('/api/health', async (_req, res) => {
   try {
     const schema = await inspectSchema(prisma);
@@ -79,6 +90,9 @@ app.get('/api/health', async (_req, res) => {
             : (config.payments.publishableKey.startsWith('pk_live_') ? 'stripe-live' : 'stripe-test')
           : config.payments.mode,
         transactionalEmail: config.email.enabled ? 'configured' : 'disabled',
+        accountSecurity: config.accountSecurityKeys.enabled
+          ? (config.email.enabled ? 'configured' : 'recovery-disabled')
+          : 'disabled',
         family: config.familyFeatureEnabled ? 'enabled' : 'disabled',
         familyHandover: config.email.enabled && config.familyHandoverTokens.enabled
           ? 'configured'
@@ -92,6 +106,7 @@ app.get('/api/health', async (_req, res) => {
 });
 app.use('/api/public', privacyPublicRouter);
 app.use('/api/auth', authRouter);
+app.use('/api/auth', accountSecurityPublicRouter);
 app.use('/api', adminRouter, privacyAdminRouter);
 // Public handover claims must not advertise that a token route exists while
 // Family is disabled. Authenticated Family surfaces may report temporary
@@ -112,6 +127,9 @@ app.use('/api', publicRouter);
 // Privacy rights remain reachable for an authenticated account even when its
 // ordinary product capabilities are restricted or awaiting remediation.
 app.use('/api/privacy', requireAuth, privacyRouter);
+// Account security remains available while ordinary account capabilities are
+// restricted, but every private route still requires the canonical session.
+app.use('/api/account/security', requireAuth, accountSecurityRouter);
 // Everything below this point is an ordinary signed-in account surface. Keep
 // public/auth/family remediation routes above it so an account that needs age,
 // consent, deletion, or handover action can still reach the route that resolves
@@ -140,7 +158,7 @@ app.use('/api/account', requireStudent, accountRouter);
 // non-revoked membership selected on the session.
 app.use('/api', requireAccountCapability('workspace'), requireWorkspace, workspaceRouter, bookingsRouter, bookingSeriesRouter, crudRouter, staffRouter, clubStaffAccessRouter, auditRouter, venuesRouter, integrityRouter, safeguardingRouter);
 app.use((_req, _res, next) => next(new HttpError(404, 'Route not found')));
-const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
+const errorHandler: ErrorRequestHandler = (error, req, res, _next) => {
   if (error instanceof HttpError) { res.status(error.status).json({ error: error.message, ...error.details }); return; }
   if (error instanceof ZodError) { res.status(400).json({ error: error.issues[0]?.message || 'Invalid input', issues: error.flatten() }); return; }
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
@@ -155,7 +173,7 @@ const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
   if (error instanceof Error && (error as { type?: string }).type === 'entity.too.large') {
     res.status(413).json({ error: 'Request body is too large' }); return;
   }
-  console.error(error);
+  logUnexpectedRequestError(error, req);
   res.status(500).json({ error: 'An unexpected server error occurred. Please try again.' });
 };
 app.use(errorHandler);

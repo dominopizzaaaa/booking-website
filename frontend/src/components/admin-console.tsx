@@ -35,6 +35,7 @@ export function AdminConsole() {
   const [email, setEmail] = useState('');
   const [businessDeletionMode, setBusinessDeletionMode] = useState<'all' | 'demo-only'>('demo-only');
   const [password, setPassword] = useState('');
+  const [totpCode, setTotpCode] = useState('');
   const [signingIn, setSigningIn] = useState(false);
   const [loginError, setLoginError] = useState('');
 
@@ -93,13 +94,13 @@ export function AdminConsole() {
 
   async function signIn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (signingIn || !password || (authMode === 'named' && !email.trim())) return;
+    if (signingIn || !password || (authMode === 'named' && (!email.trim() || !/^\d{6}$/.test(totpCode)))) return;
     setSigningIn(true); setLoginError('');
     try {
       const session = await adminLogin(authMode === 'named'
-        ? { email: email.trim().toLowerCase(), password }
+        ? { email: email.trim().toLowerCase(), password, totpCode }
         : { password });
-      setPassword(''); setEmail(''); setAuthMode(session.authMode); setOperator(session.operator);
+      setPassword(''); setTotpCode(''); setEmail(''); setAuthMode(session.authMode); setOperator(session.operator);
       setPhase('ready');
     } catch (error) {
       setLoginError(errorText(error, 'Sign in failed. Please try again.'));
@@ -180,8 +181,15 @@ export function AdminConsole() {
             onChange={event => { setPassword(event.target.value); if (loginError) setLoginError(''); }}
             className="!min-h-12 !rounded-xl !border-[#dfe5dd] !px-3.5 !text-base placeholder:!text-[#59675c] sm:!text-sm" placeholder="••••••••••••" disabled={signingIn} />
         </div>
+        {authMode === 'named' && <div>
+          <label htmlFor="admin-totp" className="!mb-2 block !text-xs !font-medium !text-[#617257]">6-digit authenticator code</label>
+          <input id="admin-totp" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" value={totpCode}
+            onChange={event => { setTotpCode(event.target.value.replace(/\D/g, '').slice(0, 6)); if (loginError) setLoginError(''); }}
+            className="!min-h-12 !rounded-xl !border-[#dfe5dd] !px-3.5 !text-base placeholder:!text-[#59675c] sm:!text-sm" placeholder="123456" required disabled={signingIn} aria-describedby="admin-totp-hint" />
+          <p id="admin-totp-hint" className="mt-1.5 text-xs leading-relaxed text-[#59675c]">Open the authenticator app registered for this operator.</p>
+        </div>}
         {loginError && <div role="alert" aria-live="polite" className="rounded-xl border border-[#eedbd4] bg-[#fff6f1] p-3.5 text-xs leading-relaxed text-[#8b4d3c]">{loginError}</div>}
-        <button type="submit" disabled={signingIn || !password || (authMode === 'named' && !email.trim())} className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#174c3c] px-5 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-[#103e2f] disabled:cursor-wait disabled:opacity-60">
+        <button type="submit" disabled={signingIn || !password || (authMode === 'named' && (!email.trim() || !/^\d{6}$/.test(totpCode)))} className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#174c3c] px-5 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-[#103e2f] disabled:cursor-wait disabled:opacity-60">
           {signingIn ? <><LoaderCircle size={16} className="animate-spin" />Signing in…</> : <>Sign in<ShieldCheck size={16} /></>}
         </button>
       </form>
