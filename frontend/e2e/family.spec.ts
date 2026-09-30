@@ -148,6 +148,9 @@ test('multiple children keep consent-only rows private and obey per-link permiss
   });
 
   await page.goto('/family');
+  await expect(page.getByRole('heading', { name: 'How to book lessons for your children' })).toBeVisible();
+  await expect(page.getByText('You can manage more than one child from this same adult account.')).toBeVisible();
+  await expect(page.getByText('3. Book one child at a time.')).toBeVisible();
   const renewalCard = page.getByRole('article', { name: 'Riley' });
   await expect(renewalCard).toContainText('privacy-minimal');
   await expect(renewalCard.getByText('@riley_tan')).toHaveCount(0);

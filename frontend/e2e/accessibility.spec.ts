@@ -402,7 +402,7 @@ test.describe('automated WCAG checks', () => {
     await expect(page.getByRole('heading', { name: 'Make room for more.', exact: true })).toBeVisible();
     await expectNoWcagViolations(page);
 
-    await page.getByRole('radio', { name: 'Student', exact: true }).check();
+    await page.getByRole('radio', { name: 'Player or guardian', exact: true }).check();
     await expect(page.getByLabel('Username', { exact: true })).toBeVisible();
     await expect(page.getByLabel('Sports optional', { exact: true })).toBeVisible();
     await expectNoWcagViolations(page);

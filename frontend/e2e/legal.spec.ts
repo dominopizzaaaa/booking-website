@@ -48,13 +48,13 @@ test('signup requires unticked legal acceptance and links to the exact documents
   await expect(acceptance).not.toBeChecked();
   await expect(page.getByRole('link', { name: 'Terms of Service' })).toHaveAttribute('href', '/legal/terms');
   await expect(page.getByRole('link', { name: 'Privacy Notice' })).toHaveAttribute('href', '/legal/privacy');
-  await page.getByRole('radio', { name: 'Player / guardian' }).check();
+  await page.getByRole('radio', { name: 'Player or guardian' }).check();
   await page.getByLabel('Your full name').fill('Legal Test');
   await page.getByLabel('Username').fill('legal_test');
-  await page.getByLabel('Date of birth').fill('1990-01-01');
+  await page.getByLabel('Your date of birth').fill('1990-01-01');
   await page.getByLabel('Email address').fill('legal@example.test');
   await page.getByLabel('Password', { exact: true }).fill('TestingOnly!2026');
-  await page.getByRole('button', { name: 'Create player account' }).click();
+  await page.getByRole('button', { name: 'Create personal account' }).click();
   await expect(page.locator('#auth-legalAcceptance-error')).toHaveText('Please accept the Terms of Service and acknowledge the Privacy Notice.');
   await expect(acceptance).toBeFocused();
 });
