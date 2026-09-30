@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 4.3.0** · Last updated 2026-09-29
+**Version 4.3.1** · Last updated 2026-09-30
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -29,6 +29,11 @@ not a person, and never teaches. A founder who also coaches uses a separate
 fourth role. It is a distinct global user with no direct login credentials and
 is operated only through an authorized adult's Family view. See
 `docs/CHILD_ACCOUNTS.md` for the full contract and rollout boundary.
+Parent or guardian is likewise a relationship, not a fourth role: an adult
+uses their own `STUDENT` account, or an existing `COACH` account, to manage one
+or more separate child profiles. User-facing signup and booking guidance must
+ask for the adult's own details and make clear that each child is added and
+booked separately.
 
 `Membership` is only an affiliation link. It has no role: a club has one
 membership to its own business; a coach has one per club that added them; a

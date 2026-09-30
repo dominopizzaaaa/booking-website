@@ -495,7 +495,7 @@ test('self-registered coach is linked to a club by its club account', async ({ p
   await page.getByRole('radio', { name: 'Coach', exact: true }).click();
   await page.getByLabel(/Your full name/i).fill('Casey Coach');
   await page.getByLabel('Username', { exact: true }).fill(`bco_${coachEmail.split('@')[0].replace(/-/g, '_').slice(-26)}`);
-  await page.getByLabel('Date of birth', { exact: true }).fill('1990-01-01');
+  await page.getByLabel('Your date of birth', { exact: true }).fill('1990-01-01');
   await page.getByLabel(/Email/i).fill(coachEmail);
   await page.getByLabel(/^Password/i).fill(password);
   await page.getByRole('button', { name: 'Create coach account' }).click();

@@ -24,20 +24,24 @@ async function visibleWorkspaceNavigation(page: Page): Promise<Locator> {
   return desktop;
 }
 
-test('signup account choices stay label-only while retaining the username field', async ({ page }) => {
+test('signup explains personal, guardian, coach, and club account paths', async ({ page }) => {
   await page.goto('/signup');
   const accountTypes = page.getByRole('group', { name: 'I’m joining Courtly as', exact: true });
 
   await expect(accountTypes.getByRole('radio')).toHaveCount(3);
-  await expect(page.getByText('Create your club workspace', { exact: true })).toHaveCount(0);
-  await expect(page.getByText('Clubs add you by email', { exact: true })).toHaveCount(0);
-  await expect(page.getByText('Book and manage lessons', { exact: true })).toHaveCount(0);
+  await expect(accountTypes.getByText('Run one club and its bookings', { exact: true })).toBeVisible();
+  await expect(accountTypes.getByText('Teach at one or more clubs', { exact: true })).toBeVisible();
+  await expect(accountTypes.getByText('Book for yourself or manage children', { exact: true })).toBeVisible();
 
-  for (const name of ['Club or academy', 'Coach', 'Student']) {
+  for (const name of ['Club or academy', 'Coach', 'Player or guardian']) {
     await accountTypes.getByRole('radio', { name, exact: true }).check();
     await expect(page.getByLabel('Username', { exact: true })).toBeVisible();
-    await expect(page.getByText(/This login belongs to your club|Your login belongs to you|Your student account keeps your bookings together/)).toHaveCount(0);
   }
+  await accountTypes.getByRole('radio', { name: 'Player or guardian', exact: true }).check();
+  await expect(page.getByRole('heading', { name: 'One personal account, with Family for children' })).toBeVisible();
+  await expect(page.getByText(/Parents and guardians do not need a separate account type/)).toBeVisible();
+  await expect(page.getByText(/Ages 13–17:.*cannot book or pay on Courtly yet/)).toBeVisible();
+  await expect(page.getByLabel('Your date of birth', { exact: true })).toBeVisible();
 });
 
 test('standalone student signup requires an explicit account type and opens the complete club directory', async ({ page }, testInfo) => {
@@ -92,23 +96,23 @@ test('standalone student signup requires an explicit account type and opens the 
 
   await page.goto('/signup');
   await expect(accountTypes.getByRole('radio')).toHaveCount(3);
-  for (const name of ['Club or academy', 'Coach', 'Student']) {
+  for (const name of ['Club or academy', 'Coach', 'Player or guardian']) {
     await expect(accountTypes.getByRole('radio', { name, exact: true })).not.toBeChecked();
   }
 
   await page.getByRole('button', { name: 'Create account', exact: true }).click();
   await expect(page.getByText('Please choose how you’re joining Courtly.', { exact: true })).toBeVisible();
 
-  await accountTypes.getByRole('radio', { name: 'Student', exact: true }).check();
+  await accountTypes.getByRole('radio', { name: 'Player or guardian', exact: true }).check();
   await expect(page.getByText('Create one student account for bookings across every club.', { exact: true })).toHaveCount(0);
   await expect(page.getByText(/Your student account keeps your bookings together/)).toHaveCount(0);
   await expect(page.getByLabel('Username', { exact: true })).toBeVisible();
   await page.getByLabel('Your full name', { exact: true }).fill('First Use Student');
   await page.getByLabel('Username', { exact: true }).fill(`fus_${studentEmail.split('@')[0].replace(/-/g, '_').slice(-26)}`);
-  await page.getByLabel('Date of birth', { exact: true }).fill('1990-01-01');
+  await page.getByLabel('Your date of birth', { exact: true }).fill('1990-01-01');
   await page.getByLabel('Email address', { exact: true }).fill(studentEmail);
   await page.getByLabel('Password', { exact: true }).fill(password);
-  await page.getByRole('button', { name: 'Create student account', exact: true }).click();
+  await page.getByRole('button', { name: 'Create personal account', exact: true }).click();
 
   await expect(page).toHaveURL(url => url.pathname === '/manage' && url.search === '');
   await expect(page.getByRole('heading', { name: 'My bookings', exact: true })).toBeVisible();
@@ -158,7 +162,7 @@ test('safe booking and manage destinations survive auth mode changes while an ex
     await expect(createAccount).toHaveAttribute('href', signupPath);
     await createAccount.click();
     await expect(page).toHaveURL(url => `${url.pathname}${url.search}` === signupPath);
-    await expect(page.getByRole('radio', { name: 'Student', exact: true })).toBeChecked();
+    await expect(page.getByRole('radio', { name: 'Player or guardian', exact: true })).toBeChecked();
 
     const signIn = page.getByRole('link', { name: 'Sign in', exact: true });
     await expect(signIn).toHaveAttribute('href', loginPath);

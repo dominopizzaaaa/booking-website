@@ -329,12 +329,12 @@ function StudentAccountAccess({
       <form id={formId} role="tabpanel" aria-labelledby={formId + "-" + mode + "-tab"} onSubmit={submitAccount} className="space-y-5 p-5 sm:p-7">
         <div>
           <h2 className="!text-base">
-            {mode === "login" ? "Welcome back" : "Your student account"}
+            {mode === "login" ? "Welcome back" : "Your personal account"}
           </h2>
           <p className="!mt-2 text-xs leading-relaxed text-[#89957f]">
             {mode === "login"
               ? "Sign in to book and keep every session in one secure place."
-              : "Create one account for bookings, changes, and your booking history."}
+              : "Use your own details for this login. If you are an adult booking for a child, add the child separately in Family after signing in."}
           </p>
         </div>
         <div className="grid gap-5 sm:grid-cols-2">
@@ -369,7 +369,7 @@ function StudentAccountAccess({
                 />
               </div>
               <div className="sm:col-span-2">
-                <label htmlFor={`${formId}-date-of-birth`}>Date of birth</label>
+                <label htmlFor={`${formId}-date-of-birth`}>Your date of birth</label>
                 <input
                   id={`${formId}-date-of-birth`}
                   className={field}
@@ -381,7 +381,7 @@ function StudentAccountAccess({
                   value={values.dateOfBirth}
                   onChange={(event) => setValues({ ...values, dateOfBirth: event.target.value })}
                 />
-                <p className="!mt-1.5 text-[11px] leading-relaxed text-[#89957f]">Courtly uses this to apply the right account protections. A child under 13 needs an adult-managed Family profile.</p>
+                <p className="!mt-1.5 text-[11px] leading-relaxed text-[#89957f]">Enter the date of birth of the person creating this login. Under-13s need an adult-managed Family profile; ages 13–17 may sign in but cannot book or pay directly yet.</p>
               </div>
             </>
           )}
@@ -1852,7 +1852,7 @@ export function PublicBooking({ slug }: { slug: string }) {
                         <fieldset className="!mt-6 border-t border-[#edf0e8] pt-5" aria-describedby="booking-player-help">
                           <legend className="text-sm font-semibold text-[#304b39]">Who is playing?</legend>
                           <p id="booking-player-help" className="!mt-1.5 text-xs leading-relaxed text-[#89957f]">
-                            Choose yourself or a child you currently have permission to book for. Child bookings do not use packages or collect payment here.
+                            Choose one player for this booking. To book siblings, complete a separate booking for each child so every child has their own place. Child bookings do not use packages or collect payment here.
                           </p>
                           {bookingChildrenLoading ? (
                             <p role="status" className="!mt-4 flex items-center gap-2 text-xs text-[#71806d]"><LoaderCircle size={14} className="animate-spin" />Loading eligible children…</p>
@@ -1911,7 +1911,7 @@ export function PublicBooking({ slug }: { slug: string }) {
                           Changes here are saved to your student profile for future bookings.
                         </p>}
                         {bookingForChild && <div role="status" className="sm:col-span-2 rounded-xl border border-[#dce5d4] bg-[#f2f6ee] p-4 text-xs leading-relaxed text-[#607358]">
-                          You are booking for <strong>{selectedChild.displayName}</strong>. Courtly will not send your phone or guardian-profile fields as the child’s identity. Packages, purchases, rentals, and chat remain unavailable for this managed profile.
+                          You are booking only for <strong>{selectedChild.displayName}</strong>. Courtly will not send your phone or guardian-profile fields as the child’s identity. Finish this booking before booking another child; packages, purchases, rentals, and chat remain unavailable for this managed profile.
                         </div>}
                         {location?.type === "HOME" && (
                           <div className="sm:col-span-2">
@@ -2544,6 +2544,7 @@ function BookingReceipt({
               ? `Contact ${data.business.name} to arrange payment for ${studentName}.`
               : <>You can review {data.business.name}&rsquo;s available payment options from My bookings.</>}
           </p>
+          {guardianBooking && <p className="text-[11px] leading-relaxed text-[#8d9881]">Booking for another child? Use <strong>Book for another child</strong> below and select them when you reach “Who is playing?”.</p>}
         </div>
       </div>
       {result.conflicts?.length ? (
@@ -2584,7 +2585,7 @@ function BookingReceipt({
           Share session on WhatsApp <ExternalLink size={12} />
         </a>
         <button type="button" className={secondary} onClick={onBookAgain}>
-          Book another session <ArrowRight size={15} />
+          {guardianBooking ? "Book for another child" : "Book another session"} <ArrowRight size={15} />
         </button>
       </div>
       <p className="!mt-5 text-center text-[10px] text-[#9aa48e]">
