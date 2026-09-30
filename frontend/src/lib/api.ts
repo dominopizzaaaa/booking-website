@@ -59,6 +59,7 @@ import {
   type Payment,
   type PaymentCapabilities,
   type PaymentIntent,
+  type PaymentReceipt,
   type PrivacyRequest,
   type PrivacyRequestInput,
   type PrivacyRequestPage,
@@ -549,6 +550,9 @@ export const createLiveCheckoutIntent = (values: LiveCheckoutInput) =>
   api<LiveCheckoutResult>('/payments/checkout-intents', { method: 'POST', body: JSON.stringify(values) });
 export const loadLiveCheckoutIntent = (id: string) =>
   api<{ paymentIntent: PaymentIntent }>(`/payments/checkout-intents/${encodeURIComponent(id)}`);
+export const loadPaymentReceipts = () => api<{ receipts: PaymentReceipt[] }>('/payments/receipts');
+export const paymentReceiptDocumentUrl = (id: string, download = false) =>
+  `/api/payments/receipts/${encodeURIComponent(id)}/document${download ? '?download=1' : ''}`;
 
 export const loadRentals = (filters: { query?: string; sport?: string; cursor?: string } = {}) => {
   const parameters = new URLSearchParams();

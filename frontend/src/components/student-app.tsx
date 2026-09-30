@@ -51,6 +51,7 @@ import { CalendarConnectionCard } from '@/components/calendar-connection-card';
 import { EmailVerificationNotice } from '@/components/email-verification-notice';
 import { PrivacyRequestsPanel } from '@/components/privacy/privacy-requests-panel';
 import { NotificationPreferencesCard } from '@/components/notification-preferences';
+import { PaymentReceiptsPanel } from '@/components/payment-receipts-panel';
 import { AccountRentalHistory } from '@/components/account-rental-dialog';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import {
@@ -4525,6 +4526,7 @@ export function StudentApp({ slug }: { slug?: string }) {
             <h1 className="mt-1.5 text-[30px] font-medium tracking-[-1px] text-[#20382d] sm:text-[36px]">Profile</h1>
             <p className="mt-2 text-sm text-[#59675c]">Keep your details current across every club.</p>
             {session.user.emailVerified === false && <div className="mt-6"><EmailVerificationNotice email={session.user.email} /></div>}
+            {session.user.accountControl !== 'GUARDIAN_MANAGED' && <section className={cn(panel, 'mt-6 p-5 sm:p-6')} aria-labelledby="student-security-heading"><div className="flex items-start gap-3"><ShieldCheck size={19} className="mt-0.5 shrink-0 text-[#66805a]" /><div className="min-w-0 flex-1"><h2 id="student-security-heading" className="text-base font-semibold text-[#304b39]">Account security</h2><p className="mt-1 text-xs leading-relaxed text-[#59675c]">Manage your sign-in email, authenticator, recovery codes, and active devices.</p></div></div><Link href="/account/security" className={cn(secondaryButton, 'mt-4 w-full sm:w-auto')}>Open security settings<ArrowRight size={14} /></Link></section>}
             {/*
               Personal details read as a record, not a form. People open this
               tab to check what a club sees far more often than to change it,
@@ -4747,6 +4749,7 @@ export function StudentApp({ slug }: { slug?: string }) {
               className="mt-6"
             />}
             <NotificationPreferencesCard className="mt-6" />
+            {canUsePayments && <PaymentReceiptsPanel className="mt-6" />}
             <PrivacyRequestsPanel emailVerified={session.user.emailVerified} className="mt-6" />
 
             {canUseCommerce && <section id="student-packages" className="mt-9 scroll-mt-24" aria-labelledby="student-packages-heading">
