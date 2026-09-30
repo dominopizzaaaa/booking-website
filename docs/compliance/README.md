@@ -49,6 +49,12 @@ evidence that supports the decision.
 - [Vendor and subprocessor register](VENDOR_REGISTER.md) is a discovery list
   whose production entities, countries, contracts, and enablement all remain
   `UNVERIFIED/TBD` until supported by evidence.
+- [PostgreSQL backup and restore verification](../operations/POSTGRES_RECOVERY.md)
+  defines the fail-closed application backup exercise and RPO/RTO evidence
+  template; provider backup/PITR configuration remains separately unverified.
+- [Production monitoring baseline](../operations/OBSERVABILITY.md) documents
+  the redacted request signals and still-open monitoring ownership and
+  configuration work required before launch.
 
 The privacy inventory and public notices may be maintained by the privacy
 workstream. If it produces an approved vendor/subprocessor register, replace
