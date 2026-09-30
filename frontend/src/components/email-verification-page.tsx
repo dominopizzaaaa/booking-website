@@ -24,7 +24,8 @@ function verificationError(error: unknown) {
 }
 
 export function EmailVerificationPage() {
-  const [token] = useState(consumeWindowVerificationToken);
+  const [token, setToken] = useState('');
+  const [tokenLoaded, setTokenLoaded] = useState(false);
   const attemptedToken = useRef<string | null>(null);
   const [state, setState] = useState<VerificationState>('loading');
   const [error, setError] = useState('');
@@ -64,11 +65,18 @@ export function EmailVerificationPage() {
   }
 
   useEffect(() => {
+    const fragmentToken = consumeWindowVerificationToken();
+    setToken(fragmentToken);
+    setTokenLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    if (!tokenLoaded) return;
     if (attemptedToken.current === token) return;
     attemptedToken.current = token;
     releaseWindowVerificationToken(token);
     void verify();
-  }, [token]);
+  }, [token, tokenLoaded]);
 
   return <main className="min-h-screen bg-[#f6f7f4] px-4 py-6 text-[#1c3029] sm:px-8 sm:py-10"><div className="mx-auto max-w-xl"><Link href="/login" aria-label="Courtly sign in" className="inline-flex min-h-11 items-center"><CourtlyLogo /></Link><section className="mt-10 rounded-3xl border border-[#e2e7dd] bg-white p-6 text-center shadow-sm sm:mt-16 sm:p-9">
     {state === 'loading' ? <div role="status" className="flex min-h-52 items-center justify-center gap-2 text-sm text-[#59675c]"><Loader2 size={17} className="animate-spin" />Verifying your email…</div>

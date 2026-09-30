@@ -16,6 +16,8 @@ const testEnvironment = [
   'EMAIL_VERIFICATION_TOKEN_ACTIVE_KEY_ID',
   'EMAIL_PROVIDER',
   'EMAIL_FROM_ADDRESS',
+  'EMAIL_API_KEY',
+  'RATE_LIMIT_HASH_KEY',
 ] as const;
 
 const originalEnvironment = Object.fromEntries(
@@ -37,10 +39,15 @@ const validEmailVerificationEnvironment = {
   EMAIL_VERIFICATION_TOKEN_KEYS: `v1:${Buffer.alloc(32, 11).toString('base64')}`,
   EMAIL_VERIFICATION_TOKEN_ACTIVE_KEY_ID: 'v1',
 };
+const validTransactionalEmailEnvironment = {
+  EMAIL_PROVIDER: 'capture',
+  EMAIL_FROM_ADDRESS: 'security@example.test',
+};
 
 async function loadCalendarConfig(overrides: Partial<Record<(typeof testEnvironment)[number], string>> = {}) {
   for (const name of testEnvironment) delete process.env[name];
   process.env.DATABASE_URL = 'postgresql://test:test@127.0.0.1:5432/test';
+  process.env.RATE_LIMIT_HASH_KEY = Buffer.alloc(32, 31).toString('base64');
   Object.assign(process.env, validCalendarEnvironment, validFamilyHandoverEnvironment,
     validEmailVerificationEnvironment, overrides);
   vi.resetModules();
@@ -107,8 +114,10 @@ describe('Google Calendar configuration', () => {
       venueAllocation: true,
       paymentProviderEvents: true,
       outboundDelivery: true,
+      accountSecurity: true,
       activeStripeBookingCheckoutGuard: true,
       paymentCompliance: true,
+      paymentReceipts: true,
       guardianChildAccounts: true,
       childConsentAppendOnly: true,
       onePendingChildHandover: true,
@@ -119,6 +128,7 @@ describe('Google Calendar configuration', () => {
       chatSafeguardingIndexes: true,
       chatSafeguardingTriggers: true,
       chatSafeguardingAssigneeIdentity: true,
+      distributedRateLimits: true,
     }]);
 
     const response = await request(app).get('/api/health').expect(200);
@@ -129,6 +139,33 @@ describe('Google Calendar configuration', () => {
     expect(response.body.schema).toBe('ready');
     expect(JSON.stringify(response.body)).not.toContain('calendar-client-secret');
     expect(JSON.stringify(response.body)).not.toContain(validCalendarEnvironment.CALENDAR_TOKEN_ENCRYPTION_KEYS);
+    query.mockRestore();
+  });
+
+  it.each([
+    ['configured', validTransactionalEmailEnvironment],
+    ['recovery-disabled', {}],
+  ] as const)('reports account security as %s only when its recovery dependency is usable', async (capability, emailEnvironment) => {
+    for (const name of testEnvironment) delete process.env[name];
+    process.env.DATABASE_URL = 'postgresql://test:test@127.0.0.1:5432/test';
+    process.env.RATE_LIMIT_HASH_KEY = Buffer.alloc(32, 31).toString('base64');
+    Object.assign(process.env, validEmailVerificationEnvironment, emailEnvironment);
+    vi.resetModules();
+    const [{ app }, { prisma }] = await Promise.all([import('../src/app.js'), import('../src/db.js')]);
+    const query = vi.spyOn(prisma, '$queryRawUnsafe').mockResolvedValueOnce([{
+      coachInvitations: true, packageScopeColumn: true, packageScopeTrigger: true, venueUnitIdentity: true,
+      namedClubStaff: true, bookingSeries: true, venueAllocation: true, paymentProviderEvents: true,
+      outboundDelivery: true, accountSecurity: true, activeStripeBookingCheckoutGuard: true,
+      paymentCompliance: true, paymentReceipts: true, guardianChildAccounts: true,
+      childConsentAppendOnly: true, onePendingChildHandover: true, signupEvidence: true,
+      privacyRequests: true, chatSafeguardingTables: true, chatSafeguardingPermissions: true,
+      chatSafeguardingIndexes: true, chatSafeguardingTriggers: true, chatSafeguardingAssigneeIdentity: true,
+      distributedRateLimits: true,
+    }]);
+
+    const response = await request(app).get('/api/health').expect(200);
+
+    expect(response.body.capabilities.accountSecurity).toBe(capability);
     query.mockRestore();
   });
 
@@ -148,8 +185,10 @@ describe('Google Calendar configuration', () => {
       venueAllocation: true,
       paymentProviderEvents: true,
       outboundDelivery: true,
+      accountSecurity: true,
       activeStripeBookingCheckoutGuard: true,
       paymentCompliance: false,
+      paymentReceipts: true,
       guardianChildAccounts: true,
       childConsentAppendOnly: true,
       onePendingChildHandover: true,
@@ -160,6 +199,7 @@ describe('Google Calendar configuration', () => {
       chatSafeguardingIndexes: true,
       chatSafeguardingTriggers: true,
       chatSafeguardingAssigneeIdentity: true,
+      distributedRateLimits: true,
     }]);
 
     const response = await request(app).get('/api/health').expect(503);
@@ -232,8 +272,10 @@ describe('Google Calendar configuration', () => {
       venueAllocation: true,
       paymentProviderEvents: true,
       outboundDelivery: true,
+      accountSecurity: true,
       activeStripeBookingCheckoutGuard: true,
       paymentCompliance: true,
+      paymentReceipts: true,
       guardianChildAccounts: true,
       childConsentAppendOnly: true,
       onePendingChildHandover: true,
@@ -244,6 +286,7 @@ describe('Google Calendar configuration', () => {
       chatSafeguardingIndexes: true,
       chatSafeguardingTriggers: true,
       chatSafeguardingAssigneeIdentity: true,
+      distributedRateLimits: true,
     }]);
 
     const response = await request(app).get('/api/health').expect(200);
@@ -271,8 +314,10 @@ describe('Google Calendar configuration', () => {
       venueAllocation: true,
       paymentProviderEvents: true,
       outboundDelivery: true,
+      accountSecurity: true,
       activeStripeBookingCheckoutGuard: true,
       paymentCompliance: true,
+      paymentReceipts: true,
       guardianChildAccounts: true,
       childConsentAppendOnly: true,
       onePendingChildHandover: true,
@@ -283,6 +328,7 @@ describe('Google Calendar configuration', () => {
       chatSafeguardingIndexes: true,
       chatSafeguardingTriggers: true,
       chatSafeguardingAssigneeIdentity: true,
+      distributedRateLimits: true,
     }]);
 
     const response = await request(app).get('/api/health').expect(200);

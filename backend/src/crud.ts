@@ -3,7 +3,7 @@ import type { Availability, AvailabilityException, Business, Student, Instructor
 import { DateTime, IANAZone } from 'luxon';
 import { z } from 'zod';
 import { prisma } from './db.js';
-import { asyncRoute, HttpError, coachScope, coachScoped, requireClubPermission, requireCoachOrClubPermission, initials, type AuthRequest } from './http.js';
+import { asyncRoute, HttpError, coachScope, coachScoped, requireClubPermission, requireCoachOrClubPermission, requireRecentAuth, initials, type AuthRequest } from './http.js';
 import { bookableInstructorWhere } from './scheduling.js';
 import { packageInclude, packageJson, withoutServiceFinancials } from './serializers.js';
 import { workspaceNotificationWhere } from './notifications.js';
@@ -634,7 +634,7 @@ const businessSchema = z.object({ name: nameSchema.optional(), ownerName: nameSc
   gstRegistrationNumber: nullableMerchantText(120).optional(),
   pricesIncludeGst: z.boolean().nullable().optional(),
 }).strict();
-crudRouter.patch('/business', requireClubPermission('SETTINGS_MANAGE'), asyncRoute(async (req, res) => {
+crudRouter.patch('/business', requireClubPermission('SETTINGS_MANAGE'), requireRecentAuth, asyncRoute(async (req, res) => {
   const input = businessSchema.parse(req.body);
   const businessId = req.auth.business.id;
   const business = await prisma.$transaction(async tx => {

@@ -15,6 +15,8 @@ export type AdminOperatorCredential = {
   name: string;
   email: string;
   passwordHash: string;
+  /** Base32 RFC 6238 secret. Mandatory for named operators in production. */
+  totpSecret?: string;
 };
 
 const adminOperatorSchema = z.object({
@@ -25,6 +27,9 @@ const adminOperatorSchema = z.object({
   email: z.string().trim().toLowerCase().email().max(320),
   passwordHash: z.string().regex(/^\$2[aby]\$12\$[./A-Za-z0-9]{53}$/,
     'Admin operator passwordHash must be a bcrypt hash with cost 12'),
+  totpSecret: z.string().trim().toUpperCase()
+    .regex(/^[A-Z2-7]{16,128}={0,6}$/, 'Admin operator totpSecret must be a base32 secret')
+    .optional(),
 }).strict().refine(operator => Buffer.byteLength(` <${operator.email}> [${operator.id}]`, 'utf8') < 120, {
   message: 'Admin operator id and email are too long for audit attribution',
 });
@@ -36,6 +41,9 @@ export function adminOperatorConfiguration(raw = process.env.ADMIN_OPERATORS_JSO
   try { parsed = JSON.parse(encoded); }
   catch { throw new Error('ADMIN_OPERATORS_JSON must be a valid JSON array'); }
   const operators = z.array(adminOperatorSchema).min(1).max(100).parse(parsed);
+  if (production && operators.some(operator => !operator.totpSecret)) {
+    throw new Error('Every production admin operator must configure totpSecret');
+  }
   const ids = new Set<string>();
   const emails = new Set<string>();
   for (const operator of operators) {
@@ -73,6 +81,26 @@ function featureFlag(value: string | undefined, defaultValue: boolean) {
   const normalized = value?.trim().toLowerCase();
   if (!normalized) return defaultValue;
   return normalized === 'true';
+}
+
+function rateLimitHashKeyConfiguration() {
+  const encoded = (process.env.RATE_LIMIT_HASH_KEY || '').trim();
+  if (!encoded && !production) {
+    return createHash('sha256').update('courtly-local-rate-limit-hashing-only').digest();
+  }
+  const key = encoded ? Buffer.from(encoded, 'base64') : Buffer.alloc(0);
+  if (key.length !== 32 || key.toString('base64') !== encoded) {
+    throw new Error('RATE_LIMIT_HASH_KEY must be exactly 32 bytes encoded as base64');
+  }
+  return key;
+}
+
+function observabilityTokenConfiguration() {
+  const token = (process.env.OBSERVABILITY_TOKEN || '').trim();
+  if (token && (token.length < 32 || token.length > 256 || /[^\x21-\x7e]/.test(token))) {
+    throw new Error('OBSERVABILITY_TOKEN must be 32-256 printable ASCII characters without spaces');
+  }
+  return token;
 }
 
 function familyHandoverTokenConfiguration() {
@@ -118,6 +146,45 @@ function emailVerificationTokenConfiguration() {
       activeKeyId,
       keys: new Map([[activeKeyId, createHash('sha256')
         .update('courtly-local-email-verification-only').digest()]]),
+    };
+  }
+
+  const keys = new Map<string, Buffer>();
+  let valid = Boolean(configuredActiveKeyId && encodedKeys);
+  if (encodedKeys) {
+    for (const entry of encodedKeys.split(',')) {
+      const separator = entry.indexOf(':');
+      const id = entry.slice(0, separator).trim();
+      const encoded = entry.slice(separator + 1).trim();
+      if (separator < 1 || !/^[A-Za-z0-9_-]{1,64}$/.test(id)
+        || !/^(?:[A-Za-z0-9+/]{4}){10}[A-Za-z0-9+/]{3}=$/.test(encoded) || keys.has(id)) {
+        valid = false;
+        continue;
+      }
+      const key = Buffer.from(encoded, 'base64');
+      if (key.length !== 32 || key.toString('base64') !== encoded) {
+        valid = false;
+        continue;
+      }
+      keys.set(id, key);
+    }
+  }
+  if (!keys.has(configuredActiveKeyId)) valid = false;
+  return { enabled: valid, activeKeyId: configuredActiveKeyId, keys };
+}
+
+function accountSecurityKeyConfiguration() {
+  const configuredActiveKeyId = (process.env.ACCOUNT_SECURITY_ACTIVE_KEY_ID || '').trim();
+  const encodedKeys = (process.env.ACCOUNT_SECURITY_KEYS || '').trim();
+
+  // Local development and tests get an isolated deterministic key so the
+  // security flows can be exercised without provisioning production secrets.
+  if (!production && !configuredActiveKeyId && !encodedKeys) {
+    const activeKeyId = 'local-v1';
+    return {
+      enabled: true, activeKeyId,
+      keys: new Map([[activeKeyId, createHash('sha256')
+        .update('courtly-local-account-security-only').digest()]]),
     };
   }
 
@@ -257,6 +324,7 @@ catch (error) {
 }
 const adminSession = adminSessionKeyConfiguration();
 const emailVerificationTokens = emailVerificationTokenConfiguration();
+const accountSecurityKeys = accountSecurityKeyConfiguration();
 
 export const config = {
   port: Number(process.env.PORT || 4000),
@@ -287,6 +355,10 @@ export const config = {
   // Versioned HMAC keys keep email-verification bearers out of persistent
   // storage and allow rotation without invalidating still-live claims.
   emailVerificationTokens,
+  // This versioned keyring provides domain-separated HMAC claim derivation
+  // and AES-256-GCM encryption for account MFA secrets. Retired keys must be
+  // retained while any claim, MFA credential, or recovery code references one.
+  accountSecurityKeys,
   publicAppOrigin: publicAppOriginConfiguration(email.enabled),
   // Public policy publication and signup acceptance are production-disabled
   // until an accountable owner records approval of this exact version and
@@ -297,10 +369,22 @@ export const config = {
   // publication. Live Stripe checkout stays closed until the current seller,
   // payment-recipient, refund-owner, and GST decisions are approved.
   paymentCommercialApprovedVersion: (process.env.PAYMENT_COMMERCIAL_APPROVED_VERSION || '').trim(),
+  observability: {
+    // HTTP logs deliberately contain only a request ID, method, bounded route
+    // group, status, and timing. Local tests stay quiet unless opted in.
+    httpLogging: featureFlag(process.env.HTTP_LOGGING, production),
+    // Metrics remain undiscoverable unless a bearer token is configured.
+    metricsToken: observabilityTokenConfiguration(),
+  },
   // Marketing remains hard-disabled until consent evidence, unsubscribe, DNC,
   // campaign approval, and suppression controls are implemented end to end.
   marketingEnabled: false,
   sessionDays: 14,
+  sessionIdleMinutes: 12 * 60,
+  recentAuthMinutes: 15,
+  // All replicas need the same secret so low-entropy IP/account identifiers
+  // cannot be recovered from persisted counter keys. Production has no fallback.
+  rateLimitHashKey: rateLimitHashKeyConfiguration(),
   demoEnabled: process.env.DEMO_ENABLED === 'true' || (!production && process.env.DEMO_ENABLED !== 'false'),
   // The browser suite creates many isolated accounts from one loopback IP.
   // Keep the escape hatch test-only even if it is accidentally configured on

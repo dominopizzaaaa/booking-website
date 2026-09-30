@@ -64,6 +64,7 @@ describe.sequential('named club staff access', () => {
     const token = randomBytes(32).toString('base64url');
     const session = await prisma.authSession.create({ data: {
       id: createHash('sha256').update(token).digest('hex'), userId, activeMembershipId,
+      recentAuthAt: new Date(),
       expiresAt: new Date(Date.now() + 3_600_000),
     } });
     return { session, cookie: `${config.sessionCookie}=${token}` };

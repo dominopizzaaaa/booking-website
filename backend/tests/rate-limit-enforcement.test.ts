@@ -7,7 +7,7 @@ const validPassword = 'correct-password';
 const invalidPassword = 'incorrect-password';
 const loginEmail = 'rate-limit-user@example.test';
 const validPasswordHash = '$2b$12$QrsSSNoV/kdmGVRTVVmoIOKhMlSeSPFjGtV8.iKB7MHYFUPprZWyK';
-const envKeys = ['NODE_ENV', 'DATABASE_URL', 'E2E_DISABLE_RATE_LIMITS'] as const;
+const envKeys = ['NODE_ENV', 'DATABASE_URL', 'E2E_DISABLE_RATE_LIMITS', 'RATE_LIMIT_HASH_KEY'] as const;
 const originalEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
 let authServer: Server | null = null;
 
@@ -24,6 +24,7 @@ async function loadConfig(nodeEnv: string, bypass: string | undefined) {
   setEnv('NODE_ENV', nodeEnv);
   setEnv('DATABASE_URL', 'postgresql://test:test@127.0.0.1:5432/rate_limit_test');
   setEnv('E2E_DISABLE_RATE_LIMITS', bypass);
+  setEnv('RATE_LIMIT_HASH_KEY', nodeEnv === 'production' ? Buffer.alloc(32, 7).toString('base64') : undefined);
   vi.resetModules();
   return import('../src/config.js');
 }
@@ -35,10 +36,25 @@ async function loadAuthHarness() {
   vi.resetModules();
 
   const compare = vi.fn(async (candidate: string) => candidate === validPassword);
+  const rateLimitHits = new Map<string, number>();
   const prisma = {
     $transaction: vi.fn(async (operation: (tx: unknown) => Promise<unknown>) => operation(prisma)),
-    $executeRaw: vi.fn(async () => 1),
-    $queryRaw: vi.fn(async () => []),
+    $executeRaw: vi.fn(async (query: { strings?: readonly string[]; values?: unknown[] }) => {
+      if (query.strings?.join('').includes('UPDATE "RateLimitCounter"')) {
+        const counterKey = `${query.values?.[0]}:${query.values?.[1]}`;
+        rateLimitHits.set(counterKey, Math.max((rateLimitHits.get(counterKey) ?? 0) - 1, 0));
+      }
+      return 1;
+    }),
+    $queryRaw: vi.fn(async (query: { strings?: readonly string[]; values?: unknown[] }) => {
+      if (query.strings?.join('').includes('RateLimitCounter')) {
+        const counterKey = `${query.values?.[0]}:${query.values?.[1]}`;
+        const counter = rateLimitHits.get(counterKey) ?? 0;
+        rateLimitHits.set(counterKey, counter + 1);
+        return [{ hits: counter + 1, resetAt: new Date(Date.now() + 15 * 60_000) }];
+      }
+      return [];
+    }),
     emailVerificationClaim: { findUnique: vi.fn(async () => null) },
     user: {
       findUnique: vi.fn(async () => ({
@@ -57,6 +73,7 @@ async function loadAuthHarness() {
       deleteMany: vi.fn(async () => ({ count: 0 })),
       create: vi.fn(async () => ({})),
     },
+    accountMfaCredential: { findUnique: vi.fn(async () => null) },
   };
 
   vi.doMock('bcryptjs', () => ({

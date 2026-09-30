@@ -3,9 +3,9 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
-import { rateLimit } from 'express-rate-limit';
 import { prisma } from './db.js';
 import { config, production, skipRateLimits } from './config.js';
+import { sharedRateLimit } from './rate-limit.js';
 import { asyncRoute, HttpError, requireAccountCapability, type AccountRequest, type MembershipWithBusiness } from './http.js';
 import { authState, isAccessibleWorkspaceMembership, isSupportedWorkspaceMembership } from './serializers.js';
 import { seedBusiness } from './seed.js';
@@ -22,6 +22,7 @@ import {
   emailVerificationTokenDigest,
 } from './email-verification-token.js';
 import { enqueueEmailVerificationSecurityEmail } from './outbound-events.js';
+import { createMfaLoginChallenge, consumeMfaLoginChallenge } from './account-security.js';
 
 const digest = (token: string) => createHash('sha256').update(token).digest('hex');
 const cookieOptions = { httpOnly: true, secure: production, sameSite: 'lax' as const, path: '/' };
@@ -69,6 +70,7 @@ export async function issueSession(
   activeMembershipId: string | null,
   activeStaffAccessId: string | null = null,
   previousToken?: string,
+  options: { recentAuthAt?: Date | null; userAgent?: string | null } = {},
 ) {
   if (activeMembershipId) {
     const owned = await prisma.membership.findFirst({
@@ -81,10 +83,18 @@ export async function issueSession(
     if (!owned) throw new HttpError(403, 'Workspace membership does not belong to this account');
   }
   if (previousToken) await prisma.authSession.deleteMany({ where: { id: digest(previousToken) } });
-  await prisma.authSession.deleteMany({ where: { expiresAt: { lt: new Date() } } });
+  const now = new Date();
+  await prisma.authSession.deleteMany({ where: { OR: [
+    { expiresAt: { lt: now } },
+    { lastSeenAt: { lt: new Date(now.getTime() - config.sessionIdleMinutes * 60_000) } },
+  ] } });
   const token = randomBytes(32).toString('base64url');
   const expiresAt = new Date(Date.now() + config.sessionDays * 86_400_000);
-  await prisma.authSession.create({ data: { id: digest(token), userId, activeMembershipId, activeStaffAccessId, expiresAt } });
+  await prisma.authSession.create({ data: {
+    id: digest(token), userId, activeMembershipId, activeStaffAccessId, expiresAt,
+    lastSeenAt: now, recentAuthAt: options.recentAuthAt ?? null,
+    userAgent: options.userAgent?.slice(0, 500) ?? null,
+  } });
   res.cookie(config.sessionCookie, token, { ...cookieOptions, expires: expiresAt });
 }
 
@@ -99,9 +109,18 @@ export const requireAuth: RequestHandler = asyncRoute(async (req, _res, next) =>
       staffAccesses: { include: { business: true }, orderBy: membershipOrder },
     } } },
   });
-  if (!session || session.expiresAt < new Date()) {
+  const now = new Date();
+  const idleExpiresAt = session
+    ? new Date(session.lastSeenAt.getTime() + config.sessionIdleMinutes * 60_000) : null;
+  if (!session || session.expiresAt < now || idleExpiresAt! < now) {
     if (session) await prisma.authSession.deleteMany({ where: { id: session.id } });
     throw new HttpError(401, 'Session expired. Please sign in again');
+  }
+  // Persist activity at most once per minute to avoid turning every request
+  // into a write while still providing useful device-session visibility.
+  if (now.getTime() - session.lastSeenAt.getTime() >= 60_000) {
+    await prisma.authSession.update({ where: { id: session.id }, data: { lastSeenAt: now } });
+    session.lastSeenAt = now;
   }
   const { memberships: allMemberships, staffAccesses: allStaffAccesses, ...user } = session.user;
   const memberships = allMemberships.filter(isSupportedWorkspaceMembership);
@@ -168,12 +187,14 @@ export const requireStudent: RequestHandler = (req, _res, next) => {
 };
 
 const authRouter = Router();
-const registrationLimit = rateLimit({
+const registrationLimit = sharedRateLimit({
+  name: 'auth-register',
   windowMs: 15 * 60_000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false,
   skip: skipRateLimits,
   message: { error: 'Too many attempts. Please try again later.' },
 });
-const loginLimit = rateLimit({
+const loginLimit = sharedRateLimit({
+  name: 'auth-login',
   windowMs: 15 * 60_000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false,
   skip: skipRateLimits,
   // Only failed credentials should spend the brute-force budget. Successful
@@ -182,12 +203,14 @@ const loginLimit = rateLimit({
   skipSuccessfulRequests: true,
   message: { error: 'Too many attempts. Please try again later.' },
 });
-const emailVerificationLimit = rateLimit({
+const emailVerificationLimit = sharedRateLimit({
+  name: 'auth-verification-resend',
   windowMs: 60 * 60_000, limit: 5, standardHeaders: 'draft-8', legacyHeaders: false,
   skip: skipRateLimits,
   message: { error: 'Too many verification emails requested. Please try again later.' },
 });
-const emailVerificationAttemptLimit = rateLimit({
+const emailVerificationAttemptLimit = sharedRateLimit({
+  name: 'auth-verification-attempt',
   windowMs: 15 * 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false,
   skip: skipRateLimits,
   message: { error: 'Too many verification attempts. Please try again later.' },
@@ -359,7 +382,9 @@ authRouter.post('/register', registrationLimit, asyncRoute(async (req, res) => {
     });
     return { user, membershipId: membership.id };
   });
-  await issueSession(result.user.id, res, result.membershipId, null, req.cookies?.[config.sessionCookie]);
+  await issueSession(result.user.id, res, result.membershipId, null, req.cookies?.[config.sessionCookie], {
+    recentAuthAt: new Date(), userAgent: req.get('user-agent') ?? null,
+  });
   res.status(201).json(await authState(result.user.id, result.membershipId));
 }));
 
@@ -447,11 +472,52 @@ authRouter.post('/login', loginLimit, asyncRoute(async (req, res) => {
     : null;
   const membership = selectedMembership(user.accountType, user.memberships, currentId);
   const activeStaffAccessId = membership ? null : previousSession?.userId === user.id ? previousSession.activeStaffAccessId : null;
-  await issueSession(user.id, res, membership?.id ?? null, activeStaffAccessId, previousToken);
+  const mfa = await prisma.accountMfaCredential.findUnique({
+    where: { userId: user.id }, select: { enabledAt: true },
+  });
+  if (mfa?.enabledAt) {
+    const challenge = await createMfaLoginChallenge(user.id);
+    res.status(202).json({
+      mfaRequired: true, challengeId: challenge.challengeToken,
+      methods: ['TOTP', 'RECOVERY_CODE'],
+      expiresAt: challenge.expiresAt.toISOString(),
+    });
+    return;
+  }
+  await issueSession(user.id, res, membership?.id ?? null, activeStaffAccessId, previousToken, {
+    recentAuthAt: new Date(), userAgent: req.get('user-agent') ?? null,
+  });
   res.json(await authState(user.id, membership?.id ?? null));
 }));
 
-authRouter.post('/demo', rateLimit({
+authRouter.post('/mfa/challenge', loginLimit, asyncRoute(async (req, res) => {
+  const { challengeId, method, code } = z.object({
+    challengeId: z.string().trim().min(32).max(200).regex(/^[A-Za-z0-9_-]+$/),
+    method: z.enum(['TOTP', 'RECOVERY_CODE']),
+    code: z.string().trim().min(6).max(32),
+  }).strict().parse(req.body);
+  const completed = await consumeMfaLoginChallenge(challengeId, method, code);
+  const user = await prisma.user.findUnique({
+    where: { id: completed.userId },
+    include: { memberships: { include: { business: true }, orderBy: membershipOrder } },
+  });
+  if (!user) throw new HttpError(401, 'MFA challenge is invalid or expired');
+  const previousToken = req.cookies?.[config.sessionCookie];
+  const previousSession = typeof previousToken === 'string'
+    ? await prisma.authSession.findUnique({ where: { id: digest(previousToken) } }) : null;
+  const currentId = previousSession?.userId === user.id && previousSession.expiresAt > new Date()
+    ? previousSession.activeMembershipId : null;
+  const membership = selectedMembership(user.accountType, user.memberships, currentId);
+  const activeStaffAccessId = membership ? null
+    : previousSession?.userId === user.id ? previousSession.activeStaffAccessId : null;
+  await issueSession(user.id, res, membership?.id ?? null, activeStaffAccessId, previousToken, {
+    recentAuthAt: completed.authenticatedAt, userAgent: req.get('user-agent') ?? null,
+  });
+  res.json(await authState(user.id, membership?.id ?? null));
+}));
+
+authRouter.post('/demo', sharedRateLimit({
+  name: 'auth-demo',
   windowMs: 60 * 60_000, limit: 40, standardHeaders: 'draft-8', legacyHeaders: false,
   skip: skipRateLimits,
   message: { error: 'Demo limit reached. Try again later.' },
@@ -466,9 +532,17 @@ authRouter.post('/demo', rateLimit({
     if (existing && existing.expiresAt > new Date()) {
       const membership = selectedMembership(existing.user.accountType, existing.user.memberships, existing.activeMembershipId);
       if (membership) {
-        if (membership.id !== existing.activeMembershipId) {
-          await prisma.authSession.update({ where: { id: existing.id }, data: { activeMembershipId: membership.id } });
-        }
+        // Demo accounts have intentionally unshared random passwords. Treat
+        // the explicit demo-entry action as fresh authentication so the
+        // disposable workspace can exercise protected product flows without
+        // inventing a reusable credential.
+        await prisma.authSession.update({
+          where: { id: existing.id },
+          data: {
+            activeMembershipId: membership.id,
+            ...(membership.business.isDemo ? { recentAuthAt: new Date() } : {}),
+          },
+        });
         res.json(await authState(existing.userId, membership.id));
         return;
       }
@@ -478,18 +552,18 @@ authRouter.post('/demo', rateLimit({
     tx => seedBusiness(tx, { isDemo: true, slug: `marcus-tan-${randomBytes(6).toString('hex')}` }),
     { timeout: 60_000 },
   );
-  await issueSession(result.clubAccount.id, res, result.clubMembership.id, null, typeof previous === 'string' ? previous : undefined);
+  await issueSession(result.clubAccount.id, res, result.clubMembership.id, null, typeof previous === 'string' ? previous : undefined, {
+    recentAuthAt: new Date(), userAgent: req.get('user-agent') ?? null,
+  });
   res.status(201).json(await authState(result.clubAccount.id, result.clubMembership.id));
 }));
 
 authRouter.post('/logout', asyncRoute(async (req, res) => {
   const token = req.cookies?.[config.sessionCookie];
   if (typeof token === 'string') {
-    const session = await prisma.authSession.findUnique({ where: { id: digest(token) }, select: { userId: true } });
-    // A deliberate sign-out invalidates every session for this identity. This
-    // also prevents a removed club membership from leaving another stale
-    // browser session authenticated under the same account.
-    if (session) await prisma.authSession.deleteMany({ where: { userId: session.userId } });
+    // Ordinary sign-out is local to this browser. Global revocation is an
+    // explicit, recent-authenticated action in the security centre.
+    await prisma.authSession.deleteMany({ where: { id: digest(token) } });
   }
   res.clearCookie(config.sessionCookie, cookieOptions);
   res.json({ ok: true });

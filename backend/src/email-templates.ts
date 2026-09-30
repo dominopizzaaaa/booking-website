@@ -5,7 +5,8 @@ export type TransactionalEmailEvent =
   | 'RESCHEDULE_DECLINED' | 'RESCHEDULE_WITHDRAWN' | 'BOOKING_REMINDER'
   | 'COACH_ASSIGNED' | 'COACH_DECLINED' | 'PAYMENT_RECORDED' | 'PAYMENT_REVERSED'
   | 'PACKAGE_PURCHASED' | 'RENTAL_CONFIRMED' | 'RENTAL_CANCELLED' | 'COACH_INVITED'
-  | 'FAMILY_HANDOVER_SECURITY' | 'EMAIL_VERIFICATION';
+  | 'PAYMENT_RECEIPT' | 'FAMILY_HANDOVER_SECURITY' | 'EMAIL_VERIFICATION' | 'PASSWORD_RESET'
+  | 'EMAIL_CHANGE_VERIFICATION' | 'ACCOUNT_SECURITY_NOTICE';
 
 type TransactionalEmailTemplatePayload = {
   eventType: TransactionalEmailEvent;
@@ -30,12 +31,22 @@ export type EmailVerificationSecurityEmailTemplatePayload = {
   expiresAt: Date | string;
 };
 
+export type PasswordResetSecurityEmailTemplatePayload = {
+  eventType: 'PASSWORD_RESET'; recipientName: string; resetUrl: string; expiresAt: Date | string;
+};
+
+export type EmailChangeSecurityEmailTemplatePayload = {
+  eventType: 'EMAIL_CHANGE_VERIFICATION'; recipientName: string; confirmationUrl: string; expiresAt: Date | string;
+};
+
 // The generic member remains worker-compatible with already persisted
 // deliveries. New family handovers can instead use the security-specific
 // member so the claim URL and expiry are required at the template boundary.
 export type EmailTemplatePayload = TransactionalEmailTemplatePayload
   | FamilyHandoverSecurityEmailTemplatePayload
-  | EmailVerificationSecurityEmailTemplatePayload;
+  | EmailVerificationSecurityEmailTemplatePayload
+  | PasswordResetSecurityEmailTemplatePayload
+  | EmailChangeSecurityEmailTemplatePayload;
 
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, character => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -52,6 +63,8 @@ function securityExpiry(value: Date | string, label: string) {
 export function renderTransactionalEmail(payload: EmailTemplatePayload) {
   const securityPayload = payload.eventType === 'FAMILY_HANDOVER_SECURITY' && 'claimUrl' in payload;
   const verificationPayload = payload.eventType === 'EMAIL_VERIFICATION' && 'verificationUrl' in payload;
+  const passwordResetPayload = payload.eventType === 'PASSWORD_RESET' && 'resetUrl' in payload;
+  const emailChangePayload = payload.eventType === 'EMAIL_CHANGE_VERIFICATION' && 'confirmationUrl' in payload;
   const content = securityPayload
     ? {
       title: 'Complete your Courtly family profile handover',
@@ -66,7 +79,19 @@ export function renderTransactionalEmail(payload: EmailTemplatePayload) {
         actionUrl: payload.verificationUrl,
         actionLabel: 'Verify email',
       }
-    : payload;
+      : passwordResetPayload
+        ? {
+          title: 'Reset your Courtly password',
+          message: `Use this secure link to choose a new password. It expires ${securityExpiry(payload.expiresAt, 'Password reset')}. If you did not request this, ignore this email.`,
+          actionUrl: payload.resetUrl, actionLabel: 'Reset password',
+        }
+        : emailChangePayload
+          ? {
+            title: 'Confirm your new Courtly email',
+            message: `Verify this address to finish changing your Courtly sign-in email. This secure link expires ${securityExpiry(payload.expiresAt, 'Email change')}. If you did not request this, ignore this email.`,
+            actionUrl: payload.confirmationUrl, actionLabel: 'Confirm new email',
+          }
+          : payload;
   const greeting = payload.recipientName.trim() ? `Hi ${payload.recipientName.trim()},` : 'Hello,';
   const actionText = content.actionLabel?.trim() || 'Open Courtly';
   const text = [greeting, '', content.title, content.message, content.actionUrl ? '' : null]
@@ -74,8 +99,8 @@ export function renderTransactionalEmail(payload: EmailTemplatePayload) {
   if (content.actionUrl) text.push(`${actionText}: ${content.actionUrl}`);
   const footer = payload.eventType === 'FAMILY_HANDOVER_SECURITY'
     ? 'This is a security message about access to a Courtly family profile. Never share this claim link.'
-    : payload.eventType === 'EMAIL_VERIFICATION'
-      ? 'This is a security message about your Courtly account. Never share this verification link.'
+    : ['EMAIL_VERIFICATION', 'PASSWORD_RESET', 'EMAIL_CHANGE_VERIFICATION'].includes(payload.eventType)
+      ? 'This is a security message about your Courtly account. Never share this secure link.'
       : 'This is a transactional message about your Courtly account.';
   text.push('', footer);
   const action = content.actionUrl

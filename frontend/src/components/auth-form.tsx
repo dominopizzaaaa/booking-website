@@ -4,7 +4,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowRight, CalendarDays, Check, CircleDot, Eye, EyeOff, Layers3, LoaderCircle, LockKeyhole, MapPin, Sparkles, UsersRound } from 'lucide-react';
-import { ApiError, api, loginAccount, registerAccount } from '@/lib/api';
+import { ApiError, api, isMfaLoginChallenge, loginAccount, registerAccount } from '@/lib/api';
+import { storeMfaLoginChallenge } from '@/lib/account-security';
 import { CourtlyLogo } from '@/components/public-booking';
 import type { AccountType, AuthSession } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -72,6 +73,7 @@ function destinationFor(state: AuthSession, requested: string | null) {
   // Staff invitation links must reach the account acceptance screen before
   // any existing coach membership or the student's default app takes over.
   if (requested?.startsWith('/account?staffInvite=')) return requested;
+  if (requested === '/account/security' || requested?.startsWith('/account/security?')) return requested;
   // Booking and management return paths belong to student self-service. A
   // coach or club must still land in the account/workspace it can operate.
   if (state.user.accountType === 'STUDENT') return requested ?? '/manage';
@@ -151,6 +153,11 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
           ? await registerAccount({ accountType, businessName: values.businessName.trim(), name: values.name.trim(), username, sports: sports!, email: values.email.trim(), password: values.password, ...legalAcceptance })
           : await registerAccount({ accountType: accountType!, dateOfBirth: values.dateOfBirth, name: values.name.trim(), username, sports: sports!, email: values.email.trim(), password: values.password, ...legalAcceptance })
         : await loginAccount({ email: values.email.trim(), password: values.password });
+      if (isMfaLoginChallenge(result)) {
+        storeMfaLoginChallenge(result, redirect?.destination);
+        router.push('/auth/mfa');
+        return;
+      }
       if (signup) markProductTourPending(result.user.id);
       router.replace(destinationFor(result, redirect?.destination ?? null)); router.refresh();
     } catch (err) {
@@ -214,7 +221,7 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
             {accountType !== 'CLUB' && <div><label htmlFor="auth-dateOfBirth" className="!mb-2 !text-sm !font-medium !text-[#52634b]">Your date of birth</label><input id="auth-dateOfBirth" className={input} type="date" value={values.dateOfBirth} onChange={event => update('dateOfBirth', event.target.value)} required autoComplete="bday" min="1900-01-01" max={singaporeCivilDate()} disabled={!!busy} aria-invalid={errorField === 'dateOfBirth'} aria-describedby={describedBy('dateOfBirth', 'date-of-birth-hint')} /><p id="date-of-birth-hint" className="!mt-2 text-sm leading-relaxed text-[#596653]">Enter the date of birth of the person creating this login—not a child you plan to add in Family.</p>{fieldError('dateOfBirth')}</div>}
           </>}
           <div><label htmlFor="auth-email" className="!mb-2 !text-sm !font-medium !text-[#52634b]">Email address</label><input id="auth-email" className={input} type="email" value={values.email} onChange={event => update('email', event.target.value)} required maxLength={254} autoComplete="email" placeholder="you@example.com" disabled={!!busy} aria-invalid={errorField === 'email'} aria-describedby={describedBy('email')} />{fieldError('email')}</div>
-          <div><label htmlFor="auth-password" className="!mb-2 !text-sm !font-medium !text-[#52634b]">Password</label><div className="relative"><input id="auth-password" className={cn(input, '!pr-12')} type={showPassword ? 'text' : 'password'} value={values.password} onChange={event => update('password', event.target.value)} required minLength={signup ? 12 : undefined} maxLength={72} autoComplete={signup ? 'new-password' : 'current-password'} placeholder={signup ? 'Create a password' : 'Your password'} disabled={!!busy} aria-invalid={errorField === 'password'} aria-describedby={describedBy('password', signup ? 'password-hint' : undefined)} /><button type="button" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword} className="absolute inset-y-0 right-0 flex w-12 items-center justify-center rounded-r-xl text-[#596653] transition hover:text-[#49673d]">{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></div>{signup && <p id="password-hint" className="!mt-2 text-sm text-[#596653]">Make it yours. Use at least 12 characters.</p>}{fieldError('password')}</div>
+          <div><div className="flex items-center justify-between gap-3"><label htmlFor="auth-password" className="!mb-2 !text-sm !font-medium !text-[#52634b]">Password</label>{!signup && <Link href="/forgot-password" className="mb-2 text-xs font-semibold text-[#45673c] underline-offset-2 hover:underline">Forgot password?</Link>}</div><div className="relative"><input id="auth-password" className={cn(input, '!pr-12')} type={showPassword ? 'text' : 'password'} value={values.password} onChange={event => update('password', event.target.value)} required minLength={signup ? 12 : undefined} maxLength={72} autoComplete={signup ? 'new-password' : 'current-password'} placeholder={signup ? 'Create a password' : 'Your password'} disabled={!!busy} aria-invalid={errorField === 'password'} aria-describedby={describedBy('password', signup ? 'password-hint' : undefined)} /><button type="button" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword} className="absolute inset-y-0 right-0 flex w-12 items-center justify-center rounded-r-xl text-[#596653] transition hover:text-[#49673d]">{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></div>{signup && <p id="password-hint" className="!mt-2 text-sm text-[#596653]">Make it yours. Use at least 12 characters.</p>}{fieldError('password')}</div>
           {signup && <fieldset aria-invalid={errorField === 'legalAcceptance'} aria-describedby={describedBy('legalAcceptance')} className="rounded-xl border border-[#dfe7d8] bg-[#f3f7ef] p-4">
             <legend className="px-1 text-sm font-semibold text-[#304b39]">Before you create your account</legend>
             <label htmlFor="auth-legal-acceptance" className="!mb-0 flex cursor-pointer items-start gap-3 text-sm font-medium leading-6 text-[#304b39]">

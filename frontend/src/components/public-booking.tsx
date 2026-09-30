@@ -46,11 +46,13 @@ import {
   loadFamilyBookingChildren,
   loadPublicBusiness,
   loadSlots,
+  isMfaLoginChallenge,
   loginStudentAccount,
   logoutAccount,
   registerStudentAccount,
   requestAccountReschedule,
 } from "@/lib/api";
+import { storeMfaLoginChallenge } from '@/lib/account-security';
 import type {
   AccountBooking,
   AuthSession,
@@ -282,6 +284,11 @@ function StudentAccountAccess({
               privacyPolicyVersion: CURRENT_PRIVACY_NOTICE_VERSION,
               policySetHash: CURRENT_LEGAL_POLICY_SET_HASH,
             });
+      if (isMfaLoginChallenge(session)) {
+        storeMfaLoginChallenge(session, `${window.location.pathname}${window.location.search}`);
+        router.push('/auth/mfa');
+        return;
+      }
       if (session.user.requiredAction) {
         router.replace("/account/action-required");
         return;
@@ -399,7 +406,7 @@ function StudentAccountAccess({
             />
           </div>
           <div className={mode === "login" ? "sm:col-span-2" : ""}>
-            <label htmlFor={`${formId}-password`}>Password</label>
+            <div className="flex items-center justify-between gap-3"><label htmlFor={`${formId}-password`}>Password</label>{mode === 'login' && <Link href="/forgot-password" className="mb-[7px] text-xs font-semibold text-[#45673c] underline-offset-2 hover:underline">Forgot password?</Link>}</div>
             <input
               id={`${formId}-password`}
               className={field}

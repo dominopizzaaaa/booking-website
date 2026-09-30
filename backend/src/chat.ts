@@ -2,10 +2,10 @@ import { createHash } from 'node:crypto';
 import { Router, type RequestHandler } from 'express';
 import { Prisma, type ChatMessage } from '@prisma/client';
 import { DateTime } from 'luxon';
-import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { prisma } from './db.js';
 import { skipRateLimits } from './config.js';
+import { sharedRateLimit } from './rate-limit.js';
 import { asyncRoute, HttpError, type AccountRequest, type AccountType } from './http.js';
 import { loadAccountPolicy } from './account-policy.js';
 import { ageOnSingaporeDate } from './children-policy.js';
@@ -1892,7 +1892,8 @@ const requireChatAccount: RequestHandler = (req, _res, next) => {
   next();
 };
 
-const chatWriteLimit = rateLimit({
+const chatWriteLimit = sharedRateLimit({
+  name: 'chat-write',
   windowMs: 60_000, limit: 40, standardHeaders: 'draft-8', legacyHeaders: false,
   skip: skipRateLimits,
   // Authentication runs first, so people sharing a network do not share one
@@ -1901,14 +1902,16 @@ const chatWriteLimit = rateLimit({
   message: { error: 'You are sending messages too quickly. Please wait a moment.' },
 });
 
-const chatCreateLimit = rateLimit({
+const chatCreateLimit = sharedRateLimit({
+  name: 'chat-create',
   windowMs: 5 * 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false,
   skip: skipRateLimits,
   keyGenerator: req => (req as AccountRequest).auth?.user.id ?? 'unauthenticated',
   message: { error: 'You are starting conversations too quickly. Please wait a moment.' },
 });
 
-const chatReportLimit = rateLimit({
+const chatReportLimit = sharedRateLimit({
+  name: 'chat-report',
   windowMs: 15 * 60_000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false,
   skip: skipRateLimits,
   keyGenerator: req => (req as AccountRequest).auth?.user.id ?? 'unauthenticated',

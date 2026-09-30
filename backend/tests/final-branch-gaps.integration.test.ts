@@ -94,7 +94,7 @@ describe.sequential('Final backend branch coverage', () => {
     })).not.toBeNull();
   });
 
-  it('keeps legacy cancellation strict and refunds one package credit exactly once', async () => {
+  it('keeps legacy cancellation strict and requires sign-in before restoring a package credit', async () => {
     const student = await createStudent(fixture, { name: 'Legacy Package Student' });
     const pkg = await createPackage(fixture, student.id, { totalCredits: 2 });
     const legacy = await legacyBooking(fixture, 1, { studentId: student.id, packageId: pkg.id });
@@ -108,15 +108,23 @@ describe.sequential('Final backend branch coverage', () => {
     expect(await prisma.lessonPackage.findUniqueOrThrow({ where: { id: pkg.id } }))
       .toMatchObject({ usedCredits: 1 });
 
-    const cancelled = await request(app).post(`/api/manage/${legacy.token}/cancel`)
-      .send({}).expect(200);
+    const legacyDenied = await request(app).post(`/api/manage/${legacy.token}/cancel`)
+      .send({}).expect(409);
+    expect(legacyDenied.body.error).toContain('Sign in');
+
+    const studentAccount = await prisma.student.findUniqueOrThrow({
+      where: { id: student.id }, select: { userId: true },
+    });
+    const signedIn = await createSession(fixture, studentAccount.userId!);
+    const cancelled = await request(app).post(`/api/account/bookings/${legacy.participantId}/cancel`)
+      .set('Cookie', signedIn.cookie).send({}).expect(200);
     expect(cancelled.body).toMatchObject({
       booking: { id: legacy.bookingId, status: 'CANCELLED' },
       participant: { name: student.name, cancelled: true },
       canCancel: false,
     });
-    const repeated = await request(app).post(`/api/manage/${legacy.token}/cancel`)
-      .send({}).expect(200);
+    const repeated = await request(app).post(`/api/account/bookings/${legacy.participantId}/cancel`)
+      .set('Cookie', signedIn.cookie).send({}).expect(200);
     expect(repeated.body).toMatchObject({
       booking: { id: legacy.bookingId, status: 'CANCELLED' },
       participant: { cancelled: true },

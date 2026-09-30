@@ -783,7 +783,10 @@ describe.sequential('Global account authentication and workspace memberships', (
     expect(secondCookie).not.toBe(cookie);
     await f.agent.post('/api/auth/logout').send({}).expect(200);
     await request(app).get('/api/auth/me').set('Cookie', secondCookie).expect(401);
-    expect(await prisma.authSession.count({ where: { userId: f.user.id } })).toBe(0);
+    // Logout is deliberately local to the current browser; the independent
+    // fixture session remains active until the person revokes it explicitly.
+    expect(await prisma.authSession.count({ where: { userId: f.user.id } })).toBe(1);
+    await request(app).get('/api/auth/me').set('Cookie', f.cookie).expect(200);
   });
 
   it('switches one global provider between memberships and isolates each workspace', async () => {

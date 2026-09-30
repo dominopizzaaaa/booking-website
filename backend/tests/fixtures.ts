@@ -91,14 +91,16 @@ export class TestTenants {
     const session = await prisma.authSession.create({
       data: {
         id: createHash('sha256').update(sessionToken).digest('hex'), userId: user.id,
-        activeMembershipId: membership.id, expiresAt: new Date(Date.now() + 3_600_000),
+        activeMembershipId: membership.id, recentAuthAt: new Date(),
+        expiresAt: new Date(Date.now() + 3_600_000),
       },
     });
     const coachSessionToken = randomBytes(32).toString('base64url');
     await prisma.authSession.create({
       data: {
         id: createHash('sha256').update(coachSessionToken).digest('hex'), userId: coachUser.id,
-        activeMembershipId: coachMembership.id, expiresAt: new Date(Date.now() + 3_600_000),
+        activeMembershipId: coachMembership.id, recentAuthAt: new Date(),
+        expiresAt: new Date(Date.now() + 3_600_000),
       },
     });
     // Dynamic dates remain in the future and represent a fixed Singapore clock
@@ -145,6 +147,9 @@ export class TestTenants {
         })).map(membership => membership.userId);
         await tx.paymentRiskCase.deleteMany({ where: { businessId } });
         await tx.paymentRefund.deleteMany({ where: { businessId } });
+        await tx.paymentSettlement.deleteMany({ where: { paymentIntent: { businessId } } });
+        // Receipts reject independent deletion and cascade only from their
+        // owning payment, intent, or business during explicit teardown.
         await tx.payment.deleteMany({ where: { businessId } });
         await tx.paymentIntent.deleteMany({ where: { businessId } });
         await tx.venueUnitAllocation.deleteMany({ where: { businessId } });
@@ -224,6 +229,11 @@ export class TestTenants {
       });
       this.userIds.clear();
     }
+    // Rate-limit counters intentionally have no tenant foreign key because
+    // they protect anonymous traffic too. Integration files share one app and
+    // loopback address, so clear this test-only operational state between
+    // independently isolated scenarios.
+    await prisma.rateLimitCounter.deleteMany();
   }
 }
 
@@ -301,6 +311,7 @@ export async function createSession(
   const session = await prisma.authSession.create({
     data: {
       id: createHash('sha256').update(token).digest('hex'), userId, activeMembershipId,
+      recentAuthAt: new Date(),
       expiresAt: new Date(Date.now() + 3_600_000),
     },
   });
@@ -341,4 +352,9 @@ export async function verifyTestDatabase() {
   // This is a real connection check, not a mock or a skip-on-failure fallback.
   const result = await prisma.$queryRaw<{ name: string; version: string }[]>`SELECT current_database() AS name, version() AS version`;
   if (!result[0]?.version.includes('PostgreSQL')) throw new Error('Integration tests require PostgreSQL');
+  // Each integration file is an independent scenario but Vitest reuses the
+  // same loopback client address across files. Do not let a prior file spend
+  // the next file's application quota. Dedicated limiter tests build their
+  // own counters after this suite-boundary reset.
+  await prisma.rateLimitCounter.deleteMany();
 }

@@ -5,6 +5,8 @@ import {
   type AccountBookingsResult,
   type AccountDirectoryUser,
   type AccountPackage,
+  type AccountSecurity,
+  type AccountSecuritySession,
   type AuthSession,
   type AuditEventListResult,
   type BookingInput,
@@ -48,6 +50,9 @@ import {
   type IntegrityFlag,
   type LiveCheckoutInput,
   type LiveCheckoutResult,
+  type LoginResult,
+  type MfaLoginChallenge,
+  type MfaMethod,
   type PackageOffer,
   type PackageOfferBusiness,
   type PackageOfferInput,
@@ -76,6 +81,7 @@ import {
   type RentalReservationResult,
   type RentalSlotsResult,
   type RescheduleRequest,
+  type RecentAuthentication,
   type SafeguardingAccountAction,
   type SafeguardingReport,
   type SafeguardingReportFilters,
@@ -86,6 +92,7 @@ import {
   type Slot,
   type StudentClubDirectoryPage,
   type StudentClubDirectoryResult,
+  type TotpEnrollment,
   type VenueSearchResult,
   type WorkspaceBooking,
   type WorkspaceResponse,
@@ -97,14 +104,32 @@ import {
   type ChatThreadDetailWire,
   type ChatThreadListWire,
 } from './chat-wire';
+import { isRecentAuthRequired } from './account-security';
+import { requestRecentAuthentication } from './recent-auth-coordinator';
 
 export class ApiError extends Error {
   constructor(message: string, public status: number, public details?: unknown) { super(message); }
 }
-export async function api<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
+type ApiFetchResult = { response: Response; prefetchedJson?: unknown };
+
+async function apiFetch(path: string, options: RequestInit = {}, allowRecentAuthRetry = true): Promise<ApiFetchResult> {
   const response = await fetch(`/api${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...options.headers }, credentials: 'include' });
+  if (allowRecentAuthRetry && path !== '/account/security/recent-auth'
+    && response.status === 428 && response.headers.get('content-type')?.includes('application/json')) {
+    const details = await response.json().catch(() => null);
+    if (isRecentAuthRequired(new ApiError(details?.error || 'Confirm your identity to continue', response.status, details))
+      && await requestRecentAuthentication()) {
+      return apiFetch(path, options, false);
+    }
+    return { response, prefetchedJson: details };
+  }
+  return { response };
+}
+
+export async function api<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
+  const { response, prefetchedJson } = await apiFetch(path, options);
   if (!response.headers.get('content-type')?.includes('application/json')) throw new ApiError('The booking service is temporarily unavailable. Please try again.', response.status);
-  const data = await response.json();
+  const data = prefetchedJson ?? await response.json();
   if (!response.ok) throw new ApiError(data.error || 'Something went wrong. Please try again.', response.status, data);
   return data;
 }
@@ -202,10 +227,10 @@ export const loadBooking = (bookingId: string) =>
 export const loadAuditEvents = (filters: { cursor?: string; limit?: number } = {}) =>
   api<AuditEventListResult>(`/audit-events${filteredQuery(filters)}`);
 export async function downloadBookingsCsv(filters: Omit<BookingListFilters, 'cursor' | 'limit'>) {
-  const response = await fetch(`/api/bookings/export.csv${filteredQuery(filters)}`, { credentials: 'include' });
+  const { response, prefetchedJson } = await apiFetch(`/bookings/export.csv${filteredQuery(filters)}`, { credentials: 'include' });
   if (!response.ok) {
     let data: { error?: string } = {};
-    if (response.headers.get('content-type')?.includes('application/json')) data = await response.json();
+    if (response.headers.get('content-type')?.includes('application/json')) data = (prefetchedJson ?? await response.json()) as { error?: string };
     throw new ApiError(data.error || 'The booking export could not be downloaded.', response.status, data);
   }
   const disposition = response.headers.get('content-disposition') || '';
@@ -219,8 +244,16 @@ export const createPublicBooking = (slug: string, values: PublicBookingInput) =>
 export async function loadAuthSession(): Promise<AuthSession> {
   return normalizeAuthSession(await api<CompatibleAuthSession>('/auth/me'));
 }
-export async function loginAccount(values: { email: string; password: string }): Promise<AuthSession> {
-  return normalizeAuthSession(await api<CompatibleAuthSession>('/auth/login', { method: 'POST', body: JSON.stringify(values) }));
+export function isMfaLoginChallenge(value: LoginResult): value is MfaLoginChallenge {
+  return 'mfaRequired' in value && value.mfaRequired === true;
+}
+export async function loginAccount(values: { email: string; password: string }): Promise<LoginResult> {
+  const result = await api<CompatibleAuthSession | MfaLoginChallenge>('/auth/login', {
+    method: 'POST', body: JSON.stringify(values),
+  });
+  return isMfaLoginChallenge(result as LoginResult)
+    ? result as MfaLoginChallenge
+    : normalizeAuthSession(result as CompatibleAuthSession);
 }
 export const loginStudentAccount = loginAccount;
 type RegisterAccountBase = {
@@ -247,6 +280,72 @@ export const resendAccountEmailVerification = () =>
   api<{ ok: true; emailQueued: boolean; alreadyVerified: boolean; expiresAt?: string | null }>(
     '/auth/email-verification/resend', { method: 'POST', body: JSON.stringify({}) },
   );
+export const requestPasswordReset = (email: string) =>
+  api<{ ok: true }>('/auth/password-reset/request', { method: 'POST', body: JSON.stringify({ email }) });
+export const resetAccountPassword = (token: string, newPassword: string) =>
+  api<{ ok: true }>('/auth/password-reset/confirm', { method: 'POST', body: JSON.stringify({ token, password: newPassword }) });
+export async function completeMfaLogin(challengeId: string, method: MfaMethod, code: string): Promise<AuthSession> {
+  return normalizeAuthSession(await api<CompatibleAuthSession>('/auth/mfa/challenge', {
+    method: 'POST', body: JSON.stringify({ challengeId, method, code }),
+  }));
+}
+export const confirmAccountEmailChange = (token: string) =>
+  api<{ ok: true; email: string }>('/auth/email-change/confirm', {
+    method: 'POST', body: JSON.stringify({ token }),
+  });
+type AccountSecuritySummaryWire = Omit<AccountSecurity, 'sessions' | 'recentAuth'> & {
+  sessions?: AccountSecuritySession[] | number; currentSessionId?: string; recentAuth?: RecentAuthentication; recentAuthUntil?: string | null;
+  mfa: AccountSecurity['mfa'] & { enabledAt?: string | null };
+};
+export async function loadAccountSecurity(): Promise<AccountSecurity> {
+  const summary = await api<AccountSecuritySummaryWire>('/account/security');
+  const sessions = Array.isArray(summary.sessions)
+    ? summary.sessions
+    : (await loadAccountSecuritySessions()).sessions;
+  return {
+    email: summary.email, emailVerified: summary.emailVerified, sessions,
+    mfa: {
+      enabled: summary.mfa.enabled,
+      verifiedAt: summary.mfa.verifiedAt ?? summary.mfa.enabledAt ?? null,
+      recoveryCodesRemaining: summary.mfa.recoveryCodesRemaining,
+    },
+    recentAuth: summary.recentAuth ?? {
+      authenticatedAt: null, expiresAt: summary.recentAuthUntil ?? null,
+    },
+  };
+}
+export const requestAccountEmailChange = (email: string) =>
+  api<{ ok: true; expiresAt: string }>('/account/security/email-change', {
+    method: 'POST', body: JSON.stringify({ email }),
+  });
+export const startTotpEnrollment = () =>
+  api<TotpEnrollment>('/account/security/mfa/enrollment', { method: 'POST', body: JSON.stringify({}) });
+export const confirmTotpEnrollment = (enrollmentId: string, code: string) =>
+  api<{ ok: true; recoveryCodes: string[] }>('/account/security/mfa/enable', {
+    method: 'POST', body: JSON.stringify({ enrollmentId, code }),
+  });
+export const disableAccountMfa = () =>
+  api<{ ok: true }>('/account/security/mfa', { method: 'DELETE', body: JSON.stringify({}) });
+export const regenerateMfaRecoveryCodes = () =>
+  api<{ recoveryCodes: string[] }>('/account/security/mfa/recovery-codes', {
+    method: 'POST', body: JSON.stringify({}),
+  });
+export const loadAccountSecuritySessions = () =>
+  api<{ sessions: AccountSecuritySession[] }>('/account/security/sessions');
+export const revokeAccountSecuritySession = (id: string) =>
+  api<{ ok: true }>(`/account/security/sessions/${encodeURIComponent(id)}`, {
+    method: 'DELETE', body: JSON.stringify({}),
+  });
+export const revokeOtherAccountSecuritySessions = () =>
+  api<{ ok: true }>('/account/security/sessions/revoke-others', {
+    method: 'POST', body: JSON.stringify({}),
+  });
+export async function reauthenticateAccount(values: { password: string; method?: MfaMethod; code?: string }) {
+  const result = await api<{ ok: true; recentAuth?: RecentAuthentication; recentAuthUntil?: string }>('/account/security/recent-auth', {
+    method: 'POST', body: JSON.stringify(values),
+  });
+  return { ...result, recentAuth: result.recentAuth ?? { authenticatedAt: new Date().toISOString(), expiresAt: result.recentAuthUntil ?? null } };
+}
 export const loadPrivacyRequests = (filters: { cursor?: string; limit?: number } = {}) =>
   api<PrivacyRequestPage>(`/privacy/requests${filteredQuery(filters)}`);
 export const createPrivacyRequest = (values: PrivacyRequestInput) =>
@@ -303,10 +402,10 @@ export const createFamilyHandover = (id: string, destinationEmail: string) =>
 export const cancelFamilyHandover = (id: string, handoverId: string) =>
   api<{ ok: true }>(`/family/children/${encodeURIComponent(id)}/handovers/${encodeURIComponent(handoverId)}`, { method: 'DELETE', body: JSON.stringify({}) });
 export async function downloadFamilyChildExport(id: string) {
-  const response = await fetch(`/api/family/children/${encodeURIComponent(id)}/export`, { credentials: 'include' });
+  const { response, prefetchedJson } = await apiFetch(`/family/children/${encodeURIComponent(id)}/export`, { credentials: 'include' });
   if (!response.ok) {
     let data: { error?: string } = {};
-    if (response.headers.get('content-type')?.includes('application/json')) data = await response.json();
+    if (response.headers.get('content-type')?.includes('application/json')) data = (prefetchedJson ?? await response.json()) as { error?: string };
     throw new ApiError(data.error || 'This child data export could not be downloaded.', response.status, data);
   }
   const disposition = response.headers.get('content-disposition') || '';
@@ -734,6 +833,8 @@ export type AdminAuthMode = 'named' | 'legacy' | 'disabled';
 export type AdminSession = {
   configured: boolean; authenticated: boolean; authMode: AdminAuthMode;
   operator: AdminOperator | null; sensitiveAccess: boolean;
+  /** Named operators must submit a current authenticator code when enabled. */
+  mfaRequired?: boolean;
   /** Missing only during a rolling deployment from an older API; clients must fail closed. */
   businessDeletionMode?: 'all' | 'demo-only';
 };
@@ -744,7 +845,7 @@ export type AdminOverview = { generatedAt: string; totals: AdminTotals };
 export type AdminBusinessCounts = { users: number; students: number; bookings: number; locations: number; services: number; instructors: number };
 export type AdminBusiness = { id: string; name: string; slug: string; ownerName: string; email: string; currency: string; timezone: string; isDemo: boolean; createdAt: string; counts: AdminBusinessCounts };
 export const adminSession = () => api<AdminSession>('/admin/session');
-export type AdminLoginInput = { password: string; email?: string };
+export type AdminLoginInput = { password: string; email?: string; totpCode?: string };
 export const adminLogin = (credentials: AdminLoginInput) =>
   api<{ ok: true; authMode: Exclude<AdminAuthMode, 'disabled'>; operator: AdminOperator | null }>('/admin/login', {
     method: 'POST', body: JSON.stringify(credentials),

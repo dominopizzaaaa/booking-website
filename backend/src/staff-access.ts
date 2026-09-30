@@ -3,7 +3,7 @@ import { Router, type RequestHandler } from 'express';
 import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from './db.js';
-import { asyncRoute, effectiveClubPermissions, HttpError, type AuthRequest } from './http.js';
+import { asyncRoute, effectiveClubPermissions, HttpError, requireRecentAuth, type AuthRequest } from './http.js';
 import { institutionalClubActor, namedStaffActor, recordBusinessAudit, type BusinessAuditActor } from './audit.js';
 
 export const CLUB_PERMISSIONS = [
@@ -193,7 +193,7 @@ clubStaffAccessRouter.get('/staff-access/invitations', requireStaffAdministratio
   res.json({ invitations: invitations.map(invitationJson) });
 }));
 
-clubStaffAccessRouter.post('/staff-access/invitations', requireStaffAdministration, asyncRoute(async (req, res) => {
+clubStaffAccessRouter.post('/staff-access/invitations', requireStaffAdministration, requireRecentAuth, asyncRoute(async (req, res) => {
   const input = invitationInputSchema.parse(req.body);
   const administration = administrationContext(req);
   const { businessId, actor } = administration;
@@ -230,7 +230,7 @@ clubStaffAccessRouter.post('/staff-access/invitations', requireStaffAdministrati
   res.status(201).json({ invitation: invitationJson(invitation), invitePath: `/signup?${new URLSearchParams({ next: destination })}` });
 }));
 
-clubStaffAccessRouter.patch('/staff-access/:accessId', requireStaffAdministration, asyncRoute(async (req, res) => {
+clubStaffAccessRouter.patch('/staff-access/:accessId', requireStaffAdministration, requireRecentAuth, asyncRoute(async (req, res) => {
   const accessId = idSchema.parse(req.params.accessId);
   const input = accessInputSchema.parse(req.body);
   const resolved = resolvedAccess(input);
@@ -262,7 +262,7 @@ clubStaffAccessRouter.patch('/staff-access/:accessId', requireStaffAdministratio
   res.json(accessJson(updated));
 }));
 
-clubStaffAccessRouter.delete('/staff-access/:accessId', requireStaffAdministration, asyncRoute(async (req, res) => {
+clubStaffAccessRouter.delete('/staff-access/:accessId', requireStaffAdministration, requireRecentAuth, asyncRoute(async (req, res) => {
   const accessId = idSchema.parse(req.params.accessId);
   const administration = administrationContext(req);
   const { businessId, actor } = administration;
@@ -286,7 +286,7 @@ clubStaffAccessRouter.delete('/staff-access/:accessId', requireStaffAdministrati
   res.json({ ok: true });
 }));
 
-clubStaffAccessRouter.delete('/staff-access/invitations/:invitationId', requireStaffAdministration, asyncRoute(async (req, res) => {
+clubStaffAccessRouter.delete('/staff-access/invitations/:invitationId', requireStaffAdministration, requireRecentAuth, asyncRoute(async (req, res) => {
   const invitationId = idSchema.parse(req.params.invitationId);
   const administration = administrationContext(req);
   const { businessId, actor } = administration;
@@ -314,7 +314,7 @@ clubStaffInvitationRouter.get('/club-staff-invitations', asyncRoute(async (req, 
   res.json({ invitations: invitations.map(invitationJson) });
 }));
 
-clubStaffInvitationRouter.post('/club-staff-invitations/accept', asyncRoute(async (req, res) => {
+clubStaffInvitationRouter.post('/club-staff-invitations/accept', requireRecentAuth, asyncRoute(async (req, res) => {
   const input = acceptSchema.parse(req.body);
   if (req.auth.user.accountType === 'CLUB') throw new HttpError(403, 'Club accounts cannot accept named staff access');
   if (!req.auth.user.email) throw new HttpError(403, 'An account email is required to accept a staff invitation');

@@ -4,7 +4,7 @@ import { DateTime } from 'luxon';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from './db.js';
-import { hasClubPermission, HttpError, initials, type AccountRequest } from './http.js';
+import { hasClubPermission, HttpError, initials, requireRecentAuth, type AccountRequest } from './http.js';
 import { isVenueAllocationConflict, lockVenueUnits, releaseRentalUnit, reserveRentalUnit } from './venue-allocations.js';
 import { executePreparedRefund, prepareProviderRefund, type RefundPreparation } from './payments/refunds.js';
 import { calendarDateBoundary } from './booking-query.js';
@@ -891,7 +891,7 @@ rentalsRouter.post('/rentals/:id/reservations', accountRoute(async (req, res) =>
   });
 }));
 
-rentalsRouter.post('/rentals/reservations/:id/cancel', accountRoute(async (req, res) => {
+rentalsRouter.post('/rentals/reservations/:id/cancel', requireRecentAuth, accountRoute(async (req, res) => {
   z.object({}).strict().parse(req.body ?? {});
   const result = await prisma.$transaction(async tx => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`venue-reservation:${req.params.id}`}, 0))`;

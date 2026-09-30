@@ -3,11 +3,11 @@ import { createHash } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { z } from 'zod';
-import { rateLimit } from 'express-rate-limit';
 import { requireAuth, requireStudent } from './auth.js';
 import { skipRateLimits } from './config.js';
+import { sharedRateLimit } from './rate-limit.js';
 import { prisma } from './db.js';
-import { asyncRoute, HttpError, requireAccountCapability, requireAccountReady } from './http.js';
+import { asyncRoute, HttpError, requireAccountCapability, requireAccountReady, requireRecentAuth } from './http.js';
 import { bookingInclude, bookingJson, publicBookingBusiness, publicInstructor, publicLocation, serviceJson } from './serializers.js';
 import { assertWritableClubBooking, bookableInstructorWhere, createBookings, evaluateSlot, lockInstructors, publicBookingInput, refundParticipant, rescheduleBooking, schedulingContext } from './scheduling.js';
 import { releaseBookingUnit } from './venue-allocations.js';
@@ -29,9 +29,9 @@ import {
 } from './reschedule.js';
 
 export const publicRouter = Router();
-const bookingLimit = rateLimit({ windowMs: 60 * 60_000, limit: 80, standardHeaders: 'draft-8', legacyHeaders: false, skip: skipRateLimits, message: { error: 'Too many requests. Please try again later.' } });
-const slotLimit = rateLimit({ windowMs: 5 * 60_000, limit: 180, standardHeaders: 'draft-8', legacyHeaders: false, skip: skipRateLimits, message: { error: 'Too many availability checks. Please wait a moment.' } });
-const legacyLookupLimit = rateLimit({ windowMs: 15 * 60_000, limit: 120, standardHeaders: 'draft-8', legacyHeaders: false, skip: skipRateLimits, message: { error: 'Too many management-link requests. Please try again later.' } });
+const bookingLimit = sharedRateLimit({ name: 'public-booking-mutation', windowMs: 60 * 60_000, limit: 80, standardHeaders: 'draft-8', legacyHeaders: false, skip: skipRateLimits, message: { error: 'Too many requests. Please try again later.' } });
+const slotLimit = sharedRateLimit({ name: 'public-booking-slots', windowMs: 5 * 60_000, limit: 180, standardHeaders: 'draft-8', legacyHeaders: false, skip: skipRateLimits, message: { error: 'Too many availability checks. Please wait a moment.' } });
+const legacyLookupLimit = sharedRateLimit({ name: 'public-management-lookup', windowMs: 15 * 60_000, limit: 120, standardHeaders: 'draft-8', legacyHeaders: false, skip: skipRateLimits, message: { error: 'Too many management-link requests. Please try again later.' } });
 
 async function businessForSlug(slug: string) {
   // Historical SOLO practices keep their contractual records, but the
@@ -457,6 +457,9 @@ publicRouter.post('/manage/:token/cancel', bookingLimit, asyncRoute(async (req, 
       || participant.booking.startAt.getTime() - Date.now() < participant.booking.business.cancellationHours * 3600_000) {
       throw new HttpError(400, `Cancellation requires ${participant.booking.business.cancellationHours} hours notice. Please contact your coach.`);
     }
+    if (participant.creditConsumed) {
+      throw new HttpError(409, 'Sign in to cancel a booking that restores a package credit.');
+    }
     await refundParticipant(tx, participant);
     await tx.participant.update({ where: { id: participant.id }, data: { cancelledAt: new Date() } });
     const remaining = await tx.participant.count({ where: { bookingId: participant.bookingId, cancelledAt: null } });
@@ -517,7 +520,7 @@ publicRouter.get('/account/bookings', requireAuth, requireAccountReady, requireS
   res.json({ bookings: participants.map(accountBookingJson) });
 }));
 
-publicRouter.post('/account/bookings/:participantId/cancel', bookingLimit, requireAuth, requireAccountReady, requireStudent, asyncRoute(async (req, res) => {
+publicRouter.post('/account/bookings/:participantId/cancel', bookingLimit, requireAuth, requireAccountReady, requireStudent, requireRecentAuth, asyncRoute(async (req, res) => {
   z.object({}).strict().parse(req.body ?? {});
   const initial = await accountParticipant(req.params.participantId, req.auth.user.id);
   await prisma.$transaction(async tx => {

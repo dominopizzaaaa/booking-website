@@ -4,7 +4,7 @@ import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from './db.js';
 import { requireAuth, requireStudent, requireWorkspace } from './auth.js';
-import { asyncRoute, HttpError, initials, requireClubPermission } from './http.js';
+import { asyncRoute, HttpError, initials, requireClubPermission, requireRecentAuth } from './http.js';
 import { notifyWorkspace } from './notifications.js';
 import { createBookingAccountAlerts } from './account-notifications.js';
 import { lockInstructors } from './scheduling.js';
@@ -305,7 +305,7 @@ async function findReplay(tx: Tx, userId: string, idempotencyKey: string) {
   return tx.paymentIntent.findUnique({ where: { userId_idempotencyKey: { userId, idempotencyKey } } });
 }
 
-commerceRouter.post('/account/package-offers/:id/checkout', requireAuth, requireStudent, asyncRoute(async (req, res) => {
+commerceRouter.post('/account/package-offers/:id/checkout', requireAuth, requireStudent, requireRecentAuth, asyncRoute(async (req, res) => {
   assertLegalAcceptanceEnabled();
   if (!req.auth.user.email) throw new HttpError(403, 'An account email is required to purchase a package');
   const input = checkoutInput.parse(req.body);
@@ -401,7 +401,7 @@ commerceRouter.post('/account/package-offers/:id/checkout', requireAuth, require
   res.status(result.replay ? 200 : 201).json(result.body);
 }));
 
-commerceRouter.post('/account/bookings/:participantId/checkout', requireAuth, requireStudent, asyncRoute(async (req, res) => {
+commerceRouter.post('/account/bookings/:participantId/checkout', requireAuth, requireStudent, requireRecentAuth, asyncRoute(async (req, res) => {
   assertLegalAcceptanceEnabled();
   const input = checkoutInput.parse(req.body);
   const result = await prisma.$transaction(async tx => {
