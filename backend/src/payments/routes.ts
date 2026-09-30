@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { config } from '../config.js';
 import { prisma } from '../db.js';
 import { requireAuth, requireStudent } from '../auth.js';
-import { asyncRoute, hasClubPermission, HttpError } from '../http.js';
+import { asyncRoute, hasClubPermission, HttpError, requireRecentAuth } from '../http.js';
 import { checkoutReviewFor, createOrResumeProviderCheckout, checkoutIntentJson, prepareCheckout } from './checkout.js';
 import { checkoutAcceptanceSchema, liveCheckoutBlockReasons } from './compliance.js';
 import { applyProviderPaymentIntent, providerIntentFromWebhook } from './fulfillment.js';
@@ -13,6 +13,7 @@ import { StripePaymentProvider } from './stripe.js';
 import { assertStripeEventMode, constructStripeWebhookEvent, paymentProviderEventRecord, type StripeWebhookEvent } from './webhooks.js';
 import { applyProviderRefundWebhook, providerRefundFromWebhook } from './refunds.js';
 import { applyProviderRiskCaseWebhook, providerRiskCaseFromWebhook } from './risk.js';
+import { paymentReceiptJson, paymentReceiptRelations, renderPaymentReceiptDocument } from './receipts.js';
 
 const checkoutInput = z.object({
   kind: z.enum(['PACKAGE', 'BOOKING']),
@@ -127,7 +128,7 @@ export function createPaymentsRouter(runtime: PaymentRuntime = configuredPayment
     res.json({ review });
   }));
 
-  router.post('/payments/checkout-intents', requireAuth, requireStudent, asyncRoute(async (req, res) => {
+  router.post('/payments/checkout-intents', requireAuth, requireStudent, requireRecentAuth, asyncRoute(async (req, res) => {
     if (runtime.mode !== 'stripe' || !runtime.provider.enabled) {
       throw new HttpError(503, runtime.mode === 'simulated'
         ? 'Live payment checkout is unavailable in simulated mode'
@@ -157,6 +158,33 @@ export function createPaymentsRouter(runtime: PaymentRuntime = configuredPayment
     });
     if (!intent) throw new HttpError(404, 'Payment intent not found');
     res.json({ paymentIntent: checkoutIntentJson(intent) });
+  }));
+
+  router.get('/payments/receipts', requireAuth, requireStudent, asyncRoute(async (req, res) => {
+    const receipts = await prisma.paymentReceipt.findMany({
+      where: { userId: req.auth.user.id }, include: paymentReceiptRelations,
+      orderBy: [{ issuedAt: 'desc' }, { id: 'desc' }], take: 200,
+    });
+    res.json({ receipts: receipts.map(paymentReceiptJson) });
+  }));
+
+  router.get('/payments/receipts/:id', requireAuth, requireStudent, asyncRoute(async (req, res) => {
+    const receipt = await prisma.paymentReceipt.findFirst({
+      where: { id: req.params.id, userId: req.auth.user.id }, include: paymentReceiptRelations,
+    });
+    if (!receipt) throw new HttpError(404, 'Payment receipt not found');
+    res.json({ receipt: paymentReceiptJson(receipt) });
+  }));
+
+  router.get('/payments/receipts/:id/document', requireAuth, requireStudent, asyncRoute(async (req, res) => {
+    const receipt = await prisma.paymentReceipt.findFirst({
+      where: { id: req.params.id, userId: req.auth.user.id }, include: paymentReceiptRelations,
+    });
+    if (!receipt) throw new HttpError(404, 'Payment receipt not found');
+    const filename = `${receipt.receiptNumber}.html`;
+    if (req.query.download === '1') res.attachment(filename);
+    else res.set('Content-Disposition', `inline; filename="${filename}"`);
+    res.type('html').send(renderPaymentReceiptDocument(receipt));
   }));
 
   return router;

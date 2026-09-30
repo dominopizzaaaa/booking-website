@@ -3,6 +3,7 @@ import { prisma } from '../db.js';
 import { HttpError, initials } from '../http.js';
 import type { ProviderPaymentIntent } from './provider.js';
 import type { StripeWebhookEvent } from './webhooks.js';
+import { issuePaymentReceipt } from './receipts.js';
 
 type Tx = Prisma.TransactionClient;
 type JsonObject = Record<string, unknown>;
@@ -200,6 +201,9 @@ async function fulfillSucceeded(tx: Tx, intentId: string, provider: ProviderPaym
       || intent.payment.kind !== 'STUDENT_TO_CLUB') {
       throw paidCheckoutConflict('the local success record has no matching active ledger receipt');
     }
+    await issuePaymentReceipt(tx, {
+      intent, paymentId: intent.payment.id, issuedAt: intent.confirmedAt ?? eventAt,
+    });
     return intent;
   }
   if (intent.status === 'REFUNDED') return intent;
@@ -216,6 +220,7 @@ async function fulfillSucceeded(tx: Tx, intentId: string, provider: ProviderPaym
     throw paidCheckoutConflict('the checkout target type does not match its immutable snapshot');
   }
   let packageId: string | null = null;
+  let paymentId: string;
   if (snapshot.kind === 'PACKAGE') {
     await assertLiveClub(tx, intent.businessId);
     await assertPackageTarget(tx, intent, snapshot);
@@ -230,11 +235,12 @@ async function fulfillSucceeded(tx: Tx, intentId: string, provider: ProviderPaym
       rentalLocations: { create: snapshot.rentalLocationIds.map(locationId => ({ locationId })) },
     } });
     packageId = pkg.id;
-    await tx.payment.create({ data: {
+    const payment = await tx.payment.create({ data: {
       businessId: intent.businessId, studentId: student.id, packageId,
       paymentIntentId: intent.id, kind: 'STUDENT_TO_CLUB', amount: intent.amount,
       method: 'STRIPE', note: `Online checkout for ${snapshot.name}`,
     } });
+    paymentId = payment.id;
   } else {
     if (!intent.participantId) throw paidCheckoutConflict('the booking participant is unavailable');
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`payment:${snapshot.studentId}`}, 0))`;
@@ -254,17 +260,20 @@ async function fulfillSucceeded(tx: Tx, intentId: string, provider: ProviderPaym
     assertBookingFulfillmentContract({
       intent, snapshot, participant, collectedAmount: collected._sum.amount ?? 0,
     });
-    await tx.payment.create({ data: {
+    const payment = await tx.payment.create({ data: {
       businessId: intent.businessId, studentId: participant.studentId, bookingId: snapshot.bookingId,
       paymentIntentId: intent.id, kind: 'STUDENT_TO_CLUB', amount: intent.amount,
       method: 'STRIPE', note: 'Online lesson checkout',
     } });
+    paymentId = payment.id;
     await tx.participant.update({ where: { id: participant.id }, data: { paid: true } });
   }
-  return tx.paymentIntent.update({ where: { id: intent.id }, data: {
+  const fulfilled = await tx.paymentIntent.update({ where: { id: intent.id }, data: {
     status: 'SUCCEEDED', packageId, confirmedAt: eventAt, failedAt: null, failureCode: null,
     lastProviderEventAt: eventAt, providerChargeReference: provider.latestChargeId,
   } });
+  await issuePaymentReceipt(tx, { intent: fulfilled, paymentId, issuedAt: eventAt });
+  return fulfilled;
 }
 
 export async function applyProviderPaymentIntent(

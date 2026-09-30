@@ -453,6 +453,18 @@ export type LiveCheckoutResult = { paymentIntent: PaymentIntent; connectedAccoun
 export type CheckoutParticipant = { id: string; bookingId: string; paid: boolean };
 export type CheckoutResult = { paymentIntent: PaymentIntent; package: AccountPackage | null; participant: CheckoutParticipant | null };
 
+export type PaymentReceipt = {
+  id: string; receiptNumber: string; documentVersion: number; kind: 'PACKAGE' | 'BOOKING';
+  amount: number; currency: string; paymentProvider: 'STRIPE'; providerReference: string | null;
+  checkoutReviewHash: string; issuedAt: string;
+  paymentStatus: 'PAID' | 'REVERSED';
+  refundStatus: 'NONE' | 'PENDING' | 'REFUNDED' | 'PARTIALLY_REFUNDED' | 'FAILED' | 'CANCELLED';
+  refundedAmount: number;
+  merchant: CheckoutReview['merchant']; purchaser: CheckoutReview['purchaser']; item: CheckoutReview['item'];
+  platform: CheckoutReview['platform']; cancellation: CheckoutReview['cancellation'];
+  policies: CheckoutReview['policies'];
+};
+
 export type RentalListing = {
   id: string; locationId: string; name: string; address: string; sport: string; amenities: string[]; unitLabel: string;
   price: number; currency: string; timezone: string; club: { name: string; slug: string };

@@ -15,6 +15,8 @@ import {
   loadLiveCheckoutIntent,
   loadCheckoutReview,
   loadPaymentCapabilities,
+  loadPaymentReceipts,
+  paymentReceiptDocumentUrl,
   loadRentalSlots,
   normalizeAuthSession,
   registerStudentAccount,
@@ -191,6 +193,14 @@ describe('package marketplace requests', () => {
     respond(capabilities);
     await expect(loadPaymentCapabilities()).resolves.toEqual(capabilities);
     expect(calls[0].url).toBe('/api/payments/capabilities');
+  });
+
+  it('loads receipts and builds encoded view/download document URLs', async () => {
+    respond({ receipts: [] });
+    await expect(loadPaymentReceipts()).resolves.toEqual({ receipts: [] });
+    expect(calls[0].url).toBe('/api/payments/receipts');
+    expect(paymentReceiptDocumentUrl('receipt/1')).toBe('/api/payments/receipts/receipt%2F1/document');
+    expect(paymentReceiptDocumentUrl('receipt/1', true)).toBe('/api/payments/receipts/receipt%2F1/document?download=1');
   });
 });
 
