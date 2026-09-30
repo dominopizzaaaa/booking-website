@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 4.3.1** · Last updated 2026-09-30
+**Version 4.4.0** · Last updated 2026-09-30
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -78,6 +78,8 @@ backend/           Express + Prisma API (TypeScript, ESM)
     app.ts         Express wiring, middleware order, /api/health capabilities
     config.ts      Environment reading; every env var enters here
     auth.ts        Sessions, signup evidence, email verification, profiles, workspace switching
+    account-security.ts Recovery, verified email change, TOTP MFA, sessions, and step-up routes
+    account-security-crypto.ts Versioned claim, TOTP, and recovery-code cryptography
     email-verification-token.ts Digest-only, versioned verification claims
     children-policy.ts Pure Singapore-date age bands and capability policy
     legal-policy.ts Canonical published policy versions, hashes, paths, and DPO contact
@@ -113,6 +115,8 @@ backend/           Express + Prisma API (TypeScript, ESM)
     commerce.ts    Package offers, My Packages, and simulated checkout fallback
     rentals.ts     Rental discovery, inventory, slots, and reservations
     payments/      Stripe provider adapter, checkout evidence, risk cases, webhooks
+    rate-limit.ts  PostgreSQL-backed replica-shared abuse counters
+    observability.ts Redacted request logs and bounded Prometheus metrics
     outbound-events.ts  Durable transactional-email enqueueing
     outbound-worker.ts  Leased retrying email delivery worker
     email-provider.ts   Disabled, capture, and Resend providers
@@ -140,11 +144,12 @@ frontend/          Next.js App Router (TypeScript, Tailwind)
     public-booking.tsx      Public booking page for /book/[slug]
     legacy-booking.tsx      Pre-account management links (/manage/[token])
     auth-form.tsx           Login and sign-up
+    account-security/      Security center, claim pages, and global step-up prompt
     family/                 Family dashboard, child form, gate and handover UI
   tests/           Vitest; the pure helpers under the UI, no DOM or server
   e2e/             Playwright; runs in CI against production bundles
 
-scripts/           Local PostgreSQL helper, investor-showcase builder
+scripts/           Local PostgreSQL, guarded backup/restore, security checks, showcase tools
 ```
 
 ---
@@ -320,6 +325,26 @@ bearer immediately before dispatch, links place it in a URL fragment, and the
 browser removes that fragment before making the verification request. Claims
 are single-use, expiring, rate-limited, and superseded by a later resend. Keep
 retired keys through the claim lifetime plus the maximum delivery retry window.
+
+### Account security and step-up authentication
+
+Self-managed accounts use digest-only password-reset and verified email-change
+claims, TOTP MFA with one-use recovery codes, and opaque public session IDs.
+Sessions expire after 14 days absolutely or 12 hours idle. Login establishes a
+15-minute recent-auth window; sensitive credential, staff, ledger, checkout,
+cancellation/refund, guardian, merchant, Calendar, and export actions use
+`requireRecentAuth`. The frontend API boundary opens one shared credential
+dialog and retries the original request at most once. Do not add a protected
+route unless that normal client path uses the shared API boundary or otherwise
+has an explicit step-up flow. Privacy-request creation intentionally remains
+available without step-up; cancelling a live request requires it. Passkeys are
+deferred and must not be represented as available.
+
+`ACCOUNT_SECURITY_KEYS` is separate from email-verification and Family
+handover keys. Production health reports account security as fully configured
+only when this keyring and transactional email are usable. Shared abuse limits
+use HMAC-digested identifiers in PostgreSQL; sensitive policies fail closed if
+the store is unavailable, while only the broad global safety net fails open.
 
 ### Privacy-request operations
 
@@ -1073,6 +1098,10 @@ with real data, since only the second exercises repair and historical audits.
 | `EMAIL_FROM_ADDRESS`, `EMAIL_FROM_NAME`, `EMAIL_REPLY_TO` | backend | Transactional-email sender identity; address is required when enabled |
 | `EMAIL_VERIFICATION_TOKEN_KEYS` | backend | Versioned `keyId:base64` HMAC keys for digest-only email-verification claims |
 | `EMAIL_VERIFICATION_TOKEN_ACTIVE_KEY_ID` | backend | Key ID used for newly issued email-verification claims |
+| `ACCOUNT_SECURITY_KEYS`, `ACCOUNT_SECURITY_ACTIVE_KEY_ID` | backend | Separate versioned 32-byte keyring for recovery claims, TOTP-secret encryption, and recovery-code digests |
+| `RATE_LIMIT_HASH_KEY` | backend | Deployment-wide 32-byte HMAC key for privacy-preserving shared rate-limit identifiers |
+| `OBSERVABILITY_TOKEN` | backend | Optional bearer for the otherwise hidden `/api/metrics` endpoint |
+| `HTTP_LOGGING` | backend | Enables the redacted bounded-route request log; defaults on in production |
 | `FAMILY_FEATURE_ENABLED` | backend | Production-default-off rollout gate for all Family routes and capabilities |
 | `FAMILY_HANDOVER_TOKEN_KEYS` | backend | Dedicated versioned `keyId:base64` HMAC keys for deriving one-use handover tokens without persisting them |
 | `FAMILY_HANDOVER_TOKEN_ACTIVE_KEY_ID` | backend | Key ID for new handovers; retain older keys through claim lifetime plus delivery retries |
