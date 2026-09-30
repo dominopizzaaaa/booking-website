@@ -12,6 +12,7 @@ type SchemaProbe = {
   outboundDelivery: boolean;
   activeStripeBookingCheckoutGuard: boolean;
   paymentCompliance: boolean;
+  paymentReceipts: boolean;
   guardianChildAccounts: boolean;
   childConsentAppendOnly: boolean;
   onePendingChildHandover: boolean;
@@ -22,6 +23,8 @@ type SchemaProbe = {
   chatSafeguardingIndexes: boolean;
   chatSafeguardingTriggers: boolean;
   chatSafeguardingAssigneeIdentity: boolean;
+  accountSecurity: boolean;
+  distributedRateLimits: boolean;
 };
 
 export type SchemaHealth = { ready: boolean; missing: string[] };
@@ -50,6 +53,32 @@ export async function inspectSchema(client: PrismaClient): Promise<SchemaHealth>
       to_regclass(current_schema() || '.\"VenueUnitAllocation\"') IS NOT NULL AS \"venueAllocation\",
       to_regclass(current_schema() || '.\"PaymentProviderEvent\"') IS NOT NULL AS \"paymentProviderEvents\",
       to_regclass(current_schema() || '.\"OutboundDelivery\"') IS NOT NULL AS \"outboundDelivery\",
+      to_regclass(current_schema() || '.\"PasswordResetClaim\"') IS NOT NULL
+        AND to_regclass(current_schema() || '.\"EmailChangeClaim\"') IS NOT NULL
+        AND to_regclass(current_schema() || '.\"AccountMfaCredential\"') IS NOT NULL
+        AND to_regclass(current_schema() || '.\"AccountMfaEnrollment\"') IS NOT NULL
+        AND to_regclass(current_schema() || '.\"AccountMfaRecoveryCode\"') IS NOT NULL
+        AND to_regclass(current_schema() || '.\"MfaLoginChallenge\"') IS NOT NULL
+        AND to_regclass(current_schema() || '.\"AccountSecurityEvent\"') IS NOT NULL
+        AND to_regclass(current_schema() || '.\"PasswordResetClaim_one_live_per_user\"') IS NOT NULL
+        AND to_regclass(current_schema() || '.\"EmailChangeClaim_one_live_per_destination\"') IS NOT NULL
+        AND to_regclass(current_schema() || '.\"AuthSession_publicId_key\"') IS NOT NULL
+        AND (SELECT count(*) = 4 FROM information_schema.columns
+          WHERE table_schema = current_schema() AND table_name = 'AuthSession'
+            AND column_name IN ('publicId', 'lastSeenAt', 'recentAuthAt', 'userAgent'))
+        AND EXISTS (
+          SELECT 1 FROM pg_trigger
+          WHERE tgrelid = to_regclass(current_schema() || '.\"AccountSecurityEvent\"')
+            AND tgname = 'AccountSecurityEvent_immutable'
+            AND tgenabled <> 'D' AND NOT tgisinternal
+        )
+        AND EXISTS (
+          SELECT 1 FROM pg_trigger
+          WHERE tgrelid = to_regclass(current_schema() || '.\"AccountSecurityEvent\"')
+            AND tgname = 'AccountSecurityEvent_truncate_guard'
+            AND tgenabled <> 'D' AND NOT tgisinternal
+        )
+        AS \"accountSecurity\",
       to_regclass(current_schema() || '.\"PaymentIntent_one_active_stripe_booking_checkout\"') IS NOT NULL
         AS \"activeStripeBookingCheckoutGuard\",
       (
@@ -104,6 +133,29 @@ export async function inspectSchema(client: PrismaClient): Promise<SchemaHealth>
               (SELECT attnum FROM pg_attribute WHERE attrelid = to_regclass(current_schema() || '.\"PaymentIntent\"') AND attname = 'businessId' AND NOT attisdropped)
             ]::SMALLINT[]
         ) AS \"paymentCompliance\",
+      to_regclass(current_schema() || '.\"PaymentReceipt\"') IS NOT NULL
+        AND to_regclass(current_schema() || '.\"PaymentReceipt_receiptNumber_key\"') IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM pg_trigger
+          WHERE tgrelid = to_regclass(current_schema() || '.\"PaymentReceipt\"')
+            AND tgname = 'PaymentReceipt_immutable'
+            AND tgenabled <> 'D' AND NOT tgisinternal
+        ) AND EXISTS (
+          SELECT 1 FROM pg_trigger
+          WHERE tgrelid = to_regclass(current_schema() || '.\"PaymentReceipt\"')
+            AND tgname = 'PaymentReceipt_linked_snapshot_invariant'
+            AND tgenabled <> 'D' AND NOT tgisinternal
+        ) AND EXISTS (
+          SELECT 1 FROM pg_trigger
+          WHERE tgrelid = to_regclass(current_schema() || '.\"PaymentReceipt\"')
+            AND tgname = 'PaymentReceipt_delete_guard'
+            AND tgenabled <> 'D' AND NOT tgisinternal
+        ) AND EXISTS (
+          SELECT 1 FROM pg_trigger
+          WHERE tgrelid = to_regclass(current_schema() || '.\"PaymentReceipt\"')
+            AND tgname = 'PaymentReceipt_truncate_guard'
+            AND tgenabled <> 'D' AND NOT tgisinternal
+        ) AS \"paymentReceipts\",
       to_regclass(current_schema() || '.\"GuardianChildLink\"') IS NOT NULL
         AND to_regclass(current_schema() || '.\"ChildConsentRecord\"') IS NOT NULL
         AND to_regclass(current_schema() || '.\"ChildAccountHandover\"') IS NOT NULL
@@ -331,7 +383,10 @@ export async function inspectSchema(client: PrismaClient): Promise<SchemaHealth>
         WHERE tgrelid = to_regclass(current_schema() || '.\"ChatSafetyReport\"')
           AND tgname = 'ChatSafetyReport_validate_assignee'
           AND tgenabled <> 'D' AND NOT tgisinternal
-      ) AS \"chatSafeguardingAssigneeIdentity\"
+      ) AS \"chatSafeguardingAssigneeIdentity\",
+      to_regclass(current_schema() || '.\"RateLimitCounter\"') IS NOT NULL
+        AND to_regclass(current_schema() || '.\"RateLimitCounter_resetAt_idx\"') IS NOT NULL
+        AS \"distributedRateLimits\"
   `);
   const checks: Array<[keyof SchemaProbe, string]> = [
     ['coachInvitations', 'CoachInvitation'],
@@ -343,8 +398,10 @@ export async function inspectSchema(client: PrismaClient): Promise<SchemaHealth>
     ['venueAllocation', 'venue unit allocation'],
     ['paymentProviderEvents', 'payment provider events'],
     ['outboundDelivery', 'outbound delivery'],
+    ['accountSecurity', 'account security'],
     ['activeStripeBookingCheckoutGuard', 'active Stripe booking checkout guard'],
     ['paymentCompliance', 'payment compliance schema'],
+    ['paymentReceipts', 'payment receipts'],
     ['guardianChildAccounts', 'guardian and child accounts'],
     ['childConsentAppendOnly', 'append-only child consent history'],
     ['onePendingChildHandover', 'pending child and destination handover guards'],
@@ -355,6 +412,7 @@ export async function inspectSchema(client: PrismaClient): Promise<SchemaHealth>
     ['chatSafeguardingIndexes', 'chat safeguarding indexes'],
     ['chatSafeguardingTriggers', 'chat safeguarding retention triggers'],
     ['chatSafeguardingAssigneeIdentity', 'chat safeguarding assignee identity'],
+    ['distributedRateLimits', 'distributed rate-limit counters'],
   ];
   const missing = checks.filter(([key]) => !probe?.[key]).map(([, label]) => label);
   return { ready: missing.length === 0, missing };

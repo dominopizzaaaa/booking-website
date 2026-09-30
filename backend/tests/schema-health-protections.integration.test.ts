@@ -6,6 +6,12 @@ beforeAll(verifyTestDatabase, 15_000);
 afterAll(async () => { await prisma.$disconnect(); });
 
 const protections = [
+  { table: 'AccountSecurityEvent', trigger: 'AccountSecurityEvent_immutable', missing: 'account security' },
+  { table: 'AccountSecurityEvent', trigger: 'AccountSecurityEvent_truncate_guard', missing: 'account security' },
+  { table: 'PaymentReceipt', trigger: 'PaymentReceipt_immutable', missing: 'payment receipts' },
+  { table: 'PaymentReceipt', trigger: 'PaymentReceipt_linked_snapshot_invariant', missing: 'payment receipts' },
+  { table: 'PaymentReceipt', trigger: 'PaymentReceipt_delete_guard', missing: 'payment receipts' },
+  { table: 'PaymentReceipt', trigger: 'PaymentReceipt_truncate_guard', missing: 'payment receipts' },
   {
     table: 'User',
     trigger: 'User_signup_evidence_immutable',
