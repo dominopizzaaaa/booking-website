@@ -68,11 +68,11 @@ building a second mail system.
   expiring consent links. Bind each link to the intended normalized guardian
   email, child, permission snapshot, and privacy-policy version; rate-limit both
   issuance and consumption and never treat delivery as consent.
-- [ ] Add password/account recovery for self-managed guardians and handed-over
-  young people. Recovery must not reveal whether an email exists, must use
-  hashed single-use expiring tokens, must serialize concurrent/replayed claims,
-  and must revoke all sessions after a credential change. Do not add recovery
-  credentials to a guardian-managed child.
+- [x] Add password/account recovery for self-managed guardians and handed-over
+  young people. Requests are non-enumerating, claims are digest-only,
+  single-use and expiring, concurrent/replayed consumption is serialized, and
+  completion revokes all sessions. Guardian-managed children still have no
+  recovery credential.
 - [ ] Add a dedicated handover resend/replacement flow. Today a guardian can
   cancel and then create a new request, subject to the existing 60-second
   server-side issuance cooldown and Family mutation rate limit; there is no
