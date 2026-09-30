@@ -72,7 +72,7 @@ test('email verification scrubs a fragment bearer before making its claim reques
 
   await page.goto('/account/verify-email#token=fragment_only_token');
   await expect(page).toHaveURL(/\/account\/verify-email$/);
-  await expect(page.getByRole('alert')).toContainText('invalid or no longer available');
+  await expect(page.getByText('This verification link is invalid or no longer available.', { exact: true })).toBeVisible();
   expect(claimedToken).toBe('fragment_only_token');
   expect(requestUrl).not.toContain('fragment_only_token');
   expect(await page.locator('meta[name="referrer"]').getAttribute('content')).toBe('no-referrer');

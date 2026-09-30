@@ -281,7 +281,7 @@ async function expectNoWcagViolations(page: Page) {
 
 async function mockAdmin(page: Page) {
   const businesses = [adminBusiness, adminDemoBusiness];
-  await page.route('**/api/admin/session', route => route.fulfill({ json: { configured: true, authenticated: true, authMode: 'named', sensitiveAccess: true, operator: { id: 'ops_a11y', name: 'A11y Operator', email: 'a11y@example.test' } } }));
+  await page.route('**/api/admin/session', route => route.fulfill({ json: { configured: true, authenticated: true, authMode: 'named', sensitiveAccess: true, businessDeletionMode: 'all', operator: { id: 'ops_a11y', name: 'A11y Operator', email: 'a11y@example.test' } } }));
   await page.route('**/api/admin/overview', route => route.fulfill({
     json: {
       generatedAt: '2026-09-19T08:00:00.000Z',
@@ -346,6 +346,15 @@ async function mockStudent(page: Page) {
 }
 
 async function mockProvider(page: Page) {
+  await page.route('**/api/auth/me', route => route.fulfill({ json: {
+    user: providerWorkspace.user,
+    membership: providerWorkspace.membership,
+    business: providerWorkspace.business,
+    memberships: [providerWorkspace.membership],
+    staffAccess: null,
+    staffAccesses: [],
+    accessMode: 'CLUB_ACCOUNT',
+  } }));
   await page.route('**/api/workspace', route => route.fulfill({ json: providerWorkspace }));
   await page.route(/\/api\/bookings(?:\?.*)?$/, route => route.fulfill({
     json: { bookings: providerWorkspace.bookings, nextCursor: null },
@@ -388,6 +397,7 @@ test.describe('automated WCAG checks', () => {
 
     await page.getByLabel('Operator email').fill('operator@example.test');
     await page.getByLabel('Password').fill('incorrect-password');
+    await page.getByLabel('6-digit authenticator code').fill('123456');
     await page.getByRole('button', { name: 'Sign in' }).click();
     await expect(page.getByRole('alert').filter({ hasText: 'Incorrect admin email or password.' })).toHaveText('Incorrect admin email or password.');
     await expectNoWcagViolations(page);

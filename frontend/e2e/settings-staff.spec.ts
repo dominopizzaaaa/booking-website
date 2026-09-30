@@ -84,6 +84,10 @@ test('club settings and coach access persist through the responsive UI', async (
     const dialog = page.getByRole('dialog', { name: 'Edit business details' });
     await expect(dialog).toBeVisible();
     await dialog.getByRole('spinbutton', { name: 'Cancellation notice (hours)', exact: true }).fill(String(cancellationHours));
+    await dialog.locator('[name="legalName"]').fill(initial.business.name);
+    await dialog.locator('[name="supportEmail"]').fill(initial.business.email);
+    await dialog.locator('[name="supportAddress"]').fill('1 Test Court, Singapore');
+    await dialog.locator('[name="gstRegistrationStatus"]').selectOption('NOT_REGISTERED');
     await expectNoHorizontalOverflow(page);
 
     const responsePromise = mutationResponse(page, 'PATCH', '/api/business');
@@ -96,6 +100,13 @@ test('club settings and coach access persist through the responsive UI', async (
       color: initial.business.color,
       tagline: initial.business.tagline,
       cancellationHours,
+      legalName: initial.business.name,
+      registrationNumber: null,
+      supportEmail: initial.business.email,
+      supportAddress: '1 Test Court, Singapore',
+      gstRegistrationStatus: 'NOT_REGISTERED',
+      gstRegistrationNumber: null,
+      pricesIncludeGst: null,
     });
     expect(business).toMatchObject({ id: initial.business.id, cancellationHours });
 

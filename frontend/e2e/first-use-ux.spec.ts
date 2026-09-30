@@ -112,6 +112,7 @@ test('standalone student signup requires an explicit account type and opens the 
   await page.getByLabel('Your date of birth', { exact: true }).fill('1990-01-01');
   await page.getByLabel('Email address', { exact: true }).fill(studentEmail);
   await page.getByLabel('Password', { exact: true }).fill(password);
+  await page.getByLabel(/I agree to the Terms of Service/).check();
   await page.getByRole('button', { name: 'Create personal account', exact: true }).click();
 
   await expect(page).toHaveURL(url => url.pathname === '/manage' && url.search === '');
@@ -202,6 +203,7 @@ test('a new club account sees setup guidance without premature sharing controls'
   await page.getByLabel('Username', { exact: true }).fill(`fuc_${clubEmail.split('@')[0].replace(/-/g, '_').slice(-26)}`);
   await page.getByLabel('Email address', { exact: true }).fill(clubEmail);
   await page.getByLabel('Password', { exact: true }).fill(password);
+  await page.getByLabel(/I agree to the Terms of Service/).check();
   await page.getByRole('button', { name: 'Create your workspace', exact: true }).click();
 
   await expect(page).toHaveURL(url => url.pathname === '/');

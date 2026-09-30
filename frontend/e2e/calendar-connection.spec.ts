@@ -169,6 +169,14 @@ function calendarCard(page: Page) {
 }
 
 async function mockWorkspace(page: Page, workspace: WorkspaceResponse) {
+  await page.route('**/api/auth/me', route => route.fulfill({
+    json: {
+      user: workspace.user,
+      membership: workspace.membership,
+      business: workspace.business,
+      memberships: workspace.memberships,
+    },
+  }));
   await page.route('**/api/workspace', route => route.fulfill({ json: workspace }));
 }
 

@@ -146,6 +146,7 @@ test.describe('every screen fits the screen it is on', () => {
     await page.getByLabel('Your date of birth', { exact: true }).fill('1990-01-01');
     await page.getByLabel('Email address', { exact: true }).fill(studentEmail);
     await page.getByLabel('Password', { exact: true }).fill(password);
+    await page.getByLabel(/I agree to the Terms of Service/).check();
     await page.getByRole('button', { name: 'Create personal account', exact: true }).click();
 
     await expect(page).toHaveURL(url => url.pathname === '/manage');

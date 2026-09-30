@@ -270,7 +270,7 @@ test('a club can bring its coach into an account conversation and plan a session
     const log = await openAccountThread(page, studentName);
     await expect(log.getByText(studentMessage, { exact: true })).toBeVisible();
     await expect(log.getByText(clubMessage, { exact: true })).toBeVisible();
-    await expect(page.getByText(`Visible to the people in this conversation, including ${coachName}, and to Courtly’s platform admins for safety.`, { exact: true })).toBeVisible();
+    await expect(page.getByText(`Visible to the people in this conversation, including ${coachName}. Courtly does not monitor every message; authorized reviewers can review relevant context after a report.`, { exact: true })).toBeVisible();
 
     const slotsResponse = page.waitForResponse(response => {
       const url = new URL(response.url());
@@ -423,7 +423,7 @@ test('a club can bring its coach into an account conversation and plan a session
 
     await page.goto('/admin');
     await expect(page.getByRole('heading', { name: 'Every workspace, at a glance', exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'chats', exact: true }).click();
+    await page.getByRole('button', { name: 'Conversation records', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Conversations', exact: true })).toBeVisible();
     const log = await openAccountThread(page, studentName);
     await expect(log.getByText(studentMessage, { exact: true })).toBeVisible();

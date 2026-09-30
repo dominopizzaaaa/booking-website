@@ -394,19 +394,21 @@ test('an already-signed-in student keeps the selected booking and skips account 
   await expectNoHorizontalOverflow(page);
 });
 
-test('a signed-in coach is rejected and can safely sign out without losing the selection', async ({ page }) => {
+test('a signed-in coach cannot book themself and can safely sign out without losing the selection', async ({ page }) => {
   await page.context().addCookies(setup.coachStorage.cookies);
   await openLiveBooking(page);
   await chooseLessonAndTime(page, setup.privateService, setup.online, setup.coachDate);
 
-  await expect(page.getByRole('heading', { name: 'Use a student account to book', exact: true })).toBeVisible();
-  await expect(page.getByText(new RegExp(`signed in as ${escapeRegExp(setup.coachEmail)}, a coach or club account`))).toBeVisible();
-  await expect(visibleBookingAction(page, 'Continue with account')).toBeDisabled();
+  await expect(page.getByText('Student account required', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: setup.coachName, exact: true })).toBeVisible();
+  await expect(page.getByText(setup.coachEmail, { exact: true })).toBeVisible();
+  await expect(page.getByText('No child is currently eligible for guardian booking.', { exact: false })).toBeVisible();
+  await expect(visibleBookingAction(page, 'Review booking')).toBeDisabled();
 
   const logout = page.waitForResponse(response =>
     response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/auth/logout',
   );
-  await page.getByRole('button', { name: 'Sign out and switch account', exact: true }).click();
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
   expect((await logout).ok()).toBeTruthy();
   await expect(page.getByRole('tab', { name: 'Sign in', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Date & time', exact: true }).click();

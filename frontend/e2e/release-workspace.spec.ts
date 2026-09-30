@@ -399,6 +399,13 @@ function responseFor(page: Page, method: string, pathname: string) {
 
 test.beforeEach(async ({ page }) => {
   await page.clock.install({ time: frozenTime });
+  const auth = workspace('CLUB');
+  await page.route('**/api/auth/me', route => fulfillJson(route, {
+    user: auth.user,
+    membership: auth.membership,
+    business: auth.business,
+    memberships: auth.memberships,
+  }));
 });
 
 test('coach navigation opens a private-only booking form and books as the current coach', async ({ page }) => {

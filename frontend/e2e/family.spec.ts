@@ -104,7 +104,7 @@ test('empty Family supports keyboard-safe add validation and an in-dialog API er
   await dialog.getByLabel('Date of birth').fill('2018-05-04');
   await dialog.getByLabel('Your relationship to this child').fill('Parent');
   await dialog.getByLabel(/I confirm that I am this child/).check();
-  await dialog.getByLabel(/I consent to the current child privacy policy/).check();
+  await dialog.getByLabel(/I consent to the current Child Privacy Notice/).check();
   await dialog.getByRole('button', { name: 'Add child' }).click();
   await expect(dialog.getByRole('alert')).toHaveText('That username is already in use.');
   await expect(dialog.getByRole('alert')).toBeFocused();
