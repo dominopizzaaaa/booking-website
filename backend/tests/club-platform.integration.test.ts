@@ -467,8 +467,8 @@ describe('Club and coach platform', () => {
     const agent = request.agent(app);
     await agent.post('/api/auth/login').send({ email, password }).expect(200);
     const created = await agent.post('/api/auth/practice')
-      .send({ name: 'Independent Coaching' }).expect(403);
-    expect(created.body.error).toBe('Select a business workspace to continue');
+      .send({ name: 'Independent Coaching' }).expect(404);
+    expect(created.body.error).toBe('Route not found');
     const auth = await agent.get('/api/auth/me').expect(200);
     expect(auth.body).toMatchObject({
       user: { id: account.id, accountType: 'COACH' }, membership: null, business: null, memberships: [],

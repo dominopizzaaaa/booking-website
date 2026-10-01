@@ -483,8 +483,8 @@ test('a coach account cannot create or enter a private practice', async ({ page 
   const retiredPractice = await page.request.post('/api/auth/practice', {
     data: { name: `Forbidden Practice ${runId}` },
   });
-  expect(retiredPractice.status()).toBe(403);
-  expect(await retiredPractice.json()).toEqual({ error: 'Select a business workspace to continue' });
+  expect(retiredPractice.status()).toBe(404);
+  expect(await retiredPractice.json()).toEqual({ error: 'Route not found' });
 
   const after = await responseJson<AuthSession>(await page.request.get('/api/auth/me'));
   expect(after.business).toBeNull();

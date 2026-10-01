@@ -197,8 +197,8 @@ describe.sequential('Solo practice invariants', () => {
     });
     const session = await createSession(club, coach.id);
     const response = await request(app).post('/api/auth/practice')
-      .set('Cookie', session.cookie).send({ name: 'New Practice' }).expect(403);
-    expect(response.body.error).toBe('Select a business workspace to continue');
+      .set('Cookie', session.cookie).send({ name: 'New Practice' }).expect(404);
+    expect(response.body.error).toBe('Route not found');
     expect(await prisma.membership.count({
       where: { userId: coach.id, business: { kind: 'SOLO' } },
     })).toBe(0);
