@@ -388,6 +388,24 @@ describe.sequential('HTTP, authentication, and admin boundaries', () => {
     })).toBe(0);
   });
 
+  it('answers an unknown API path with 404 rather than the workspace guard', async () => {
+    const club = await tenants.fixture();
+    const student = await createAccount(club, { name: 'Unknown Route Player' });
+    const { cookie } = await createSession(club, student.id);
+    const workspaceRequired = { error: 'Select a business workspace to continue' };
+
+    const missing = await request(app).get('/api/account/not-a-route').set('Cookie', cookie).expect(404);
+    expect(missing.body).toEqual({ error: 'Route not found' });
+    await request(app).delete('/api/workspace').set('Cookie', cookie).expect(404);
+    // Real provider routes, including ones nested in operationsRouter and a
+    // HEAD request served by a GET route, still reach the workspace guard.
+    expect((await request(app).get('/api/workspace').set('Cookie', cookie).expect(403)).body).toEqual(workspaceRequired);
+    expect((await request(app).get('/api/operations/inbox').set('Cookie', cookie).expect(403)).body).toEqual(workspaceRequired);
+    expect((await request(app).get(`/api/bookings/${randomUUID()}`).set('Cookie', cookie).expect(403)).body).toEqual(workspaceRequired);
+    await request(app).head('/api/workspace').set('Cookie', cookie).expect(403);
+    await request(app).get('/api/workspace').set('Cookie', club.cookie).expect(200);
+  });
+
   it('keeps the workspace-switch alias identical to the canonical route', async () => {
     const first = await tenants.fixture();
     const second = await tenants.fixture();

@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 4.5.0** · Last updated 2026-10-01
+**Version 4.5.1** · Last updated 2026-10-01
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -975,7 +975,11 @@ duplicated into either alert store.
   and preserve the narrowly allowlisted Family remediation paths.
 - Provider routes are mounted behind `requireAuth` + `requireWorkspace`;
   use `requireClubAccount` for club-only management and `coachScope()` to keep
-  a coach working in a club in their lane.
+  a coach working in a club in their lane. Register a new provider router in
+  `providerRouters` in `app.ts`: an authenticated request whose method and path
+  match none of them answers 404 before the prefix-mounted workspace guard, so
+  a frontend deployed ahead of its API is not misreported as a missing
+  workspace.
 - Concurrency: `lockInstructors()` (advisory lock) before any read-then-write
   on a schedule, then reload state after waiting. Reschedule decisions also
   lock the request. Financial writes and reversals take the party advisory lock
@@ -1232,6 +1236,13 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 4.5.1 — 2026-10-01
+
+An authenticated request to an unknown `/api` path now answers 404 instead
+of falling through to the workspace guard's "Select a business workspace to
+continue". A student app served against an older API had shown that guard's
+message on every account panel the API did not yet have.
 
 ### 4.5.0 — 2026-10-01
 

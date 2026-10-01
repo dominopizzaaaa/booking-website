@@ -1,4 +1,4 @@
-import express, { type ErrorRequestHandler } from 'express';
+import express, { type ErrorRequestHandler, type Router } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
@@ -168,7 +168,34 @@ app.use('/api/account', requireStudent, accountRouter);
 // Account-only public booking management installs its own authentication
 // middleware. Every provider route below additionally requires an active,
 // non-revoked membership selected on the session.
-app.use('/api', requireAccountCapability('workspace'), requireWorkspace, workspaceRouter, bookingsRouter, bookingSeriesRouter, crudRouter, staffRouter, clubStaffAccessRouter, auditRouter, venuesRouter, integrityRouter, safeguardingRouter, feedbackRouter, waitlistWorkspaceRouter, packageActivityWorkspaceRouter, trainingGroupsRouter, insightsRouter);
+type RouterLayer = {
+  name: string; path: string; match(path: string): boolean;
+  route?: { methods: Record<string, boolean | undefined> };
+  handle: { stack?: RouterLayer[] };
+};
+// Express 4 exposes no public route lookup, so walk the router stacks the same
+// way dispatch does, descending into nested routers such as operationsRouter.
+// A GET route also answers HEAD, as it does during dispatch.
+function routerHandles(router: Router | RouterLayer['handle'], method: string, path: string): boolean {
+  const name = method.toLowerCase();
+  return ((router as { stack?: RouterLayer[] }).stack ?? []).some(layer => {
+    if (!layer.match(path)) return false;
+    if (layer.route) {
+      const { methods } = layer.route;
+      return Boolean(methods._all || methods[name] || (name === 'head' && methods.get));
+    }
+    return layer.name === 'router' && routerHandles(layer.handle, method, path.slice(layer.path.length) || '/');
+  });
+}
+const providerRouters = [workspaceRouter, bookingsRouter, bookingSeriesRouter, crudRouter, staffRouter, clubStaffAccessRouter, auditRouter, venuesRouter, integrityRouter, safeguardingRouter, feedbackRouter, waitlistWorkspaceRouter, packageActivityWorkspaceRouter, trainingGroupsRouter, insightsRouter];
+// The workspace guard is prefix-mounted, so without this check every unknown
+// path answered "Select a business workspace". That disguised a frontend
+// deployed ahead of its API as a permission problem in the student app.
+app.use('/api', (req, _res, next) => {
+  if (!providerRouters.some(router => routerHandles(router, req.method, req.path))) return next(new HttpError(404, 'Route not found'));
+  next();
+});
+app.use('/api', requireAccountCapability('workspace'), requireWorkspace, ...providerRouters);
 app.use((_req, _res, next) => next(new HttpError(404, 'Route not found')));
 const errorHandler: ErrorRequestHandler = (error, req, res, _next) => {
   if (error instanceof HttpError) { res.status(error.status).json({ error: error.message, ...error.details }); return; }
