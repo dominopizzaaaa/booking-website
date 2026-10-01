@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 4.5.1** · Last updated 2026-10-01
+**Version 4.5.2** · Last updated 2026-10-01
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -1044,6 +1044,11 @@ npm run build --prefix frontend
 (cd frontend && npx playwright test)  # needs both servers running
 ```
 
+CI runs the Playwright suite as a separate `browser-tests` job after the unit,
+type, and build checks pass. It provisions its own migrated PostgreSQL service
+and rebuilds both production bundles, keeping browser-runtime installation and
+journey time outside the main build/test timeout.
+
 Railway probes `/api/live` for process liveness; that route must stay
 independent of PostgreSQL and worker state. `/api/health` is the stricter
 release-readiness gate and may return 503 when the database or required schema
@@ -1236,6 +1241,13 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 4.5.2 — 2026-10-01
+
+Patched Next.js past the production RCE advisory and moved Playwright into a
+separate, dependency-gated CI job with its own database and timeout. This
+unblocks release checks without weakening the security audit or dropping any
+browser journey. Deployment documentation now names the live Railway API URL.
 
 ### 4.5.1 — 2026-10-01
 

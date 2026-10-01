@@ -137,6 +137,60 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+  browser-tests:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: courtly_e2e
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d courtly_e2e"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/courtly_e2e?schema=public
+      BACKEND_URL: http://127.0.0.1:4000
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Apply database migrations
+        working-directory: backend
+        run: npm run db:migrate
+
+      - name: Build production bundles
+        run: |
+          npm run build --prefix backend
+          npm run build --prefix frontend
+
       - name: Install responsive browser test runtime
         working-directory: frontend
         run: npx playwright install --with-deps chromium
