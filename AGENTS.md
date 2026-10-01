@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 4.4.0** · Last updated 2026-09-30
+**Version 4.4.1** · Last updated 2026-10-01
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -979,6 +979,11 @@ npm test --prefix frontend            # frontend Vitest (no server, no DOM)
 npm run build --prefix frontend
 (cd frontend && npx playwright test)  # needs both servers running
 ```
+
+Railway probes `/api/live` for process liveness; that route must stay
+independent of PostgreSQL and worker state. `/api/health` is the stricter
+release-readiness gate and may return 503 when the database or required schema
+contract is unavailable.
 
 Backend Vitest must remain file-serial: `npm test` invokes
 `--no-file-parallelism` because integration and configuration tests share
