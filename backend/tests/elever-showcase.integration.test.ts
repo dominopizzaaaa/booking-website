@@ -54,6 +54,8 @@ const applicationTables = [
   'PrivacyRequestEvent', 'PrivacyRequest', 'RescheduleRequest',
   'Service', 'ServiceInstructor', 'ServiceLocation', 'Student', 'User', 'VenueOpeningHour', 'VenueReservation',
   'VenueUnit', 'VenueUnitAllocation',
+  'SessionFeedback', 'WaitlistEntry', 'PackageCreditEvent', 'TrainingGroupMember', 'TrainingGroup',
+  'FavoriteClub', 'ClubFunnelCounter',
 ] as const;
 const snapshotTables = [...applicationTables, '_prisma_migrations'] as const;
 type ProvisionResult = SpawnSyncReturns<string>;

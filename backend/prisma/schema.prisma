@@ -41,6 +41,11 @@ model Business {
   gstRegistrationStatus String                  @default("NOT_DECLARED")
   gstRegistrationNumber String?
   pricesIncludeGst      Boolean?
+  /// Public club profile shown before account creation on the booking page
+  /// and in Explore. Contact values are optional and never inferred.
+  description           String                  @default("")
+  publicPhone           String                  @default("")
+  websiteUrl            String                  @default("")
   /// "CLUB" routes every new lesson payment through the club before it reaches
   /// a coach. "SOLO" survives only on retained historical records. The value
   /// was snapshotted onto each Booking as paymentRoute.
@@ -85,6 +90,13 @@ model Business {
   paymentRefunds        PaymentRefund[]
   paymentRiskCases      PaymentRiskCase[]
   chatSafetyReports     ChatSafetyReport[]
+  sessionFeedback       SessionFeedback[]
+  waitlistEntries       WaitlistEntry[]
+  packageCreditEvents   PackageCreditEvent[]
+  trainingGroups        TrainingGroup[]
+  trainingGroupMembers  TrainingGroupMember[]
+  favoritedBy           FavoriteClub[]
+  funnelCounters        ClubFunnelCounter[]
 
   @@index([kind, isDemo, slug])
 }
@@ -132,6 +144,15 @@ model User {
   profileVisibility            String                    @default("PUBLIC")
   phone                        String                    @default("")
   parentName                   String                    @default("")
+  /// Portable coaching profile. Only COACH accounts may set these values, and
+  /// only those accounts expose them on public booking pages. Qualifications
+  /// are self-reported; Courtly does not verify them.
+  bio                          String                    @default("")
+  languages                    String[]                  @default([])
+  coachingLevels               String[]                  @default([])
+  coachingAgeGroups            String[]                  @default([])
+  qualifications               String[]                  @default([])
+  coachingSince                Int?
   memberships                  Membership[]
   sessions                     AuthSession[]
   students                     Student[]
@@ -172,6 +193,8 @@ model User {
   chatSafetyReportsAgainst     ChatSafetyReport[]        @relation("ChatSafetyReportSubject")
   chatSafetyReportsAssigned    ChatSafetyReport[]        @relation("ChatSafetyReportClubAssignee")
   chatSafetyAuditEvents        ChatSafetyAuditEvent[]    @relation("ChatSafetyAuditActor")
+  feedbackAuthored             SessionFeedback[]         @relation("SessionFeedbackAuthor")
+  favoriteClubs                FavoriteClub[]
   createdAt                    DateTime                  @default(now())
 }
 
@@ -625,6 +648,9 @@ model Location {
   requiresApproval           Boolean                 @default(false)
   travelMinutes              Int                     @default(20)
   notes                      String                  @default("")
+  /// Public neighbourhood or region label used by Explore search, such as
+  /// "Tampines · East". Free text chosen by the club; never geocoded.
+  area                       String                  @default("")
   /// Venue provenance. A coach or club can look a venue up on Google Maps
   /// instead of typing an address, so the place identity is stored alongside
   /// the free-text address rather than replacing it.
@@ -880,24 +906,26 @@ model AvailabilityException {
 /// A student's record inside one club: what that club knows about them.
 /// Their identity as a person lives on User.
 model Student {
-  id            String                @id @default(cuid())
+  id                   String                @id @default(cuid())
   /// Tenant ownership is immutable after creation at the database boundary.
-  businessId    String
-  business      Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  userId        String?
-  user          User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
-  name          String
+  businessId           String
+  business             Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  userId               String?
+  user                 User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  name                 String
   /// Linked managed children may have no direct email address.
-  email         String?
-  phone         String                @default("")
-  initials      String
-  notes         String                @default("")
-  parentName    String                @default("")
-  createdAt     DateTime              @default(now())
-  participants  Participant[]
-  packages      LessonPackage[]
-  payments      Payment[]
-  seriesMembers BookingSeriesMember[]
+  email                String?
+  phone                String                @default("")
+  initials             String
+  notes                String                @default("")
+  parentName           String                @default("")
+  createdAt            DateTime              @default(now())
+  participants         Participant[]
+  packages             LessonPackage[]
+  payments             Payment[]
+  seriesMembers        BookingSeriesMember[]
+  waitlist             WaitlistEntry[]
+  trainingGroupMembers TrainingGroupMember[]
 
   // Supports the database-level composite FK that keeps a payment's student
   // party inside the payment's business.
@@ -908,36 +936,38 @@ model Student {
 }
 
 model LessonPackage {
-  id                  String                  @id @default(cuid())
-  businessId          String
-  business            Business                @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  studentId           String
-  student             Student                 @relation(fields: [studentId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  id                   String                  @id @default(cuid())
+  businessId           String
+  business             Business                @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  studentId            String
+  student              Student                 @relation(fields: [studentId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   /// Optional live-offer provenance. The joins below are the immutable scope
   /// snapshot used to authorize credits after the offer changes or retires.
-  offerId             String?
-  offer               PackageOffer?           @relation(fields: [offerId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
+  offerId              String?
+  offer                PackageOffer?           @relation(fields: [offerId, businessId], references: [id, businessId], onDelete: Restrict, onUpdate: NoAction)
   /// Set by a deferred database trigger after an offer-backed package and all
   /// of its scope rows have been created atomically. Sealed scopes cannot be
   /// edited independently from the historical purchase.
-  scopeSnapshotSealed Boolean                 @default(false)
-  name                String
-  serviceId           String?
+  scopeSnapshotSealed  Boolean                 @default(false)
+  name                 String
+  serviceId            String?
   /// SQL adds a deferred, non-cascading composite tenant FK alongside this
   /// Prisma relation. It nulls only serviceId so businessId stays intact.
-  service             Service?                @relation(fields: [serviceId], references: [id], onDelete: SetNull)
-  totalCredits        Int
-  usedCredits         Int                     @default(0)
+  service              Service?                @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  totalCredits         Int
+  usedCredits          Int                     @default(0)
   /// Integer minor units (cents).
-  price               Int
-  expiresAt           DateTime
-  paid                Boolean                 @default(false)
-  participants        Participant[]
-  payments            Payment[]
-  services            LessonPackageService[]
-  rentalLocations     LessonPackageLocation[]
-  reservations        VenueReservation[]
-  paymentIntents      PaymentIntent[]
+  price                Int
+  expiresAt            DateTime
+  paid                 Boolean                 @default(false)
+  participants         Participant[]
+  payments             Payment[]
+  services             LessonPackageService[]
+  rentalLocations      LessonPackageLocation[]
+  reservations         VenueReservation[]
+  paymentIntents       PaymentIntent[]
+  creditEvents         PackageCreditEvent[]
+  accountNotifications AccountNotification[]
 
   @@unique([id, businessId])
   @@unique([id, studentId])
@@ -1026,6 +1056,8 @@ model Booking {
   venueUnitAllocations VenueUnitAllocation[]
   outboundDeliveries   OutboundDelivery[]
   chatSafetyReports    ChatSafetyReport[]
+  sessionFeedback      SessionFeedback[]
+  waitlistEntries      WaitlistEntry[]
 
   // Supports the database-level composite FK that keeps a payment's optional
   // booking inside the same business.
@@ -1228,27 +1260,28 @@ model CalendarBusyInterval {
 }
 
 model Participant {
-  id                       String          @id @default(cuid())
+  id                       String           @id @default(cuid())
   bookingId                String
-  booking                  Booking         @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  booking                  Booking          @relation(fields: [bookingId], references: [id], onDelete: Cascade)
   studentId                String
   /// The database requires this student to share the booking's business.
-  student                  Student         @relation(fields: [studentId], references: [id], onDelete: Restrict)
-  attendance               String          @default("UNMARKED")
-  paid                     Boolean         @default(false)
+  student                  Student          @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  attendance               String           @default("UNMARKED")
+  paid                     Boolean          @default(false)
   /// Integer minor units (cents), snapshotted for this participant.
   price                    Int
-  notes                    String          @default("")
+  notes                    String           @default("")
   packageId                String?
   /// A composite relation pins package ownership to this student. Because the
   /// student is tenant-pinned to the booking, package tenancy follows too.
-  package                  LessonPackage?  @relation(fields: [packageId, studentId], references: [id, studentId], onDelete: NoAction, onUpdate: NoAction)
-  creditConsumed           Boolean         @default(false)
+  package                  LessonPackage?   @relation(fields: [packageId, studentId], references: [id, studentId], onDelete: NoAction, onUpdate: NoAction)
+  creditConsumed           Boolean          @default(false)
   cancelledAt              DateTime?
-  managementTokenHash      String?         @unique
+  managementTokenHash      String?          @unique
   managementTokenExpiresAt DateTime?
   managementTokenRevokedAt DateTime?
   paymentIntents           PaymentIntent[]
+  feedback                 SessionFeedback?
 
   @@unique([bookingId, studentId])
   @@index([packageId, studentId])
@@ -1555,6 +1588,10 @@ model AccountNotification {
   business           Business?          @relation(fields: [businessId], references: [id], onDelete: SetNull)
   bookingId          String?
   booking            Booking?           @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  /// Optional package subject for credit-balance and expiry reminders. It is
+  /// also the reminder worker's per-package deduplication key.
+  packageId          String?
+  package            LessonPackage?     @relation(fields: [packageId], references: [id], onDelete: SetNull)
   type               String
   title              String
   message            String
@@ -1564,6 +1601,7 @@ model AccountNotification {
   outboundDeliveries OutboundDelivery[]
 
   @@index([userId, createdAt])
+  @@index([packageId, type])
   @@index([businessId])
   @@index([bookingId])
 }
@@ -1941,4 +1979,161 @@ model SessionProposalResponse {
 
   @@unique([proposalId, studentUserId])
   @@index([bookingId])
+}
+
+/// Coach-to-learner feedback for one attended place in a Class. SHARED
+/// feedback is visible to the student (or an authorized guardian of a managed
+/// child); PRIVATE drafts and clubNote stay inside the club workspace.
+model SessionFeedback {
+  id            String      @id @default(cuid())
+  businessId    String
+  business      Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  bookingId     String
+  booking       Booking     @relation(fields: [bookingId, businessId], references: [id, businessId], onDelete: Cascade, onUpdate: NoAction)
+  /// SQL also requires this participant to belong to bookingId.
+  participantId String      @unique
+  participant   Participant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  authorUserId  String?
+  author        User?       @relation("SessionFeedbackAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  /// Immutable snapshots of who first wrote the feedback.
+  authorName    String
+  authorRole    String
+  editedByName  String?
+  visibility    String      @default("PRIVATE")
+  summary       String      @default("")
+  strengths     String      @default("")
+  focusAreas    String      @default("")
+  nextGoal      String      @default("")
+  /// Internal remark for club staff. Never serialized to students or guardians.
+  clubNote      String      @default("")
+  /// First time the feedback became visible to the learner.
+  sharedAt      DateTime?
+  firstViewedAt DateTime?
+  editedAt      DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@index([businessId, sharedAt])
+  @@index([bookingId])
+}
+
+/// A student's place in the queue for one full group Class occurrence. Order
+/// is the database-assigned sequence; an OFFERED row holds one place until
+/// offerExpiresAt so a public booking cannot take it first.
+model WaitlistEntry {
+  id             String    @id @default(cuid())
+  sequence       Int       @default(autoincrement())
+  businessId     String
+  business       Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  bookingId      String
+  booking        Booking   @relation(fields: [bookingId, businessId], references: [id, businessId], onDelete: Cascade, onUpdate: NoAction)
+  studentId      String
+  student        Student   @relation(fields: [studentId, businessId], references: [id, businessId], onDelete: Cascade, onUpdate: NoAction)
+  status         String    @default("WAITING")
+  offeredAt      DateTime?
+  offerExpiresAt DateTime?
+  respondedAt    DateTime?
+  closedReason   String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([sequence])
+  @@index([bookingId, status, sequence])
+  @@index([studentId, status])
+  @@index([status, offerExpiresAt])
+}
+
+/// Append-only package credit history written by a LessonPackage trigger, so
+/// every balance change is captured whichever code path made it. Application
+/// writers label the change through the transaction-local
+/// courtly.credit_context setting (see credit-ledger.ts).
+model PackageCreditEvent {
+  id            String        @id @default(cuid())
+  sequence      Int           @default(autoincrement())
+  businessId    String
+  business      Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  packageId     String
+  package       LessonPackage @relation(fields: [packageId, businessId], references: [id, businessId], onDelete: Cascade, onUpdate: NoAction)
+  studentId     String
+  kind          String
+  delta         Int
+  totalAfter    Int
+  usedAfter     Int
+  bookingId     String?
+  participantId String?
+  reservationId String?
+  actorUserId   String?
+  note          String        @default("")
+  createdAt     DateTime      @default(now())
+
+  @@unique([sequence])
+  @@index([packageId, sequence])
+  @@index([businessId, createdAt])
+}
+
+/// A club-local training cohort, such as a weekly junior squad. It is an
+/// operational roster, never an account type or a teaching affiliation.
+model TrainingGroup {
+  id           String                @id @default(cuid())
+  businessId   String
+  business     Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name         String
+  sport        String                @default("")
+  level        String                @default("")
+  ageBand      String                @default("")
+  description  String                @default("")
+  scheduleNote String                @default("")
+  capacity     Int?
+  /// Optional scheduling defaults. The API validates them inside businessId;
+  /// a later-archived default is simply ignored.
+  serviceId    String?
+  locationId   String?
+  instructorId String?
+  active       Boolean               @default(true)
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+  members      TrainingGroupMember[]
+
+  @@unique([id, businessId])
+  @@index([businessId, active])
+}
+
+model TrainingGroupMember {
+  id         String        @id @default(cuid())
+  businessId String
+  business   Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  groupId    String
+  group      TrainingGroup @relation(fields: [groupId, businessId], references: [id, businessId], onDelete: Cascade, onUpdate: NoAction)
+  studentId  String
+  student    Student       @relation(fields: [studentId, businessId], references: [id, businessId], onDelete: Cascade, onUpdate: NoAction)
+  active     Boolean       @default(true)
+  joinedAt   DateTime      @default(now())
+  leftAt     DateTime?
+
+  @@unique([groupId, studentId])
+  @@index([businessId, studentId])
+}
+
+/// A student's saved club. Only the account itself can read or change it.
+model FavoriteClub {
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@id([userId, businessId])
+  @@index([businessId])
+}
+
+/// Aggregate, person-free daily funnel counters for one club. No account,
+/// session, device, or request identifier is stored.
+model ClubFunnelCounter {
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  day        DateTime @db.Date
+  metric     String
+  count      Int      @default(0)
+
+  @@id([businessId, day, metric])
 }

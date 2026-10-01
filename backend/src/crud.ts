@@ -7,6 +7,7 @@ import { asyncRoute, HttpError, coachScope, coachScoped, requireClubPermission, 
 import { bookableInstructorWhere } from './scheduling.js';
 import { packageInclude, packageJson, withoutServiceFinancials } from './serializers.js';
 import { workspaceNotificationWhere } from './notifications.js';
+import { withCreditContext } from './credit-ledger.js';
 
 export const crudRouter = Router();
 type Tx = Prisma.TransactionClient;
@@ -511,7 +512,8 @@ crudRouter.patch('/packages/:id', requireClubPermission('PACKAGES_MANAGE'), asyn
         booking: { businessId, status: { not: 'CANCELLED' }, startAt: { gt: input.expiresAt } } }, select: { id: true } });
       if (laterBooking) throw new HttpError(409, 'Package expiry cannot precede an existing booked lesson');
     }
-    return tx.lessonPackage.update({ where: { id, businessId }, data: input, include: packageInclude });
+    return withCreditContext(tx, { kind: 'ADJUSTED', actorUserId: req.auth.user.id, note: 'Package edited by the club' },
+      () => tx.lessonPackage.update({ where: { id, businessId }, data: input, include: packageInclude }));
   });
   res.json(packageJson(pkg));
 }));

@@ -44,6 +44,7 @@ export const accountNotificationJson = (notification: FullAccountNotification) =
   userId: notification.userId,
   businessId: notification.businessId,
   bookingId: notification.bookingId,
+  packageId: notification.packageId,
   type: notification.type,
   title: notification.title,
   message: notification.message,
@@ -198,6 +199,103 @@ export async function createBookingAccountAlerts(
     });
   }
   return recipients.length;
+}
+
+/**
+ * Account alerts that are not about a booking's own lifecycle: coach feedback,
+ * waitlist offers, and package reminders. Like createBookingAccountAlerts this
+ * owns all of the copy, so the frontend alert vocabulary test can read it.
+ * `subjectName` names a guardian-managed child when the recipient is the
+ * child's guardian rather than the learner.
+ */
+export type AccountAlert =
+  | {
+    kind: 'FEEDBACK_SHARED'; userId: string; businessId: string; bookingId: string;
+    coachName: string; serviceName: string; startAt: Date; timezone: string; subjectName?: string;
+  }
+  | {
+    kind: 'WAITLIST_OFFERED'; userId: string; businessId: string; bookingId: string;
+    serviceName: string; startAt: Date; expiresAt: Date; timezone: string;
+  }
+  | {
+    kind: 'WAITLIST_CLOSED'; userId: string; businessId: string; bookingId: string;
+    serviceName: string; startAt: Date; timezone: string; reason: string;
+  }
+  | { kind: 'PACKAGE_LOW'; userId: string; businessId: string; packageId: string; packageName: string; remaining: number }
+  | {
+    kind: 'PACKAGE_EXPIRING'; userId: string; businessId: string; packageId: string; packageName: string;
+    remaining: number; expiresAt: Date; timezone: string;
+  };
+
+const alertWhen = (value: Date, timezone: string) => DateTime.fromJSDate(value, { zone: timezone })
+  .setLocale('en-SG').toFormat("ccc, d LLL yyyy 'at' h:mm a");
+
+function accountAlertCopy(alert: AccountAlert): {
+  type: string; title: string; message: string; actionNeeded: boolean;
+  email: TransactionalEmailEvent; category: 'TRANSACTIONAL' | 'REMINDER'; tab: string;
+} {
+  switch (alert.kind) {
+    case 'FEEDBACK_SHARED': {
+      const learner = alert.subjectName ? `${alert.subjectName}'s` : 'your';
+      return {
+        type: 'FEEDBACK_SHARED', title: alert.subjectName ? `New coach feedback for ${alert.subjectName}` : 'New coach feedback',
+        message: `${alert.coachName} shared feedback on ${learner} ${alert.serviceName} session on ${alertWhen(alert.startAt, alert.timezone)}.`,
+        actionNeeded: false, email: 'COACH_FEEDBACK', category: 'TRANSACTIONAL', tab: 'progress',
+      };
+    }
+    case 'WAITLIST_OFFERED':
+      return {
+        type: 'WAITLIST_OFFERED', title: 'A place opened up for you',
+        message: `A place is being held for you in ${alert.serviceName} on ${alertWhen(alert.startAt, alert.timezone)}. Confirm it before ${alertWhen(alert.expiresAt, alert.timezone)} or it passes to the next person.`,
+        actionNeeded: true, email: 'WAITLIST_OFFERED', category: 'TRANSACTIONAL', tab: 'home',
+      };
+    case 'WAITLIST_CLOSED':
+      return {
+        type: 'WAITLIST_CLOSED', title: 'Waitlist closed',
+        message: `The waitlist for ${alert.serviceName} on ${alertWhen(alert.startAt, alert.timezone)} has closed: ${alert.reason}`,
+        actionNeeded: false, email: 'WAITLIST_CLOSED', category: 'TRANSACTIONAL', tab: 'home',
+      };
+    case 'PACKAGE_LOW':
+      return {
+        type: 'PACKAGE_LOW', title: alert.remaining === 0 ? 'Package credits used up' : 'One package credit left',
+        message: alert.remaining === 0
+          ? `You have used every credit in ${alert.packageName}. Buy another package from the club to keep booking with credits.`
+          : `${alert.packageName} has 1 credit left.`,
+        actionNeeded: false, email: 'PACKAGE_REMINDER', category: 'REMINDER', tab: 'profile',
+      };
+    case 'PACKAGE_EXPIRING':
+      return {
+        type: 'PACKAGE_EXPIRING', title: 'Package credits expiring soon',
+        message: `${alert.remaining} credit${alert.remaining === 1 ? '' : 's'} in ${alert.packageName} expire on ${DateTime.fromJSDate(alert.expiresAt, { zone: alert.timezone }).setLocale('en-SG').toFormat('d LLL yyyy')}. Book a session to use ${alert.remaining === 1 ? 'it' : 'them'}.`,
+        actionNeeded: false, email: 'PACKAGE_REMINDER', category: 'REMINDER', tab: 'profile',
+      };
+  }
+}
+
+export async function createAccountAlert(tx: Tx, alert: AccountAlert) {
+  const copy = accountAlertCopy(alert);
+  const notification = await tx.accountNotification.create({
+    data: {
+      userId: alert.userId, businessId: alert.businessId,
+      bookingId: 'bookingId' in alert ? alert.bookingId : null,
+      packageId: 'packageId' in alert ? alert.packageId : null,
+      type: copy.type, title: copy.title, message: copy.message, actionNeeded: copy.actionNeeded,
+    },
+  });
+  if (!config.email.enabled) return notification;
+  const recipient = await tx.user.findUnique({ where: { id: alert.userId }, select: { id: true, name: true, email: true } });
+  // Managed children have no direct address; guardians receive their own alert.
+  if (!recipient?.email) return notification;
+  await queueOutboundEmail(tx, {
+    eventType: copy.email, category: copy.category,
+    dedupeKey: `account-alert:${copy.type}:${notification.id}`,
+    recipientEmail: recipient.email, recipientName: recipient.name, recipientUserId: recipient.id,
+    businessId: alert.businessId, bookingId: 'bookingId' in alert ? alert.bookingId : null,
+    accountNotificationId: notification.id,
+    title: copy.title, message: copy.message, actionNeeded: copy.actionNeeded,
+    actionUrl: `${config.publicAppOrigin}/manage?tab=${copy.tab}`, actionLabel: 'Open Courtly',
+  });
+  return notification;
 }
 
 // Personal details belong to the student account, not to a selected club.

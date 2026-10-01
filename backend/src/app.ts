@@ -32,6 +32,13 @@ import { familyPublicRouter, familyRouter } from './family.js';
 import { privacyAdminRouter, privacyPublicRouter, privacyRouter } from './privacy.js';
 import { safeguardingRouter } from './safeguarding.js';
 import { accountSecurityPublicRouter, accountSecurityRouter } from './account-security.js';
+import { feedbackRouter, progressRouter } from './feedback.js';
+import { familyProgressRouter } from './family-progress.js';
+import { waitlistAccountRouter, waitlistWorkspaceRouter } from './waitlist.js';
+import { discoveryRouter } from './discovery.js';
+import { packageActivityAccountRouter, packageActivityWorkspaceRouter } from './package-activity.js';
+import { trainingGroupsRouter } from './training-groups.js';
+import { insightsRouter } from './insights.js';
 import { logUnexpectedRequestError, metricsHandler, requestObservability } from './observability.js';
 import { sharedRateLimit } from './rate-limit.js';
 export const app = express();
@@ -123,6 +130,7 @@ app.use('/api/family', (_req, _res, next) => {
 });
 app.use('/api/family', familyPublicRouter);
 app.use('/api/family', requireAuth, familyRouter);
+app.use('/api/family', requireAuth, familyProgressRouter);
 app.use('/api', publicRouter);
 // Privacy rights remain reachable for an authenticated account even when its
 // ordinary product capabilities are restricted or awaiting remediation.
@@ -135,6 +143,10 @@ app.use('/api/account/security', requireAuth, accountSecurityRouter);
 // consent, deletion, or handover action can still reach the route that resolves
 // that state. Narrow capability gates remain layered on each feature group.
 app.use('/api', requireAuth, requireAccountReady);
+// Training-companion account routes apply their capability and role guards
+// per route. A capability middleware mounted on the bare /api prefix would
+// otherwise reject unrelated routes mounted after it.
+app.use('/api', discoveryRouter, progressRouter, waitlistAccountRouter, packageActivityAccountRouter);
 app.use('/api', requireAccountCapability('directory'), accountDirectoryRouter);
 app.use('/api', requireAccountCapability('payments'), paymentsRouter);
 // A coach can review and accept invitations before selecting a workspace.
@@ -156,7 +168,7 @@ app.use('/api/account', requireStudent, accountRouter);
 // Account-only public booking management installs its own authentication
 // middleware. Every provider route below additionally requires an active,
 // non-revoked membership selected on the session.
-app.use('/api', requireAccountCapability('workspace'), requireWorkspace, workspaceRouter, bookingsRouter, bookingSeriesRouter, crudRouter, staffRouter, clubStaffAccessRouter, auditRouter, venuesRouter, integrityRouter, safeguardingRouter);
+app.use('/api', requireAccountCapability('workspace'), requireWorkspace, workspaceRouter, bookingsRouter, bookingSeriesRouter, crudRouter, staffRouter, clubStaffAccessRouter, auditRouter, venuesRouter, integrityRouter, safeguardingRouter, feedbackRouter, waitlistWorkspaceRouter, packageActivityWorkspaceRouter, trainingGroupsRouter, insightsRouter);
 app.use((_req, _res, next) => next(new HttpError(404, 'Route not found')));
 const errorHandler: ErrorRequestHandler = (error, req, res, _next) => {
   if (error instanceof HttpError) { res.status(error.status).json({ error: error.message, ...error.details }); return; }

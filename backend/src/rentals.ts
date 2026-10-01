@@ -8,6 +8,7 @@ import { hasClubPermission, HttpError, initials, requireRecentAuth, type Account
 import { isVenueAllocationConflict, lockVenueUnits, releaseRentalUnit, reserveRentalUnit } from './venue-allocations.js';
 import { executePreparedRefund, prepareProviderRefund, type RefundPreparation } from './payments/refunds.js';
 import { calendarDateBoundary } from './booking-query.js';
+import { withCreditContext } from './credit-ledger.js';
 
 export const rentalsRouter = Router();
 
@@ -833,9 +834,12 @@ async function createReservation(req: AccountRequest, locationId: string, input:
       ? await eligiblePackage(tx, input.packageId, req.auth.user.id, location, input.startAt)
       : null;
     if (pkg) {
-      const consumed = await tx.lessonPackage.updateMany({
+      const consumed = await withCreditContext(tx, {
+        kind: 'RENTAL_RESERVED', actorUserId: req.auth.user.id,
+        note: `${location.name} · ${unit.name}`,
+      }, () => tx.lessonPackage.updateMany({
         where: { id: pkg.id, usedCredits: { lt: pkg.totalCredits } }, data: { usedCredits: { increment: 1 } },
-      });
+      }));
       if (!consumed.count) throw new HttpError(409, 'This rental package has no credits remaining');
     }
     const reservation = await tx.venueReservation.create({ data: {
@@ -919,10 +923,14 @@ rentalsRouter.post('/rentals/reservations/:id/cancel', requireRecentAuth, accoun
 
     if (current.packageId && current.creditConsumed) {
       await tx.$queryRaw`SELECT id FROM "LessonPackage" WHERE id = ${current.packageId} FOR UPDATE`;
-      const restored = await tx.lessonPackage.updateMany({
-        where: { id: current.packageId, businessId: current.businessId, usedCredits: { gt: 0 } },
+      const packageId = current.packageId;
+      const restored = await withCreditContext(tx, {
+        kind: 'RENTAL_RESTORED', reservationId: current.id, actorUserId: req.auth.user.id,
+        note: 'Court reservation cancelled',
+      }, () => tx.lessonPackage.updateMany({
+        where: { id: packageId, businessId: current.businessId, usedCredits: { gt: 0 } },
         data: { usedCredits: { decrement: 1 } },
-      });
+      }));
       if (!restored.count) throw new HttpError(409, 'The rental package credit could not be restored safely');
     }
     const now = new Date();

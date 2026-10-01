@@ -13,6 +13,7 @@ import { ensureChatThread, noteSessionCancelled, noteSessionMoved, noteStudentJo
 import { config } from './config.js';
 import { availableClassUnit, releaseBookingUnit, replaceBookingUnit, reserveBookingUnit } from './venue-allocations.js';
 import { ADULT_AGE, ageOnSingaporeDate } from './children-policy.js';
+import { withCreditContext } from './credit-ledger.js';
 
 const bookingSelection = {
   serviceId: z.string().min(1), instructorId: z.string().min(1), locationId: z.string().min(1),
@@ -34,6 +35,8 @@ export const bookingInput = z.object({
 export const publicBookingInput = z.object({
   ...bookingSelection,
   student: studentContact.optional(),
+  // Funnel attribution only; it never changes how the booking is made.
+  source: z.enum(['DIRECT', 'REBOOK', 'SEARCH']).optional(),
 }).strict();
 export type BookingInput = z.infer<typeof bookingInput>;
 export type PublicBookingInput = z.infer<typeof publicBookingInput>;
@@ -478,7 +481,12 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
       packageId: input.packageId, businessId, studentId: student.id, serviceId: input.serviceId,
       sessionDates: occurrences.map(slot => slot.startAt),
     });
-    const updated = await tx.lessonPackage.updateMany({ where: { id: pkg.id, usedCredits: { lte: pkg.totalCredits - occurrences.length } }, data: { usedCredits: { increment: occurrences.length } } });
+    const firstSession = DateTime.fromJSDate(occurrences[0].startAt, { zone: ctx.business.timezone }).setLocale('en-SG').toFormat('ccc d LLL');
+    const updated = await withCreditContext(tx, {
+      kind: 'BOOKED',
+      actorUserId: 'studentUserId' in options ? options.studentUserId : ('requireLinkedStudent' in options ? options.actor?.userId ?? null : null),
+      note: `${ctx.service.name} · ${firstSession}${occurrences.length > 1 ? ` (+${occurrences.length - 1} more)` : ''}`,
+    }, () => tx.lessonPackage.updateMany({ where: { id: pkg!.id, usedCredits: { lte: pkg!.totalCredits - occurrences.length } }, data: { usedCredits: { increment: occurrences.length } } }));
     if (!updated.count) throw new HttpError(409, 'Not enough package credits for all sessions');
   }
   const recurringId = occurrences.length > 1 ? randomUUID() : null;
@@ -556,10 +564,20 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
 }
 export const createBookings = (businessId: string, input: BookingInput, options: CreateBookingsOptions = { requireLinkedStudent: true }) => prisma.$transaction(tx => createBookingsInTransaction(tx, businessId, input, options), { timeout: 30_000 });
 
-export async function refundParticipant(tx: Tx, participant: { id: string; packageId: string | null; creditConsumed: boolean }) {
+export async function refundParticipant(tx: Tx, participant: { id: string; packageId: string | null; creditConsumed: boolean; bookingId?: string }) {
   if (!participant.creditConsumed || !participant.packageId) return;
   const changed = await tx.participant.updateMany({ where: { id: participant.id, creditConsumed: true }, data: { creditConsumed: false } });
-  if (changed.count) await tx.lessonPackage.updateMany({ where: { id: participant.packageId, usedCredits: { gt: 0 } }, data: { usedCredits: { decrement: 1 } } });
+  if (!changed.count) return;
+  const packageId = participant.packageId;
+  const booking = await tx.participant.findUnique({
+    where: { id: participant.id },
+    select: { booking: { select: { id: true, startAt: true, service: { select: { name: true } }, business: { select: { timezone: true } } } } },
+  });
+  const when = booking ? DateTime.fromJSDate(booking.booking.startAt, { zone: booking.booking.business.timezone }).setLocale('en-SG').toFormat('ccc d LLL') : '';
+  await withCreditContext(tx, {
+    kind: 'RESTORED', bookingId: booking?.booking.id ?? participant.bookingId ?? null, participantId: participant.id,
+    note: booking ? `${booking.booking.service.name} · ${when} cancelled` : 'Booking cancelled',
+  }, () => tx.lessonPackage.updateMany({ where: { id: packageId, usedCredits: { gt: 0 } }, data: { usedCredits: { decrement: 1 } } }));
 }
 export async function cancelBooking(tx: Tx, businessId: string, bookingId: string) {
   const booking = await tx.booking.findFirst({ where: { id: bookingId, businessId } });

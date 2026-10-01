@@ -25,6 +25,8 @@ export type Business = {
   /** Optional only while older workspace payloads and retained fixtures roll forward. */
   legalName?: string; registrationNumber?: string | null; supportEmail?: string; supportAddress?: string;
   gstRegistrationStatus?: GstRegistrationStatus; gstRegistrationNumber?: string | null; pricesIncludeGst?: boolean | null;
+  /** Public club profile; optional while older payloads roll forward. */
+  description?: string; publicPhone?: string; websiteUrl?: string;
 };
 /** username and sports are optional only while old fixtures or servers roll forward. */
 export type AccountUser = {
@@ -34,6 +36,8 @@ export type AccountUser = {
   ageBand?: AgeBand | null; needsAgeReview?: boolean; requiredAction?: AccountRequiredAction | null;
   capabilities?: AccountCapabilities;
   emailVerified?: boolean;
+  /** Present (possibly empty) for COACH accounts only. */
+  coachProfile?: CoachProfile | null;
   signupEvidence?: {
     termsVersion: string | null; termsAcceptedAt: string | null;
     privacyPolicyVersion: string | null; privacyNoticeAcknowledgedAt: string | null;
@@ -191,7 +195,7 @@ export type FamilyHandoverPublic = {
 };
 export type Instructor = { id: string; name: string; initials: string; color: string; email: string; specialty: string; rescheduleNoticeHours: number; active: boolean };
 export type WorkspaceInstructor = Instructor & { accountLinkAvailable: boolean };
-export type Location = { id: string; name: string; address: string; type: 'FACILITY' | 'RENTED' | 'HOME' | 'ONLINE'; color: string; requiresApproval: boolean; classUnitSchedulingEnabled?: boolean; travelMinutes: number; notes: string; source: VenueSource; placeId: string; mapsUrl: string; latitude: number | null; longitude: number | null; active: boolean };
+export type Location = { id: string; name: string; address: string; area?: string; type: 'FACILITY' | 'RENTED' | 'HOME' | 'ONLINE'; color: string; requiresApproval: boolean; classUnitSchedulingEnabled?: boolean; travelMinutes: number; notes: string; source: VenueSource; placeId: string; mapsUrl: string; latitude: number | null; longitude: number | null; active: boolean };
 export type VenueSource = 'MANUAL' | 'GOOGLE_MAPS';
 export type VenueCandidate = { placeId: string; name: string; address: string; mapsUrl: string; latitude: number | null; longitude: number | null; source: VenueSource };
 export type VenueSearchResult = { configured: boolean; results: VenueCandidate[] };
@@ -215,9 +219,16 @@ export type NotificationPreferencesResponse = {
   preferences: NotificationPreferences;
   updatedAt?: string;
 };
-export type PublicInstructor = Pick<Instructor, 'id' | 'name' | 'initials' | 'color' | 'specialty' | 'active'>;
-export type PublicLocation = Pick<Location, 'id' | 'name' | 'address' | 'type' | 'color' | 'requiresApproval' | 'active'> & { mapsUrl?: string };
-export type PublicBookingBusiness = Pick<Business, 'name' | 'slug' | 'ownerName' | 'timezone' | 'currency' | 'color' | 'tagline' | 'cancellationHours'> & { kind?: BusinessKind };
+export type PublicInstructor = Pick<Instructor, 'id' | 'name' | 'initials' | 'color' | 'specialty' | 'active'> & {
+  /** Public coaching profile of the coach account; null when the coach has not written one. */
+  profile?: CoachPublicProfile | null;
+};
+export type PublicLocation = Pick<Location, 'id' | 'name' | 'address' | 'type' | 'color' | 'requiresApproval' | 'active'> & { mapsUrl?: string; area?: string };
+export type PublicBookingBusiness = Pick<Business, 'name' | 'slug' | 'ownerName' | 'timezone' | 'currency' | 'color' | 'tagline' | 'cancellationHours'> & {
+  kind?: BusinessKind;
+  /** Public club profile; optional while older payloads roll forward. */
+  description?: string; publicPhone?: string; websiteUrl?: string; supportEmail?: string;
+};
 export type ServiceLocation = { locationId: string; price: number; duration: number; instructorIds: string[] };
 export type Service = { id: string; name: string; description: string; category: string; type: 'PRIVATE' | 'GROUP'; duration: number; price: number; capacity: number; bufferMinutes: number; noticeHours: number; color: string; active: boolean; locations: ServiceLocation[] };
 export type CoachScopedServiceLocation = Omit<ServiceLocation, 'price'>;
@@ -231,7 +242,8 @@ export type LessonPackage = {
   serviceIds?: string[]; rentalLocationIds?: string[];
   totalCredits: number; usedCredits: number; price: number; expiresAt: string; paid: boolean;
 };
-export type Participant = { id: string; studentId: string; name: string; email: string | null; attendance: 'UNMARKED' | 'PRESENT' | 'ABSENT'; paid: boolean; price: number; packageId: string | null; notes: string; cancelled?: boolean; cancelledAt?: string | null };
+export type Attendance = 'UNMARKED' | 'PRESENT' | 'LATE' | 'ABSENT' | 'EXCUSED';
+export type Participant = { id: string; studentId: string; name: string; email: string | null; attendance: Attendance; paid: boolean; price: number; packageId: string | null; notes: string; cancelled?: boolean; cancelledAt?: string | null };
 export type CoachScopedParticipant = Omit<Participant, 'paid' | 'price' | 'packageId'>;
 /** "CLUB" runs the money through the club's books; "DIRECT" goes to the coach. */
 export type PaymentRoute = 'CLUB' | 'DIRECT';
@@ -343,7 +355,11 @@ export function isManagerWorkspace(workspace: WorkspaceWireResponse): workspace 
     && !workspace.business.legacyReadOnly;
 }
 export type Slot = { startAt: string; endAt: string; available: boolean; placesRemaining: number; reason?: string };
-export type PublicBusiness = { business: PublicBookingBusiness; instructors: PublicInstructor[]; locations: PublicLocation[]; services: Service[] };
+export type PublicBusiness = {
+  business: PublicBookingBusiness; instructors: PublicInstructor[]; locations: PublicLocation[]; services: Service[];
+  /** Decision summary shown before account creation; optional while older payloads roll forward. */
+  summary?: ClubPublicSummary;
+};
 export type BookingInput = { serviceId: string; instructorId?: string; locationId: string; startAt: string; studentId: string; repeatWeeks?: number; packageId?: string; notes?: string; address?: string };
 export type BookingSeriesParticipantInput = { studentId: string; packageId?: string };
 export type BookingSeriesInput = {
@@ -354,7 +370,8 @@ export type BookingSeriesResult = {
   series: { id: string; name: string; occurrenceCount: number; memberCount: number };
   bookings: WorkspaceBooking[];
 };
-export type PublicBookingInput = { serviceId: string; instructorId: string; locationId: string; startAt: string; student?: { phone?: string; parentName?: string }; repeatWeeks?: number; packageId?: string; notes?: string; address?: string };
+export type BookingSource = 'DIRECT' | 'REBOOK' | 'SEARCH';
+export type PublicBookingInput = { serviceId: string; instructorId: string; locationId: string; startAt: string; student?: { phone?: string; parentName?: string }; repeatWeeks?: number; packageId?: string; notes?: string; address?: string; source?: BookingSource };
 export type BookingResult = { bookings: Booking[]; conflicts?: { date: string; reason: string }[] };
 export type FamilyChildBookingInput = {
   businessSlug: string; serviceId: string; instructorId: string; locationId: string; startAt: string;
@@ -378,6 +395,9 @@ export type StudentClubDirectoryEntry = {
   coachCount: number;
   locationCount: number;
   priceFrom: number;
+  /** Venue area labels; optional while older payloads roll forward. */
+  areas?: string[];
+  favorite?: boolean;
 };
 export type StudentClubDirectoryResult = { clubs: StudentClubDirectoryEntry[] };
 export type StudentClubDirectoryPage = StudentClubDirectoryResult & { nextCursor?: string | null };
@@ -654,4 +674,141 @@ export type SafeguardingReportUpdate = {
 export type ClubSafeguardingReportUpdate = Omit<SafeguardingReportUpdate, 'assignedTo'> & {
   status?: Extract<SafeguardingReportStatus, 'IN_REVIEW' | 'REFERRED_TO_PLATFORM'>;
   assignment?: 'SELF' | 'UNASSIGNED';
+};
+
+/* ------------------------------------------------------------------------ */
+/* Training companion: profiles, progress, waitlists, credits, discovery.    */
+/* Contract: docs/TRAINING_COMPANION.md                                       */
+/* ------------------------------------------------------------------------ */
+
+export type CoachingLevel = 'BEGINNER' | 'INTERMEDIATE' | 'ADVANCED' | 'COMPETITIVE';
+export type CoachingAgeGroup = 'JUNIOR' | 'TEEN' | 'ADULT' | 'SENIOR';
+/** Editable portable coach profile (COACH accounts only). Qualifications are self-reported. */
+export type CoachProfile = {
+  bio: string; languages: string[]; coachingLevels: CoachingLevel[]; coachingAgeGroups: CoachingAgeGroup[];
+  qualifications: string[]; coachingSince: number | null;
+};
+export type CoachPublicProfile = CoachProfile & { sports: string[] };
+export type CoachProfileInput = Partial<CoachProfile>;
+
+export type ClubPublicSummary = {
+  sports: string[]; priceFrom: number | null; coachCount: number; locationCount: number;
+  serviceCount: number; groupClassCount: number; areas: string[];
+};
+
+export type FeedbackVisibility = 'SHARED' | 'PRIVATE';
+export type FeedbackAuthorRole = 'COACH' | 'CLUB' | 'STAFF';
+/** Provider view of one participant's feedback. clubNote never reaches students or guardians. */
+export type ProviderFeedback = {
+  id: string; bookingId: string; participantId: string; studentId: string; studentName: string;
+  authorName: string; authorRole: FeedbackAuthorRole; editedByName: string | null;
+  visibility: FeedbackVisibility; summary: string; strengths: string; focusAreas: string; nextGoal: string;
+  clubNote: string; sharedAt: string | null; editedAt: string | null; viewedAt: string | null; createdAt: string;
+};
+export type ProviderFeedbackList = { feedback: ProviderFeedback[]; canWrite: boolean };
+export type FeedbackInput = {
+  visibility: FeedbackVisibility; summary?: string; strengths?: string; focusAreas?: string; nextGoal?: string; clubNote?: string;
+};
+/** Learner view: shared feedback only, without the internal club note. */
+export type LearnerFeedback = {
+  id: string; bookingId: string; participantId: string;
+  business: { name: string; slug: string }; serviceName: string; sport: string;
+  coachName: string; authorRole: FeedbackAuthorRole; sessionStartAt: string; timezone: string;
+  summary: string; strengths: string; focusAreas: string; nextGoal: string;
+  sharedAt: string; editedAt: string | null; viewed: boolean;
+};
+export type ProgressStats = {
+  attended: number; booked: number; upcoming: number; hoursOnCourt: number;
+  currentStreakWeeks: number; longestStreakWeeks: number; clubs: number; coaches: number;
+  lastAttendedAt: string | null; attendanceRate: number | null;
+};
+export type ProgressSummary = {
+  stats: ProgressStats;
+  monthly: Array<{ month: string; attended: number }>;
+  currentGoal: { text: string; setAt: string; coachName: string; businessName: string } | null;
+  feedback: LearnerFeedback[];
+  filters: { clubs: Array<{ slug: string; name: string }>; coaches: string[]; sports: string[] };
+};
+export type ProgressFilters = { businessSlug?: string; coach?: string; sport?: string };
+
+export type ChildScheduleItem = {
+  participantId: string; bookingId: string;
+  business: { name: string; slug: string; timezone: string };
+  serviceName: string; sport: string; type: 'PRIVATE' | 'GROUP'; coachName: string;
+  location: { name: string; address: string; area: string; mapsUrl: string };
+  startAt: string; endAt: string; status: Status; attendance: Attendance; hasFeedback: boolean;
+};
+export type ChildSchedule = { child: { id: string; name: string; username: string }; bookings: ChildScheduleItem[] };
+export type ChildProgress = ProgressSummary & { child: { id: string; name: string; username: string } };
+
+export type WaitlistStatus = 'WAITING' | 'OFFERED' | 'ACCEPTED' | 'DECLINED' | 'EXPIRED' | 'WITHDRAWN' | 'REMOVED' | 'CLOSED';
+export type AccountWaitlistEntry = {
+  id: string; status: WaitlistStatus;
+  /** Students queued ahead while WAITING; null once offered or closed. The club may still offer places manually. */
+  aheadCount: number | null;
+  offeredAt: string | null; offerExpiresAt: string | null; createdAt: string; closedReason: string | null;
+  business: PublicBookingBusiness;
+  booking: {
+    id: string; serviceId: string; serviceName: string; instructorId: string; instructorName: string;
+    locationId: string; locationName: string; startAt: string; endAt: string; capacity: number; price: number;
+  };
+};
+export type WaitlistJoinInput = { serviceId: string; instructorId: string; locationId: string; startAt: string };
+export type ProviderWaitlistEntry = {
+  id: string; studentId: string; studentName: string; status: WaitlistStatus; position: number | null;
+  offeredAt: string | null; offerExpiresAt: string | null; createdAt: string;
+};
+export type ProviderWaitlist = { entries: ProviderWaitlistEntry[]; placesFree: number; canManage: boolean };
+
+export type CreditEventKind =
+  | 'OPENING_BALANCE' | 'GRANTED' | 'BOOKED' | 'RESTORED' | 'RENTAL_RESERVED' | 'RENTAL_RESTORED'
+  | 'ADJUSTED' | 'USED' | 'EXPIRED';
+export type CreditEvent = {
+  id: string; kind: CreditEventKind; delta: number; balanceAfter: number; totalAfter: number;
+  note: string; createdAt: string; bookingId: string | null; reservationId: string | null;
+  session: { serviceName: string; startAt: string; timezone: string } | null;
+};
+export type PackageActivity = {
+  package: {
+    id: string; name: string; totalCredits: number; usedCredits: number; remainingCredits: number;
+    expiresAt: string; business: { name: string; slug: string; currency: string };
+  };
+  events: CreditEvent[];
+};
+
+export type SessionTimeOfDay = 'any' | 'morning' | 'afternoon' | 'evening';
+export type SessionSearchFilters = {
+  date: string; sport?: string; timeOfDay?: SessionTimeOfDay; type?: 'any' | 'PRIVATE' | 'GROUP'; area?: string; q?: string;
+};
+export type SessionSearchResult = {
+  business: PublicBookingBusiness;
+  service: { id: string; name: string; category: string; type: 'PRIVATE' | 'GROUP'; duration: number };
+  instructor: { id: string; name: string; initials: string; color: string };
+  location: { id: string; name: string; area: string; address: string };
+  startAt: string; endAt: string; price: number; placesRemaining: number;
+};
+export type SessionSearchResponse = { results: SessionSearchResult[]; truncated: boolean };
+export type FavoriteClub = { slug: string; savedAt: string };
+
+export type TrainingGroupMemberSummary = { studentId: string; name: string; initials: string; joinedAt: string };
+export type TrainingGroup = {
+  id: string; name: string; sport: string; level: string; ageBand: string; description: string; scheduleNote: string;
+  capacity: number | null; serviceId: string | null; locationId: string | null; instructorId: string | null;
+  active: boolean; createdAt: string; updatedAt: string; members: TrainingGroupMemberSummary[];
+};
+export type TrainingGroupInput = {
+  name: string; sport?: string; level?: string; ageBand?: string; description?: string; scheduleNote?: string;
+  capacity?: number | null; serviceId?: string | null; locationId?: string | null; instructorId?: string | null;
+};
+
+export type GrowthInsights = {
+  days: number;
+  funnel: {
+    pageViews: number; availabilityChecks: number; bookings: number; rebooks: number;
+    waitlistJoined: number; waitlistAccepted: number; searchImpressions: number;
+  };
+  daily: Array<{ day: string; pageViews: number; availabilityChecks: number; bookings: number }>;
+  retention: { activeStudents: number; returningStudents: number; repeatRate: number | null };
+  feedback: { attendedPlaces: number; withSharedFeedback: number; coverage: number | null; viewed: number; viewRate: number | null };
+  waitlist: { waiting: number; offered: number };
 };

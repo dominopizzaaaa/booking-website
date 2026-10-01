@@ -12,6 +12,7 @@ import { createBookingAccountAlerts } from './account-notifications.js';
 import { notifyWorkspace } from './notifications.js';
 import { ensureChatThread } from './chat-events.js';
 import { reserveBookingUnit } from './venue-allocations.js';
+import { withCreditContext } from './credit-ledger.js';
 
 const seriesParticipantInput = z.object({
   studentId: z.string().min(1),
@@ -106,10 +107,13 @@ export async function createBookingSeriesInTransaction(
       packageId: entry.packageId, businessId, studentId: entry.studentId, serviceId: input.serviceId,
       sessionDates: slots.map(slot => slot.startAt),
     });
-    const reserved = await tx.lessonPackage.updateMany({
+    const reserved = await withCreditContext(tx, {
+      kind: 'BOOKED', actorUserId: actor.userId ?? null,
+      note: `${input.name || 'Booking series'} · ${slots.length} session${slots.length === 1 ? '' : 's'}`,
+    }, () => tx.lessonPackage.updateMany({
       where: { id: pkg.id, usedCredits: { lte: pkg.totalCredits - slots.length } },
       data: { usedCredits: { increment: slots.length } },
-    });
+    }));
     if (!reserved.count) throw new HttpError(409, `Not enough package credits for ${entry.student.name}`);
     packages.set(entry.studentId, pkg);
   }

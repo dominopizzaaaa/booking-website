@@ -98,6 +98,27 @@ import {
   type WorkspaceBooking,
   type WorkspaceResponse,
   type WorkspaceWireResponse,
+  type AccountWaitlistEntry,
+  type Attendance,
+  type BookingResult as WaitlistBookingResult,
+  type ChildProgress,
+  type ChildSchedule,
+  type CoachProfileInput,
+  type FavoriteClub,
+  type FeedbackInput,
+  type GrowthInsights,
+  type PackageActivity,
+  type ProgressFilters,
+  type ProgressSummary,
+  type ProviderFeedback,
+  type ProviderFeedbackList,
+  type ProviderWaitlist,
+  type ProviderWaitlistEntry,
+  type SessionSearchFilters,
+  type SessionSearchResponse,
+  type TrainingGroup,
+  type TrainingGroupInput,
+  type WaitlistJoinInput,
 } from './types';
 import {
   normalizeChatThreadDetail,
@@ -357,7 +378,10 @@ export const cancelPrivacyRequest = (id: string) =>
   });
 export const registerStudentAccount = (values: Omit<RegisterPersonalAccountInput, 'accountType' | 'businessName'>) =>
   registerAccount({ ...values, accountType: 'STUDENT' });
-export type AccountProfileInput = Partial<Pick<AuthSession['user'], 'name' | 'username' | 'sports' | 'phone' | 'parentName'>>;
+export type AccountProfileInput = Partial<Pick<AuthSession['user'], 'name' | 'username' | 'sports' | 'phone' | 'parentName'>> & {
+  /** COACH accounts only; the API rejects it for other account types. */
+  coachProfile?: CoachProfileInput;
+};
 export async function updateAuthAccount(values: AccountProfileInput): Promise<AuthSession> {
   return normalizeAuthSession(await api<CompatibleAuthSession>('/auth/me', { method: 'PATCH', body: JSON.stringify(values) }));
 }
@@ -859,3 +883,90 @@ export const adminOverview = () => api<AdminOverview>('/admin/overview');
 export const adminBusinesses = (params: { search?: string; filter?: 'all' | 'real' | 'demo' } = {}) => api<{ businesses: AdminBusiness[] }>(`/admin/businesses?${new URLSearchParams({ ...(params.search ? { search: params.search } : {}), filter: params.filter || 'all' })}`);
 export const adminDeleteBusiness = (id: string) => api<{ ok: true }>(`/admin/businesses/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const adminPurgeDemos = () => api<{ ok: true; deleted: number }>('/admin/purge-demos', { method: 'POST', body: JSON.stringify({}) });
+
+/* Training companion. Contract: docs/TRAINING_COMPANION.md */
+
+function queryString(values: Record<string, string | number | undefined | null>) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+  }
+  const text = params.toString();
+  return text ? `?${text}` : '';
+}
+
+// Discovery
+export const loadNextAvailableSlots = (slug: string, values: { serviceId: string; instructorId: string; locationId: string; limit?: number }) =>
+  api<{ slots: Slot[] }>(`/public/${encodeURIComponent(slug)}/next-available${queryString(values)}`);
+export const searchSessions = (filters: SessionSearchFilters) =>
+  api<SessionSearchResponse>(`/account/sessions/search${queryString(filters)}`);
+export const loadFavoriteClubs = () => api<{ favorites: FavoriteClub[] }>('/account/favorites');
+export const saveFavoriteClub = (slug: string) =>
+  api<FavoriteClub>(`/account/favorites/${encodeURIComponent(slug)}`, { method: 'PUT', body: JSON.stringify({}) });
+export const removeFavoriteClub = (slug: string) =>
+  api<{ ok: true }>(`/account/favorites/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+
+// Progress and coach feedback
+export const loadAccountProgress = (filters: ProgressFilters = {}) =>
+  api<ProgressSummary>(`/account/progress${queryString(filters)}`);
+export const markFeedbackViewed = (id: string) =>
+  api<{ ok: true }>(`/account/feedback/${encodeURIComponent(id)}/viewed`, { method: 'POST', body: JSON.stringify({}) });
+export const loadBookingFeedback = (bookingId: string) =>
+  api<ProviderFeedbackList>(`/bookings/${encodeURIComponent(bookingId)}/feedback`);
+export const saveParticipantFeedback = (bookingId: string, participantId: string, values: FeedbackInput) =>
+  api<ProviderFeedback>(`/bookings/${encodeURIComponent(bookingId)}/participants/${encodeURIComponent(participantId)}/feedback`, {
+    method: 'PUT', body: JSON.stringify(values),
+  });
+export const markParticipantAttendance = (bookingId: string, participantId: string, attendance: Attendance) =>
+  api<{ id: string; attendance: Attendance }>(`/bookings/${encodeURIComponent(bookingId)}/participants/${encodeURIComponent(participantId)}`, {
+    method: 'PATCH', body: JSON.stringify({ attendance }),
+  });
+export const markAllAttendance = (bookingId: string, attendance: Attendance, participantIds?: string[]) =>
+  api<{ participants: Array<{ id: string; attendance: Attendance }> }>(`/bookings/${encodeURIComponent(bookingId)}/participants`, {
+    method: 'PATCH', body: JSON.stringify(participantIds ? { attendance, participantIds } : { attendance }),
+  });
+
+// Family child projections
+export const loadFamilyChildSchedule = (childId: string) =>
+  api<ChildSchedule>(`/family/children/${encodeURIComponent(childId)}/schedule`);
+export const loadFamilyChildProgress = (childId: string) =>
+  api<ChildProgress>(`/family/children/${encodeURIComponent(childId)}/progress`);
+
+// Waitlists
+export const joinWaitlist = (slug: string, values: WaitlistJoinInput) =>
+  api<{ entry: AccountWaitlistEntry }>(`/public/${encodeURIComponent(slug)}/waitlist`, { method: 'POST', body: JSON.stringify(values) });
+export const loadAccountWaitlist = () => api<{ entries: AccountWaitlistEntry[] }>('/account/waitlist');
+export const acceptWaitlistOffer = (id: string, packageId?: string) =>
+  api<{ entry: AccountWaitlistEntry } & WaitlistBookingResult>(`/account/waitlist/${encodeURIComponent(id)}/accept`, {
+    method: 'POST', body: JSON.stringify(packageId ? { packageId } : {}),
+  });
+export const declineWaitlistOffer = (id: string) =>
+  api<{ entry: AccountWaitlistEntry }>(`/account/waitlist/${encodeURIComponent(id)}/decline`, { method: 'POST', body: JSON.stringify({}) });
+export const leaveWaitlist = (id: string) =>
+  api<{ entry: AccountWaitlistEntry }>(`/account/waitlist/${encodeURIComponent(id)}`, { method: 'DELETE' });
+export const loadBookingWaitlist = (bookingId: string) =>
+  api<ProviderWaitlist>(`/bookings/${encodeURIComponent(bookingId)}/waitlist`);
+export const offerWaitlistPlace = (entryId: string) =>
+  api<{ entry: ProviderWaitlistEntry }>(`/waitlist/${encodeURIComponent(entryId)}/offer`, { method: 'POST', body: JSON.stringify({}) });
+export const removeWaitlistEntry = (entryId: string) =>
+  api<{ entry: ProviderWaitlistEntry }>(`/waitlist/${encodeURIComponent(entryId)}`, { method: 'DELETE' });
+
+// Package credit activity
+export const loadAccountPackageActivity = (packageId: string) =>
+  api<PackageActivity>(`/account/packages/${encodeURIComponent(packageId)}/activity`);
+export const loadPackageActivity = (packageId: string) =>
+  api<PackageActivity>(`/packages/${encodeURIComponent(packageId)}/activity`);
+
+// Training groups
+export const loadTrainingGroups = () => api<{ groups: TrainingGroup[] }>('/training-groups');
+export const createTrainingGroup = (values: TrainingGroupInput) =>
+  api<TrainingGroup>('/training-groups', { method: 'POST', body: JSON.stringify(values) });
+export const updateTrainingGroup = (id: string, values: Partial<TrainingGroupInput> & { active?: boolean }) =>
+  api<TrainingGroup>(`/training-groups/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(values) });
+export const setTrainingGroupMembers = (id: string, studentIds: string[]) =>
+  api<TrainingGroup>(`/training-groups/${encodeURIComponent(id)}/members`, { method: 'PUT', body: JSON.stringify({ studentIds }) });
+export const archiveTrainingGroup = (id: string) =>
+  api<TrainingGroup>(`/training-groups/${encodeURIComponent(id)}`, { method: 'DELETE' });
+
+// Club growth insights
+export const loadGrowthInsights = (days = 30) => api<GrowthInsights>(`/insights/growth${queryString({ days })}`);

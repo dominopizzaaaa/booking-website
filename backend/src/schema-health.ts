@@ -25,6 +25,7 @@ type SchemaProbe = {
   chatSafeguardingAssigneeIdentity: boolean;
   accountSecurity: boolean;
   distributedRateLimits: boolean;
+  trainingCompanion: boolean;
 };
 
 export type SchemaHealth = { ready: boolean; missing: string[] };
@@ -386,7 +387,26 @@ export async function inspectSchema(client: PrismaClient): Promise<SchemaHealth>
       ) AS \"chatSafeguardingAssigneeIdentity\",
       to_regclass(current_schema() || '.\"RateLimitCounter\"') IS NOT NULL
         AND to_regclass(current_schema() || '.\"RateLimitCounter_resetAt_idx\"') IS NOT NULL
-        AS \"distributedRateLimits\"
+        AS \"distributedRateLimits\",
+      to_regclass(current_schema() || '.\"SessionFeedback\"') IS NOT NULL
+        AND to_regclass(current_schema() || '.\"WaitlistEntry_one_live_per_student\"') IS NOT NULL
+        AND to_regclass(current_schema() || '.\"PackageCreditEvent\"') IS NOT NULL
+        AND to_regclass(current_schema() || '.\"TrainingGroupMember\"') IS NOT NULL
+        AND to_regclass(current_schema() || '.\"FavoriteClub\"') IS NOT NULL
+        AND to_regclass(current_schema() || '.\"ClubFunnelCounter\"') IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM pg_trigger
+          WHERE tgrelid = to_regclass(current_schema() || '.\"LessonPackage\"')
+            AND tgname = 'LessonPackage_credit_ledger'
+            AND tgenabled <> 'D' AND NOT tgisinternal
+        )
+        AND EXISTS (
+          SELECT 1 FROM pg_trigger
+          WHERE tgrelid = to_regclass(current_schema() || '.\"PackageCreditEvent\"')
+            AND tgname = 'PackageCreditEvent_append_only'
+            AND tgenabled <> 'D' AND NOT tgisinternal
+        )
+        AS \"trainingCompanion\"
   `);
   const checks: Array<[keyof SchemaProbe, string]> = [
     ['coachInvitations', 'CoachInvitation'],
@@ -413,6 +433,7 @@ export async function inspectSchema(client: PrismaClient): Promise<SchemaHealth>
     ['chatSafeguardingTriggers', 'chat safeguarding retention triggers'],
     ['chatSafeguardingAssigneeIdentity', 'chat safeguarding assignee identity'],
     ['distributedRateLimits', 'distributed rate-limit counters'],
+    ['trainingCompanion', 'training companion feedback, waitlist, credit ledger and discovery tables'],
   ];
   const missing = checks.filter(([key]) => !probe?.[key]).map(([, label]) => label);
   return { ready: missing.length === 0, missing };
