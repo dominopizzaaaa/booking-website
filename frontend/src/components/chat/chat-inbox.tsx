@@ -78,6 +78,7 @@ import { NewConversationDialog } from './new-conversation-dialog';
 import { ProposeSessionDialog } from './propose-session-dialog';
 import { BlockAccountDialog } from '@/components/safeguarding/block-account-dialog';
 import { ReportMessageDialog } from '@/components/safeguarding/report-message-dialog';
+import { Disclosure } from '@/components/ui/progressive-disclosure';
 
 type ChatMode = 'participant' | 'admin';
 
@@ -280,7 +281,6 @@ function ChatList({
                       <span className={cn('mt-0.5 block truncate text-xs', unread ? 'font-semibold text-[#263a30]' : 'text-[#59675c]')}>
                         {chatPreview(thread.lastMessage)}
                       </span>
-                      {typeof thread.messageCount === 'number' && <span className="mt-0.5 block text-[11px] text-[#59675c]">{thread.messageCount} message{thread.messageCount === 1 ? '' : 's'}</span>}
                     </span>
                     {unread && <span className="grid h-5 min-w-5 shrink-0 place-items-center rounded-full bg-[#b3483a] px-1.5 text-[10px] font-bold leading-none text-white">
                       <span aria-hidden="true">{chatBadge(thread.unreadCount)}</span>
@@ -831,7 +831,6 @@ function ChatThreadPane({ threadId, mode, fullscreen, singlePane, onBack, beginU
           {statusBadge && <span className="badge shrink-0 !py-0.5">{statusBadge}</span>}
         </h2>
         <p className="truncate text-[11px] text-[#59675c]">{subtitle}</p>
-        <p className="truncate text-[11px] text-[#59675c]">{conversation ? accountMemberSummary(detail.members) : chatMemberSummary(detail.members)}</p>
       </div>
       {conversation && mode === 'participant' && detail.viewer.canAssignCoach && <button type="button" onClick={() => setCoachDialogOpen(true)}
         aria-label="Manage conversation coach" title="Manage conversation coach"
@@ -852,12 +851,18 @@ function ChatThreadPane({ threadId, mode, fullscreen, singlePane, onBack, beginU
     </header>
 
     <div ref={scrollRef} onScroll={trackScroll} className="chat-messages min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-4 sm:px-4">
-      <p className="!mx-auto !mb-6 max-w-md text-balance text-center text-[11px] leading-relaxed text-[#59675c]">
-        <LockKeyhole size={12} className="mr-1 inline-block align-[-1px]" aria-hidden="true" />
-        {session
-          ? 'Visible to the coach, students, and club in this session. Courtly does not monitor every message; authorized reviewers can review relevant context after a report.'
-          : `Visible to the people in this conversation${conversation?.assignedCoach ? `, including ${conversation.assignedCoach.name}` : ''}. Courtly does not monitor every message; authorized reviewers can review relevant context after a report.`}
-      </p>
+      <Disclosure
+        title="Conversation details"
+        summary={conversation ? accountMemberSummary(detail.members) : chatMemberSummary(detail.members)}
+        className="!mx-auto !mb-5 max-w-xl bg-white"
+      >
+        <p className="flex items-start gap-2 text-[11px] leading-relaxed text-[#59675c]">
+          <LockKeyhole size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
+          <span>{session
+            ? 'Visible to the coach, students, and club in this session. Courtly does not monitor every message; authorized reviewers can review relevant context after a report.'
+            : `Visible to the people in this conversation${conversation?.assignedCoach ? `, including ${conversation.assignedCoach.name}` : ''}. Courtly does not monitor every message; authorized reviewers can review relevant context after a report.`}</span>
+        </p>
+      </Disclosure>
       {canLoadEarlier && <div className="mb-4 flex justify-center">
         <button type="button" onClick={() => void loadEarlier()} disabled={loadingEarlier} className="inline-flex min-h-11 items-center gap-2 rounded-full border border-[#dfe5df] bg-white px-4 text-xs font-semibold text-[#33443b] hover:bg-[#f2f5f1] disabled:opacity-60">
           {loadingEarlier && <Loader2 size={13} className="animate-spin" aria-hidden="true" />}Load earlier messages
@@ -944,7 +949,7 @@ function ChatThreadPane({ threadId, mode, fullscreen, singlePane, onBack, beginU
 const defaultHeading = {
   eyebrow: 'Conversations',
   title: 'Chats',
-  description: 'Message students, coaches and clubs, or keep planning inside a session conversation.',
+  description: 'Messages and session planning, together.',
 };
 
 /**

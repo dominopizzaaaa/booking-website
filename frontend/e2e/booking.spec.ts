@@ -50,7 +50,11 @@ async function openWorkspaceView(page: Page, label: string) {
   const navigation = await visibleWorkspaceNavigation(page);
   await navigation.getByRole('button', { name: 'Explore', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: `Open ${label}`, exact: true }).click();
+  const destination = page.getByRole('button', { name: `Open ${label}`, exact: true });
+  if (!await destination.isVisible()) {
+    await page.getByRole('button', { name: /^See \d+ more tools$/ }).click();
+  }
+  await destination.click();
 }
 
 async function expectWorkspaceHomeUrl(page: Page) {
@@ -99,7 +103,7 @@ test('student creates an account, books, views history, and cancels', async ({ p
   // session before entering the account-required public booking journey.
   await page.request.post('/api/auth/logout', { data: {} });
   await page.goto(`/book/${workspace.business.slug}`);
-  await expect(page.getByRole('heading', { name: 'Good days start with a class.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Choose a class' })).toBeVisible();
   await page.getByRole('button', { name: new RegExp(escapeRegExp(service.name)) }).click();
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await page.getByRole('button', { name: new RegExp(escapeRegExp(location.name)) }).click();
@@ -644,6 +648,7 @@ test('self-registered coach is linked to a club by its club account', async ({ p
   await expect(page.locator('main').getByText('Your booking page', { exact: true })).toHaveCount(0);
   await coachNavigation.getByRole('button', { name: 'Explore', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: /^See \d+ more tools$/ }).click();
   for (const label of ['Calendar', 'Bookings', 'Students', 'Locations', 'Availability']) {
     await expect(page.getByRole('button', { name: `Open ${label}`, exact: true })).toBeEnabled();
   }

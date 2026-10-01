@@ -491,9 +491,9 @@ test('an unaffiliated coach can search public account profiles from the account 
 
   await page.goto('/account');
   await expect(page.getByRole('heading', { name: 'No club access yet', exact: true })).toBeVisible();
-  const people = page.locator('section[aria-labelledby="account-people-heading"]');
-  await expect(people.getByRole('heading', { name: 'Find people on Courtly', exact: true })).toBeVisible();
-  await expect(people).toContainText('name, username, or exact email address');
+  const people = page.locator('details').filter({ hasText: 'Find people on Courtly' });
+  await people.locator('summary').click();
+  await expect(people).toContainText('name, username, or exact email');
   await people.getByRole('searchbox', { name: 'Search all Courtly accounts', exact: true }).fill('avery@example.test');
   await people.getByRole('button', { name: 'Search people', exact: true }).click();
 

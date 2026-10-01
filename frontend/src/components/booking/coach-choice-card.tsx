@@ -6,6 +6,7 @@ import { coachProfileDetails } from "@/lib/club-profile";
 import type { PublicInstructor } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ClampedText } from "./clamped-text";
+import { Disclosure } from "@/components/ui/progressive-disclosure";
 
 /**
  * One coach in the "Find your coach" step. The selection button stays short
@@ -74,30 +75,37 @@ export function CoachChoiceCard({
         </span>
       </button>
       {details && (details.bio || rows.length > 0 || details.qualifications.length > 0) && (
-        <div className="flex flex-col gap-3 border-t border-[#edf0e8] px-3.5 pb-3.5 pt-3 sm:px-4 sm:pb-4">
-          {details.bio && (
-            <ClampedText text={details.bio} describedBy={nameId} className="text-xs leading-relaxed text-[#3d5043]" />
-          )}
-          {rows.length > 0 && (
-            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-xs leading-relaxed">
-              {rows.map((row) => (
-                <div key={row.label} className="contents">
-                  <dt className="font-semibold text-[#5d6b5f]">{row.label}</dt>
-                  <dd className="break-words text-[#2f4a3a]">{row.value}</dd>
-                </div>
-              ))}
-            </dl>
-          )}
-          {details.qualifications.length > 0 && (
-            <div>
-              <p className="text-xs font-semibold text-[#5d6b5f]">Self-reported qualifications</p>
-              <ul className="!mt-1 list-disc space-y-0.5 pl-4 text-xs leading-relaxed text-[#2f4a3a]">
-                {details.qualifications.map((qualification) => (
-                  <li key={qualification} className="break-words">{qualification}</li>
+        <div className="border-t border-[#edf0e8] px-3.5 py-3 sm:px-4">
+          <Disclosure
+            title="Coach background"
+            summary="Bio, coaching preferences and self-reported qualifications"
+            className="border-0 bg-transparent"
+            contentClassName="flex flex-col gap-3 !px-0 !pb-0"
+          >
+            {details.bio && (
+              <ClampedText text={details.bio} describedBy={nameId} className="text-xs leading-relaxed text-[#3d5043]" />
+            )}
+            {rows.length > 0 && (
+              <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-xs leading-relaxed">
+                {rows.map((row) => (
+                  <div key={row.label} className="contents">
+                    <dt className="font-semibold text-[#5d6b5f]">{row.label}</dt>
+                    <dd className="break-words text-[#2f4a3a]">{row.value}</dd>
+                  </div>
                 ))}
-              </ul>
-            </div>
-          )}
+              </dl>
+            )}
+            {details.qualifications.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-[#5d6b5f]">Self-reported qualifications</p>
+                <ul className="!mt-1 list-disc space-y-0.5 pl-4 text-xs leading-relaxed text-[#2f4a3a]">
+                  {details.qualifications.map((qualification) => (
+                    <li key={qualification} className="break-words">{qualification}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </Disclosure>
         </div>
       )}
     </li>

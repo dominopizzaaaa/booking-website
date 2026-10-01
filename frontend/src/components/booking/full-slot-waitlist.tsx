@@ -1,11 +1,12 @@
 "use client";
 
-import { useId } from "react";
+import { useId, useState } from "react";
 import Link from "next/link";
 import { CheckCheck, LogIn, UsersRound } from "lucide-react";
 import { waitlistPositionText } from "@/lib/club-profile";
 import type { AccountWaitlistEntry, Slot } from "@/lib/types";
 import { time } from "@/lib/utils";
+import { SeeMoreButton } from "@/components/ui/progressive-disclosure";
 
 /**
  * Full group times, listed after the bookable ones. They are deliberately not
@@ -28,7 +29,10 @@ export function FullSlotWaitlist({
   onJoin: (slot: Slot) => void;
 }) {
   const headingId = useId();
+  const listId = useId();
+  const [showAll, setShowAll] = useState(false);
   if (slots.length === 0) return null;
+  const visibleSlots = showAll ? slots : slots.slice(0, 4);
   return (
     <section aria-labelledby={headingId} className="!mt-6 border-t border-[#eef0eb] pt-5">
       <h3 id={headingId} className="flex items-center gap-2 !text-sm">
@@ -40,8 +44,8 @@ export function FullSlotWaitlist({
           ? "These Classes are full. Join a waitlist and, if a place opens, Courtly offers it to you to confirm."
           : "These Classes are full. Sign in to join a waitlist and be offered a place if one opens."}
       </p>
-      <ul className="!mt-3 space-y-2">
-        {slots.map((slot) => {
+      <ul id={listId} className="!mt-3 space-y-2">
+        {visibleSlots.map((slot) => {
           const label = time(slot.startAt, timezone);
           const entry = joinedEntryFor(slot);
           return (
@@ -79,6 +83,16 @@ export function FullSlotWaitlist({
           );
         })}
       </ul>
+      {slots.length > 4 && (
+        <SeeMoreButton
+          expanded={showAll}
+          onToggle={() => setShowAll((value) => !value)}
+          controls={listId}
+          hiddenCount={slots.length - visibleSlots.length}
+          noun="full times"
+          className="!mt-2"
+        />
+      )}
     </section>
   );
 }

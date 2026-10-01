@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -22,6 +22,7 @@ import { formatInTimeZone } from 'date-fns-tz';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+import { SeeMoreButton } from '@/components/ui/progressive-disclosure';
 import { ApiError, loadAuthSession, loadBooking, loadWorkspace, mutate, openBookingChat, searchAccounts, switchWorkspaceAccess } from '@/lib/api';
 import { alertsButtonLabel, chatBadge, chatTabLabel } from '@/lib/chat';
 import { destroyProductTour, startProductTour, type ProductTourContext } from '@/lib/product-tour';
@@ -124,11 +125,20 @@ const staffToolDescriptions: Partial<Record<string, string>> = {
 };
 
 function StaffLanding({ data, onNavigate, home }: { data: WorkspaceResponse; onNavigate: (view: string) => void; home: boolean }) {
+  const [showAllTools, setShowAllTools] = useState(false);
+  const moreToolsId = useId();
   const tools = Object.keys(staffViewPermissions).filter(view => view !== 'settings' && canAccessWorkspaceView(data, view));
+  const primaryTools = tools.slice(0, 3);
+  const secondaryTools = tools.slice(3);
+  const hiddenCount = Math.max(0, tools.length - 3);
   return <section className="mx-auto max-w-5xl" aria-labelledby="staff-workspace-title">
     <header data-tour="workspace-home" className="section-heading"><div><p className="eyebrow">Named staff access</p><h1 id="staff-workspace-title" className="mt-2">{home ? `Welcome, ${data.user.name.split(' ')[0]}.` : 'Your club tools'}</h1><p className="mt-2 max-w-2xl text-xs leading-relaxed text-stone-500">You are working in {data.business.name} as named staff. The tools below reflect the permissions assigned by the club.</p></div></header>
-    <div data-tour="workspace-staff-tools">{tools.length ? <div className="workspace-explore-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{tools.map(tool => <button key={tool} type="button" className="workspace-explore-card group min-h-32 rounded-2xl border border-[#e2e8df] bg-white p-5 text-left transition hover:-translate-y-0.5 hover:border-[#cbd8c5] hover:shadow-sm" onClick={() => onNavigate(tool)}><span className="grid h-9 w-9 place-items-center rounded-xl bg-[#edf2e7] text-[#66805a]"><Compass size={17} /></span><span className="mt-4 block text-sm font-semibold text-[#294735]">{viewTitles[tool] ?? tool}</span><span className="mt-2 block text-[11px] leading-relaxed text-stone-500">{staffToolDescriptions[tool]}</span></button>)}</div> : <div className="rounded-2xl border border-[#e2e8df] bg-white p-6 text-sm text-stone-500">This role does not currently include any workspace tools. Ask the club account to review your staff access.</div>}</div>
+    <div data-tour="workspace-staff-tools">{tools.length ? <><div className="workspace-explore-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{primaryTools.map(tool => <StaffToolButton key={tool} tool={tool} onNavigate={onNavigate} />)}</div>{hiddenCount > 0 && <><div className="my-3 flex justify-center border-y border-[#e2e7df] py-2"><SeeMoreButton expanded={showAllTools} onToggle={() => setShowAllTools(value => !value)} controls={moreToolsId} hiddenCount={hiddenCount} noun="tools" /></div><div id={moreToolsId} hidden={!showAllTools} className="workspace-explore-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{secondaryTools.map(tool => <StaffToolButton key={tool} tool={tool} onNavigate={onNavigate} />)}</div></>}</> : <div className="rounded-2xl border border-[#e2e8df] bg-white p-6 text-sm text-stone-500">This role does not currently include any workspace tools. Ask the club account to review your staff access.</div>}</div>
   </section>;
+}
+
+function StaffToolButton({ tool, onNavigate }: { tool: string; onNavigate: (view: string) => void }) {
+  return <button type="button" className="workspace-explore-card group min-h-32 rounded-2xl border border-[#e2e8df] bg-white p-5 text-left transition hover:-translate-y-0.5 hover:border-[#cbd8c5] hover:shadow-sm" onClick={() => onNavigate(tool)}><span className="grid h-9 w-9 place-items-center rounded-xl bg-[#edf2e7] text-[#66805a]"><Compass size={17} /></span><span className="mt-4 block text-sm font-semibold text-[#294735]">{viewTitles[tool] ?? tool}</span><span className="mt-2 block text-[11px] leading-relaxed text-stone-500">{staffToolDescriptions[tool]}</span></button>;
 }
 
 function routeView(data: WorkspaceResponse) {

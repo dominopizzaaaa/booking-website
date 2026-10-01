@@ -8,6 +8,7 @@ import {
 } from '@/lib/progress';
 import type { LearnerFeedback, ProgressFilters, ProgressSummary } from '@/lib/types';
 import { cn, shortDate, time } from '@/lib/utils';
+import { Disclosure, SeeMoreButton } from '@/components/ui/progressive-disclosure';
 import { EmptyState, ErrorNotice, LoadingScreen } from './shared';
 import { compactButton, eyebrow, field, panel, secondaryButton } from './styles';
 
@@ -86,20 +87,18 @@ function FeedbackItem({
           From {item.coachName}{item.sport ? ` · ${item.sport}` : ''}{item.editedAt ? ' · edited' : ''}
         </p>
         {!expanded && <p className="!mt-2 text-sm leading-relaxed text-[#415244]">{feedbackPreview(item)}</p>}
-        {expanded && (
-          <dl id={panelId} className="mt-3 space-y-3">
+        <dl id={panelId} hidden={!expanded} className="mt-3 space-y-3">
             {fields.map(entry => (
               <div key={entry.key}>
                 <dt className="text-[10px] font-semibold uppercase tracking-wide text-[#59675c]">{entry.label}</dt>
                 <dd className="mt-1 whitespace-pre-line text-sm leading-relaxed text-[#304b39]">{entry.text}</dd>
               </div>
             ))}
-          </dl>
-        )}
+        </dl>
         <button
           type="button"
           aria-expanded={expanded}
-          aria-controls={expanded ? panelId : undefined}
+          aria-controls={panelId}
           onClick={onToggle}
           className={cn(compactButton, 'mt-3')}
         >
@@ -150,6 +149,8 @@ export function ProgressView({
   const [error, setError] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [viewed, setViewed] = useState<Set<string>>(() => new Set());
+  const [showMoreStats, setShowMoreStats] = useState(false);
+  const [showAllFeedback, setShowAllFeedback] = useState(false);
   const [reload, setReload] = useState(0);
   const requestRef = useRef(0);
   const requestFilters = serverFilters ? cleanProgressFilters(filters) : {};
@@ -206,6 +207,18 @@ export function ProgressView({
   const active = progressFiltersActive(filters);
   const possessive = subjectName ? `${subjectName}’s` : 'your';
   const stats = summary?.stats;
+  const primaryStats = stats ? [
+    ['Sessions attended', String(stats.attended)],
+    ['Current streak', streakText(stats.currentStreakWeeks)],
+    ['Time on court', hoursText(stats.hoursOnCourt)],
+    ['Upcoming sessions', String(stats.upcoming)],
+  ] : [];
+  const secondaryStats = stats ? [
+    ['Longest streak', weeksText(stats.longestStreakWeeks)],
+    ['Attendance rate', attendanceRateText(stats.attendanceRate)],
+    ['Clubs', String(stats.clubs)],
+    ['Coaches', String(stats.coaches)],
+  ] : [];
 
   return (
     <div className="space-y-6">
@@ -234,38 +247,6 @@ export function ProgressView({
         <LoadingScreen compact text="Loading progress…" />
       ) : (
         <>
-          <section aria-labelledby={`${idPrefix}-stats`} className={cn(panel, 'p-5')}>
-            <div className="flex items-start gap-3">
-              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#e8edf2] text-[#4f687d]"><BarChart3 size={18} aria-hidden="true" /></span>
-              <div>
-                <p className={eyebrow}>Automatic statistics</p>
-                <Sub id={`${idPrefix}-stats`} className="!mt-1 text-lg font-semibold tracking-tight">Training at a glance</Sub>
-                <p className="!mt-1 text-xs leading-relaxed text-[#59675c]">Calculated by Courtly from the attendance clubs record. Late arrivals count as attended.</p>
-              </div>
-            </div>
-            {stats && (
-              <dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                {[
-                  ['Sessions attended', String(stats.attended)],
-                  ['Current streak', streakText(stats.currentStreakWeeks)],
-                  ['Longest streak', weeksText(stats.longestStreakWeeks)],
-                  ['Time on court', hoursText(stats.hoursOnCourt)],
-                  ['Attendance rate', attendanceRateText(stats.attendanceRate)],
-                  ['Upcoming sessions', String(stats.upcoming)],
-                  ['Clubs', String(stats.clubs)],
-                  ['Coaches', String(stats.coaches)],
-                ].map(([label, value]) => (
-                  <div key={label} className="rounded-xl bg-[#f6f8f3] p-3">
-                    <dt className="text-[10px] uppercase tracking-wide text-[#59675c]">{label}</dt>
-                    <dd className="mt-1 text-sm font-semibold text-[#34533e]">{value}</dd>
-                  </div>
-                ))}
-              </dl>
-            )}
-            {serverFilters && active && <p className="!mt-3 text-[11px] text-[#59675c]">Statistics reflect the filters below.</p>}
-            <MonthlyChart monthly={summary.monthly} idPrefix={idPrefix} />
-          </section>
-
           {summary.currentGoal && (
             <section aria-labelledby={`${idPrefix}-goal`} className="rounded-2xl border border-[#d6e4dd] bg-[#f0f6f2] p-5">
               <div className="flex items-start gap-3">
@@ -275,12 +256,54 @@ export function ProgressView({
                   <Sub id={`${idPrefix}-goal`} className="!mt-1 text-base font-semibold text-[#263e33]">Current goal</Sub>
                   <p className="!mt-2 text-sm leading-relaxed text-[#304b39]">{summary.currentGoal.text}</p>
                   <p className="!mt-2 text-[11px] text-[#59675c]">
-                    Set by {summary.currentGoal.coachName} at {summary.currentGoal.businessName} · {shortDate(summary.currentGoal.setAt)}
+                    {summary.currentGoal.coachName} · {summary.currentGoal.businessName} · {shortDate(summary.currentGoal.setAt)}
                   </p>
                 </div>
               </div>
             </section>
           )}
+
+          <section aria-labelledby={`${idPrefix}-stats`} className={cn(panel, 'p-5')}>
+            <div className="flex items-start gap-3">
+              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#e8edf2] text-[#4f687d]"><BarChart3 size={18} aria-hidden="true" /></span>
+              <div>
+                <p className={eyebrow}>Automatic statistics</p>
+                <Sub id={`${idPrefix}-stats`} className="!mt-1 text-lg font-semibold tracking-tight">Training at a glance</Sub>
+                <p className="!mt-1 text-xs text-[#59675c]">Based on recorded attendance; late counts as attended.</p>
+              </div>
+            </div>
+            {stats && (
+              <dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {primaryStats.map(([label, value]) => (
+                  <div key={label} className="rounded-xl bg-[#f6f8f3] p-3">
+                    <dt className="text-[10px] uppercase tracking-wide text-[#59675c]">{label}</dt>
+                    <dd className="mt-1 text-sm font-semibold text-[#34533e]">{value}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+            {serverFilters && active && <p className="!mt-3 text-[11px] text-[#59675c]">Statistics reflect the filters below.</p>}
+            <div id={`${idPrefix}-more-stats`} hidden={!showMoreStats}>
+              <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {secondaryStats.map(([label, value]) => (
+                  <div key={label} className="rounded-xl bg-[#f6f8f3] p-3">
+                    <dt className="text-[10px] uppercase tracking-wide text-[#59675c]">{label}</dt>
+                    <dd className="mt-1 text-sm font-semibold text-[#34533e]">{value}</dd>
+                  </div>
+                ))}
+              </dl>
+              <MonthlyChart monthly={summary.monthly} idPrefix={idPrefix} />
+            </div>
+            <SeeMoreButton
+              expanded={showMoreStats}
+              controls={`${idPrefix}-more-stats`}
+              hiddenCount={secondaryStats.length}
+              noun="statistics"
+              collapsedLabel="More progress"
+              onToggle={() => setShowMoreStats((value) => !value)}
+              className="mt-3 w-full"
+            />
+          </section>
 
           <section aria-labelledby={`${idPrefix}-feedback`} className="space-y-4">
             <div className="flex items-start gap-3">
@@ -288,12 +311,13 @@ export function ProgressView({
               <div>
                 <p className={eyebrow}>Written by coaches</p>
                 <Sub id={`${idPrefix}-feedback`} className="!mt-1 text-lg font-semibold tracking-tight">Coach feedback</Sub>
-                <p className="!mt-1 text-xs leading-relaxed text-[#59675c]">Notes coaches chose to share after {possessive} sessions, newest first.</p>
+                <p className="!mt-1 text-xs text-[#59675c]">Shared after {possessive} sessions, newest first.</p>
               </div>
             </div>
 
             {options && (options.clubs.length > 1 || options.coaches.length > 1 || options.sports.length > 1) && (
-              <fieldset className={cn(panel, 'p-4')}>
+              <Disclosure title="Filter feedback" summary="Narrow by club, coach, or sport.">
+              <fieldset id={`${idPrefix}-feedback-filters`}>
                 <legend className="sr-only">Filter coach feedback</legend>
                 <div className="grid gap-3 sm:grid-cols-3">
                   {options.clubs.length > 1 && (
@@ -328,6 +352,7 @@ export function ProgressView({
                   <button type="button" className={cn(compactButton, 'mt-3')} onClick={() => setFilters({})}>Clear feedback filters</button>
                 )}
               </fieldset>
+              </Disclosure>
             )}
 
             <p role="status" aria-live="polite" className="text-xs font-medium text-[#59675c]">
@@ -336,8 +361,9 @@ export function ProgressView({
             {error && <ErrorNotice message={error} />}
 
             {timeline.length ? (
+              <>
               <ol className="space-y-3">
-                {timeline.map(item => (
+                {timeline.slice(0, 3).map(item => (
                   <FeedbackItem
                     key={item.id}
                     item={item}
@@ -348,6 +374,29 @@ export function ProgressView({
                   />
                 ))}
               </ol>
+              <ol id={`${idPrefix}-feedback-list`} hidden={!showAllFeedback} start={4} className="space-y-3">
+                {timeline.slice(3).map(item => (
+                  <FeedbackItem
+                    key={item.id}
+                    item={item}
+                    expanded={expanded.has(item.id)}
+                    viewed={item.viewed || viewed.has(item.id) || !markViewed}
+                    onToggle={() => toggle(item)}
+                    headingLevel={headingLevel === 1 ? 3 : 4}
+                  />
+                ))}
+              </ol>
+              {timeline.length > 3 && (
+                <SeeMoreButton
+                  expanded={showAllFeedback}
+                  controls={`${idPrefix}-feedback-list`}
+                  hiddenCount={timeline.length - 3}
+                  noun="notes"
+                  onToggle={() => setShowAllFeedback((value) => !value)}
+                  className="w-full"
+                />
+              )}
+              </>
             ) : (
               <EmptyState
                 headingLevel={headingLevel === 1 ? 2 : 3}

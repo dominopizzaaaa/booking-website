@@ -213,6 +213,9 @@ async function mockAccountRentalFlow(page: Page, options: {
     if (request.method() === 'GET' && path === '/api/auth/me') {
       return fulfillJson(route, options.session ?? coachSession);
     }
+    if (request.method() === 'GET' && (path === '/api/coach-invitations' || path === '/api/club-staff-invitations')) {
+      return fulfillJson(route, { invitations: [] });
+    }
     if (request.method() === 'GET' && path === '/api/calendar/connection') {
       return fulfillJson(route, calendarStatus);
     }
@@ -314,7 +317,8 @@ test('an unaffiliated coach can reserve a rental from Account', async ({ page })
   await expect(page.getByText(inactiveClub.name, { exact: true })).toHaveCount(0);
   await expect(page.getByText(legacyPractice.name, { exact: true })).toHaveCount(0);
 
-  const rentals = page.getByRole('region', { name: 'Explore rental venues', exact: true });
+  const rentals = page.locator('details').filter({ hasText: 'Explore rental venues' });
+  await rentals.locator('summary').click();
   await expect.poll(() => requests.rentalQueries.at(-1)).toEqual({ sport: null, cursor: null });
   const sportFilter = rentals.getByLabel('Filter rental venues by sport', { exact: true });
   await sportFilter.fill(' Tennis ');
@@ -386,6 +390,7 @@ test('account rental retry rotates the checkout key after a definitive failure',
   await page.clock.install({ time: frozenTime });
   const requests = await mockAccountRentalFlow(page, { failFirstCheckout: true });
   await page.goto('/account');
+  await page.locator('details').filter({ hasText: 'Explore rental venues' }).locator('summary').click();
   await page.getByRole('button', { name: `View available times for ${rental.name}`, exact: true }).click();
   const dialog = page.getByRole('dialog', { name: rental.name, exact: true });
   await dialog.getByLabel('Date', { exact: true }).fill(selectedDate);
@@ -404,6 +409,7 @@ test('account free rental checkout never presents a card payment or refund', asy
   await page.clock.install({ time: frozenTime });
   await mockAccountRentalFlow(page, { freeCheckout: true });
   await page.goto('/account');
+  await page.locator('details').filter({ hasText: 'Explore rental venues' }).locator('summary').click();
   await page.getByRole('button', { name: `View available times for ${rental.name}`, exact: true }).click();
   const dialog = page.getByRole('dialog', { name: rental.name, exact: true });
   await dialog.getByLabel('Date', { exact: true }).fill(selectedDate);

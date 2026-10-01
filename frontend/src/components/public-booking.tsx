@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -30,7 +31,6 @@ import {
   MessageCircle,
   RefreshCw,
   ShieldCheck,
-  Sparkles,
   UserRound,
   UsersRound,
   Video,
@@ -97,6 +97,7 @@ import { FullSlotWaitlist } from "@/components/booking/full-slot-waitlist";
 import { NextAvailableStrip, type NextAvailableState } from "@/components/booking/next-available-strip";
 import { PreselectionBanner } from "@/components/booking/preselection-banner";
 import { WaitlistDialog } from "@/components/booking/waitlist-dialog";
+import { SeeMoreButton } from "@/components/ui/progressive-disclosure";
 const venueMessage = "Venue to be arranged — booking does not reserve a court";
 const steps = [
   "Class",
@@ -126,6 +127,46 @@ function packageCreditLabel(count: number) {
 function packageCoversOccurrences(pkg: AccountPackage, startAt: string, repeatWeeks: number, timezone: string) {
   if (!startAt || pkg.state !== "ACTIVE" || !pkg.paid || pkg.remainingCredits < repeatWeeks) return false;
   return coversWeeklyOccurrences(pkg.expiresAt, startAt, repeatWeeks, timezone);
+}
+function BoundedChoices({
+  items,
+  initialCount,
+  noun,
+  className,
+  listLabel,
+  preserveIndex = -1,
+}: {
+  items: ReactNode[];
+  initialCount: number;
+  noun: string;
+  className: string;
+  listLabel?: string;
+  preserveIndex?: number;
+}) {
+  const id = useId();
+  const [expanded, setExpanded] = useState(false);
+  const collapsed = items.filter((_, index) => index < initialCount || index === preserveIndex);
+  const visible = expanded ? items : collapsed;
+  const canToggle = collapsed.length < items.length;
+  return (
+    <>
+      {listLabel ? (
+        <ul id={id} role="list" aria-label={listLabel} className={className}>{visible}</ul>
+      ) : (
+        <div id={id} className={className}>{visible}</div>
+      )}
+      {canToggle && (
+        <SeeMoreButton
+          expanded={expanded}
+          onToggle={() => setExpanded((value) => !value)}
+          controls={id}
+          hiddenCount={items.length - visible.length}
+          noun={noun}
+          className="!mt-2"
+        />
+      )}
+    </>
+  );
 }
 function messageOf(error: unknown) {
   return error instanceof Error
@@ -677,14 +718,19 @@ function DateSlots({
   minimumDate: string;
 }) {
   const [week, setWeek] = useState(date || minimumDate);
+  const [showAllTimes, setShowAllTimes] = useState(false);
+  const timesId = useId();
   // A date chosen from outside the week strip (a link or "Next available")
   // brings its week into view, so the selected day is never off-screen.
   useEffect(() => {
     if (!date) return;
     setWeek((current) => (date < current || date > plusDays(current, 6) ? date : current));
   }, [date]);
+  useEffect(() => setShowAllTimes(false), [date]);
   const dates = Array.from({ length: 7 }, (_, i) => plusDays(week, i));
   const available = slots.filter((slot) => slot.available);
+  const collapsedTimes = available.filter((candidate, index) => index < 8 || candidate.startAt === selected);
+  const visibleTimes = showAllTimes ? available : collapsedTimes;
   return (
     <div className="space-y-6">
       <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -820,8 +866,9 @@ function DateSlots({
             </button>
           </div>
         ) : (
-          <div role="radiogroup" aria-label="Available start times" className="grid grid-cols-3 gap-2 sm:grid-cols-4">
-            {available.map((slot) => (
+          <>
+          <div id={timesId} role="radiogroup" aria-label="Available start times" className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+            {visibleTimes.map((slot) => (
               <button
                 key={slot.startAt}
                 type="button"
@@ -846,6 +893,17 @@ function DateSlots({
               </button>
             ))}
           </div>
+          {collapsedTimes.length < available.length && (
+            <SeeMoreButton
+              expanded={showAllTimes}
+              onToggle={() => setShowAllTimes((value) => !value)}
+              controls={timesId}
+              hiddenCount={available.length - visibleTimes.length}
+              noun="times"
+              className="!mt-2"
+            />
+          )}
+          </>
         )}
       </div>
     </div>
@@ -922,7 +980,7 @@ export function PublicBooking({ slug }: { slug: string }) {
     try {
       const value = await loadPublicBusiness(slug);
       setData(value);
-      setDate(dateKey(new Date(), value.business.timezone));
+      setDate((current) => current || dateKey(new Date(), value.business.timezone));
     } catch (error) {
       setLoadError(messageOf(error));
     } finally {
@@ -1514,18 +1572,18 @@ export function PublicBooking({ slug }: { slug: string }) {
     );
 
   const titles = [
-    "Good days start with a class.",
-    "Your coach. Your kind of place.",
-    "Make a little time for your game.",
-    "Keep your bookings close.",
-    "All set for your next good game?",
+    "Choose a class",
+    "Choose a place and coach",
+    "Choose a date and time",
+    "Sign in and add details",
+    "Review and confirm",
   ];
   const subtitles = [
-    "A little practice, a little progress, a whole lot of possibility. Find the right class for you.",
-    "Find your match, on and off the court. Choose where and who you’d like to play with.",
-    "Pick a day and a time that fits. Availability is checked directly with your coach’s schedule.",
-    "Sign in or create an account here. Your selected class and time will stay right where they are.",
-    "Take a moment to check the details. We’ll keep the rest simple.",
+    "Select the class you want to book.",
+    "Choose where to play, then choose an available coach.",
+    "Pick an available time from the coach’s schedule.",
+    "Sign in or create an account. Your class and time will stay selected.",
+    "Check the player, session, price, payment and cancellation details.",
   ];
   return (
     <PublicShell business={data.business} homeHref={shellHomeHref}>
@@ -1534,8 +1592,7 @@ export function PublicBooking({ slug }: { slug: string }) {
           business={data.business}
           summary={clubDecisionSummary(data)}
           venueConfirmation={venueConfirmation}
-          // Open while choosing a Class; afterwards it folds away until asked for.
-          open={clubDetailsOpen ?? step === 0}
+          open={clubDetailsOpen ?? false}
           onOpenChange={setClubDetailsOpen}
         />
         {banner && bookingSource !== "DIRECT" && (
@@ -1647,7 +1704,12 @@ export function PublicBooking({ slug }: { slug: string }) {
                     </p>
                   </div>
                 ) : (
-                  data.services
+                  <BoundedChoices
+                    initialCount={4}
+                    noun="classes"
+                    className="space-y-3"
+                    preserveIndex={data.services.filter((value) => value.active).findIndex((value) => value.id === serviceId)}
+                    items={data.services
                     .filter((value) => value.active)
                     .map((value) => {
                       const prices = value.locations
@@ -1767,7 +1829,8 @@ export function PublicBooking({ slug }: { slug: string }) {
                           </div>
                         </button>
                       );
-                    })
+                    })}
+                  />
                 )}
               </div>
             )}
@@ -1780,8 +1843,12 @@ export function PublicBooking({ slug }: { slug: string }) {
                       Where would you like to play?
                     </h2>
                   </div>
-                  <div className="space-y-3">
-                    {eligibleLocations.map((value) => {
+                  <BoundedChoices
+                    initialCount={4}
+                    noun="places"
+                    className="space-y-3"
+                    preserveIndex={eligibleLocations.findIndex((value) => value.id === locationId)}
+                    items={eligibleLocations.map((value) => {
                       const option = service?.locations.find(
                         (item) => item.locationId === value.id,
                       );
@@ -1845,7 +1912,7 @@ export function PublicBooking({ slug }: { slug: string }) {
                         </button>
                       );
                     })}
-                  </div>
+                  />
                   {eligibleLocations.length === 0 && (
                     <p className="text-sm text-[#83907b]">
                       No locations are available for this class. Please choose
@@ -1864,8 +1931,13 @@ export function PublicBooking({ slug }: { slug: string }) {
                       Choose a location above to see your available coaches.
                     </p>
                   ) : (
-                    <ul role="list" aria-label="Coaches" className="grid gap-3 sm:grid-cols-2">
-                      {eligibleInstructors.map((value) => (
+                    <BoundedChoices
+                      initialCount={4}
+                      noun="coaches"
+                      listLabel="Coaches"
+                      className="grid gap-3 sm:grid-cols-2"
+                      preserveIndex={eligibleInstructors.findIndex((value) => value.id === instructorId)}
+                      items={eligibleInstructors.map((value) => (
                         <CoachChoiceCard
                           key={value.id}
                           coach={value}
@@ -1877,7 +1949,7 @@ export function PublicBooking({ slug }: { slug: string }) {
                           }}
                         />
                       ))}
-                    </ul>
+                    />
                   )}
                 </section>
               </div>
@@ -2436,8 +2508,8 @@ export function PublicBooking({ slug }: { slug: string }) {
             </div>
             <p className="!mt-4 text-right text-[10px] text-[#98a08f]">
               {step === 4
-                ? "No online payment. Just a little commitment to your game."
-                : "Good things, one step at a time."}
+                ? "No payment is collected on this page."
+                : "Your selections are saved as you continue."}
             </p>
           </div>
           <aside className="hidden space-y-4 lg:sticky lg:top-28 lg:block">
@@ -2446,18 +2518,18 @@ export function PublicBooking({ slug }: { slug: string }) {
                 <div className="!mb-1 flex items-center gap-2">
                   <span className="h-1.5 w-1.5 rounded-full bg-[#98af7e]" />
                   <p className="text-[10px] font-medium uppercase tracking-[1.5px] text-[#89967e]">
-                    Your next good game
+                    Booking summary
                   </p>
                 </div>
                 <h2 className="!text-lg !font-medium">
-                  A little time, just for you.
+                  Your selections
                 </h2>
               </div>
               <div className="space-y-5 px-6 py-6">
                 <DetailRow icon={<CircleDot size={17} />} title="Class">
                   {service?.name || (
                     <span className="text-[#a0aa95]">
-                      Choose something you’ll love
+                      Not selected
                     </span>
                   )}
                   {service && (
@@ -2470,14 +2542,14 @@ export function PublicBooking({ slug }: { slug: string }) {
                 <DetailRow icon={<UserRound size={17} />} title="Coach">
                   {instructor?.name || (
                     <span className="text-[#a0aa95]">
-                      Your perfect match awaits
+                      Not selected
                     </span>
                   )}
                 </DetailRow>
                 <DetailRow icon={<MapPin size={17} />} title="Place">
                   {location?.name || (
                     <span className="text-[#a0aa95]">
-                      Find your favourite spot
+                      Not selected
                     </span>
                   )}
                 </DetailRow>
@@ -2496,7 +2568,7 @@ export function PublicBooking({ slug }: { slug: string }) {
                     </>
                   ) : (
                     <span className="text-[#a0aa95]">
-                      A time that works for you
+                      Not selected
                     </span>
                   )}
                 </DetailRow>
@@ -2526,18 +2598,6 @@ export function PublicBooking({ slug }: { slug: string }) {
                       : data.business.kind === "CLUB"
                         ? `Payment is arranged through the options shown for ${data.business.name}; this booking page does not determine the legal payment recipient.`
                         : "This historical payment route does not determine the legal payment recipient."}
-                </p>
-              </div>
-            </div>
-            <div className="flex gap-3 rounded-2xl border border-[#e3e8d9] bg-[#eef3e5] p-5">
-              <Sparkles size={18} className="!mt-0.5 shrink-0 text-[#8ea36d]" />
-              <div>
-                <h3 className="!text-xs !font-semibold text-[#6f8555]">
-                  The best investment is in you.
-                </h3>
-                <p className="!mt-1.5 text-[11px] leading-relaxed text-[#8a9979]">
-                  Show up, find your rhythm, and enjoy a little progress every
-                  time.
                 </p>
               </div>
             </div>

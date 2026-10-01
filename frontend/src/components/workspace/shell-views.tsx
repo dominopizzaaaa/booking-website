@@ -34,6 +34,7 @@ import { CalendarConnectionCard } from '@/components/calendar-connection-card';
 import { NotificationPreferencesCard } from '@/components/notification-preferences';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+import { SeeMoreButton } from '@/components/ui/progressive-disclosure';
 import { mutate, updateAuthAccount } from '@/lib/api';
 import { alertAppearance, alertPageSize, linkedIntegrityFlag, sortAlerts } from '@/lib/alerts';
 import { isManagerWorkspace, type AccountType, type AuthSession, type BusinessKind, type ClubPermission, type ManagerWorkspace, type Notification, type WorkspaceAccessMode, type WorkspaceResponse, type WorkspaceUser } from '@/lib/types';
@@ -175,8 +176,15 @@ const exploreGroups: { title: string; ids: ExploreViewId[] }[] = [
 ];
 
 export function ExploreHub({ data, onNavigate }: { data: WorkspaceResponse; onNavigate: (view: string) => void }) {
+  const [showAllTools, setShowAllTools] = useState(false);
   const managerData = isManagerWorkspace(data) ? data : null;
   const isClubCoach = workspaceAccessMode(data) === 'COACH';
+  const primaryIds = exploreGroups[0].ids.filter(id => canAccessExploreView(data, id));
+  const secondaryGroups = exploreGroups.slice(1).map(group => ({
+    ...group, ids: group.ids.filter(id => canAccessExploreView(data, id)),
+  })).filter(group => group.ids.length > 0);
+  const secondaryCount = secondaryGroups.reduce((total, group) => total + group.ids.length, 0);
+  const moreToolsId = 'workspace-more-tools';
   function renderSharedCard(item: ExploreItem) {
     const Icon = item.icon;
     const description = isClubCoach && item.id === 'students'
@@ -215,21 +223,23 @@ export function ExploreHub({ data, onNavigate }: { data: WorkspaceResponse; onNa
         <p className="mt-2 max-w-2xl text-xs leading-relaxed text-stone-500">Everything that keeps {data.business.name} moving, gathered in one calm place.</p>
       </div>
     </header>
-    {isClubCoach ? <div className="space-y-5">
-      <section aria-labelledby="explore-your-tools">
-        <h2 id="explore-your-tools" className="mb-3 text-sm text-[#405744]">Your tools</h2>
-        <div className="workspace-explore-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{sharedExploreItems.filter(item => canAccessExploreView(data, item.id)).map(renderSharedCard)}</div>
+    <div className="space-y-5">
+      <section aria-labelledby="explore-everyday-tools">
+        <h2 id="explore-everyday-tools" className="mb-3 text-sm text-[#405744]">Everyday tools</h2>
+        <div className="workspace-explore-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{primaryIds.map(id => renderSharedCard(sharedExploreItems.find(item => item.id === id)!))}</div>
       </section>
-      <div className="workspace-explore-role-note flex items-start gap-3 rounded-xl border border-[#e4e9dd] bg-[#f4f7ef] p-4 text-xs leading-relaxed text-[#66755f]"><ShieldCheck size={17} className="mt-0.5 shrink-0" /><p>Business setup, coach access, packages, payments, and reporting are managed by the club.</p></div>
-    </div> : <div className="space-y-7">
-      {exploreGroups.map(group => {
+      {secondaryCount > 0 && <div className="flex justify-center border-y border-[#e2e7df] py-2"><SeeMoreButton expanded={showAllTools} onToggle={() => setShowAllTools(value => !value)} controls={moreToolsId} hiddenCount={secondaryCount} noun="tools" /></div>}
+      <div id={moreToolsId} hidden={!showAllTools} className="space-y-7">
+        {secondaryGroups.map(group => {
         const headingId = `explore-${group.title.toLowerCase().replace(/[^a-z]+/g, '-')}`;
         return <section key={group.title} aria-labelledby={headingId}>
           <h2 id={headingId} className="mb-3 text-sm text-[#405744]">{group.title}</h2>
-          <div className="workspace-explore-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{group.ids.filter(id => canAccessExploreView(data, id)).map(id => { const shared = sharedExploreItems.find(item => item.id === id); return shared ? renderSharedCard(shared) : renderManagerCard(managerExploreItems.find(item => item.id === id)!); })}</div>
+          <div className="workspace-explore-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{group.ids.map(id => { const shared = sharedExploreItems.find(item => item.id === id); return shared ? renderSharedCard(shared) : renderManagerCard(managerExploreItems.find(item => item.id === id)!); })}</div>
         </section>;
-      })}
-    </div>}
+        })}
+        {isClubCoach && <div className="workspace-explore-role-note flex items-start gap-3 rounded-xl border border-[#e4e9dd] bg-[#f4f7ef] p-4 text-xs leading-relaxed text-[#66755f]"><ShieldCheck size={17} className="mt-0.5 shrink-0" /><p>Business setup, coach access, packages, payments, and reporting are managed by the club.</p></div>}
+      </div>
+    </div>
   </section>;
 }
 

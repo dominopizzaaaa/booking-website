@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useId } from "react";
 import {
   CalendarClock,
   ChevronDown,
@@ -23,6 +23,7 @@ import type { ClubPublicSummary, PublicBookingBusiness } from "@/lib/types";
 import { cn, money } from "@/lib/utils";
 import { ClampedText } from "./clamped-text";
 import { panel } from "./styles";
+import { Disclosure } from "@/components/ui/progressive-disclosure";
 
 const stepIcons: Record<AfterBookingStep["id"], typeof CircleCheck> = {
   confirmation: CircleCheck,
@@ -93,10 +94,11 @@ export function ClubDecisionHeader({
           type="button"
           aria-expanded={open}
           aria-controls={detailsId}
+          aria-label={open ? "Show less club details" : "See more club details"}
           onClick={() => onOpenChange(!open)}
           className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl border border-[#dce3da] bg-white px-3 text-xs font-semibold text-[#2f5a43] transition hover:bg-[#f3f6f1]"
         >
-          Club details
+          {open ? "Show less" : "Club details"}
           <ChevronDown size={14} aria-hidden="true" className={cn("transition-transform", open && "rotate-180")} />
         </button>
       </div>
@@ -161,28 +163,14 @@ export function ClubDecisionHeader({
 }
 
 function AfterBookingExplainer({ steps }: { steps: AfterBookingStep[] }) {
-  const contentId = useId();
-  const [open, setOpen] = useState(false);
-  // Wide screens have room to show the answers up front; phones keep the
-  // header short and let the player open them.
-  useEffect(() => {
-    if (typeof window !== "undefined" && window.matchMedia?.("(min-width: 640px)").matches) setOpen(true);
-  }, []);
   return (
-    <div className="border-t border-[#edf0e8] pt-4">
-      <h3 className="!text-sm">
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-controls={contentId}
-          onClick={() => setOpen((value) => !value)}
-          className="flex min-h-11 w-full items-center justify-between gap-3 rounded-lg text-left text-sm font-semibold text-[#253c31]"
-        >
-          What happens after booking
-          <ChevronDown size={16} aria-hidden="true" className={cn("shrink-0 transition-transform", open && "rotate-180")} />
-        </button>
-      </h3>
-      <ol id={contentId} hidden={!open} className={cn("!mt-2 gap-3 sm:grid-cols-2", open ? "grid" : "hidden")}>
+    <Disclosure
+      title="What happens after booking"
+      summary="Confirmation, payment, changes and chat"
+      className="border-[#edf0e8] bg-white"
+      contentClassName="!px-0 !pb-0"
+    >
+      <ol className="grid gap-3 sm:grid-cols-2">
         {steps.map((step) => {
           const Icon = stepIcons[step.id];
           return (
@@ -198,6 +186,6 @@ function AfterBookingExplainer({ steps }: { steps: AfterBookingStep[] }) {
           );
         })}
       </ol>
-    </div>
+    </Disclosure>
   );
 }

@@ -95,17 +95,21 @@ export function PrivacyRequestsPanel({ emailVerified, className }: { emailVerifi
   return <section className={cn('rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6', className)} aria-labelledby="privacy-requests-heading">
     <div className="flex items-start gap-3">
       <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#edf3e7] text-[#4f6847]"><FileKey2 size={18} /></span>
-      <div className="min-w-0 flex-1"><h2 id="privacy-requests-heading" className="text-sm font-semibold text-[#3f4c42]">Your privacy requests</h2><p className="mt-1 text-xs leading-relaxed text-[#59675c]">Ask to access, correct, delete, restrict, or object to use of your personal data. Each request is reviewed; submission does not automatically erase records or override required retention.</p></div>
+      <div className="min-w-0 flex-1"><h2 id="privacy-requests-heading" className="text-sm font-semibold text-[#3f4c42]">Privacy requests</h2><p className="mt-1 text-xs leading-relaxed text-[#59675c]">Track requests about your personal data or start a new one.</p></div>
     </div>
 
     {emailVerified === false ? <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-900">Verify your sign-in email before submitting a request. Existing requests remain visible.</p>
-      : <form className="mt-5 space-y-4" onSubmit={submit}>
+      : <details className="group mt-5 rounded-xl border border-[#dfe7d8] bg-[#f7f9f4] open:bg-white">
+        <summary className="min-h-12 cursor-pointer px-4 py-3 text-sm font-semibold text-[#405941] marker:text-[#6f865f]">Start a privacy request</summary>
+        <form className="space-y-4 border-t border-[#e4e9df] p-4" onSubmit={submit}>
+        <p className="text-xs leading-relaxed text-[#59675c]">Requests are reviewed. Submitting one does not automatically erase records or override required retention.</p>
         <div><label htmlFor="privacy-request-type" className="text-xs font-semibold text-[#405941]">Request type</label><select id="privacy-request-type" className="mt-1.5 min-h-11 w-full rounded-xl border border-[#dfe5dd] bg-white px-3.5 text-sm" value={type} onChange={event => { setType(event.target.value as PrivacyRequestType); setError(''); setNotice(''); }} disabled={submitting}>{Object.entries(requestLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>
         <div><label htmlFor="privacy-request-details" className="text-xs font-semibold text-[#405941]">Details <span className="font-normal text-[#59675c]">(do not include passwords, card details, or identity documents)</span></label><textarea id="privacy-request-details" className="mt-1.5 min-h-24 w-full rounded-xl border border-[#dfe5dd] px-3.5 py-3 text-sm" value={details} onChange={event => setDetails(event.target.value)} maxLength={4000} placeholder="Describe the account, records, purpose, or time period involved." disabled={submitting} /></div>
         {type === 'CORRECTION' && <div><label htmlFor="privacy-request-correction" className="text-xs font-semibold text-[#405941]">What should be corrected?</label><textarea id="privacy-request-correction" className="mt-1.5 min-h-20 w-full rounded-xl border border-[#dfe5dd] px-3.5 py-3 text-sm" value={correction} onChange={event => setCorrection(event.target.value)} maxLength={2000} required disabled={submitting} /></div>}
         {type === 'CONSENT_WITHDRAWAL' && <label className="flex items-start gap-2 rounded-xl bg-[#f7f9f4] p-3 text-xs leading-relaxed text-[#4d5e51]"><input className="mt-0.5" type="checkbox" checked={consequencesAccepted} onChange={event => setConsequencesAccepted(event.target.checked)} required disabled={submitting} /><span>I understand that withdrawing consent may limit or end affected Courtly features, while prior processing and records subject to a valid retention requirement may remain.</span></label>}
         <div className="flex flex-wrap items-center gap-3"><Button type="submit" disabled={submitting || correctionMissing || withdrawalUnacknowledged}>{submitting ? <Loader2 size={14} className="animate-spin" /> : <FileKey2 size={14} />}Submit privacy request</Button><Link href="/legal/privacy" className="text-xs font-semibold text-[#52704d] underline underline-offset-2">Read the Privacy Notice</Link></div>
-      </form>}
+        </form>
+      </details>}
 
     {notice && <p role="status" className="mt-4 flex items-start gap-2 rounded-xl bg-[#edf5e4] p-3 text-xs text-[#4f6847]"><CheckCircle2 size={15} className="mt-0.5 shrink-0" />{notice}</p>}
     {error && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-3 text-xs text-red-700">{error}</p>}

@@ -9,6 +9,7 @@ import {
   type CalendarDot, type CalendarEvent, type CalendarFilters,
 } from '@/lib/student-calendar';
 import { cn, time } from '@/lib/utils';
+import { Disclosure } from '@/components/ui/progressive-disclosure';
 import { compactButton, field, focusRing, panel, statusClass } from './styles';
 
 const dotColour: Record<CalendarDot, string> = {
@@ -115,7 +116,8 @@ export function BookingCalendar({
   return (
     <section aria-label={label} className="space-y-4">
       {(options.clubs.length > 1 || options.coaches.length > 1 || options.sports.length > 1) && (
-        <fieldset className={cn(panel, 'p-4')}>
+        <Disclosure title="Filter calendar" summary="Narrow sessions by club, coach, or sport.">
+        <fieldset>
           <legend className="sr-only">Filter the calendar</legend>
           <div className="grid gap-3 sm:grid-cols-3">
             {options.clubs.length > 1 && (
@@ -152,6 +154,7 @@ export function BookingCalendar({
             </button>
           )}
         </fieldset>
+        </Disclosure>
       )}
 
       <div className={cn(panel, 'p-3 sm:p-5')}>

@@ -38,8 +38,9 @@ test('signup explains personal, guardian, coach, and club account paths', async 
     await expect(page.getByLabel('Username', { exact: true })).toBeVisible();
   }
   await accountTypes.getByRole('radio', { name: 'Player or guardian', exact: true }).check();
-  await expect(page.getByRole('heading', { name: 'One personal account, with Family for children' })).toBeVisible();
-  await expect(page.getByText(/Parents and guardians do not need a separate account type/)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Create the adult’s own account' })).toBeVisible();
+  await expect(page.getByText(/an adult Player or Coach can add each child separately in Family/)).toBeVisible();
+  await page.locator('summary').filter({ hasText: 'How accounts work by age' }).click();
   await expect(page.getByText(/Ages 13–17:.*cannot book or pay on Courtly yet/)).toBeVisible();
   await expect(page.getByLabel('Your date of birth', { exact: true })).toBeVisible();
 });
@@ -139,7 +140,7 @@ test('standalone student signup requires an explicit account type and opens the 
   await expect(clubChoice).toBeChecked();
   await page.getByRole('link', { name: `Continue to ${publicBusiness.business.name}`, exact: true }).click();
   await expect(page).toHaveURL(url => url.pathname === `/book/${publicBusiness.business.slug}`);
-  await expect(page.getByRole('heading', { name: 'Good days start with a class.', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Choose a class', exact: true })).toBeVisible();
   await expect(page.getByText(publicBusiness.business.name, { exact: true }).first()).toBeVisible();
   const bookableService = page.getByRole('button', { name: new RegExp(escapeRegExp(service!.name)) });
   await expect(bookableService).toBeVisible();

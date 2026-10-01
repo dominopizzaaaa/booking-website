@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 4.5.2** · Last updated 2026-10-01
+**Version 4.6.0** · Last updated 2026-10-01
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -147,6 +147,7 @@ frontend/          Next.js App Router (TypeScript, Tailwind)
     utils.ts       cn, money, dates, initials()
     booking-links.ts  Re-book and search-result links into /book/[slug] preselection
   src/components/
+    ui/progressive-disclosure.tsx  Shared bounded-list and secondary-content controls
     calendar-connection-card.tsx  Shared student/coach personal integration UI
     chat/                   Account/session inbox, discovery, assignment, proposals
     student-app.tsx         The student app (/manage) — five-tab shell
@@ -992,6 +993,12 @@ duplicated into either alert store.
   predictable focus behavior, and work at 390px wide. The Playwright suite runs
   three viewports. A control that carries a number must say what the number
   counts; a bare badge reads as "Alerts 5" to a screen reader.
+- Keep the first view focused on the next decision or action. Put history,
+  explanatory context, advanced filters, and long list tails behind the shared
+  `Disclosure` or `SeeMoreButton` controls in
+  `frontend/src/components/ui/progressive-disclosure.tsx`. Keep every
+  `aria-controls` target mounted while collapsed, and keep selected or urgent
+  items visible rather than hiding them solely because they fall past a limit.
 - **Put a test where it belongs.** A rule about scheduling, money, tenancy or
   an API contract belongs in `backend/tests`. A pure helper — formatting, the
   alert vocabulary, the API client's own behaviour — belongs in

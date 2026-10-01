@@ -123,6 +123,7 @@ test('a valid legacy link loads the private booking details and available action
   await expect(page.getByText('When', { exact: true }).locator('..')).toContainText('10:00 AM – 11:00 AM');
   await expect(page.getByText('Where', { exact: true }).locator('..')).toContainText('Legacy Court');
   await expect(page.getByText('Where', { exact: true }).locator('..')).toContainText('1 Court Lane');
+  await page.locator('summary').filter({ hasText: 'Player and payment details' }).click();
   await expect(page.getByText('Booked for', { exact: true }).locator('..')).toContainText('Legacy Player');
   await expect(page.getByText('Session price', { exact: true }).locator('..')).toContainText('$80');
   await expect(page.getByText('Confirmed', { exact: true })).toBeVisible();
@@ -266,6 +267,29 @@ test('an eligible legacy booking loads slots and reschedules successfully', asyn
     locationId: 'legacy-court',
     date: '2026-09-27',
   });
+});
+
+test('a long legacy time list reveals more on request', async ({ page }) => {
+  const manySlots = Array.from({ length: 10 }, (_, index) => {
+    const startAt = new Date(new Date(movedStart).getTime() + index * 3_600_000).toISOString();
+    return {
+      startAt,
+      endAt: new Date(new Date(startAt).getTime() + 3_600_000).toISOString(),
+      available: true,
+      placesRemaining: 1,
+    };
+  });
+  await mockSlots(page, undefined, manySlots);
+  await page.route(`**/api/manage/${token}`, route => fulfillJson(route, managedBooking()));
+
+  await page.goto(`/manage/${token}`);
+  await page.getByRole('button', { name: 'Reschedule session', exact: true }).click();
+  await page.getByLabel('Choose a date').fill('2026-09-27');
+  await expect(page.getByRole('radio')).toHaveCount(8);
+  await page.getByRole('button', { name: 'See 2 more times', exact: true }).click();
+  await expect(page.getByRole('radio')).toHaveCount(10);
+  await page.getByRole('button', { name: 'Show less', exact: true }).click();
+  await expect(page.getByRole('radio')).toHaveCount(8);
 });
 
 test('cancellation is sent only after confirmation and leaves a terminal booking', async ({ page }) => {

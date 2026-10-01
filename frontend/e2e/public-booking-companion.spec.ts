@@ -198,24 +198,29 @@ async function fulfillJson(route: Route, json: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', json });
 }
 
-async function mockClub(page: Page, session: AuthSession | null) {
+async function mockClub(
+  page: Page,
+  session: AuthSession | null,
+  publicCatalog = catalog,
+  slotsFor: (url: URL) => Slot[] = (url) => {
+    const date = url.searchParams.get('date') ?? singaporeDate(1);
+    return url.searchParams.get('serviceId') === 'svc-group' ? groupSlots(date) : privateSlots(date);
+  },
+) {
   await page.route(/\/api\/auth\/me$/, route => session
     ? fulfillJson(route, session)
     : fulfillJson(route, { error: 'Authentication required' }, 401));
-  await page.route(new RegExp(`/api/public/${slug}$`), route => fulfillJson(route, catalog));
+  await page.route(new RegExp(`/api/public/${slug}$`), route => fulfillJson(route, publicCatalog));
   await page.route(new RegExp(`/api/public/${slug}/slots\\?`), route => {
     const url = new URL(route.request().url());
-    const date = url.searchParams.get('date') ?? singaporeDate(1);
-    return fulfillJson(route, {
-      slots: url.searchParams.get('serviceId') === 'svc-group' ? groupSlots(date) : privateSlots(date),
-    });
+    return fulfillJson(route, { slots: slotsFor(url) });
   });
   await page.route(new RegExp(`/api/public/${slug}/bookings$`), async route => {
     const body = route.request().postDataJSON() as { serviceId: string; instructorId: string; locationId: string; startAt: string };
-    const service = catalog.services.find(candidate => candidate.id === body.serviceId)!;
+    const service = publicCatalog.services.find(candidate => candidate.id === body.serviceId)!;
     const mapping = service.locations.find(candidate => candidate.locationId === body.locationId)!;
-    const coach = catalog.instructors.find(candidate => candidate.id === body.instructorId)!;
-    const venue = catalog.locations.find(candidate => candidate.id === body.locationId)!;
+    const coach = publicCatalog.instructors.find(candidate => candidate.id === body.instructorId)!;
+    const venue = publicCatalog.locations.find(candidate => candidate.id === body.locationId)!;
     const booking: Booking = {
       id: 'companion-booking-1',
       serviceId: service.id,
@@ -262,15 +267,18 @@ async function expectNoHorizontalOverflow(page: Page) {
 }
 
 const stepTwoHeading = (page: Page) =>
-  page.getByRole('heading', { name: 'Make a little time for your game.', exact: true });
+  page.getByRole('heading', { name: 'Choose a date and time', exact: true });
 
 test('the decision header shows a new player what they need before booking', async ({ page }) => {
   await mockClub(page, null);
   await page.goto(`/book/${slug}`);
-  await expect(page.getByRole('heading', { name: 'Good days start with a class.', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Choose a class', exact: true })).toBeVisible();
 
   const header = page.getByRole('region', { name: catalog.business.name, exact: true });
-  const clubDetails = header.getByRole('button', { name: 'Club details', exact: true });
+  let clubDetails = header.getByRole('button', { name: 'See more club details', exact: true });
+  await expect(clubDetails).toHaveAttribute('aria-expanded', 'false');
+  await clubDetails.click();
+  clubDetails = header.getByRole('button', { name: 'Show less club details', exact: true });
   await expect(clubDetails).toHaveAttribute('aria-expanded', 'true');
   await expect(header.getByText(/^A friendly indoor tennis and badminton club/)).toBeVisible();
   await expect(header.getByText('Badminton, Tennis', { exact: true })).toBeVisible();
@@ -289,12 +297,10 @@ test('the decision header shows a new player what they need before booking', asy
   await expect(website).toHaveAttribute('rel', /\bnoopener\b/);
   await expect(website).toHaveAttribute('rel', /\bnoreferrer\b/);
 
-  // Wide screens show the answers up front; a phone keeps them one tap away.
-  const desktop = (page.viewportSize()?.width ?? 1440) >= 640;
-  const explainer = header.getByRole('button', { name: 'What happens after booking', exact: true });
-  await expect(explainer).toHaveAttribute('aria-expanded', desktop ? 'true' : 'false');
-  if (!desktop) await explainer.click();
-  await expect(explainer).toHaveAttribute('aria-expanded', 'true');
+  const explainer = header.locator('summary').filter({ hasText: 'What happens after booking' });
+  await expect(explainer.locator('..')).not.toHaveAttribute('open', '');
+  await explainer.click();
+  await expect(explainer.locator('..')).toHaveAttribute('open', '');
   for (const text of [
     /^Your place is confirmed straight away/,
     /^Nothing is charged on this page\./,
@@ -305,12 +311,16 @@ test('the decision header shows a new player what they need before booking', asy
   }
   await expectNoHorizontalOverflow(page);
 
-  // Once a Class is chosen the header folds away, and opens again on request.
+  // The optional club context folds away, and opens again on request.
   await page.getByRole('button', { name: /Private tennis lesson/ }).click();
   await visibleAction(page, 'Continue').click();
+  await expect(clubDetails).toHaveAttribute('aria-expanded', 'true');
+  await clubDetails.click();
+  clubDetails = header.getByRole('button', { name: 'See more club details', exact: true });
   await expect(clubDetails).toHaveAttribute('aria-expanded', 'false');
   await expect(cancellation).toBeHidden();
   await clubDetails.click();
+  clubDetails = header.getByRole('button', { name: 'Show less club details', exact: true });
   await expect(clubDetails).toHaveAttribute('aria-expanded', 'true');
   await expect(cancellation).toBeVisible();
   await expectNoHorizontalOverflow(page);
@@ -330,6 +340,10 @@ test('coach cards show a self-reported public profile without contact details', 
   const coaches = page.getByRole('list', { name: 'Coaches', exact: true });
   const casey = coaches.getByRole('listitem').filter({ hasText: 'Casey Lim' });
   await expect(casey).toContainText(/\d+ years coaching · since 2016/);
+  const background = casey.locator('summary').filter({ hasText: 'Coach background' });
+  await expect(background.locator('..')).not.toHaveAttribute('open', '');
+  await background.click();
+  await expect(background.locator('..')).toHaveAttribute('open', '');
   await expect(casey).toContainText('Tennis, Badminton');
   await expect(casey).toContainText('Beginner, Intermediate');
   await expect(casey).toContainText('Juniors, Adults');
@@ -338,10 +352,10 @@ test('coach cards show a self-reported public profile without contact details', 
   await expect(casey).toContainText('Level 2 club coach');
   await expect(casey).not.toContainText('@');
 
-  const more = casey.getByRole('button', { name: 'More', exact: true });
+  const more = casey.getByRole('button', { name: 'See more', exact: true });
   await expect(more).toHaveAttribute('aria-expanded', 'false');
   await more.click();
-  await expect(casey.getByRole('button', { name: 'Less', exact: true })).toHaveAttribute('aria-expanded', 'true');
+  await expect(casey.getByRole('button', { name: 'Show less', exact: true })).toHaveAttribute('aria-expanded', 'true');
   await expect(casey).toContainText('plenty of rallies');
 
   // The bio toggle is never named for the coach, so choosing by name stays unambiguous.
@@ -353,6 +367,79 @@ test('coach cards show a self-reported public profile without contact details', 
   const drew = coaches.getByRole('listitem').filter({ hasText: 'Drew Tan' });
   await expect(drew.getByRole('button')).toHaveCount(1);
   await expect(drew).not.toContainText('Self-reported qualifications');
+  await expectNoHorizontalOverflow(page);
+});
+
+test('long booking choices reveal more only when requested', async ({ page }) => {
+  const extraCoaches = Array.from({ length: 4 }, (_, index) => ({
+    id: `coach-extra-${index}`,
+    name: `Extra Coach ${index + 1}`,
+    initials: `E${index + 1}`,
+    color: '#78915e',
+    specialty: 'All levels',
+    active: true,
+    profile: null,
+  }));
+  const extraLocations = Array.from({ length: 4 }, (_, index) => ({
+    id: `court-extra-${index}`,
+    name: `Extra Court ${index + 1}`,
+    address: `${index + 3} Rally Road`,
+    area: 'Singapore',
+    type: 'FACILITY' as const,
+    color: '#78915e',
+    requiresApproval: false,
+    active: true,
+  }));
+  const coaches = [...catalog.instructors, ...extraCoaches];
+  const locations = [...catalog.locations, ...extraLocations];
+  const coachIds = coaches.map(coach => coach.id);
+  const privateService = catalog.services[0];
+  const expandedCatalog: PublicBusiness = {
+    ...catalog,
+    instructors: coaches,
+    locations,
+    services: [
+      {
+        ...privateService,
+        locations: locations.map(location => ({
+          locationId: location.id, price: 8_000, duration: 60, instructorIds: coachIds,
+        })),
+      },
+      ...catalog.services.slice(1),
+      ...Array.from({ length: 4 }, (_, index) => ({
+        ...privateService, id: `svc-extra-${index}`, name: `Extra class ${index + 1}`,
+      })),
+    ],
+  };
+  await mockClub(page, null, expandedCatalog, url => {
+    const date = url.searchParams.get('date') ?? singaporeDate(1);
+    return Array.from({ length: 10 }, (_, index) => ({
+      startAt: localStart(date, 8 + index),
+      endAt: addMinutes(localStart(date, 8 + index), 60),
+      available: true,
+      placesRemaining: 1,
+    }));
+  });
+
+  await page.goto(`/book/${slug}`);
+  await expect(page.getByRole('button', { name: /Extra class 3/ })).toHaveCount(0);
+  await page.getByRole('button', { name: 'See 2 more classes', exact: true }).click();
+  await expect(page.getByRole('button', { name: /Extra class 3/ })).toBeVisible();
+
+  await page.getByRole('button', { name: /Private tennis lesson/ }).click();
+  await visibleAction(page, 'Continue').click();
+  await expect(page.getByRole('button', { name: /Extra Court 3/ })).toHaveCount(0);
+  await page.getByRole('button', { name: 'See 2 more places', exact: true }).click();
+  await expect(page.getByRole('button', { name: /Extra Court 3/ })).toBeVisible();
+  await page.getByRole('button', { name: /East Courts/ }).click();
+  await expect(page.getByRole('button', { name: /Extra Coach 3/ })).toHaveCount(0);
+  await page.getByRole('button', { name: 'See 2 more coaches', exact: true }).click();
+  await expect(page.getByRole('button', { name: /Extra Coach 3/ })).toBeVisible();
+  await page.getByRole('button', { name: /Casey Lim/ }).click();
+  await visibleAction(page, 'Continue').click();
+  await expect(page.getByRole('radio')).toHaveCount(8);
+  await page.getByRole('button', { name: 'See 2 more times', exact: true }).click();
+  await expect(page.getByRole('radio')).toHaveCount(10);
   await expectNoHorizontalOverflow(page);
 });
 

@@ -126,7 +126,7 @@ async function mockLoadedPublicPage(page: Page, accountType: AccountType | null)
       }));
 
   await page.goto(`/book/${slug}`);
-  await expect(page.getByRole('heading', { name: 'Good days start with a class.', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Choose a class', exact: true })).toBeVisible();
 }
 
 function expectDestination(page: Page, pathname: string, search = '') {
