@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowRight, CalendarDays, Check, CircleDot, Eye, EyeOff, Layers3, LoaderCircle, LockKeyhole, MapPin, Sparkles, UsersRound } from 'lucide-react';
-import { ApiError, api, isMfaLoginChallenge, loginAccount, registerAccount } from '@/lib/api';
+import { ApiError, isMfaLoginChallenge, loginAccount, registerAccount } from '@/lib/api';
 import { storeMfaLoginChallenge } from '@/lib/account-security';
 import { CourtlyLogo } from '@/components/public-booking';
 import type { AccountType, AuthSession } from '@/lib/types';
@@ -88,7 +88,7 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
   const [redirect, setRedirect] = useState<AuthRedirect | null>(null);
   const [values, setValues] = useState<AuthValues>({ businessName: '', name: '', username: '', sports: '', dateOfBirth: '', email: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
-  const [busy, setBusy] = useState<'form' | 'demo' | null>(null);
+  const [busy, setBusy] = useState<'form' | null>(null);
   const [error, setError] = useState('');
   const [familyRequired, setFamilyRequired] = useState(false);
   const [errorField, setErrorField] = useState<AuthField | null>(null);
@@ -168,12 +168,6 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
       setBusy(null);
     }
   }
-  async function demo() {
-    if (busy) return;
-    setBusy('demo'); clearError();
-    try { await api('/auth/demo', { method: 'POST', body: JSON.stringify({}) }); router.replace('/'); router.refresh(); }
-    catch (err) { setError(err instanceof Error ? err.message : 'The demo is not available right now. Please try again.'); setErrorField(null); setBusy(null); }
-  }
   return <main className="min-h-screen overflow-x-clip bg-[#f6f7f4] text-[#1c3029] lg:grid lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
     <section className="relative hidden min-h-screen overflow-hidden bg-[#174c3c] p-12 text-white lg:flex lg:flex-col xl:p-16">
       <div className="relative z-10"><Link href={loginHref} aria-label="Courtly sign in"><CourtlyLogo light /></Link></div>
@@ -234,7 +228,6 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
           {error && !errorField && <div role="alert" aria-live="polite" className="rounded-xl border border-[#e4c7bc] bg-[#fff6f1] p-3.5 text-sm leading-relaxed text-[#8a4937]"><p>{error}</p>{familyRequired && <p className="mt-2">Ask a parent or guardian to <Link className="font-semibold underline underline-offset-2" href="/login?next=%2Ffamily">sign in and open Family</Link> to create a managed child profile.</p>}</div>}
           <button type="submit" className={primary} disabled={!!busy}>{busy === 'form' ? <><LoaderCircle size={16} className="animate-spin" />{signup ? 'Creating your account…' : 'Signing you in…'}</> : <>{signup ? accountType === 'CLUB' ? 'Create your workspace' : accountType === 'COACH' ? 'Create coach account' : accountType === 'STUDENT' ? 'Create personal account' : 'Create account' : 'Sign in'}<ArrowRight size={16} /></>}</button>
         </form>
-        {(!signup || accountType === 'CLUB') && <><div className="my-5 flex items-center gap-3 sm:my-6 sm:gap-4"><span className="h-px flex-1 bg-[#e3e7dd]" /><span className="shrink-0 text-[10px] text-[#596653]">or take a little look around</span><span className="h-px flex-1 bg-[#e3e7dd]" /></div><button type="button" disabled={!!busy} onClick={() => void demo()} className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-[#dce4d4] bg-[#f2f5eb] px-4 py-3 text-xs font-semibold text-[#4f6048] transition hover:bg-[#eaf0df] disabled:cursor-wait disabled:opacity-60">{busy === 'demo' ? <LoaderCircle size={16} className="animate-spin" /> : <Sparkles size={15} />}{busy === 'demo' ? 'Preparing your demo…' : 'Explore the demo workspace'}<ArrowRight size={14} /></button><p className="!mt-3 text-center text-[10px] leading-relaxed text-[#596653]">No sign-up needed. A sample club workspace, ready to explore.</p></>}
       </div>
       <footer className="mx-auto flex w-full max-w-[390px] flex-wrap items-center justify-center gap-x-4 gap-y-1 text-center text-[10px] text-[#596653] sm:justify-between"><span>Good things, one class at a time.</span><span className="flex items-center gap-1"><LockKeyhole size={11} />Your space. Secure.</span></footer>
     </section>
