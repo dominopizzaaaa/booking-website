@@ -78,6 +78,14 @@ describe.sequential('Participant attendance lifecycle', () => {
     return actionResult.value;
   }
 
+  async function makeStarted(bookingId: string, status: 'CONFIRMED' | 'COMPLETED' = 'CONFIRMED') {
+    const startAt = new Date(Date.now() - 10 * 60_000);
+    await prisma.booking.update({
+      where: { id: bookingId },
+      data: { startAt, endAt: new Date(startAt.getTime() + 3_600_000), status, coachAcceptance: 'NOT_REQUIRED' },
+    });
+  }
+
   it('allows the club and assigned coach to record and correct attendance after a lesson ends', async () => {
     const ids = await booking();
     await makeEnded(ids.bookingId);
@@ -92,8 +100,20 @@ describe.sequential('Participant attendance lifecycle', () => {
       .send({ attendance: 'UNMARKED' }).expect(200, { id: ids.participantId, attendance: 'UNMARKED' });
   });
 
+  it('opens court-side roll call once the lesson has started and accepts LATE and EXCUSED', async () => {
+    const ids = await booking();
+    await makeStarted(ids.bookingId);
+
+    await request(app).patch(attendancePath(ids)).set('Cookie', f.coachCookie)
+      .send({ attendance: 'LATE' }).expect(200, { id: ids.participantId, attendance: 'LATE' });
+    await request(app).patch(attendancePath(ids)).set('Cookie', f.cookie)
+      .send({ attendance: 'EXCUSED' }).expect(200, { id: ids.participantId, attendance: 'EXCUSED' });
+    expect(await prisma.participant.findUniqueOrThrow({ where: { id: ids.participantId } }))
+      .toMatchObject({ attendance: 'EXCUSED' });
+  });
+
   it.each([
-    ['future confirmed lesson', { status: 'CONFIRMED', coachAcceptance: 'NOT_REQUIRED', ended: false }],
+    ['not-yet-started confirmed lesson', { status: 'CONFIRMED', coachAcceptance: 'NOT_REQUIRED', ended: false }],
     ['pending lesson', { status: 'PENDING', coachAcceptance: 'NOT_REQUIRED', ended: true }],
     ['unaccepted assignment', { status: 'PENDING', coachAcceptance: 'PENDING', ended: true }],
     ['cancelled lesson', { status: 'CANCELLED', coachAcceptance: 'NOT_REQUIRED', ended: true }],
@@ -107,7 +127,7 @@ describe.sequential('Participant attendance lifecycle', () => {
 
     const response = await request(app).patch(attendancePath(ids)).set('Cookie', f.cookie)
       .send({ attendance: 'PRESENT' }).expect(400);
-    expect(response.body.error).toContain(state.status === 'CONFIRMED' ? 'after the lesson has ended' : 'confirmed or completed');
+    expect(response.body.error).toContain(state.status === 'CONFIRMED' ? 'once the lesson has started' : 'confirmed or completed');
     expect(await prisma.participant.findUniqueOrThrow({ where: { id: ids.participantId } }))
       .toMatchObject({ attendance: 'UNMARKED' });
   });
@@ -153,6 +173,107 @@ describe.sequential('Participant attendance lifecycle', () => {
       .send({ attendance: 'PRESENT' }).expect(404);
   });
 
+  async function groupBooking(size = 3) {
+    const group = await prisma.service.create({
+      data: {
+        businessId: f.business.id, name: 'Group roll call', type: 'GROUP', capacity: 6, duration: 60, price: 3000,
+        noticeHours: 0, locations: { create: {
+          locationId: f.location.id, price: 3000, duration: 60, instructors: { create: { instructorId: f.instructor.id } },
+        } },
+      },
+    });
+    let bookingId = '';
+    for (let index = 0; index < size; index += 1) {
+      const student = await createStudent(f, { name: `Group Learner ${index + 1}` });
+      const created = await createBookings(f.business.id, inputFor(f, {
+        serviceId: group.id, studentId: student.id, student: undefined,
+      }));
+      bookingId = created.bookings[0]!.id;
+    }
+    const participants = await prisma.participant.findMany({ where: { bookingId }, orderBy: { id: 'asc' } });
+    return { bookingId, participantIds: participants.map(participant => participant.id) };
+  }
+
+  const bulkPath = (bookingId: string) => `/api/bookings/${bookingId}/participants`;
+
+  it('marks every active participant at once and ignores cancelled places', async () => {
+    const { bookingId, participantIds } = await groupBooking(3);
+    expect(participantIds).toHaveLength(3);
+    await prisma.participant.update({ where: { id: participantIds[2]! }, data: { cancelledAt: new Date() } });
+    await makeStarted(bookingId);
+
+    const all = await request(app).patch(bulkPath(bookingId)).set('Cookie', f.coachCookie)
+      .send({ attendance: 'PRESENT' }).expect(200);
+    expect(all.body).toEqual({ participants: participantIds.slice(0, 2).map(id => ({ id, attendance: 'PRESENT' })) });
+
+    const some = await request(app).patch(bulkPath(bookingId)).set('Cookie', f.cookie)
+      .send({ attendance: 'LATE', participantIds: [participantIds[1]] }).expect(200);
+    expect(some.body).toEqual({ participants: [{ id: participantIds[1], attendance: 'LATE' }] });
+
+    const rows = await prisma.participant.findMany({ where: { bookingId }, orderBy: { id: 'asc' } });
+    expect(rows.map(row => row.attendance)).toEqual(['PRESENT', 'LATE', 'UNMARKED']);
+  });
+
+  it('applies bulk attendance atomically with the single-participant rules', async () => {
+    const { bookingId, participantIds } = await groupBooking(2);
+    const otherStudent = await createStudent(f);
+    const otherCreated = await createBookings(f.business.id, inputFor(f, {
+      studentId: otherStudent.id, student: undefined, startAt: f.starts.plus({ hours: 3 }).toISO()!,
+    }));
+    const other = { participantId: otherCreated.bookings[0]!.participants[0]!.id };
+
+    const early = await request(app).patch(bulkPath(bookingId)).set('Cookie', f.cookie)
+      .send({ attendance: 'PRESENT' }).expect(400);
+    expect(early.body.error).toBe('Attendance can only be marked once the lesson has started');
+
+    await makeStarted(bookingId);
+    for (const body of [
+      { attendance: 'PRESENT', notes: 'unknown field' },
+      { attendance: 'TARDY' },
+      { attendance: 'PRESENT', participantIds: [] },
+      { participantIds },
+    ]) {
+      await request(app).patch(bulkPath(bookingId)).set('Cookie', f.cookie).send(body).expect(400);
+    }
+
+    // One ID from another booking makes the whole roll call fail.
+    await request(app).patch(bulkPath(bookingId)).set('Cookie', f.cookie)
+      .send({ attendance: 'ABSENT', participantIds: [participantIds[0], other.participantId] }).expect(404);
+    await prisma.participant.update({ where: { id: participantIds[1]! }, data: { cancelledAt: new Date() } });
+    await request(app).patch(bulkPath(bookingId)).set('Cookie', f.cookie)
+      .send({ attendance: 'ABSENT', participantIds }).expect(404);
+    expect((await prisma.participant.findMany({ where: { id: { in: participantIds } } }))
+      .map(row => row.attendance)).toEqual(['UNMARKED', 'UNMARKED']);
+
+    await prisma.booking.update({ where: { id: bookingId }, data: { status: 'PENDING', coachAcceptance: 'PENDING' } });
+    const pending = await request(app).patch(bulkPath(bookingId)).set('Cookie', f.cookie)
+      .send({ attendance: 'PRESENT' }).expect(400);
+    expect(pending.body.error).toBe('Attendance can only be marked for a confirmed or completed lesson');
+  });
+
+  it('keeps bulk attendance inside the coach lane and the tenant', async () => {
+    const { bookingId } = await groupBooking(1);
+    await makeStarted(bookingId);
+
+    const otherCoach = await createAccount(f, { name: 'Bulk Other Coach', accountType: 'COACH' });
+    const otherInstructor = await prisma.instructor.create({
+      data: { businessId: f.business.id, name: otherCoach.name, email: otherCoach.email, initials: 'BO' },
+    });
+    const otherMembership = await prisma.membership.create({
+      data: { businessId: f.business.id, userId: otherCoach.id, instructorId: otherInstructor.id },
+    });
+    const otherCoachSession = await createSession(f, otherCoach.id, otherMembership.id);
+    await request(app).patch(bulkPath(bookingId)).set('Cookie', otherCoachSession.cookie)
+      .send({ attendance: 'PRESENT' }).expect(403);
+
+    const foreign = await tenants.fixture();
+    await request(app).patch(bulkPath(bookingId)).set('Cookie', foreign.cookie)
+      .send({ attendance: 'PRESENT' }).expect(404);
+    await request(app).patch(bulkPath(bookingId)).set('Cookie', foreign.coachCookie)
+      .send({ attendance: 'PRESENT' }).expect(404);
+    expect(await prisma.participant.count({ where: { bookingId, attendance: 'PRESENT' } })).toBe(0);
+  });
+
   it('uses a strict body and revalidates attendance after waiting for the instructor lock', async () => {
     const ids = await booking();
     await makeEnded(ids.bookingId);
@@ -160,7 +281,7 @@ describe.sequential('Participant attendance lifecycle', () => {
     await request(app).patch(attendancePath(ids)).set('Cookie', f.cookie)
       .send({ attendance: 'PRESENT', notes: 'not accepted here' }).expect(400);
     await request(app).patch(attendancePath(ids)).set('Cookie', f.cookie)
-      .send({ attendance: 'LATE' }).expect(400);
+      .send({ attendance: 'TARDY' }).expect(400);
     expect(await prisma.participant.findUniqueOrThrow({ where: { id: ids.participantId } }))
       .toMatchObject({ attendance: 'UNMARKED' });
 

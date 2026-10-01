@@ -2,6 +2,7 @@ import type { Business, ClubStaffAccess, Membership, Prisma, User } from '@prism
 import { prisma } from './db.js';
 import { effectiveClubPermissions, type AccountType } from './http.js';
 import { loadAccountPolicy } from './account-policy.js';
+import { coachProfileJson, coachPublicProfileJson } from './account-profile.js';
 import type { AccountPolicyDecision } from './children-policy.js';
 
 export const bookingInclude = { service: true, instructor: true, location: true, participants: { include: { student: true } } } satisfies Prisma.BookingInclude;
@@ -17,19 +18,33 @@ export const publicBusiness = (b: Business) => ({
   supportEmail: b.supportEmail, supportAddress: b.supportAddress,
   gstRegistrationStatus: b.gstRegistrationStatus, gstRegistrationNumber: b.gstRegistrationNumber,
   pricesIncludeGst: b.pricesIncludeGst,
+  description: b.description, publicPhone: b.publicPhone, websiteUrl: b.websiteUrl,
   kind: b.kind, isDemo: b.isDemo, legacyReadOnly: b.legacyReadOnly,
 });
+// The club's own published contact details are public by design; the
+// institutional login email and internal IDs are not.
 export const publicBookingBusiness = (b: Business) => ({
   name: b.name, slug: b.slug, ownerName: b.ownerName, timezone: b.timezone, currency: b.currency,
   color: b.color, tagline: b.tagline, cancellationHours: b.cancellationHours, kind: b.kind,
+  description: b.description, publicPhone: b.publicPhone, websiteUrl: b.websiteUrl, supportEmail: b.supportEmail,
 });
-export const publicInstructor = (instructor: any) => ({
-  id: instructor.id, name: instructor.name, initials: instructor.initials, color: instructor.color,
-  specialty: instructor.specialty, active: instructor.active,
-});
+/**
+ * Public coach card. `profile` is read only from the roster entry's active
+ * COACH account when the caller loaded `membership.user`; contact details
+ * never leave the account.
+ */
+export const publicInstructor = (instructor: any) => {
+  const membership = instructor.membership;
+  const account = membership?.active && membership.user?.accountType === 'COACH' ? membership.user : null;
+  return {
+    id: instructor.id, name: instructor.name, initials: instructor.initials, color: instructor.color,
+    specialty: instructor.specialty, active: instructor.active,
+    profile: account ? coachPublicProfileJson(account) : null,
+  };
+};
 export const publicLocation = (location: any) => ({
-  id: location.id, name: location.name, address: location.address, type: location.type, color: location.color,
-  requiresApproval: location.requiresApproval, mapsUrl: location.mapsUrl, active: location.active,
+  id: location.id, name: location.name, address: location.address, area: location.area ?? '', type: location.type,
+  color: location.color, requiresApproval: location.requiresApproval, mapsUrl: location.mapsUrl, active: location.active,
 });
 
 // Account identity and workspace authorization are deliberately serialized separately.
@@ -48,6 +63,7 @@ export const userJson = (user: User) => ({
     policySetHash: user.signupPolicySetHash,
   },
   accountType: user.accountType as AccountType,
+  coachProfile: user.accountType === 'COACH' ? coachProfileJson(user) : null,
 });
 export const workspaceUserJson = (user: User, membership: Pick<Membership, 'instructorId'> | null) => ({
   ...userJson(user), instructorId: membership?.instructorId ?? null,

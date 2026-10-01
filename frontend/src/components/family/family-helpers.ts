@@ -1,4 +1,5 @@
-import type { AccountRequiredAction, AgeBand, FamilyChild } from '@/lib/types';
+import { formatInTimeZone } from 'date-fns-tz';
+import type { AccountRequiredAction, AgeBand, Attendance, AuthSession, ChildScheduleItem, FamilyChild, Status } from '@/lib/types';
 
 export const familyUsernamePattern = /^[a-z0-9_]{3,30}$/;
 const singaporeDateFormatter = new Intl.DateTimeFormat('en-CA', {
@@ -83,4 +84,103 @@ export function requiredActionCopy(action: AccountRequiredAction | null | undefi
     default:
       return { title: 'Account action required', detail: 'Review your account before continuing.' };
   }
+}
+
+/**
+ * Mirrors the server's projection authority so the entry points appear only
+ * when they can work: an active link with BOOKINGS_MANAGE, current consent,
+ * and a still-managed child. The server re-checks and answers 404 otherwise.
+ */
+export function canViewFamilyTraining(child: FamilyChild, policyVersion: string): boolean {
+  return child.accountControl === 'GUARDIAN_MANAGED'
+    && child.link.permissions.includes('BOOKINGS_MANAGE')
+    && hasCurrentFamilyConsent(child, policyVersion);
+}
+
+export type FamilyBookingTarget = { href: string; clubName: string | null };
+
+/**
+ * Where "Book a Class" should go. A student guardian uses the club directory in
+ * the player app; a coach guardian has no player app, so offer the clubs they
+ * already work with. Both reach the public booking page's "Who is playing?".
+ */
+export function familyBookingTargets(session: Pick<AuthSession, 'user' | 'memberships'> | null | undefined, limit = 3): FamilyBookingTarget[] {
+  if (!session) return [];
+  if (session.user.accountType === 'STUDENT') return [{ href: '/manage?tab=explore', clubName: null }];
+  if (session.user.accountType !== 'COACH') return [];
+  const seen = new Set<string>();
+  const targets: FamilyBookingTarget[] = [];
+  for (const membership of session.memberships ?? []) {
+    const business = membership.business;
+    if (!membership.active || !business || business.kind !== 'CLUB' || business.legacyReadOnly || !business.slug || seen.has(business.slug)) continue;
+    seen.add(business.slug);
+    targets.push({ href: `/book/${encodeURIComponent(business.slug)}`, clubName: business.name });
+    if (targets.length >= limit) break;
+  }
+  return targets;
+}
+
+/** Upcoming soonest first (a Class in progress still counts), recent newest first. */
+export function splitChildSchedule(items: ChildScheduleItem[], now = Date.now()) {
+  const upcoming: ChildScheduleItem[] = [];
+  const recent: ChildScheduleItem[] = [];
+  for (const item of items) (new Date(item.endAt).getTime() > now ? upcoming : recent).push(item);
+  const start = (item: ChildScheduleItem) => new Date(item.startAt).getTime();
+  upcoming.sort((a, b) => start(a) - start(b));
+  recent.sort((a, b) => start(b) - start(a));
+  return { upcoming, recent };
+}
+
+function zoned(value: string, timezone: string, pattern: string) {
+  try { return formatInTimeZone(value, timezone, pattern); } catch { return formatInTimeZone(value, 'Asia/Singapore', pattern); }
+}
+
+/** Date and time in the club's own timezone, never the viewer's. */
+export function classWhenLabel(item: Pick<ChildScheduleItem, 'startAt' | 'endAt' | 'business'>) {
+  const timezone = item.business.timezone || 'Asia/Singapore';
+  return {
+    date: zoned(item.startAt, timezone, 'EEE, d MMM yyyy'),
+    time: `${zoned(item.startAt, timezone, 'h:mm a')} – ${zoned(item.endAt, timezone, 'h:mm a')}`,
+  };
+}
+
+/** Named once above the list when any club keeps a different clock from the viewer. */
+export function clubTimeZoneNote(items: Pick<ChildScheduleItem, 'business'>[], viewerZone?: string): string | null {
+  const viewer = viewerZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const zones = [...new Set(items.map(item => item.business.timezone).filter(Boolean))];
+  if (!zones.length || zones.every(zone => zone === viewer)) return null;
+  return zones.length === 1
+    ? `Times are shown in the club’s time zone (${zones[0]}).`
+    : 'Times are shown in each club’s own time zone.';
+}
+
+export function scheduleStatusLabel(status: Status): string {
+  switch (status) {
+    case 'CONFIRMED': return 'Confirmed';
+    case 'PENDING': return 'Awaiting confirmation';
+    case 'CANCELLED': return 'Cancelled';
+    case 'COMPLETED': return 'Completed';
+    default: return status;
+  }
+}
+
+/** Attendance opens when a Class starts; before that, and for cancelled Classes, say nothing. */
+export function attendanceLabel(attendance: Attendance, started: boolean, status: Status): string | null {
+  if (status === 'CANCELLED') return null;
+  switch (attendance) {
+    case 'PRESENT': return 'Attended';
+    case 'LATE': return 'Attended · arrived late';
+    case 'ABSENT': return 'Absent';
+    case 'EXCUSED': return 'Excused';
+    default: return started ? 'Attendance not marked yet' : null;
+  }
+}
+
+/** Only an absolute https link from the server becomes a Maps link. */
+export function safeExternalUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' ? url.toString() : null;
+  } catch { return null; }
 }

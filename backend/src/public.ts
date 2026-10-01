@@ -17,6 +17,8 @@ import { enqueueCalendarSync } from './calendar-sync.js';
 import { noteStudentLeft } from './chat-events.js';
 import { loadAccountPolicy } from './account-policy.js';
 import { offerWaitlistPlaces } from './waitlist.js';
+import { recordClubMetricSoon } from './club-metrics.js';
+import { coachPublicProfileSelect } from './account-profile.js';
 import {
   acceptRescheduleRequest,
   assertInsideRescheduleWindow,
@@ -42,6 +44,39 @@ async function businessForSlug(slug: string) {
   });
   if (!business) throw new HttpError(404, 'Booking page not found');
   return business;
+}
+
+/**
+ * The public half-hourly start grid for one coach, venue and weekday. Every
+ * availability surface (day slots, next available, session search) uses this
+ * one definition so a time offered in one place is offered in all of them.
+ */
+export function slotGridMinutes(
+  blocks: Array<{ dayOfWeek: number; startTime: string; endTime: string }>, dayOfWeek: number, duration: number,
+) {
+  const minutes = new Set<number>();
+  for (const block of blocks) {
+    if (block.dayOfWeek !== dayOfWeek) continue;
+    const [sh, sm] = block.startTime.split(':').map(Number); const [eh, em] = block.endTime.split(':').map(Number);
+    for (let m = sh * 60 + sm; m + duration <= eh * 60 + em; m += 30) minutes.add(m);
+  }
+  return [...minutes].sort((a, b) => a - b);
+}
+
+/**
+ * Distinct, trimmed venue area labels in a stable, case-insensitive order.
+ * Venue rows arrive in no guaranteed order, so the displayed spelling of a
+ * repeated area is chosen deterministically (capitalized first by code
+ * point) rather than by whichever row the database returned first.
+ */
+export function distinctAreas(values: Array<string | null | undefined>) {
+  const areas = values.map(value => value?.trim() ?? '').filter(Boolean)
+    .sort((a, b) => a.toLocaleLowerCase().localeCompare(b.toLocaleLowerCase()) || (a < b ? -1 : a > b ? 1 : 0));
+  const byKey = new Map<string, string>();
+  for (const area of areas) {
+    if (!byKey.has(area.toLocaleLowerCase())) byKey.set(area.toLocaleLowerCase(), area);
+  }
+  return [...byKey.values()];
 }
 
 const bookableServiceWhere = {
@@ -88,7 +123,7 @@ publicRouter.get(
               instructors: { some: { instructor: bookableInstructorWhere() } },
             },
             select: {
-              locationId: true, price: true,
+              locationId: true, price: true, location: { select: { area: true } },
               instructors: {
                 where: { instructor: bookableInstructorWhere() },
                 select: { instructorId: true },
@@ -103,6 +138,11 @@ publicRouter.get(
   });
   const hasNextPage = businesses.length > limit;
   const page = hasNextPage ? businesses.slice(0, limit) : businesses;
+  const favorites = page.length ? await prisma.favoriteClub.findMany({
+    where: { userId: req.auth.user.id, businessId: { in: page.map(business => business.id) } },
+    select: { businessId: true },
+  }) : [];
+  const favoriteIds = new Set(favorites.map(favorite => favorite.businessId));
 
   res.json({
     clubs: page.map(business => {
@@ -121,6 +161,8 @@ publicRouter.get(
         coachCount: new Set(locations.flatMap(location => location.instructors.map(item => item.instructorId))).size,
         locationCount: new Set(locations.map(location => location.locationId)).size,
         priceFrom: Math.min(...locations.map(location => location.price)),
+        areas: distinctAreas(locations.map(location => location.location.area)),
+        favorite: favoriteIds.has(business.id),
       };
     }),
     nextCursor: hasNextPage ? page.at(-1)!.slug : null,
@@ -131,7 +173,12 @@ publicRouter.get(
 publicRouter.get('/public/:slug', asyncRoute(async (req, res) => {
   const business = await businessForSlug(req.params.slug);
   const [instructors, services] = await Promise.all([
-    prisma.instructor.findMany({ where: bookableInstructorWhere(business.id), orderBy: { name: 'asc' } }),
+    prisma.instructor.findMany({
+      where: bookableInstructorWhere(business.id),
+      // Only the public coaching-profile columns are read from the account.
+      include: { membership: { select: { active: true, user: { select: coachPublicProfileSelect } } } },
+      orderBy: { name: 'asc' },
+    }),
     prisma.service.findMany({
       where: { businessId: business.id, active: true },
       include: { locations: { where: { location: { active: true } }, include: { instructors: true } } },
@@ -151,11 +198,31 @@ publicRouter.get('/public/:slug', asyncRoute(async (req, res) => {
     where: { id: { in: locationIds }, businessId: business.id, active: true },
     orderBy: { name: 'asc' },
   });
+  const sportByKey = new Map<string, string>();
+  for (const service of bookableServices) {
+    const sport = service.category.trim();
+    if (sport && !sportByKey.has(sport.toLocaleLowerCase())) sportByKey.set(sport.toLocaleLowerCase(), sport);
+  }
+  const venuePrices = bookableServices.flatMap(service => service.locations.map(location => location.price));
+  // A decision summary of exactly the catalogue below, so the header never
+  // promises a sport, price or venue the page cannot actually book.
+  const summary = {
+    sports: [...sportByKey.values()].sort((a, b) => a.localeCompare(b)),
+    priceFrom: venuePrices.length ? Math.min(...venuePrices) : null,
+    coachCount: new Set(bookableServices.flatMap(service => service.locations
+      .flatMap(location => location.instructors.map(assignment => assignment.instructorId)))).size,
+    locationCount: locations.length,
+    serviceCount: bookableServices.length,
+    groupClassCount: bookableServices.filter(service => service.type === 'GROUP').length,
+    areas: distinctAreas(locations.map(location => location.area)),
+  };
+  recordClubMetricSoon(business.id, 'PAGE_VIEW', { timezone: business.timezone });
   res.json({
     business: publicBookingBusiness(business),
     instructors: instructors.map(publicInstructor),
     locations: locations.map(publicLocation),
     services: bookableServices.map(serviceJson),
+    summary,
   });
 }));
 
@@ -167,19 +234,60 @@ publicRouter.get('/public/:slug/slots', slotLimit, asyncRoute(async (req, res) =
   if (day > DateTime.now().plus({ years: 1 })) throw new HttpError(400, 'Choose a date within the next year');
   const slots = await prisma.$transaction(async tx => {
     const ctx = await schedulingContext(tx, business.id, query.serviceId, query.instructorId, query.locationId);
-    const blocks = ctx.blocks.filter(b => b.dayOfWeek === day.weekday % 7);
-    const minutes = new Set<number>();
-    for (const block of blocks) {
-      const [sh, sm] = block.startTime.split(':').map(Number); const [eh, em] = block.endTime.split(':').map(Number);
-      for (let m = sh * 60 + sm; m + ctx.assignment.duration <= eh * 60 + em; m += 30) minutes.add(m);
-    }
     const result = [];
-    for (const minute of [...minutes].sort((a, b) => a - b)) {
+    for (const minute of slotGridMinutes(ctx.blocks, day.weekday % 7, ctx.assignment.duration)) {
       const slot = await evaluateSlot(tx, ctx, day.plus({ minutes: minute }).toJSDate());
       result.push({ startAt: slot.startAt.toISOString(), endAt: slot.endAt.toISOString(), available: slot.available, placesRemaining: slot.placesRemaining, ...(slot.reason ? { reason: slot.reason } : {}) });
     }
     return result;
   }, { timeout: 15_000 });
+  recordClubMetricSoon(business.id, 'AVAILABILITY_CHECK', { timezone: business.timezone });
+  res.json({ slots });
+}));
+
+const NEXT_AVAILABLE_DAYS = 28;
+const NEXT_AVAILABLE_EVALUATIONS = 400;
+const nextAvailableQuery = z.object({
+  serviceId: z.string().trim().min(1).max(200),
+  instructorId: z.string().trim().min(1).max(200),
+  locationId: z.string().trim().min(1).max(200),
+  limit: z.coerce.number().int().min(1).max(10).default(5),
+}).strict();
+
+// Re-booking starts from a known Class, coach and venue, so the useful answer
+// is "when can I go next", not a day picker. The scan is bounded both in days
+// and in authoritative slot evaluations so a sparse calendar stays cheap.
+publicRouter.get('/public/:slug/next-available', slotLimit, asyncRoute(async (req, res) => {
+  const query = nextAvailableQuery.parse(req.query);
+  const business = await businessForSlug(req.params.slug);
+  const slots = await prisma.$transaction(async tx => {
+    const ctx = await schedulingContext(tx, business.id, query.serviceId, query.instructorId, query.locationId);
+    // Starts inside the notice period can never be booked; skipping them here
+    // keeps the evaluation budget for times evaluateSlot might accept.
+    const earliest = Date.now() + ctx.service.noticeHours * 3600_000;
+    const today = DateTime.now().setZone(business.timezone).startOf('day');
+    const found: Array<{ startAt: string; endAt: string; available: boolean; placesRemaining: number }> = [];
+    let evaluations = 0;
+    scan: for (let offset = 0; offset < NEXT_AVAILABLE_DAYS; offset++) {
+      const day = today.plus({ days: offset });
+      if (ctx.exceptions.some(exception => exception.date === day.toISODate())) continue;
+      for (const minute of slotGridMinutes(ctx.blocks, day.weekday % 7, ctx.assignment.duration)) {
+        const startAt = day.plus({ minutes: minute }).toJSDate();
+        if (startAt.getTime() < earliest) continue;
+        if (evaluations >= NEXT_AVAILABLE_EVALUATIONS) break scan;
+        evaluations++;
+        const slot = await evaluateSlot(tx, ctx, startAt);
+        if (!slot.available) continue;
+        found.push({
+          startAt: slot.startAt.toISOString(), endAt: slot.endAt.toISOString(),
+          available: true, placesRemaining: slot.placesRemaining,
+        });
+        if (found.length >= query.limit) break scan;
+      }
+    }
+    return found;
+  }, { timeout: 15_000 });
+  recordClubMetricSoon(business.id, 'AVAILABILITY_CHECK', { timezone: business.timezone });
   res.json({ slots });
 }));
 
@@ -191,7 +299,8 @@ publicRouter.post(
   requireAccountCapability('commerce'),
   requireStudent,
   asyncRoute(async (req, res) => {
-  const input = publicBookingInput.parse(req.body);
+  // Attribution is funnel-only and never reaches booking creation.
+  const { source, ...input } = publicBookingInput.parse(req.body);
   if (!req.auth.user.email) throw new HttpError(403, 'An account email is required to book a class');
   const business = await businessForSlug(req.params.slug);
   const result = await createBookings(business.id, {
@@ -203,6 +312,11 @@ publicRouter.post(
       parentName: input.student?.parentName,
     },
   }, { studentUserId: req.auth.user.id });
+  // One conversion per successful request, however many weeks it booked.
+  if (result.bookings.length) {
+    recordClubMetricSoon(business.id, 'BOOKING_CREATED', { timezone: business.timezone });
+    if (source === 'REBOOK') recordClubMetricSoon(business.id, 'REBOOK_CREATED', { timezone: business.timezone });
+  }
   res.status(201).json(result);
   }),
 );

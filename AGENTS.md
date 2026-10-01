@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 4.4.1** · Last updated 2026-10-01
+**Version 4.5.0** · Last updated 2026-10-01
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -123,6 +123,15 @@ backend/           Express + Prisma API (TypeScript, ESM)
     workspace.ts   The single GET /api/workspace payload
     public.ts      Public booking page + student self-service
     admin.ts       Named-operator platform console; not an account type
+    feedback.ts    Coach session feedback (provider) and learner progress (account)
+    family-progress.ts  Guardian read-only child schedule and progress projections
+    waitlist.ts    Group-Class waitlists, held offers, and the offer/expiry worker
+    discovery.ts   Saved clubs and availability-first session search
+    package-activity.ts  Package credit history routes and low-credit/expiry reminders
+    credit-ledger.ts  Labels for the trigger-written PackageCreditEvent ledger
+    club-metrics.ts   Person-free daily club funnel counters
+    training-groups.ts  Club-local training cohorts
+    insights.ts    Club growth funnel, retention, and feedback coverage
   tests/           Vitest; integration tests need a local PostgreSQL
 
 frontend/          Next.js App Router (TypeScript, Tailwind)
@@ -136,12 +145,15 @@ frontend/          Next.js App Router (TypeScript, Tailwind)
     chat.ts        Chat list/thread wording and grouping helpers
     product-tour.ts  Versioned Driver.js tours, first-run persistence, visible anchors
     utils.ts       cn, money, dates, initials()
+    booking-links.ts  Re-book and search-result links into /book/[slug] preselection
   src/components/
     calendar-connection-card.tsx  Shared student/coach personal integration UI
     chat/                   Account/session inbox, discovery, assignment, proposals
     student-app.tsx         The student app (/manage) — five-tab shell
-    workspace/              The provider workspace (/)
+    student/                Calendar, progress, waitlist, package activity, Find a time, player switcher
+    workspace/              The provider workspace (/), incl. Run this Class, training groups, growth insights
     public-booking.tsx      Public booking page for /book/[slug]
+    booking/                Its club details header, coach cards, next-available strip, waitlist join
     legacy-booking.tsx      Pre-account management links (/manage/[token])
     auth-form.tsx           Login and sign-up
     account-security/      Security center, claim pages, and global step-up prompt
@@ -166,6 +178,11 @@ scripts/           Local PostgreSQL, guarded backup/restore, security checks, sh
 | Change account discovery | `backend/src/account-directory.ts`, then the account/roster/chat discovery UI |
 | Change package offers or checkout | `backend/src/commerce.ts`, then `frontend/src/lib/types.ts` |
 | Change rentals | `backend/src/rentals.ts`, then the student and workspace rental views |
+| Change coach feedback, attendance, or learner progress | `backend/src/feedback.ts`, `bookings.ts`, `family-progress.ts`, then the Run this Class view and student progress UI |
+| Change group-Class waitlists | `backend/src/waitlist.ts`, `scheduling.ts` (held places in `evaluateSlot`), then the public booking page, student Home, and workspace waitlist panel |
+| Change package credit history or reminders | The `LessonPackage_credit_ledger` trigger, `credit-ledger.ts`, `package-activity.ts` |
+| Change saved clubs, Find a time, next-available, or public club/coach profiles | `backend/src/discovery.ts`, `public.ts`, `serializers.ts`, then `frontend/src/lib/booking-links.ts` and the student/public booking UI |
+| Change training groups or club growth insights | `backend/src/training-groups.ts`, `insights.ts`, `club-metrics.ts`, then the workspace views |
 | Change Google Calendar OAuth/sync | `backend/src/calendar.ts`, `calendar-sync.ts`, `google-calendar.ts`, then `frontend/src/components/calendar-connection-card.tsx` |
 | Change provider UI | `frontend/src/components/workspace/` |
 | Change slot / conflict rules | `backend/src/scheduling.ts` |
@@ -287,6 +304,45 @@ scripts/           Local PostgreSQL, guarded backup/restore, security checks, sh
   does not need booking history or a pasted club URL. Provider Explore is the
   grouped workspace tool hub, with owned-venue discovery under the named
   **Rent a court** destination.
+
+### Training companion: feedback, waitlists, credits, discovery
+
+The full contract is `docs/TRAINING_COMPANION.md`. The invariants most likely
+to matter:
+
+- `SessionFeedback` is one row per participant place. `PRIVATE` is a club-only
+  draft; `SHARED` is visible to the learner, or to a guardian of a managed
+  child who holds an ACTIVE link with `BOOKINGS_MANAGE` and current consent.
+  `clubNote` is internal and never reaches learners or guardians. Feedback
+  needs a started, confirmed/completed Class and a `PRESENT`/`LATE` place. SQL
+  pins it to its booking's participant and freezes author and first-share time.
+- Guardians get read-only child schedule and progress projections; they still
+  cannot cancel, reschedule, waitlist, pay, or chat for a child.
+- A `WaitlistEntry` queues a student for one full group Class occurrence. An
+  `OFFERED` entry holds a place until `offerExpiresAt`, and `evaluateSlot`
+  subtracts live offers from a group's remaining places so public booking
+  cannot take it. Acceptance books through `createBookingsInTransaction` with
+  the entry ID. Terminal entries never reopen; one live entry per student and
+  booking is a partial unique index. A worker expires and re-offers places.
+- `PackageCreditEvent` is written by the `LessonPackage_credit_ledger` trigger
+  for every insert or change of `totalCredits`/`usedCredits`, and SQL rejects
+  edits or independent deletes. Label a credit write with
+  `withCreditContext()`; never compute history from `usedCredits` alone.
+- Coach profile fields on `User` are COACH-only (SQL check) and qualifications
+  are self-reported. Public payloads never include a coach's email or phone.
+- `TrainingGroup` is a club-local roster, never an account type or affiliation.
+- `ClubFunnelCounter` stores only club, local day, metric, and count. Do not add
+  visitor, account, session, device, or free-text identifiers to analytics.
+  Growth insights appear in Insights for club-side users with `BOOKINGS_VIEW`;
+  that permission alone does not open financial reporting.
+- Consume package credits per booked place with `consumeLessonCredit()` (or a
+  labelled update after the reservation exists) so every ledger row names its
+  session. Hidden accessible tables must be wrapped in an `sr-only` block, not
+  given `sr-only` themselves: tables ignore the 1px width and widen phone
+  layouts.
+- Account-level routers for these features are mounted on `/api` immediately
+  after authentication and apply capability/role guards per route: a
+  capability guard mounted on the bare `/api` prefix rejects every later route.
 
 ### Legal publication and compliance records
 
@@ -598,8 +654,10 @@ only become `CONFIRMED` after coach acceptance, and `COMPLETED` may only follow
 `CONFIRMED` after the lesson ends. `CANCELLED` and `COMPLETED` are terminal,
 although internal notes may still be corrected.
 Cancellation and coach accept/decline also close once `endAt` is reached.
-Attendance may be marked only after `endAt`, only on `CONFIRMED` or `COMPLETED`
-classes, and only after any required coach acceptance.
+Attendance (`UNMARKED`, `PRESENT`, `LATE`, `ABSENT`, `EXCUSED`; LATE counts as
+attended) opens once the lesson has started, so a coach can take the roll at
+the court. It applies only to `CONFIRMED` or `COMPLETED` classes and only after
+any required coach acceptance. `COMPLETED` still waits for `endAt`.
 
 ### Rescheduling is a negotiation, not an edit
 
@@ -873,7 +931,9 @@ Two stores, one vocabulary (`backend/src/notifications.ts`):
 
 - `Notification` — provider workspace. Always write through `notifyWorkspace()`.
 - `AccountNotification` — student. Always write through
-  `createBookingAccountAlerts()`, which owns all the copy.
+  `createBookingAccountAlerts()` for a booking's own lifecycle, or
+  `createAccountAlert()` for coach feedback, waitlist offers, and package
+  reminders. Both live in `account-notifications.ts`, which owns all the copy.
 
 `frontend/src/lib/alerts.ts` maps a type to an icon and tone, falling back to
 wording and then to a neutral bell, so old untyped rows still render. Both apps
@@ -1145,7 +1205,8 @@ quickest way to tell which mode a deployment is in.
   are not wired; creation has only a 60-second per-child cooldown. There is no
   SMS/push/WhatsApp provider or delivery/bounce webhook.
 - Family manages a child's identity, privacy, consent, bounded public club Class
-  booking, export, deletion request, and verified handover. Guardian bookings
+  booking, read-only schedule and coach-feedback progress, export, deletion
+  request, and verified handover. Guardian bookings
   are unpaid `CLUB`-route bookings with no package; payment is arranged with the
   club. Family still cannot pay, buy packages, reserve rentals, connect Calendar,
   or chat on behalf of a child, and it grants no guardian cancellation or
@@ -1160,6 +1221,10 @@ quickest way to tell which mode a deployment is in.
 - A Class always reserves coach time and reserves a Courtly-managed unit only
   when the facility opts into Class unit scheduling. A third-party venue
   needing approval remains external and leaves the booking `PENDING`.
+- Waitlists cover self-managed students only, and an accepted offer is booked
+  unpaid like any other Class (no automatic charge). Coach qualifications are
+  self-reported. The web manifest makes Courtly installable, but there is
+  deliberately no service worker or offline cache for authenticated data.
 - Google Calendar is a one-way, eventually consistent view of confirmed
   Classes. Remote edits do not change Courtly, and stale external free/busy
   data never blocks scheduling.
@@ -1167,6 +1232,20 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 4.5.0 — 2026-10-01
+
+Turned the student and guardian experience into a training companion while
+keeping Courtly a multi-club marketplace. Added coach session feedback and
+learner progress, guardian read-only child schedule and progress, court-side
+"Run this Class" attendance (now opening at the start time, with LATE and
+EXCUSED), waitlists with held offers for full group Classes, a trigger-written
+append-only package credit ledger with low-credit and expiry reminders, saved
+clubs, availability-first search, next-available re-booking, richer public club
+and coach profiles, club-local training groups, person-free funnel counters with
+growth insights, a calendar view of bookings, and an installable web manifest.
+Chat read positions are now written in one atomic statement, so opening a
+thread while sending in it can no longer fail with a duplicate-key error.
 
 ### 4.3.0 — 2026-09-29
 

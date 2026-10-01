@@ -111,12 +111,12 @@ describe.sequential('A lesson seen from every seat', () => {
       where: { userId: account.id, bookingId: booking.id, type: 'BOOKING_CONFIRMED' },
     })).toBe(1);
 
-    // 5. The lesson happens. Attendance opens only once it has ended.
+    // 5. The lesson happens. Attendance opens court-side once it has started.
     const early = await request(app)
       .patch(`/api/bookings/${booking.id}/participants/${booking.participants[0].id}`)
       .set('Cookie', coachCookie).send({ attendance: 'PRESENT' });
     expect(early.status).toBe(400);
-    expect(early.body.error).toBe('Attendance can only be marked after the lesson has ended');
+    expect(early.body.error).toBe('Attendance can only be marked once the lesson has started');
 
     await prisma.booking.update({
       where: { id: booking.id },

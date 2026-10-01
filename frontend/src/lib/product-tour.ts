@@ -17,7 +17,7 @@ type ProductTourStep = {
   align?: Alignment;
 };
 
-const TOUR_VERSION = '2026-09-28.1';
+const TOUR_VERSION = '2026-10-01.1';
 const PENDING_TOUR_KEY = 'courtly:product-tour:pending';
 let activeTour: Driver | null = null;
 let tourGeneration = 0;
@@ -91,9 +91,12 @@ export function productTourSteps({ kind, firstName, businessName }: ProductTourC
     { anchor: 'student-home', title: 'Every booking, one calm view', description: 'Home brings your sessions from every club together, with the next useful action always close by.', side: 'bottom', align: 'start' },
     { anchor: 'student-clubs', title: 'Jump back to your clubs', description: 'Your clubs appear here after you book. Choose one to head straight to its live booking page.', side: 'bottom', align: 'start' },
     { anchor: 'student-packages', title: 'Keep an eye on credits', description: 'See active class and rental credits across clubs, then open My Packages for the full detail.', side: 'bottom', align: 'start' },
+    // Shown only once there is training to report, so a brand-new player's tour stays short.
+    { anchor: 'student-progress', title: 'Watch your game grow', description: 'Your streak, sessions attended, current goal, and the latest note from your coach. Open it for the full picture.', side: 'bottom', align: 'start' },
     { anchor: 'student-bookings', title: 'Your sessions live here', description: 'Open a booking to see its status, payment, venue, rescheduling options, and class conversation.', side: 'top', align: 'start' },
+    { anchor: 'student-view-toggle', title: 'A list or a calendar', description: 'Switch to a month calendar to see your sessions by day. Courtly remembers your choice on this device.', side: 'bottom', align: 'end' },
     { anchor: 'student-navigation', title: 'Explore, book, and stay connected', description: 'Use these five destinations to discover clubs and venues, book a session, read conversations, or manage your profile.', side: 'top', align: 'center' },
-    { anchor: 'student-alerts', title: 'Important changes, without the noise', description: 'The bell collects booking, payment, and reschedule updates. Its label always tells you how many are unread.', side: 'bottom', align: 'end' },
+    { anchor: 'student-alerts', title: 'Important changes, without the noise', description: 'The bell collects booking, payment, reschedule, coach feedback, waitlist, and package updates. Its label always tells you how many are unread.', side: 'bottom', align: 'end' },
     finish('That’s the map. You can replay this tour any time from Profile under Help & support.'),
   ];
 

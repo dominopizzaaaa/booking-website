@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { DateTime } from 'luxon';
 import { chatOpeningLine, chatWhen } from './chat-events.js';
+import { withCreditContext } from './credit-ledger.js';
 
 export type SeedBusinessOptions = {
   slug?: string;
@@ -52,6 +53,10 @@ async function populateBusiness(
       currency: 'SGD',
       color: '#214e3e',
       tagline: 'Good coaching. Great possibilities.',
+      description: 'A friendly racket club in central Singapore. Private tennis, junior groups, badminton fundamentals and match play, with coaches who keep every session purposeful and fun.',
+      publicPhone: '+65 6123 4567',
+      // The reserved .example domain keeps the sample link from pointing at a real site.
+      websiteUrl: 'https://marcus-tan-racket-club.example',
       cancellationHours: 24,
       kind: 'CLUB',
       isDemo: options.isDemo ?? false,
@@ -66,6 +71,28 @@ async function populateBusiness(
     { name: 'Sarah Lim', color: '#5c7f91', email: `sarah.${tenantKey}@sample.courtly.invalid`, specialty: 'Junior tennis · confidence and fundamentals' },
     { name: 'Daniel Lee', color: '#b1854f', email: `daniel.${tenantKey}@sample.courtly.invalid`, specialty: 'Badminton · footwork and doubles' },
   ].map(instructor => tx.instructor.create({ data: { businessId, ...instructor, initials: initials(instructor.name) } })));
+  // Portable public profiles belong to each coach's own account. The
+  // qualifications are sample self-reported text, never verified credentials.
+  const coachProfiles = [
+    {
+      bio: 'Former competitive junior who now coaches technique and match play. Sessions mix clear drills with plenty of live points.',
+      languages: ['English', 'Mandarin'], coachingLevels: ['INTERMEDIATE', 'ADVANCED', 'COMPETITIVE'],
+      coachingAgeGroups: ['TEEN', 'ADULT'], qualifications: ['Level 2 tennis coaching certificate', 'Standard first aid'],
+      coachingSince: 2010,
+    },
+    {
+      bio: 'Specialises in young players and first-time adults. Expect games, rallies and steady confidence-building.',
+      languages: ['English', 'Mandarin', 'Malay'], coachingLevels: ['BEGINNER', 'INTERMEDIATE'],
+      coachingAgeGroups: ['JUNIOR', 'TEEN'], qualifications: ['Junior tennis coaching certificate', 'Child safeguarding course'],
+      coachingSince: 2015,
+    },
+    {
+      bio: 'Badminton coach focused on footwork, clean technique and doubles awareness for social and league players.',
+      languages: ['English', 'Cantonese'], coachingLevels: ['BEGINNER', 'INTERMEDIATE', 'ADVANCED'],
+      coachingAgeGroups: ['TEEN', 'ADULT', 'SENIOR'], qualifications: ['Level 1 badminton coaching certificate'],
+      coachingSince: 2013,
+    },
+  ];
   // The club's own operating login. It runs the club and never teaches, so it
   // holds no roster entry; every coach below has their own account.
   const clubAccount = await tx.user.create({
@@ -91,6 +118,7 @@ async function populateBusiness(
         accountType: 'COACH',
         phone: '',
         parentName: '',
+        ...coachProfiles[instructors.indexOf(instructor)],
         createdAt: business.createdAt,
       },
     });
@@ -101,15 +129,15 @@ async function populateBusiness(
 
   const locations = await Promise.all([
     {
-      name: 'Kallang Tennis Centre', address: '52 Stadium Road, Singapore 397724', type: 'FACILITY', color: '#78915e',
+      name: 'Kallang Tennis Centre', address: '52 Stadium Road, Singapore 397724', area: 'Kallang · Central', type: 'FACILITY', color: '#78915e',
       requiresApproval: false, travelMinutes: 20, notes: 'Meet beside the main entrance.', sport: 'Tennis',
       rentalEnabled: true, rentalUnitLabel: 'Court', rentalPrice: 3200, rentalStartInterval: 30, rentalMinDuration: 60,
       rentalBookingIncrement: 30, rentalMaxDuration: 120, rentalNoticeHours: 2, rentalAdvanceDays: 60,
       rentalCancellationHours: 24, rules: 'Non-marking shoes are required. Check in before entering the court.',
       amenities: JSON.stringify(['Changing rooms', 'Racket hire', 'Water station']),
     },
-    { name: 'OCBC Arena', address: '5 Stadium Drive, Singapore 397631', type: 'RENTED', color: '#6f91a6', requiresApproval: true, travelMinutes: 20, notes: 'Rented badminton courts require venue confirmation. A Courtly booking does not reserve an external court.' },
-    { name: 'Tanglin Club', address: '5 Stevens Road, Singapore 257814', type: 'FACILITY', color: '#b08a4f', requiresApproval: false, travelMinutes: 30, notes: 'Member or guest access required. Allow time to check in at reception.' },
+    { name: 'OCBC Arena', address: '5 Stadium Drive, Singapore 397631', area: 'Kallang · Central', type: 'RENTED', color: '#6f91a6', requiresApproval: true, travelMinutes: 20, notes: 'Rented badminton courts require venue confirmation. A Courtly booking does not reserve an external court.' },
+    { name: 'Tanglin Club', address: '5 Stevens Road, Singapore 257814', area: 'Tanglin · Central', type: 'FACILITY', color: '#b08a4f', requiresApproval: false, travelMinutes: 30, notes: 'Member or guest access required. Allow time to check in at reception.' },
     { name: 'Online', address: 'Online coaching · joining details shared after confirmation', type: 'ONLINE', color: '#84739c', requiresApproval: false, travelMinutes: 0, notes: 'Video technique review. Bring a recent recording and a little space to move.' },
   ].map(location => tx.location.create({ data: { businessId, ...location } })));
 
@@ -258,6 +286,7 @@ async function populateBusiness(
   const juniors = [1, 2, 3, 4, 5, 6, 7, 8];
   const pendingByCoach = new Map<string, number>();
   const upcomingByCoach = new Map<string, number>();
+  const creditUses: Array<{ packageId: string; bookingId: string; participantId: string; startAt: DateTime; serviceName: string }> = [];
 
   for (let day = 0; day < 7; day++) {
     // Five daily sessions always include today's 09:00, 10:00 and 11:00.
@@ -301,10 +330,14 @@ async function populateBusiness(
         const pkg = packages.find(item => item.studentId === student.id && (!item.serviceId || item.serviceId === service.id)
           && item.expiresAt >= startAt.toJSDate() && item.usedCredits < item.totalCredits);
         const creditConsumed = !!pkg && !cancelled;
-        if (creditConsumed) pkg!.usedCredits++;
+        const participantId = randomUUID();
+        if (creditConsumed) {
+          pkg!.usedCredits++;
+          creditUses.push({ packageId: pkg!.id, bookingId, participantId, startAt, serviceName: service.name });
+        }
         const paid = !cancelled && (pkg ? pkg.paid : (day + slot + seat) % 3 !== 0);
         participants.push({
-          id: randomUUID(), bookingId, studentId: student.id, price: assignment.price,
+          id: participantId, bookingId, studentId: student.id, price: assignment.price,
           paid, packageId: pkg?.id ?? null, creditConsumed,
           attendance: status === 'COMPLETED' ? ((day + slot + seat) % 13 === 0 ? 'ABSENT' : 'PRESENT') : 'UNMARKED',
           managementTokenHash: null,
@@ -326,9 +359,61 @@ async function populateBusiness(
     }
   }
 
-  // All tenant foreign keys and package counters are persisted together.
+  // Two earlier weeks of attended sessions give progress, coach feedback and
+  // retention views real history whatever weekday the demo is created on.
+  // Earlier weeks are entirely in the past, so they never collide with the
+  // current week's schedule above.
+  const history = [
+    { weeksAgo: 2, day: 1, hour: 9, service: 0, instructor: 0, location: 0, students: [0], late: -1 },
+    { weeksAgo: 2, day: 2, hour: 11, service: 1, instructor: 1, location: 0, students: [1, 2, 3, 4], late: -1 },
+    { weeksAgo: 1, day: 1, hour: 9, service: 0, instructor: 0, location: 0, students: [0], late: -1 },
+    { weeksAgo: 1, day: 2, hour: 11, service: 1, instructor: 1, location: 0, students: [1, 2, 3, 5], late: 2 },
+  ];
+  const historyPlaces: Array<{
+    weeksAgo: number; bookingId: string; participantId: string; studentIndex: number;
+    instructorIndex: number; endAt: DateTime;
+  }> = [];
+  for (const session of history) {
+    const service = services[session.service];
+    const location = locations[session.location];
+    const instructorId = instructors[session.instructor].id;
+    const assignment = service.locations.find(item => item.locationId === location.id)!;
+    const startAt = weekStart.minus({ weeks: session.weeksAgo }).plus({ days: session.day, hours: session.hour });
+    const endAt = startAt.plus({ minutes: assignment.duration });
+    const bookingId = randomUUID();
+    bookings.push({
+      id: bookingId, businessId, serviceId: service.id, instructorId, locationId: location.id,
+      startAt: startAt.toJSDate(), endAt: endAt.toJSDate(), duration: assignment.duration,
+      bufferMinutes: service.bufferMinutes, status: 'COMPLETED', type: service.type, capacity: service.capacity,
+      price: assignment.price, address: location.address, paymentRoute,
+      notes: session.service === 1 ? 'Bring water and a junior racket. Parent or guardian collects after the lesson.'
+        : 'A little practice, a little progress. Bring water and your racket.',
+      createdAt: startAt.minus({ days: 3 }).toJSDate(),
+    });
+    for (const [seat, studentIndex] of session.students.entries()) {
+      const student = students[studentIndex];
+      const participantId = randomUUID();
+      // Earlier sessions were paid per lesson; package purchases above are
+      // recent and are not back-applied to sessions that predate them.
+      participants.push({
+        id: participantId, bookingId, studentId: student.id, price: assignment.price, paid: true,
+        packageId: null, creditConsumed: false, attendance: seat === session.late ? 'LATE' : 'PRESENT',
+        managementTokenHash: null, managementTokenExpiresAt: null, managementTokenRevokedAt: null, notes: '',
+      });
+      payments.push({
+        id: randomUUID(), businessId, studentId: student.id, bookingId, amount: assignment.price,
+        kind: studentPaymentKind, method: ['BANK_TRANSFER', 'CASH'][seat % 2], note: `Lesson payment · ${service.name}`,
+        paidAt: startAt.minus({ hours: 2 }).toJSDate(),
+      });
+      historyPlaces.push({ weeksAgo: session.weeksAgo, bookingId, participantId, studentIndex, instructorIndex: session.instructor, endAt });
+    }
+  }
+
+  // All tenant foreign keys are persisted together. Packages start at zero
+  // used credits and every redemption below is written as its own labelled
+  // change, so the credit ledger shows which session used each credit.
   packages[0].usedCredits += 1;
-  await tx.lessonPackage.createMany({ data: packages });
+  await tx.lessonPackage.createMany({ data: packages.map(pkg => ({ ...pkg, usedCredits: 0 })) });
   await tx.lessonPackageService.create({
     data: { packageId: packages[0].id, businessId, serviceId: services[0].id },
   });
@@ -382,6 +467,19 @@ async function populateBusiness(
   await tx.booking.createMany({ data: bookings });
   await tx.participant.createMany({ data: participants });
   await tx.payment.createMany({ data: payments });
+  for (const use of creditUses.sort((left, right) => left.startAt.toMillis() - right.startAt.toMillis())) {
+    await withCreditContext(tx, {
+      kind: 'BOOKED', bookingId: use.bookingId, participantId: use.participantId,
+      note: `${use.serviceName} · ${use.startAt.setLocale('en-SG').toFormat('ccc d LLL')}`,
+    }, () => tx.lessonPackage.update({ where: { id: use.packageId }, data: { usedCredits: { increment: 1 } } }));
+  }
+  await withCreditContext(tx, {
+    kind: 'RENTAL_RESERVED', reservationId: packageRental.id, actorUserId: students[0].userId,
+    note: `${locations[0].name} · ${rentalUnits[1].name}`,
+  }, () => tx.lessonPackage.update({ where: { id: packages[0].id }, data: { usedCredits: { increment: 1 } } }));
+  await seedTrainingCompanion(tx, {
+    businessId, now, students, services, locations, instructors, historyPlaces,
+  });
   await seedSessionChats(tx, { businessId, businessName: business.name, businessCurrency: business.currency, clubUserId: clubAccount.id, now, bookings, participants, students, services, instructors, locations });
   const notifications: Prisma.NotificationCreateManyInput[] = [
     { businessId, instructorId: instructors[0].id, title: 'Your week is ready', message: 'Your lessons, students and payments are together in Courtly. All times are shown in Asia/Singapore.', read: true, createdAt: now.minus({ hours: 3 }).toJSDate() },
@@ -500,4 +598,122 @@ async function seedSessionChats(tx: Prisma.TransactionClient, context: SeedChatC
   for (const thread of threads.filter(candidate => candidate.lastMessageAt.getTime() !== candidate.createdAt.getTime())) {
     await tx.chatThread.update({ where: { id: thread.id }, data: { lastMessageAt: thread.lastMessageAt } });
   }
+}
+
+type SeedCompanionContext = {
+  businessId: string;
+  now: DateTime;
+  students: Array<{ id: string; name: string }>;
+  services: Array<{ id: string; name: string }>;
+  locations: Array<{ id: string }>;
+  instructors: Array<{ id: string; name: string }>;
+  historyPlaces: Array<{
+    weeksAgo: number; bookingId: string; participantId: string; studentIndex: number;
+    instructorIndex: number; endAt: DateTime;
+  }>;
+};
+
+/**
+ * Training-companion sample data: coach feedback on attended sessions, two
+ * club training groups and a month of person-free funnel counters, so the
+ * learner progress, Run this Class, Training groups and Growth insights views
+ * all have something real to show.
+ */
+async function seedTrainingCompanion(tx: Prisma.TransactionClient, context: SeedCompanionContext) {
+  const { businessId, now } = context;
+  const place = (weeksAgo: number, studentIndex: number) =>
+    context.historyPlaces.find(item => item.weeksAgo === weeksAgo && item.studentIndex === studentIndex)!;
+  const feedback = [
+    {
+      place: place(2, 0), shared: true, viewed: true, summary: 'Great energy today. Your first serve is landing far more often.',
+      strengths: 'Smooth service motion and a consistent ball toss.', focusAreas: 'Second-serve spin and recovery after the serve.',
+      nextGoal: 'Land seven of ten second serves in the box.', clubNote: '',
+    },
+    {
+      place: place(1, 0), shared: true, viewed: false, summary: 'Second serves looked more confident. We started building a return routine.',
+      strengths: 'Better shape on the kick serve.', focusAreas: 'Split step timing on returns.',
+      nextGoal: 'Return serve deep through the middle.', clubNote: 'Asked about renewing the Flex Pass.',
+    },
+    {
+      place: place(1, 2), shared: true, viewed: false, summary: 'Chloe led her doubles team and called the score clearly all session.',
+      strengths: 'Positioning at the net.', focusAreas: 'Keeping the racket up between shots.',
+      nextGoal: 'Hold a ten-ball rally from the baseline.', clubNote: '',
+    },
+    {
+      place: place(1, 3), shared: true, viewed: false, summary: 'Ryan arrived a little late but caught up quickly in the footwork games.',
+      strengths: 'Quick feet in the ladder drills.', focusAreas: 'Turning the shoulders on the forehand.',
+      nextGoal: 'Finish forehands over the shoulder.', clubNote: '',
+    },
+    {
+      place: place(2, 3), shared: false, viewed: false, summary: 'Draft: footwork improving; review again after next week.',
+      strengths: '', focusAreas: '', nextGoal: '', clubNote: 'Parent asked for a short progress call.',
+    },
+  ];
+  await tx.sessionFeedback.createMany({
+    data: feedback.map(item => {
+      const coach = context.instructors[item.place.instructorIndex];
+      const writtenAt = item.place.endAt.plus({ hours: 2 });
+      return {
+        businessId, bookingId: item.place.bookingId, participantId: item.place.participantId,
+        authorUserId: `seed-instructor-${coach.id}`, authorName: coach.name, authorRole: 'COACH',
+        visibility: item.shared ? 'SHARED' : 'PRIVATE', summary: item.summary, strengths: item.strengths,
+        focusAreas: item.focusAreas, nextGoal: item.nextGoal, clubNote: item.clubNote,
+        sharedAt: item.shared ? writtenAt.toJSDate() : null,
+        firstViewedAt: item.viewed ? writtenAt.plus({ hours: 5 }).toJSDate() : null,
+        createdAt: writtenAt.toJSDate(), updatedAt: writtenAt.toJSDate(),
+      };
+    }),
+  });
+
+  const groups = [
+    {
+      name: 'Junior Squad', sport: 'Tennis', level: 'Beginner', ageBand: '7–12',
+      description: 'Weekly junior cohort working on movement, rallies and match play.',
+      scheduleNote: 'Wednesdays 11:00 · Kallang', capacity: 8, service: 1, location: 0, instructor: 1,
+      members: [2, 3, 4, 5, 6, 7],
+    },
+    {
+      name: 'Weekend Match Play', sport: 'Tennis', level: 'Intermediate', ageBand: 'Adults',
+      description: 'Adults preparing for social doubles leagues.',
+      scheduleNote: 'Saturdays 14:00 · Tanglin', capacity: 4, service: 3, location: 2, instructor: 0,
+      members: [9, 10, 13, 14],
+    },
+  ];
+  for (const [position, group] of groups.entries()) {
+    const created = await tx.trainingGroup.create({ data: {
+      businessId, name: group.name, sport: group.sport, level: group.level, ageBand: group.ageBand,
+      description: group.description, scheduleNote: group.scheduleNote, capacity: group.capacity,
+      serviceId: context.services[group.service].id, locationId: context.locations[group.location].id,
+      instructorId: context.instructors[group.instructor].id,
+      createdAt: now.minus({ days: 70 - position * 10 }).toJSDate(),
+    } });
+    await tx.trainingGroupMember.createMany({
+      data: group.members.map((studentIndex, index) => ({
+        businessId, groupId: created.id, studentId: context.students[studentIndex].id,
+        joinedAt: now.minus({ days: 60 - position * 10 - index * 3 }).toJSDate(),
+      })),
+    });
+  }
+
+  // Aggregate counters only, exactly the shape live traffic records: a club,
+  // a local day, a metric and a count. No visitor or account is implied.
+  const counters: Prisma.ClubFunnelCounterCreateManyInput[] = [];
+  for (let offset = 27; offset >= 0; offset--) {
+    const day = now.minus({ days: offset });
+    const weekend = day.weekday >= 6;
+    const pageViews = 14 + ((offset * 7) % 9) + (weekend ? 6 : 0);
+    const values: Record<string, number> = {
+      PAGE_VIEW: pageViews,
+      AVAILABILITY_CHECK: Math.round(pageViews * 0.6),
+      SEARCH_IMPRESSION: 8 + (offset % 5),
+      BOOKING_CREATED: 1 + (offset % 3),
+      REBOOK_CREATED: offset % 4 === 0 ? 1 : 0,
+      WAITLIST_JOINED: offset % 6 === 0 ? 1 : 0,
+      WAITLIST_ACCEPTED: offset % 12 === 0 ? 1 : 0,
+    };
+    for (const [metric, count] of Object.entries(values)) {
+      if (count > 0) counters.push({ businessId, day: new Date(`${day.toISODate()}T00:00:00.000Z`), metric, count });
+    }
+  }
+  await tx.clubFunnelCounter.createMany({ data: counters });
 }

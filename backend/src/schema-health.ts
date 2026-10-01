@@ -406,6 +406,18 @@ export async function inspectSchema(client: PrismaClient): Promise<SchemaHealth>
             AND tgname = 'PackageCreditEvent_append_only'
             AND tgenabled <> 'D' AND NOT tgisinternal
         )
+        AND EXISTS (
+          SELECT 1 FROM pg_trigger
+          WHERE tgrelid = to_regclass(current_schema() || '.\"SessionFeedback\"')
+            AND tgname = 'SessionFeedback_identity_guard'
+            AND tgenabled <> 'D' AND NOT tgisinternal
+        )
+        AND EXISTS (
+          SELECT 1 FROM pg_trigger
+          WHERE tgrelid = to_regclass(current_schema() || '.\"WaitlistEntry\"')
+            AND tgname = 'WaitlistEntry_lifecycle_guard'
+            AND tgenabled <> 'D' AND NOT tgisinternal
+        )
         AS \"trainingCompanion\"
   `);
   const checks: Array<[keyof SchemaProbe, string]> = [

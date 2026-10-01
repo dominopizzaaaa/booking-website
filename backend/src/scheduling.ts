@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { prisma } from './db.js';
 import { HttpError, initials, type AccountType } from './http.js';
 import { bookingInclude, bookingJson } from './serializers.js';
-import { createBookingAccountAlerts } from './account-notifications.js';
+import { createAccountAlert, createBookingAccountAlerts } from './account-notifications.js';
 import { notifyWorkspace } from './notifications.js';
 import { flagPrivateSessionsAfterClub } from './integrity.js';
 import { enqueueCalendarSync } from './calendar-sync.js';
@@ -101,7 +101,9 @@ export async function selectEligibleLessonPackage(
  *  - `actor`               a provider created it inside a workspace
  */
 export type CreateBookingsOptions =
-  | { studentUserId: string }
+  // `waitlistEntryId` names the offered waitlist place the student is
+  // claiming, so the place held for them is not counted against them.
+  | { studentUserId: string; waitlistEntryId?: string }
   | {
       guardianUserId: string;
       guardianAccountType: 'STUDENT' | 'COACH';
@@ -220,11 +222,30 @@ type SlotEvaluationOptions = {
   excludeBookingId?: string;
   snapshot?: { duration: number; bufferMinutes: number };
   studentUserIds?: Array<string | null | undefined>;
+  /** An offered waitlist entry being accepted; its own held place is free to it. */
+  waitlistEntryId?: string;
 };
+/** The one slot reason that means "full group": the only state a waitlist may be joined in. */
+export const GROUP_FULL_REASON = 'This group is full';
 type EvaluatedSlot = {
   startAt: Date; endAt: Date; available: boolean; placesRemaining: number;
   reason?: string; groupId?: string; venueUnit?: { id: string; name: string } | null;
 };
+
+/**
+ * Places promised to waitlisted students: OFFERED entries whose deadline has
+ * not passed. An expired offer no longer holds anything, even before the
+ * worker records it as EXPIRED. The accepting entry is excluded so the
+ * student claiming a held place is not blocked by their own hold.
+ */
+export async function countHeldWaitlistOffers(tx: Pick<Tx, 'waitlistEntry'>, bookingId: string, exceptEntryId?: string, now = new Date()) {
+  return tx.waitlistEntry.count({
+    where: {
+      bookingId, status: 'OFFERED', offerExpiresAt: { gt: now },
+      ...(exceptEntryId ? { id: { not: exceptEntryId } } : {}),
+    },
+  });
+}
 
 async function hasCachedCalendarBusy(
   tx: Tx,
@@ -318,8 +339,11 @@ export async function evaluateSlot(
       return result('Student has a conflict in their connected calendar');
     }
   }
-  const remaining = group ? group.capacity - group.participants.length : ctx.service.capacity;
-  if (remaining <= 0) return result('This group is full');
+  // A live waitlist offer holds its place until it expires, so a public
+  // booking can never take a place promised to the next waiting student.
+  const heldOffers = group ? await countHeldWaitlistOffers(tx, group.id, options.waitlistEntryId) : 0;
+  const remaining = group ? group.capacity - group.participants.length - heldOffers : ctx.service.capacity;
+  if (remaining <= 0) return result(GROUP_FULL_REASON);
   if (group) return result('', remaining, group.id);
   const venueUnit = await availableClassUnit(tx, ctx.location, startAt, endAt, excludeBookingId);
   if (ctx.location.classUnitSchedulingEnabled && !venueUnit) {
@@ -355,7 +379,7 @@ async function syncAccountContact(tx: Tx, userId: string, contact: BookingInput[
   return account;
 }
 
-async function resolveAccountStudent(tx: Tx, businessId: string, userId: string, profile: NonNullable<BookingInput['student']>) {
+export async function resolveAccountStudent(tx: Tx, businessId: string, userId: string, profile: NonNullable<BookingInput['student']>) {
   // Serializing first-time resolution makes creating the account-backed club
   // profile race-safe. Legacy email-only rows are intentionally never claimed:
   // registration alone does not prove ownership of an old contact address.
@@ -469,7 +493,10 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
   const conflicts = [];
   for (let week = 0; week < input.repeatWeeks; week++) {
     const date = first.plus({ weeks: week }).toJSDate();
-    const slot = await evaluateSlot(tx, ctx, date, { studentUserIds: [student.userId] });
+    const slot = await evaluateSlot(tx, ctx, date, {
+      studentUserIds: [student.userId],
+      waitlistEntryId: 'studentUserId' in options ? options.waitlistEntryId : undefined,
+    });
     if (!slot.available) conflicts.push({ date: date.toISOString(), reason: slot.reason });
     if (slot.groupId && await tx.participant.findFirst({ where: { bookingId: slot.groupId, studentId: student.id, cancelledAt: null } })) conflicts.push({ date: date.toISOString(), reason: 'Student is already enrolled in this group' });
     occurrences.push(slot);
@@ -481,13 +508,11 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
       packageId: input.packageId, businessId, studentId: student.id, serviceId: input.serviceId,
       sessionDates: occurrences.map(slot => slot.startAt),
     });
-    const firstSession = DateTime.fromJSDate(occurrences[0].startAt, { zone: ctx.business.timezone }).setLocale('en-SG').toFormat('ccc d LLL');
-    const updated = await withCreditContext(tx, {
-      kind: 'BOOKED',
-      actorUserId: 'studentUserId' in options ? options.studentUserId : ('requireLinkedStudent' in options ? options.actor?.userId ?? null : null),
-      note: `${ctx.service.name} · ${firstSession}${occurrences.length > 1 ? ` (+${occurrences.length - 1} more)` : ''}`,
-    }, () => tx.lessonPackage.updateMany({ where: { id: pkg!.id, usedCredits: { lte: pkg!.totalCredits - occurrences.length } }, data: { usedCredits: { increment: occurrences.length } } }));
-    if (!updated.count) throw new HttpError(409, 'Not enough package credits for all sessions');
+    // selectEligibleLessonPackage holds the package row lock, so this balance
+    // cannot move before each place below consumes its own credit.
+    if (pkg.totalCredits - pkg.usedCredits < occurrences.length) {
+      throw new HttpError(409, 'Not enough package credits for all sessions');
+    }
   }
   const recurringId = occurrences.length > 1 ? randomUUID() : null;
   const paymentRoute = paymentRouteFor(ctx.business);
@@ -517,8 +542,28 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
     const existing = await tx.participant.findUnique({ where: { bookingId_studentId: { bookingId, studentId: student.id } } });
     const sessionSnapshot = await tx.booking.findUniqueOrThrow({ where: { id: bookingId }, select: { price: true } });
     const participantData = { managementTokenHash: null, managementTokenExpiresAt: null, managementTokenRevokedAt: null, notes: studentSideBooking ? input.notes : '', price: sessionSnapshot.price, packageId: pkg?.id ?? null, paid: pkg?.paid ?? false, creditConsumed: !!pkg, cancelledAt: null, attendance: 'UNMARKED' };
-    if (existing) await tx.participant.update({ where: { id: existing.id }, data: participantData });
-    else await tx.participant.create({ data: { bookingId, studentId: student.id, ...participantData } });
+    const place = existing
+      ? await tx.participant.update({ where: { id: existing.id }, data: participantData })
+      : await tx.participant.create({ data: { bookingId, studentId: student.id, ...participantData } });
+    if (pkg) {
+      await consumeLessonCredit(tx, pkg.id, {
+        bookingId, participantId: place.id, startAt: slot.startAt, timezone: ctx.business.timezone,
+        serviceName: ctx.service.name,
+        actorUserId: 'studentUserId' in options ? options.studentUserId : actor?.userId ?? null,
+      });
+    }
+    // Taking a place by any other route ends a queue place the student still
+    // held for this Class, so an offer is never left holding a second place.
+    // The accepting entry itself is settled by the waitlist route.
+    if (slot.groupId) {
+      await tx.waitlistEntry.updateMany({
+        where: {
+          bookingId, studentId: student.id, status: { in: ['WAITING', 'OFFERED'] },
+          ...('studentUserId' in options && options.waitlistEntryId ? { id: { not: options.waitlistEntryId } } : {}),
+        },
+        data: { status: 'CLOSED', closedReason: 'You already have a place in this Class.' },
+      });
+    }
     await enqueueCalendarSync(tx, bookingId);
     // Every session gets its chat as it is booked; joining a group that
     // already exists is announced in that group's chat instead.
@@ -536,6 +581,9 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
   const summaryBooking = booked[0];
   const awaitingCoach = summaryBooking?.coachAcceptance === 'PENDING';
   const confirmationPending = summaryBooking?.status === 'PENDING' && !awaitingCoach;
+  // A place claimed from the waitlist is still one ordinary booking alert;
+  // the copy says where it came from instead of sending a second notice.
+  const fromWaitlist = 'studentUserId' in options && !!options.waitlistEntryId;
   await notifyWorkspace(tx, {
     businessId,
     instructorId: input.instructorId,
@@ -544,10 +592,12 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
     actionNeeded: awaitingCoach,
     title: awaitingCoach
       ? `Lesson awaiting your acceptance · ${student.name}`
-      : `${booked.length > 1 ? 'Recurring booking' : 'New booking'} · ${student.name}`,
+      : fromWaitlist
+        ? `Waitlist place taken · ${student.name}`
+        : `${booked.length > 1 ? 'Recurring booking' : 'New booking'} · ${student.name}`,
     message: awaitingCoach
       ? `${ctx.service.name} with ${student.name} was assigned to ${ctx.instructor.name}. It is confirmed once the coach accepts it.`
-      : `${ctx.service.name} with ${ctx.instructor.name}. ${confirmationPending ? 'Venue approval is required; no external court has been reserved. ' : ''}Booking confirmation and 24-hour reminder queued in Courtly; external delivery is not configured.`,
+      : `${ctx.service.name} with ${ctx.instructor.name}. ${fromWaitlist ? `${student.name} confirmed a place offered from the waitlist. ` : ''}${confirmationPending ? 'Venue approval is required; no external court has been reserved. ' : ''}Booking confirmation and 24-hour reminder queued in Courtly; external delivery is not configured.`,
   });
   for (const booking of booked) {
     await createBookingAccountAlerts(
@@ -564,6 +614,25 @@ export async function createBookingsInTransaction(tx: Tx, businessId: string, in
 }
 export const createBookings = (businessId: string, input: BookingInput, options: CreateBookingsOptions = { requireLinkedStudent: true }) => prisma.$transaction(tx => createBookingsInTransaction(tx, businessId, input, options), { timeout: 30_000 });
 
+/**
+ * Consume one package credit for one booked place, labelled with that place so
+ * the credit history can name the exact session. The caller must already hold
+ * the package row lock and have checked the balance for every place it books.
+ */
+export async function consumeLessonCredit(tx: Tx, packageId: string, place: {
+  bookingId: string; participantId: string; startAt: Date; timezone: string; serviceName: string; actorUserId: string | null;
+}) {
+  const when = DateTime.fromJSDate(place.startAt, { zone: place.timezone }).setLocale('en-SG').toFormat('ccc d LLL');
+  const consumed = await withCreditContext(tx, {
+    kind: 'BOOKED', bookingId: place.bookingId, participantId: place.participantId,
+    actorUserId: place.actorUserId, note: `${place.serviceName} · ${when}`,
+  }, () => tx.lessonPackage.updateMany({
+    where: { id: packageId, usedCredits: { lt: tx.lessonPackage.fields.totalCredits } },
+    data: { usedCredits: { increment: 1 } },
+  }));
+  if (!consumed.count) throw new HttpError(409, 'Not enough package credits for all sessions');
+}
+
 export async function refundParticipant(tx: Tx, participant: { id: string; packageId: string | null; creditConsumed: boolean; bookingId?: string }) {
   if (!participant.creditConsumed || !participant.packageId) return;
   const changed = await tx.participant.updateMany({ where: { id: participant.id, creditConsumed: true }, data: { creditConsumed: false } });
@@ -579,6 +648,50 @@ export async function refundParticipant(tx: Tx, participant: { id: string; packa
     note: booking ? `${booking.booking.service.name} · ${when} cancelled` : 'Booking cancelled',
   }, () => tx.lessonPackage.updateMany({ where: { id: packageId, usedCredits: { gt: 0 } }, data: { usedCredits: { decrement: 1 } } }));
 }
+/**
+ * Close live waitlist entries for a booking and tell each student why. It
+ * lives beside cancelBooking so scheduling never imports the waitlist module,
+ * which itself books through this one; `closeWaitlistForBooking` in
+ * waitlist.ts is the public name. Row locks make a concurrent accept,
+ * decline or withdrawal wait for, and then observe, this terminal decision.
+ */
+export async function closeLiveWaitlistEntries(
+  tx: Tx, bookingId: string, reason: string,
+  options: { statuses?: Array<'WAITING' | 'OFFERED'> } = {},
+) {
+  const statuses = options.statuses ?? ['WAITING', 'OFFERED'];
+  const locked = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT "id" FROM "WaitlistEntry"
+    WHERE "bookingId" = ${bookingId} AND "status" IN (${Prisma.join(statuses)})
+    ORDER BY "sequence" ASC
+    FOR UPDATE`;
+  if (!locked.length) return 0;
+  const entries = await tx.waitlistEntry.findMany({
+    where: { id: { in: locked.map(row => row.id) }, status: { in: statuses } },
+    select: { id: true, student: { select: { userId: true } } },
+    orderBy: { sequence: 'asc' },
+  });
+  if (!entries.length) return 0;
+  const closedReason = reason.trim().slice(0, 200);
+  await tx.waitlistEntry.updateMany({
+    where: { id: { in: entries.map(entry => entry.id) } },
+    data: { status: 'CLOSED', closedReason },
+  });
+  const booking = await tx.booking.findUniqueOrThrow({
+    where: { id: bookingId },
+    select: { businessId: true, startAt: true, service: { select: { name: true } }, business: { select: { timezone: true } } },
+  });
+  for (const entry of entries) {
+    if (!entry.student.userId) continue;
+    await createAccountAlert(tx, {
+      kind: 'WAITLIST_CLOSED', userId: entry.student.userId, businessId: booking.businessId, bookingId,
+      serviceName: booking.service.name, startAt: booking.startAt, timezone: booking.business.timezone,
+      reason: closedReason,
+    });
+  }
+  return entries.length;
+}
+
 export async function cancelBooking(tx: Tx, businessId: string, bookingId: string) {
   const booking = await tx.booking.findFirst({ where: { id: bookingId, businessId } });
   if (!booking) throw new HttpError(404, 'Booking not found');
@@ -593,6 +706,7 @@ export async function cancelBooking(tx: Tx, businessId: string, bookingId: strin
   for (const participant of current.participants) await refundParticipant(tx, participant);
   await tx.booking.update({ where: { id: bookingId }, data: { status: 'CANCELLED' } });
   await releaseBookingUnit(tx, bookingId);
+  await closeLiveWaitlistEntries(tx, bookingId, 'The Class was cancelled.');
   await notifyWorkspace(tx, { businessId, instructorId: current.instructorId, bookingId, type: 'CANCELLATION', title: 'Session cancelled', message: 'Package credits were restored. Cancellation notification queued; no external message has been sent.' });
   await createBookingAccountAlerts(tx, bookingId, 'PROVIDER_CANCELLED');
   await enqueueCalendarSync(tx, bookingId);

@@ -185,7 +185,7 @@ function renewalChildJson(link: FamilyLink) {
   };
 }
 
-function guardianEligible(user: {
+export function guardianEligible(user: {
   accountType: string; accountControl: string; accountStatus: string; dateOfBirth: Date | null;
 }) {
   const age = ageOnSingaporeDate(user.dateOfBirth);
@@ -372,7 +372,9 @@ async function appendConsentEvent(
   } });
 }
 
-async function hasCurrentLinkConsent(db: FamilyDb, linkId: string) {
+// Exported for the read-only guardian projections and feedback alerts, which
+// must use the same greatest-sequence decision on the exact link.
+export async function hasCurrentLinkConsent(db: FamilyDb, linkId: string) {
   const latest = await db.childConsentRecord.findFirst({
     where: { linkId, eventType: { in: [...consentDecisionEvents] } },
     orderBy: { sequence: 'desc' },

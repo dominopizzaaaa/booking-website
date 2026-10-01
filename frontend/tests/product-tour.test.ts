@@ -26,6 +26,14 @@ describe('product tour content', () => {
     },
   );
 
+  it('introduces progress and the calendar between the existing student steps', () => {
+    const anchors = productTourSteps({ kind: 'student', userId: 'user-1' }).flatMap(step => step.anchor ? [step.anchor] : []);
+    // Both anchors render only once a player has training or bookings, so a
+    // brand-new account still gets the short tour.
+    expect(anchors.indexOf('student-progress')).toBe(anchors.indexOf('student-packages') + 1);
+    expect(anchors.indexOf('student-view-toggle')).toBe(anchors.indexOf('student-bookings') + 1);
+  });
+
   it('keeps completion scoped to both the account and tour kind', () => {
     const storage = new TestStorage() as unknown as Storage;
     storage.setItem(`courtly:product-tour:student:user-1`, productTourStorage.version);
@@ -45,6 +53,7 @@ describe('product tour content', () => {
     const { readFile } = await import('node:fs/promises');
     const sources = await Promise.all([
       '../src/components/student-app.tsx',
+      '../src/components/student/progress-card.tsx',
       '../src/components/workspace/app.tsx',
       '../src/components/workspace/dashboard.tsx',
       '../src/app/account/page.tsx',

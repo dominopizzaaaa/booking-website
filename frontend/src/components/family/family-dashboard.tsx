@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { ArrowLeft, CalendarDays, Check, Download, Handshake, Loader2, LogOut, Pencil, Plus, RefreshCw, ShieldCheck, Trash2, UserRound, UsersRound, X } from 'lucide-react';
 import { CourtlyLogo } from '@/components/public-booking';
 import { Button } from '@/components/ui/button';
@@ -22,8 +22,9 @@ import {
   type FamilyConsentRenewalChild,
   type FamilyResponse,
 } from '@/lib/types';
-import { ageBandLabel, canStartFamilyHandover, childStatusLabel, hasCurrentFamilyConsent, singaporeCivilDate, validPastDate } from './family-helpers';
+import { ageBandLabel, canStartFamilyHandover, canViewFamilyTraining, childStatusLabel, familyBookingTargets, hasCurrentFamilyConsent, singaporeCivilDate, validPastDate } from './family-helpers';
 import { ChildForm } from './child-form';
+import { ChildTrainingSection } from './child-training';
 
 type DialogState =
   | { kind: 'add' }
@@ -115,6 +116,8 @@ export function FamilyDashboard() {
     } finally { setLoading(false); }
   }, [router]);
   useEffect(() => { void refresh(); }, [refresh]);
+  const bookingTargets = useMemo(() => familyBookingTargets(session), [session]);
+  const signInAgain = useCallback(() => router.replace('/login?next=%2Ffamily'), [router]);
   useEffect(() => {
     if (!notice || dialog) return;
     const frame = window.requestAnimationFrame(() => noticeRef.current?.focus());
@@ -245,10 +248,11 @@ export function FamilyDashboard() {
           {child.sports.length > 0 && <div className="mt-4 flex flex-wrap gap-2">{child.sports.map(sport => <span key={sport.toLowerCase()} className="rounded-full bg-[#edf3e7] px-2.5 py-1 text-xs font-semibold text-[#496353]">{sport}</span>)}</div>}
           {pendingHandover && <div className="mt-5 rounded-xl border border-[#dfdfca] bg-[#fbfaee] p-4"><p className="text-sm font-semibold text-[#655f3e]">Handover pending{child.handover?.maskedDestinationEmail ? ` for ${child.handover.maskedDestinationEmail}` : ''}</p><p className="mt-1 text-xs leading-relaxed text-[#756f51]">Expires {dateTimeLabel(child.handover?.expiresAt)}. Courtly queued the security email when this handover was created; delivery is not guaranteed. Until completion, this remains a guardian-managed profile with no sign-in.</p>{permission(child, 'HANDOVER_MANAGE') && <Button variant="outline" size="sm" className="mt-3" disabled={busy === `cancel-handover:${child.id}`} onClick={() => void cancelHandover(child)}><X size={14} />Cancel handover</Button>}</div>}
           {child.accountStatus === 'DELETION_REQUESTED' && <div className="mt-5 rounded-xl border border-[#ecd5cc] bg-[#fbefeb] p-4 text-sm leading-relaxed text-[#8b4d3c]">Deletion has been requested. The profile is restricted immediately, and the deletion request is pending a separate human review under Courtly’s retention and erasure process.</div>}
+          {canViewFamilyTraining(child, family.privacyPolicyVersion) && <ChildTrainingSection child={child} bookingTargets={bookingTargets} onUnauthorized={signInAgain} />}
           <div className="mt-5 flex flex-wrap gap-2 border-t border-[#edf0e8] pt-5">{permission(child, 'DATA_EXPORT', ['ACTIVE', 'WITHDRAWN']) && (child.link.status === 'WITHDRAWN' || consentCurrent) && <Button variant="outline" disabled={!!busy} onClick={() => void exportChild(child)}>{busy === `export:${child.id}` ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}Export data</Button>}{permission(child, 'CONSENT_MANAGE') && child.accountStatus !== 'DELETION_REQUESTED' && consentCurrent && <Button variant="outline" disabled={!!busy} onClick={() => openDialog({ kind: 'withdraw', child })}><ShieldCheck size={14} />Withdraw consent</Button>}{permission(child, 'CONSENT_MANAGE', ['ACTIVE', 'WITHDRAWN']) && child.accountStatus !== 'DELETION_REQUESTED' && !consentCurrent && <Button disabled={!!busy} onClick={() => openDialog({ kind: 'renew', child })}><ShieldCheck size={14} />Renew consent</Button>}{handoverEligible && !pendingHandover && <Button variant="outline" disabled={!!busy || !family.handoverAvailable} title={!family.handoverAvailable ? 'Secure handover is unavailable' : undefined} onClick={() => openDialog({ kind: 'handover', child })}><Handshake size={14} />Start handover</Button>}{permission(child, 'DELETION_REQUEST') && child.accountStatus !== 'DELETION_REQUESTED' && <Button variant="destructive" disabled={!!busy} onClick={() => openDialog({ kind: 'delete', child })}><Trash2 size={14} />Request deletion</Button>}</div>
           {!family.handoverAvailable && handoverEligible && !pendingHandover && <p className="mt-3 text-xs leading-relaxed text-[#756f51]">Secure account handover is unavailable right now. Try again later.</p>}
         </article>; })}</div> : family.guardian.eligible ? <section className={`${panel} mt-8 py-12 text-center`}><UsersRound size={26} className="mx-auto text-[#71865f]" /><h2 className="mt-4 text-lg">No children added yet</h2><p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-[#59675c]">Add a child to manage their private profile, privacy choice, consent, data requests, and eventual verified handover.</p><Button className="mt-6" onClick={() => openDialog({ kind: 'add' })}><Plus size={16} />Add child</Button></section> : null}
-        <section className="mt-7 rounded-2xl border border-[#dfe7d8] bg-[#f1f5ed] p-5 text-sm leading-relaxed text-[#59675c]" aria-labelledby="family-booking-guide"><h2 id="family-booking-guide" className="font-semibold text-[#304b39]">How to book lessons for your children</h2><ol className="mt-3 grid gap-3 sm:grid-cols-3"><li><span className="font-semibold text-[#405941]">1. Add each child.</span><span className="mt-1 block text-xs">You can manage more than one child from this same adult account.</span></li><li><span className="font-semibold text-[#405941]">2. Open a club’s booking page.</span><span className="mt-1 block text-xs">Choose the child under “Who is playing?”.</span></li><li><span className="font-semibold text-[#405941]">3. Book one child at a time.</span><span className="mt-1 block text-xs">Repeat the booking for a sibling. Payment is arranged with the club.</span></li></ol><div className="mt-4 border-t border-[#dfe7d8] pt-4 text-xs"><p><strong className="text-[#405941]">When they turn 13:</strong> a child may stay managed so you can keep booking for them, or you may start account handover. A self-managed teen can sign in for non-commercial features, but cannot book or pay on Courtly until 18.</p></div></section>
+        <section className="mt-7 rounded-2xl border border-[#dfe7d8] bg-[#f1f5ed] p-5 text-sm leading-relaxed text-[#59675c]" aria-labelledby="family-booking-guide"><h2 id="family-booking-guide" className="font-semibold text-[#304b39]">Booking for your children</h2><p className="!mt-2">Book one child at a time from a club’s booking page by choosing them under “Who is playing?”. Payment, cancellations, and reschedules for a child are arranged with the club.</p><p className="!mt-3 border-t border-[#dfe7d8] pt-3 text-xs"><strong className="text-[#405941]">When they turn 13:</strong> a child may stay managed so you can keep booking for them, or you may start account handover. A self-managed teen can sign in for non-commercial features, but cannot book or pay on Courtly until 18.</p></section>
       </div> : null}
     </div>
     <Dialog open={!!dialog} onOpenChange={open => { if (!open) closeDialog(); }}><DialogContent className="max-w-2xl" onEscapeKeyDown={event => { if (busy) event.preventDefault(); }} onPointerDownOutside={event => { if (busy) event.preventDefault(); }} onCloseAutoFocus={event => { if (notice) { event.preventDefault(); window.requestAnimationFrame(() => noticeRef.current?.focus()); } }}>

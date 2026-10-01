@@ -47,6 +47,16 @@ const weekdays = [
   "Saturday",
 ];
 const weekOrder = [1, 2, 3, 4, 5, 6, 0];
+/** Matches the API: a public club website must be an https link with a host. */
+function isHttpsUrl(value: string) {
+  if (!/^https:\/\/\S+$/.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !!url.hostname;
+  } catch {
+    return false;
+  }
+}
 function localTime(value: string, locale = "en-SG") {
   const [hour = "0", minute = "00"] = value.split(":");
   const numericHour = Number(hour);
@@ -679,6 +689,24 @@ export function SettingsView({ data, refresh }: ManagementProps) {
                   </dd>
                 </div>
               </dl>
+              <section aria-labelledby="public-club-profile-heading" className="border-t border-[#edf0e8] pt-5">
+                <h3 id="public-club-profile-heading" className="text-xs text-[#344b39]">Public club profile</h3>
+                <p className="!mt-1 text-[11px] leading-relaxed text-[#59675c]">Shown at the top of your booking page so students can decide before they book.</p>
+                <dl className="mt-3 grid grid-cols-1 gap-4 text-xs sm:grid-cols-2">
+                  <div className="sm:col-span-2">
+                    <dt className="text-[10px] text-stone-400">About the club</dt>
+                    <dd className="mt-1.5 whitespace-pre-line leading-relaxed">{business.description || "Not added yet."}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-[10px] text-stone-400">Public phone</dt>
+                    <dd className="mt-1.5">{business.publicPhone || "Not shown"}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-[10px] text-stone-400">Website</dt>
+                    <dd className="mt-1.5 break-all">{business.websiteUrl ? <a href={business.websiteUrl} target="_blank" rel="noreferrer" className="font-medium text-[#3f6a3d] underline underline-offset-2">{business.websiteUrl}</a> : "Not shown"}</dd>
+                  </div>
+                </dl>
+              </section>
               <p className="rounded-xl bg-[#f5f7f1] p-3 text-[11px] leading-relaxed text-stone-500">
                 This workspace currently supports Singapore time and SGD.
                 Currency, timezone, and account email are not editable here.
@@ -810,7 +838,19 @@ export function SettingsView({ data, refresh }: ManagementProps) {
           wide
           onSubmit={(form) => {
             const gstPriceTreatment = text(form, "pricesIncludeGst");
+            const websiteUrl = text(form, "websiteUrl");
+            if (websiteUrl && !isHttpsUrl(websiteUrl)) {
+              throw new Error("Use a full website link that starts with https://, or leave it blank.");
+            }
+            // Send the public profile only when it changed, so a settings
+            // save never rewrites fields an older API does not know yet.
+            const publicProfile = Object.fromEntries(([
+              ["description", text(form, "description"), business.description ?? ""],
+              ["publicPhone", text(form, "publicPhone"), business.publicPhone ?? ""],
+              ["websiteUrl", websiteUrl, business.websiteUrl ?? ""],
+            ] as const).filter(([, next, current]) => next !== current.trim()).map(([key, next]) => [key, next]));
             return mutate("/business", "PATCH", {
+              ...publicProfile,
               name: text(form, "name"),
               ownerName: text(form, "ownerName"),
               color: text(form, "color"),
@@ -850,6 +890,34 @@ export function SettingsView({ data, refresh }: ManagementProps) {
               name="tagline"
               defaultValue={business.tagline}
               wide
+            />
+            <Field label="About the club (optional)" name="description" wide hint="A few sentences for your booking page: who you coach, where, and what makes the club yours. Up to 1200 characters.">
+              <textarea
+                id="description"
+                name="description"
+                rows={4}
+                maxLength={1200}
+                defaultValue={business.description ?? ""}
+              />
+            </Field>
+            <Field
+              label="Public phone (optional)"
+              name="publicPhone"
+              type="tel"
+              maxLength={40}
+              defaultValue={business.publicPhone ?? ""}
+              hint="Shown on your booking page."
+            />
+            <Field
+              label="Website (optional)"
+              name="websiteUrl"
+              type="url"
+              inputMode="url"
+              maxLength={200}
+              pattern="https://.*"
+              placeholder="https://"
+              defaultValue={business.websiteUrl ?? ""}
+              hint="Must start with https://."
             />
             <Field
               label="Brand colour"

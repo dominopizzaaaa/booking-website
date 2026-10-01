@@ -40,6 +40,7 @@ import { isManagerWorkspace, type AccountType, type AuthSession, type BusinessKi
 import { initials, shortDate, time } from '@/lib/utils';
 import { IntegrityAlertDetail } from './management-integrity';
 import { NamedStaffAccess } from './staff-access';
+import { CoachProfilePanel } from './coach-profile';
 
 export const exploreViewIds = [
   'calendar',
@@ -63,7 +64,7 @@ const explorePermissions: Partial<Record<ExploreViewId, ClubPermission[]>> = {
   services: ['CATALOG_VIEW', 'CATALOG_MANAGE'], locations: ['CATALOG_VIEW', 'CATALOG_MANAGE'],
   team: ['ROSTER_VIEW', 'ROSTER_MANAGE'], availability: ['AVAILABILITY_MANAGE'],
   rentals: ['RENTALS_VIEW', 'RENTALS_MANAGE'], packages: ['PACKAGES_VIEW', 'PACKAGES_MANAGE'],
-  payments: ['PAYMENTS_VIEW'], insights: ['PAYMENTS_VIEW', 'AUDIT_VIEW', 'SAFEGUARDING_VIEW'],
+  payments: ['PAYMENTS_VIEW'], insights: ['PAYMENTS_VIEW', 'AUDIT_VIEW', 'SAFEGUARDING_VIEW', 'BOOKINGS_VIEW'],
 };
 
 type AccessContext = {
@@ -162,7 +163,7 @@ const managerExploreItems: ManagerExploreItem[] = [
   { id: 'team', label: 'My coaches', description: 'Add coaches to your roster and keep their details together.', icon: UsersRound, detail: data => `${data.instructors.filter(instructor => instructor.active).length} active` },
   { id: 'packages', label: 'Packages', description: 'Track class and rental credits and student commitments.', icon: Ticket, detail: data => `${data.packages.length} package${data.packages.length === 1 ? '' : 's'}` },
   { id: 'payments', label: 'Payments', description: 'Review online and offline receipts, payouts, and unpaid classes.', icon: CreditCard, detail: data => `${data.payments.length} recorded` },
-  { id: 'insights', label: 'Insights', description: 'Review reporting, safety cases, and the club audit log.', icon: ChartNoAxesCombined, detail: data => workspaceAccessMode(data) === 'STAFF' && data.permissions?.includes('SAFEGUARDING_VIEW') && !data.permissions?.includes('PAYMENTS_VIEW') ? 'Safety reports' : workspaceAccessMode(data) === 'STAFF' && !data.permissions?.includes('PAYMENTS_VIEW') ? 'Audit history' : `${data.bookings.filter(booking => booking.status === 'COMPLETED').length} completed lessons` },
+  { id: 'insights', label: 'Insights', description: 'Review growth, reporting, safety cases, and the club audit log.', icon: ChartNoAxesCombined, detail: data => workspaceAccessMode(data) === 'STAFF' && data.permissions?.includes('SAFEGUARDING_VIEW') && !data.permissions?.includes('PAYMENTS_VIEW') ? 'Safety reports' : workspaceAccessMode(data) === 'STAFF' && !data.permissions?.includes('PAYMENTS_VIEW') && data.permissions?.includes('AUDIT_VIEW') ? 'Audit history' : workspaceAccessMode(data) === 'STAFF' && !data.permissions?.includes('PAYMENTS_VIEW') ? 'Growth and retention' : `${data.bookings.filter(booking => booking.status === 'COMPLETED').length} completed lessons` },
 ];
 const exploreItems = [...sharedExploreItems, ...managerExploreItems];
 
@@ -366,6 +367,8 @@ type ProfileViewProps = {
   onHelp: () => void;
   onSignOut: () => void;
   onNavigate?: (view: string) => void;
+  /** Reloads the workspace after an account-level edit such as the coaching profile. */
+  refresh?: () => Promise<void>;
 };
 
 /** Tools a club account expects to reach from its own profile page. */
@@ -380,7 +383,7 @@ const clubProfileShortcuts: ExploreViewId[] = [
  * and opens business settings instead of editing a personal profile. A coach
  * keeps one personal profile while moving between clubs that hired them.
  */
-export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusinessSettings, onHelp, onSignOut, onNavigate }: ProfileViewProps) {
+export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusinessSettings, onHelp, onSignOut, onNavigate, refresh }: ProfileViewProps) {
   const accessMode = workspaceAccessMode(data);
   const isCoach = accessMode === 'COACH';
   const clubAccount = accessMode === 'CLUB_ACCOUNT';
@@ -476,6 +479,7 @@ export function ProfileView({ data, onEditProfile, onSwitchWorkspace, onBusiness
             </div>
           </div>
         </section>
+        {data.user.accountType === 'COACH' && refresh && <CoachProfilePanel user={data.user} refresh={refresh} />}
         {canManageBusiness && <section className="panel overflow-hidden">
           <div className="panel-heading"><div className="flex items-center gap-2"><Link2 size={17} className="text-[#839677]" /><h2 className="text-[#294735]">Your booking link</h2></div><span className="badge">{bookingReadiness.publicReady ? 'Ready' : 'Setup needed'}</span></div>
           <div className="px-5 pb-5 sm:px-6 sm:pb-6"><p className="text-xs leading-relaxed text-stone-500">{bookingReadiness.publicReady ? 'Share this page so students can choose a class and find an available lesson.' : 'Preview the page now. Finish your location, class assignment, and matching availability before sharing it.'}</p><div className="mt-4 flex min-w-0 items-center gap-2 rounded-xl border border-[#e3e8df] bg-[#fafbf8] p-3"><span className="min-w-0 flex-1 truncate text-xs text-stone-600">{bookingPath}</span>{bookingReadiness.publicReady && <Button size="icon" variant="ghost" aria-label="Copy booking link" onClick={() => void copyBookingLink()}><Copy size={14} /></Button>}</div><div className="mt-3 grid grid-cols-1 gap-2 sm:flex">{bookingReadiness.publicReady && <Button size="sm" onClick={() => void copyBookingLink()}><Copy size={13} />Copy link</Button>}<Button size="sm" variant="outline" asChild><a href={bookingPath} target="_blank" rel="noreferrer"><ExternalLink size={13} />Preview booking page</a></Button></div></div>

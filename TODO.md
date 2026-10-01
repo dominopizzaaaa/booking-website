@@ -121,9 +121,11 @@ belong only in the deployment secret manager.
   so `CREDENTIAL_RESET` is reserved and must not manufacture credentials.
 - [ ] Design any expansion beyond the bounded guardian Class-creation flow.
   `BOOKINGS_MANAGE` now permits an eligible adult to create an unpaid,
-  package-free public club Class for a linked managed child, but it deliberately
-  grants no booking-history, cancellation, reschedule, notification, session-
-  chat, package, payment, or rental authority. Define attribution, consent,
+  package-free public club Class for a linked managed child and to read that
+  child's schedule and shared coach feedback (with current consent on the same
+  link), and guardians receive a coach-feedback alert. It deliberately grants
+  no cancellation, reschedule, waitlist, session-chat, package, payment, or
+  rental authority. Define attribution, consent,
   safeguarding, refunds, payment authentication, transcript membership,
   notifications, and club-visible identity before enabling any of those
   operations.
@@ -206,3 +208,20 @@ this documentation pass ran the suites or that production readiness is approved.
   production-shaped copy, run backend/frontend focused suites and builds, verify
   `/api/health`, exercise capture-mode handover end to end, then validate a
   Resend test-domain delivery and failure without using real child data.
+
+## Training companion follow-ups
+
+These were deliberately left out of the 4.5.0 training-companion release (see
+`docs/TRAINING_COMPANION.md`) because each needs a separate product,
+safeguarding, or commercial decision rather than more code:
+
+- [ ] Guardian waitlisting, cancellation, and rescheduling for a managed child.
+- [ ] Charging or consuming a package automatically when a waitlist offer is
+  confirmed; today the accepted place is booked like any other unpaid Class.
+- [ ] Verified coach qualifications (document review and expiry); profiles are
+  self-reported and labelled as such.
+- [ ] Referral links and campaign attribution, booking-funnel experiments, and
+  localization once demand is measured with the new anonymous funnel counters.
+- [ ] A reviewed offline strategy. The app is installable through its web
+  manifest, but there is no service worker because authenticated booking data
+  must never be served stale.

@@ -81,6 +81,9 @@ const expectedApplicationCounts: Record<(typeof applicationTables)[number], numb
   RescheduleRequest: 0, Service: 2, ServiceInstructor: 4,
   ServiceLocation: 2, Student: 20, User: 23, VenueOpeningHour: 7, VenueReservation: 4,
   VenueUnit: 4, VenueUnitAllocation: 0,
+  // The ledger trigger records both package grants and the one credit the fixture uses.
+  ClubFunnelCounter: 0, FavoriteClub: 0, PackageCreditEvent: 3, SessionFeedback: 0,
+  TrainingGroup: 0, TrainingGroupMember: 0, WaitlistEntry: 0,
 };
 const showcaseBookingQuery = {
   include: { instructor: true, service: true, participants: { include: { student: true } } },

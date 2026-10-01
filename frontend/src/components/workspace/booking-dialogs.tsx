@@ -1,16 +1,28 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
-import { CalendarDays, Check, Clock3, MapPin, Repeat2, ArrowRight, Loader2, ExternalLink, UserRound, AlertCircle, Undo2, X, CalendarClock, ShieldCheck, MessageCircle } from 'lucide-react';
+import { CalendarDays, Check, Clock3, MapPin, Repeat2, ArrowRight, Loader2, ExternalLink, UserRound, AlertCircle, Undo2, X, CalendarClock, ShieldCheck, MessageCircle, ClipboardCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { ApiError, createBooking, createBookingSeries, loadSlots, mutate, proposeWorkspaceReschedule, respondToAssignment, respondToRescheduleRequest, reversePayment } from '@/lib/api';
-import { isManagerWorkspace, type ManagerWorkspace, type Payment, type Slot, type WorkspaceResponse } from '@/lib/types';
+import { ApiError, createBooking, createBookingSeries, loadSlots, markParticipantAttendance, mutate, proposeWorkspaceReschedule, respondToAssignment, respondToRescheduleRequest, reversePayment } from '@/lib/api';
+import { isManagerWorkspace, type Attendance, type ManagerWorkspace, type Payment, type Slot, type WorkspaceResponse } from '@/lib/types';
 import { addCalendarWeeks, coversWeeklyOccurrences, dateKey, money, shortDate, time } from '@/lib/utils';
-import { bookingDetailCapabilities } from './booking-detail-permissions';
+import { attendanceOpen, bookingDetailCapabilities, lessonHasEnded, lessonHasStarted, nextTimingBoundary, runClassAvailability } from './booking-detail-permissions';
+import { AttendanceBadge, AttendanceControl } from './attendance-control';
+import { RunClassDialog } from './run-class';
+import { WaitlistPanel } from './waitlist-panel';
 
-type NewBookingDialogProps = { data: WorkspaceResponse; open: boolean; onClose: () => void; refresh: () => Promise<void> };
+/**
+ * Starting values for the booking dialog, used when another screen (such as a
+ * training group's "Schedule series") opens it already filled in. Every value
+ * is still validated against what the workspace can actually book.
+ */
+export type BookingDialogInitial = {
+  mode?: 'ONE' | 'SERIES'; serviceId?: string; locationId?: string; instructorId?: string;
+  studentIds?: string[]; seriesName?: string; notice?: string;
+};
+type NewBookingDialogProps = { data: WorkspaceResponse; open: boolean; onClose: () => void; refresh: () => Promise<void>; initial?: BookingDialogInitial };
 type WorkspaceService = WorkspaceResponse['services'][number];
 
 function bookingClassAvailable(
@@ -66,11 +78,6 @@ function occurrenceIso(date: string, selectedSlot: string, timezone: string) {
   return fromZonedTime(`${date}T${clock}`, timezone).toISOString();
 }
 
-function lessonHasEnded(endAt: string, now: number) {
-  const end = new Date(endAt).getTime();
-  return Number.isFinite(end) && end <= now;
-}
-
 export function NewBookingDialog(props: NewBookingDialogProps) {
   // Workspace switching does not require a full browser reload. Remount the
   // state holder on both workspace and open-state changes so selections and
@@ -78,13 +85,27 @@ export function NewBookingDialog(props: NewBookingDialogProps) {
   return <BusinessBookingDialog key={`${props.data.business.id}:${props.open ? 'open' : 'closed'}`} {...props} />;
 }
 
-function BusinessBookingDialog({ data, open, onClose, refresh }: NewBookingDialogProps) {
+function BusinessBookingDialog({ data, open, onClose, refresh, initial }: NewBookingDialogProps) {
   const isClubCoach = data.user.accountType === 'COACH' && data.business.kind === 'CLUB';
   const coachInstructorId = isClubCoach ? data.user.instructorId : null;
   const managerData = isManagerWorkspace(data) ? data : null;
   const activeLocationIds = new Set(data.locations.filter(candidate => candidate.active).map(candidate => candidate.id));
   const activeInstructorIds = new Set(data.instructors.filter(candidate => candidate.active).map(candidate => candidate.id));
-  const [serviceId, setService] = useState(data.services.find(candidate => bookingClassAvailable(candidate, isClubCoach, coachInstructorId, activeLocationIds, activeInstructorIds))?.id || '');
+  const linkedStudentIds = new Set(data.students.filter(student => !!student.userId).map(student => student.id));
+  const initialStudentIds = (initial?.studentIds ?? []).filter(id => linkedStudentIds.has(id));
+  /** The prefilled roster that fits a Class, or nothing when there is no prefill. */
+  function initialRosterFor(candidateServiceId: string) {
+    const candidate = data.services.find(item => item.id === candidateServiceId);
+    return candidate?.type === 'GROUP' ? initialStudentIds.slice(0, Math.max(0, candidate.capacity)) : [];
+  }
+  const [serviceId, setService] = useState(() => {
+    const available = data.services.filter(candidate => bookingClassAvailable(candidate, isClubCoach, coachInstructorId, activeLocationIds, activeInstructorIds));
+    return (initial?.serviceId && available.some(candidate => candidate.id === initial.serviceId) ? initial.serviceId : available[0]?.id) || '';
+  });
+  // Preferred venue and coach are applied once, on the first matching render,
+  // and then behave exactly like a manual choice.
+  const preferredLocation = useRef(initial?.locationId);
+  const preferredInstructor = useRef(initial?.instructorId);
   const [locationId, setLocation] = useState('');
   const [instructorId, setInstructor] = useState('');
   const [date, setDate] = useState(dateKey());
@@ -92,15 +113,18 @@ function BusinessBookingDialog({ data, open, onClose, refresh }: NewBookingDialo
   const [slots, setSlots] = useState<Slot[]>([]);
   const [slotsLoading, setSlotsLoading] = useState(false);
   const [slotsError, setSlotsError] = useState('');
-  const [studentId, setStudent] = useState('');
+  const [studentId, setStudent] = useState(() => {
+    const first = data.services.find(item => item.id === serviceId);
+    return first && first.type !== 'GROUP' && initialStudentIds.length ? initialStudentIds[0] : '';
+  });
   const [packageId, setPackage] = useState('');
   const [repeat, setRepeat] = useState(1);
-  const [bookingMode, setBookingMode] = useState<'ONE' | 'SERIES'>('ONE');
-  const [seriesName, setSeriesName] = useState('');
+  const [bookingMode, setBookingMode] = useState<'ONE' | 'SERIES'>(initial?.mode === 'SERIES' && isManagerWorkspace(data) ? 'SERIES' : 'ONE');
+  const [seriesName, setSeriesName] = useState(initial?.seriesName?.slice(0, 120) ?? '');
   const [seriesInterval, setSeriesInterval] = useState(1);
   const [seriesCount, setSeriesCount] = useState(4);
   const [seriesOccurrences, setSeriesOccurrences] = useState<Array<{ id: string; date: string }>>([]);
-  const [rosterStudentIds, setRosterStudentIds] = useState<string[]>([]);
+  const [rosterStudentIds, setRosterStudentIds] = useState<string[]>(() => initialRosterFor(serviceId));
   const [rosterPackageIds, setRosterPackageIds] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -132,8 +156,28 @@ function BusinessBookingDialog({ data, open, onClose, refresh }: NewBookingDialo
       setService(data.services.find(s => bookingClassAvailable(s, isClubCoach, coachInstructorId, activeLocationIds, activeInstructorIds))?.id || '');
     }
   }, [open, data.services, data.locations, data.instructors, serviceId, coachInstructorId, isClubCoach]);
-  useEffect(() => { setLocation(firstLocationId); }, [serviceId, firstLocationId]);
-  useEffect(() => { if (!isClubCoach) setInstructor(firstInstructorId); }, [locationId, serviceId, firstInstructorId, isClubCoach]);
+  useEffect(() => {
+    const preferred = preferredLocation.current;
+    if (preferred && serviceLocations.some(candidate => candidate.locationId === preferred)) {
+      preferredLocation.current = undefined;
+      setLocation(preferred);
+      return;
+    }
+    if (firstLocationId) preferredLocation.current = undefined;
+    setLocation(firstLocationId);
+  }, [serviceId, firstLocationId]);
+  useEffect(() => {
+    if (isClubCoach) return;
+    const preferred = preferredInstructor.current;
+    if (mapping && preferred) {
+      preferredInstructor.current = undefined;
+      if (mapping.instructorIds.includes(preferred) && activeInstructorIds.has(preferred)) {
+        setInstructor(preferred);
+        return;
+      }
+    }
+    setInstructor(firstInstructorId);
+  }, [locationId, serviceId, firstInstructorId, isClubCoach]);
   useEffect(() => {
     if (packageId && !eligiblePackages.some(pkg => pkg.id === packageId)) setPackage('');
   }, [eligiblePackages, packageId]);
@@ -181,9 +225,9 @@ function BusinessBookingDialog({ data, open, onClose, refresh }: NewBookingDialo
       setError(detail?.conflicts?.length ? `${err.message} ${detail.conflicts.map(c => `${c.startAt ?? c.date}: ${c.reason}`).join('; ')}` : err.message);
     } finally { setBusy(false); }
   }
-  return <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}><DialogContent className="max-h-[90vh] max-w-xl overflow-y-auto"><DialogTitle className="text-xl font-semibold tracking-tight">Add a booking</DialogTitle><DialogDescription className="mt-2 mb-6 text-xs text-stone-500">Choose the class, venue, students, and time.</DialogDescription><form onSubmit={submit} className="form-stack">
+  return <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}><DialogContent className="max-h-[90vh] max-w-xl overflow-y-auto"><DialogTitle className="text-xl font-semibold tracking-tight">Add a booking</DialogTitle><DialogDescription className="mt-2 mb-6 text-xs text-stone-500">Choose the class, venue, students, and time.</DialogDescription>{initial?.notice && <p role="note" className="mb-5 rounded-xl border border-[#dfe7d3] bg-[#f3f7ed] p-3 text-xs leading-relaxed text-[#405941]">{initial.notice}</p>}<form onSubmit={submit} className="form-stack">
     {managerData && <div className="tab-bar w-fit" role="group" aria-label="Booking type"><button type="button" aria-pressed={bookingMode === 'ONE'} className={bookingMode === 'ONE' ? 'active' : ''} onClick={() => setBookingMode('ONE')}>One class</button><button type="button" aria-pressed={bookingMode === 'SERIES'} className={bookingMode === 'SERIES' ? 'active' : ''} onClick={() => setBookingMode('SERIES')}>Series</button></div>}
-    <div className="form-grid"><div className="field-wide"><label htmlFor="booking-service">{isClubCoach ? '1-1 session' : 'Class'}</label><select id="booking-service" value={serviceId} onChange={e => { setService(e.target.value); setPackage(''); setRosterStudentIds([]); setRosterPackageIds({}); }} required><option value="" disabled>Choose a class</option>{availableServices.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></div>{isClubCoach && <div className="field-wide grid gap-3 rounded-xl border border-[#e3e8df] bg-[#f7f9f4] p-3 sm:grid-cols-2" role="group" aria-label="1-1 session details"><p className="text-[11px] text-stone-500"><span className="block text-[10px] font-semibold uppercase tracking-wide text-stone-400">Club</span><strong className="mt-1 block font-semibold text-[#344b39]">{data.business.name}</strong></p><p className="text-[11px] text-stone-500"><span className="block text-[10px] font-semibold uppercase tracking-wide text-stone-400">Duration</span><strong className="mt-1 block font-semibold text-[#344b39]">{mapping?.duration || service?.duration || 60} minutes</strong></p></div>}<div><label htmlFor="booking-location">Location</label><select id="booking-location" value={locationId} onChange={e => setLocation(e.target.value)} required><option value="" disabled>Select location</option>{serviceLocations.map(l => <option key={l.locationId} value={l.locationId}>{data.locations.find(x => x.id === l.locationId)?.name}</option>)}</select></div>{!isClubCoach && <div><label htmlFor="booking-instructor">Instructor</label><select id="booking-instructor" value={instructorId} onChange={e => setInstructor(e.target.value)} required><option value="" disabled>Select instructor</option>{data.instructors.filter(i => activeInstructorIds.has(i.id) && mapping?.instructorIds.includes(i.id)).map(i => <option key={i.id} value={i.id}>{i.name}</option>)}</select></div>}<div><label htmlFor="booking-date">First date</label><input id="booking-date" type="date" min={dateKey()} value={date} onChange={e => setDate(e.target.value)} required /></div>{isSeries ? <><div><label htmlFor="series-interval">Repeat every</label><select id="series-interval" value={seriesInterval} onChange={e => setSeriesInterval(Number(e.target.value))}>{[1, 2, 3, 4].map(value => <option key={value} value={value}>{value} week{value === 1 ? '' : 's'}</option>)}</select></div><div><label htmlFor="series-count">Number of classes</label><input id="series-count" type="number" min={2} max={24} value={seriesCount} onChange={e => setSeriesCount(Math.min(24, Math.max(2, Number(e.target.value) || 2)))} /></div><div><label htmlFor="series-name">Series name (optional)</label><input id="series-name" value={seriesName} maxLength={120} onChange={e => setSeriesName(e.target.value)} placeholder="Tuesday beginners" /></div></> : <div><label htmlFor="booking-repeat">Repeat</label><select id="booking-repeat" value={repeat} onChange={e => setRepeat(Number(e.target.value))}><option value={1}>Does not repeat</option><option value={4}>Weekly · 4 classes</option><option value={8}>Weekly · 8 classes</option><option value={10}>Weekly · 10 classes</option></select></div>}</div>
+    <div className="form-grid"><div className="field-wide"><label htmlFor="booking-service">{isClubCoach ? '1-1 session' : 'Class'}</label><select id="booking-service" value={serviceId} onChange={e => { setService(e.target.value); setPackage(''); setRosterStudentIds(initialRosterFor(e.target.value)); setRosterPackageIds({}); }} required><option value="" disabled>Choose a class</option>{availableServices.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></div>{isClubCoach && <div className="field-wide grid gap-3 rounded-xl border border-[#e3e8df] bg-[#f7f9f4] p-3 sm:grid-cols-2" role="group" aria-label="1-1 session details"><p className="text-[11px] text-stone-500"><span className="block text-[10px] font-semibold uppercase tracking-wide text-stone-400">Club</span><strong className="mt-1 block font-semibold text-[#344b39]">{data.business.name}</strong></p><p className="text-[11px] text-stone-500"><span className="block text-[10px] font-semibold uppercase tracking-wide text-stone-400">Duration</span><strong className="mt-1 block font-semibold text-[#344b39]">{mapping?.duration || service?.duration || 60} minutes</strong></p></div>}<div><label htmlFor="booking-location">Location</label><select id="booking-location" value={locationId} onChange={e => setLocation(e.target.value)} required><option value="" disabled>Select location</option>{serviceLocations.map(l => <option key={l.locationId} value={l.locationId}>{data.locations.find(x => x.id === l.locationId)?.name}</option>)}</select></div>{!isClubCoach && <div><label htmlFor="booking-instructor">Instructor</label><select id="booking-instructor" value={instructorId} onChange={e => setInstructor(e.target.value)} required><option value="" disabled>Select instructor</option>{data.instructors.filter(i => activeInstructorIds.has(i.id) && mapping?.instructorIds.includes(i.id)).map(i => <option key={i.id} value={i.id}>{i.name}</option>)}</select></div>}<div><label htmlFor="booking-date">First date</label><input id="booking-date" type="date" min={dateKey()} value={date} onChange={e => setDate(e.target.value)} required /></div>{isSeries ? <><div><label htmlFor="series-interval">Repeat every</label><select id="series-interval" value={seriesInterval} onChange={e => setSeriesInterval(Number(e.target.value))}>{[1, 2, 3, 4].map(value => <option key={value} value={value}>{value} week{value === 1 ? '' : 's'}</option>)}</select></div><div><label htmlFor="series-count">Number of classes</label><input id="series-count" type="number" min={2} max={24} value={seriesCount} onChange={e => setSeriesCount(Math.min(24, Math.max(2, Number(e.target.value) || 2)))} /></div><div><label htmlFor="series-name">Series name (optional)</label><input id="series-name" value={seriesName} maxLength={120} onChange={e => setSeriesName(e.target.value)} placeholder="Tuesday beginners" /></div></> : <div><label htmlFor="booking-repeat">Repeat</label><select id="booking-repeat" value={repeat} onChange={e => setRepeat(Number(e.target.value))}><option value={1}>Does not repeat</option><option value={4}>Weekly · 4 classes</option><option value={8}>Weekly · 8 classes</option><option value={10}>Weekly · 10 classes</option></select></div>}</div>
     <div aria-busy={slotsLoading}><label id="booking-times-label">Available start times · {mapping?.duration || service?.duration || 60} min</label><p role="status" aria-live="polite" className="sr-only">{slotsLoading ? 'Checking availability.' : slotsError ? 'Available times could not be loaded.' : slots.filter(s => s.available).length === 1 ? '1 available time loaded.' : slots.filter(s => s.available).length + ' available times loaded.'}</p>{slotsLoading ? <p className="flex items-center gap-2 py-4 text-xs text-stone-500"><Loader2 size={14} className="animate-spin" />Checking all locations and travel time…</p> : slotsError ? <p role="alert" className="rounded-lg bg-red-50 p-3 text-xs text-red-700">{slotsError}</p> : <div role="radiogroup" aria-labelledby="booking-times-label" className="grid grid-cols-4 gap-2">{slots.filter(s => s.available).map(s => <button type="button" role="radio" aria-checked={slot === s.startAt} key={s.startAt} onClick={() => setSlot(s.startAt)} className={`rounded-lg border px-2 py-2.5 text-sm ${slot === s.startAt ? 'border-[#214e3e] bg-[#214e3e] text-white' : 'border-stone-200 hover:bg-stone-50'}`}>{time(s.startAt)}</button>)}{!slots.some(s => s.available) && <p className="col-span-4 rounded-lg bg-stone-50 p-4 text-xs text-stone-500">No available times. Try a different date, {isClubCoach ? 'class' : 'instructor'}, or location.</p>}</div>}</div>
     {isSeries && <div><div className="mb-2 flex flex-wrap items-center justify-between gap-3"><label>Series dates</label><span className="text-[10px] text-stone-500">{seriesDates.length} of 24</span></div><div className="space-y-2">{seriesOccurrences.map((occurrence, index) => <div key={occurrence.id} className="flex flex-wrap items-center gap-2"><input className="min-w-0 flex-1" aria-label={`Class ${index + 1} date`} type="date" min={dateKey()} value={occurrence.date} onChange={e => setSeriesOccurrences(current => current.map(item => item.id === occurrence.id ? { ...item, date: e.target.value } : item))} /><Button type="button" variant="ghost" size="icon" aria-label={`Remove class ${index + 1}`} disabled={seriesDates.length <= 2} onClick={() => setSeriesOccurrences(current => current.filter(item => item.id !== occurrence.id))}><X size={14} /></Button></div>)}</div><p className="mt-2 text-[10px] text-stone-400">Edit or remove individual dates for holidays and other exceptions.</p></div>}
     {isGroupSeries ? <fieldset><legend className="mb-2 text-xs font-medium">Group roster · {rosterStudentIds.length}/{service?.capacity ?? 0}</legend><div className="max-h-56 space-y-2 overflow-y-auto rounded-lg border border-stone-200 p-2">{data.students.filter(student => !!student.userId).map(student => {
@@ -238,23 +282,28 @@ export function BookingDetail({ bookingId, data, onClose, refresh, onOpenChat }:
   const managerBooking = canViewPayments
     ? managerData?.bookings.find(booking => booking.id === bookingId) ?? null
     : null;
+  const [runOpen, setRunOpen] = useState(false);
+  const runTriggerRef = useRef<HTMLButtonElement>(null);
+  const [attendanceSaving, setAttendanceSaving] = useState<{ participantId: string; value: Attendance } | null>(null);
   const currentStatus = current?.status;
+  const currentStartAt = current?.startAt;
   const currentEndAt = current?.endAt;
-  useEffect(() => { setReschedule(false); setSelectedSlot(''); setProposalMessage(''); setConfirmation(null); setReversalReason('Recorded by mistake'); setNowMs(Date.now()); }, [bookingId]);
+  useEffect(() => { setReschedule(false); setSelectedSlot(''); setProposalMessage(''); setConfirmation(null); setReversalReason('Recorded by mistake'); setRunOpen(false); setNowMs(Date.now()); }, [bookingId]);
   useEffect(() => {
-    if (!bookingId || !currentEndAt || currentStatus === 'CANCELLED' || currentStatus === 'COMPLETED') return;
-    const end = new Date(currentEndAt).getTime();
+    if (!bookingId || !currentStartAt || !currentEndAt || currentStatus === 'CANCELLED' || currentStatus === 'COMPLETED') return;
     let timer: number | undefined;
+    // Attendance opens at the start and scheduling closes at the end, so the
+    // clock wakes for whichever of those boundaries comes next.
+    function schedule(from: number) {
+      const next = nextTimingBoundary({ startAt: currentStartAt!, endAt: currentEndAt! }, from);
+      if (next !== null) timer = window.setTimeout(updateClock, Math.max(50, Math.min(30_000, next - from)));
+    }
     function updateClock() {
       const liveNow = Date.now();
       setNowMs(liveNow);
-      if (Number.isFinite(end) && end > liveNow) {
-        timer = window.setTimeout(updateClock, Math.max(50, Math.min(30_000, end - liveNow)));
-      }
+      schedule(liveNow);
     }
-    if (Number.isFinite(end) && end > Date.now()) {
-      timer = window.setTimeout(updateClock, Math.max(50, Math.min(30_000, end - Date.now())));
-    }
+    schedule(Date.now());
     function handleVisibilityChange() {
       if (document.visibilityState === 'visible') {
         if (timer !== undefined) window.clearTimeout(timer);
@@ -266,7 +315,7 @@ export function BookingDetail({ bookingId, data, onClose, refresh, onOpenChat }:
       if (timer !== undefined) window.clearTimeout(timer);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [bookingId, currentEndAt, currentStatus]);
+  }, [bookingId, currentStartAt, currentEndAt, currentStatus]);
   useEffect(() => {
     if (!currentEndAt || !lessonHasEnded(currentEndAt, nowMs)) return;
     setReschedule(false);
@@ -298,13 +347,31 @@ export function BookingDetail({ bookingId, data, onClose, refresh, onOpenChat }:
     setNowMs(liveNow);
     return false;
   }
+  function allowAfterLessonStart() {
+    const liveNow = Date.now();
+    if (lessonHasStarted(current!.startAt, liveNow)) return true;
+    setNowMs(liveNow);
+    return false;
+  }
+  async function markAttendance(participantId: string, value: Attendance) {
+    if (!allowAfterLessonStart()) return;
+    setAttendanceSaving({ participantId, value });
+    try {
+      await markParticipantAttendance(current!.id, participantId, value);
+      await refresh();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setAttendanceSaving(null);
+    }
+  }
 
   const inactive = current.status === 'CANCELLED';
   const hasEnded = lessonHasEnded(current.endAt, nowMs);
   const canMarkCompleted = canManageBookings && current.status === 'CONFIRMED' && hasEnded;
-  const canMarkAttendance = canManageBookings && hasEnded
-    && ['CONFIRMED', 'COMPLETED'].includes(current.status)
-    && current.coachAcceptance !== 'PENDING';
+  // Roll call is court-side: attendance opens when the lesson starts.
+  const canMarkAttendance = canManageBookings && attendanceOpen(current, nowMs);
+  const runClass = canManageBookings ? runClassAvailability(current, nowMs) : { state: 'UNAVAILABLE' as const };
   const scheduleClosed = inactive || current.status === 'COMPLETED' || hasEnded;
   const awaitingCoach = current.status === 'PENDING' && current.coachAcceptance === 'PENDING';
   const isAssignedCoach = mode === 'COACH' && data.user.accountType === 'COACH' && data.user.instructorId === current.instructorId;
@@ -354,6 +421,13 @@ export function BookingDetail({ bookingId, data, onClose, refresh, onOpenChat }:
     </div>
     <div className="my-5 space-y-3 rounded-xl bg-[#f5f7f1] p-4 text-xs"><p className="flex items-center gap-3"><CalendarDays size={15} className="text-stone-400" />{shortDate(current.startAt)}<span className="ml-auto">{time(current.startAt)} – {time(current.endAt)}</span></p><p className="flex items-center gap-3"><MapPin size={15} className="text-stone-400" />{current.locationName}</p><p className="flex items-center gap-3"><UserRound size={15} className="text-stone-400" />{current.instructorName}</p>{current.address && <p className="pl-7">{current.address}</p>}</div>
 
+    {runClass.state !== 'UNAVAILABLE' && <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#dfe7d3] bg-[#f3f7ed] p-3">
+      <div className="min-w-0 flex-1"><p className="text-xs font-semibold text-[#294735]">Run this Class</p><p className="mt-1 text-[11px] leading-relaxed text-[#59675c]">{runClass.state === 'OPEN' ? 'Roll call, coach feedback and completion, built for court-side use.' : 'Roll call and feedback open when the Class starts.'}</p></div>
+      {runClass.state === 'OPEN'
+        ? <Button ref={runTriggerRef} size="sm" onClick={() => setRunOpen(true)} aria-haspopup="dialog"><ClipboardCheck size={14} aria-hidden="true" />Run this Class</Button>
+        : <span className="badge bg-white!"><Clock3 size={12} aria-hidden="true" />Opens at {time(runClass.opensAt, data.business.timezone)}</span>}
+    </div>}
+
     {awaitingCoach && <div className="mb-5 rounded-lg border border-amber-100 bg-amber-50 p-3 text-xs text-amber-800">
       <p className="leading-relaxed">{current.createdByRole === 'CLUB' ? 'The club assigned this class. The student does not need to accept it, but the coach does before it is confirmed.' : 'This class is waiting for the coach to accept it.'}</p>
       {canAnswerAssignment && <div className="mt-3 flex flex-wrap gap-2">
@@ -384,8 +458,10 @@ export function BookingDetail({ bookingId, data, onClose, refresh, onOpenChat }:
       const payment = activePaymentFor(p.studentId);
       return <div className="rounded-lg border border-stone-200 p-3" key={p.id}>
         <div className="flex items-center justify-between gap-3"><div><p className="text-xs font-semibold">{p.name}</p><p className="mt-1 text-[10px] text-stone-400">{p.email ?? 'No direct email'}</p></div>{managerParticipant && <span className={`badge ${!managerParticipant.paid ? 'pending' : ''}`}>{managerParticipant.packageId ? 'Package credit' : managerParticipant.paid ? 'Paid' : `${money(managerParticipant.price)} unpaid`}</span>}</div>
+        {canMarkAttendance && !p.cancelled
+          ? <div className="mt-3"><AttendanceControl size="sm" value={p.attendance} learnerName={p.name} locked={busy || !!attendanceSaving} busyValue={attendanceSaving?.participantId === p.id ? attendanceSaving.value : null} onChange={value => void markAttendance(p.id, value)} /></div>
+          : p.attendance !== 'UNMARKED' ? <div className="mt-2"><AttendanceBadge value={p.attendance} /></div> : null}
         <div className="mt-3 flex flex-wrap gap-2">
-          {canMarkAttendance && <><Button size="sm" variant={p.attendance === 'PRESENT' ? 'default' : 'outline'} disabled={busy} onClick={() => { if (allowAfterLessonEnd()) void action(`/bookings/${current.id}/participants/${p.id}`, { attendance: 'PRESENT' }); }}><Check size={12} />Attended</Button><Button size="sm" variant={p.attendance === 'ABSENT' ? 'destructive' : 'ghost'} disabled={busy} onClick={() => { if (allowAfterLessonEnd()) void action(`/bookings/${current.id}/participants/${p.id}`, { attendance: 'ABSENT' }); }}>No-show</Button></>}
           {canRecordPayments && managerParticipant && !managerParticipant.paid && !managerParticipant.packageId && !inactive && <Button size="sm" variant="outline" disabled={busy} onClick={() => action('/payments', { studentId: p.studentId, bookingId: current.id, amount: managerParticipant.price, method: payMethod, note: 'Class payment' }, 'POST')}>Record payment</Button>}
           {/* Recording a payment is undoable: the row stays in the ledger,
               marked reversed, and the participant returns to unpaid. */}
@@ -395,6 +471,8 @@ export function BookingDetail({ bookingId, data, onClose, refresh, onOpenChat }:
         {managerParticipant && lessonPayments.some(candidate => candidate.studentId === p.studentId && candidate.reversedAt) && <p className="mt-1 text-[10px] text-stone-400">{lessonPayments.filter(candidate => candidate.studentId === p.studentId && candidate.reversedAt).length} reversed payment(s) kept in the ledger.</p>}
       </div>;
     })}</div>
+
+    {current.type === 'GROUP' && <WaitlistPanel bookingId={current.id} timezone={data.business.timezone} onChanged={refresh} />}
 
     {canRecordPayments && managerBooking && managerBooking.participants.some(p => !p.paid && !p.packageId) && !inactive && <div className="mt-4"><label htmlFor="detail-payment-method">Payment recording method</label><select id="detail-payment-method" value={payMethod} onChange={e => setPayMethod(e.target.value)}><option value="BANK_TRANSFER">Bank transfer / PayNow</option><option value="CASH">Cash</option><option value="OTHER">Other</option></select>{managerBooking.paymentRoute === 'CLUB' && <p className="mt-1.5 flex items-start gap-1.5 text-[10px] leading-relaxed text-stone-500"><ShieldCheck size={12} className="mt-0.5 shrink-0" />This class runs through the club. Record what the student paid the club here, then record the coach&rsquo;s payout under Payments.</p>}</div>}
 
@@ -422,5 +500,14 @@ export function BookingDetail({ bookingId, data, onClose, refresh, onOpenChat }:
         : <Button variant="outline" size="sm" disabled={!!openRequest || awaitingCoach} onClick={() => { if (allowBeforeLessonEnd()) setReschedule(v => !v); }}><Clock3 size={13} />{openRequest ? 'Reschedule pending' : 'Propose a new time'}</Button>}
       {!scheduleClosed && <Button variant="destructive" size="sm" disabled={busy} onClick={() => { if (allowBeforeLessonEnd()) setConfirmation({ kind: 'cancel' }); }}>Cancel class</Button>}
     </div>}
+    {runClass.state === 'OPEN' && <RunClassDialog
+      booking={current}
+      timezone={data.business.timezone}
+      open={runOpen}
+      onOpenChange={setRunOpen}
+      refresh={refresh}
+      onOpenChat={onOpenChat && canOpenSessionChat && current.paymentRoute === 'CLUB' ? onOpenChat : undefined}
+      returnFocusRef={runTriggerRef}
+    />}
   </DialogContent></Dialog>;
 }

@@ -1062,13 +1062,16 @@ async function touchThread(tx: Tx, threadId: string, at: Date) {
 }
 
 async function markRead(tx: Tx | typeof prisma, threadId: string, userId: string, at: Date) {
-  await tx.chatReadState.upsert({
-    where: { threadId_userId: { threadId, userId } },
-    create: { threadId, userId, lastReadAt: at },
-    update: {},
-  });
-  // Read positions only move forward, whichever request lands last.
-  await tx.chatReadState.updateMany({ where: { threadId, userId, lastReadAt: { lt: at } }, data: { lastReadAt: at } });
+  // One atomic statement. Opening a thread and sending in it both mark it
+  // read, and a find-then-insert upsert let those concurrent first reads race
+  // into a primary-key violation. Read positions only move forward, whichever
+  // request lands last. The column stores UTC wall time without a zone.
+  await tx.$executeRaw`
+    INSERT INTO "ChatReadState" ("threadId", "userId", "lastReadAt")
+    VALUES (${threadId}, ${userId}, (${at.toISOString()}::timestamptz AT TIME ZONE 'UTC'))
+    ON CONFLICT ("threadId", "userId")
+    DO UPDATE SET "lastReadAt" = GREATEST("ChatReadState"."lastReadAt", EXCLUDED."lastReadAt")
+  `;
 }
 
 async function lockSessionCoachAccessForWrite(tx: Tx, viewer: ChatViewer, instructorId: string) {
