@@ -99,9 +99,10 @@ test('provider records attendance and notes before completing an ended session',
     request.method() === 'PATCH'
       && new URL(request.url()).pathname === `/api/bookings/${booking.id}/participants/${participant.id}`,
   );
-  await dialog.getByRole('button', { name: 'Attended', exact: true }).click();
+  const attendance = dialog.getByRole('group', { name: `Attendance for ${participant.name}`, exact: true });
+  await attendance.getByRole('button', { name: 'Present', exact: true }).click();
   expect((await attendanceRequest).postDataJSON()).toEqual({ attendance: 'PRESENT' });
-  await expect(dialog.getByRole('button', { name: 'Attended', exact: true })).toHaveClass(/bg-\[#214e3e\]/);
+  await expect(attendance.getByRole('button', { name: 'Present', exact: true })).toHaveAttribute('aria-pressed', 'true');
 
   const notes = 'Strong footwork and consistent recovery between shots.';
   await dialog.getByLabel('Internal class notes', { exact: true }).fill(notes);
@@ -131,8 +132,8 @@ test('provider records attendance and notes before completing an ended session',
   await expect(dialog.getByRole('button', { name: 'Mark completed', exact: true })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Propose a new time', exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Cancel class', exact: true })).toBeVisible();
-  await expect(dialog.getByRole('button', { name: 'Attended', exact: true })).toHaveCount(0);
-  await expect(dialog.getByRole('button', { name: 'No-show', exact: true })).toHaveCount(0);
+  // Attendance opens when the lesson starts, so a future lesson has no roll call yet.
+  await expect(dialog.getByRole('group', { name: /^Attendance for / })).toHaveCount(0);
 });
 
 test('an open provider booking switches actions when the lesson end passes', async ({ page }) => {
@@ -170,8 +171,11 @@ test('an open provider booking switches actions when the lesson end passes', asy
   await expect(dialog.getByRole('heading', { name: boundaryBooking.serviceName, exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Propose a new time', exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Cancel class', exact: true })).toBeVisible();
-  await expect(dialog.getByRole('button', { name: 'Attended', exact: true })).toHaveCount(0);
-  await expect(dialog.getByRole('button', { name: 'No-show', exact: true })).toHaveCount(0);
+  // The lesson has started, so court-side roll call is already open before it ends.
+  const rollCall = dialog.getByRole('group', { name: /^Attendance for / }).first();
+  await expect(rollCall.getByRole('button', { name: 'Present', exact: true })).toBeVisible();
+  await expect(rollCall.getByRole('button', { name: 'Absent', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Mark completed', exact: true })).toHaveCount(0);
 
   await dialog.getByRole('button', { name: 'Propose a new time', exact: true }).click();
   await expect(dialog.getByLabel('New class time')).toBeVisible();
@@ -181,8 +185,8 @@ test('an open provider booking switches actions when the lesson end passes', asy
   await expect(dialog.getByRole('button', { name: 'Propose a new time', exact: true })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Cancel class', exact: true })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Mark completed', exact: true })).toBeVisible();
-  await expect(dialog.getByRole('button', { name: 'Attended', exact: true })).toBeVisible();
-  await expect(dialog.getByRole('button', { name: 'No-show', exact: true })).toBeVisible();
+  await expect(rollCall.getByRole('button', { name: 'Present', exact: true })).toBeVisible();
+  await expect(rollCall.getByRole('button', { name: 'Absent', exact: true })).toBeVisible();
 });
 
 test('an ended lesson keeps pending reschedule cleanup available without reopening schedule actions', async ({ page }) => {

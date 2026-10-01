@@ -98,6 +98,46 @@ A recorded payment can be reversed. The record stays in the ledger marked as rev
 
 Because a club invests in introducing its coaches to its students, Courtly flags it to the club when a coach and a student who train together through that club also book privately outside it. Courtly reports; it does not block the booking, and it does not tell the coach or the student. The club records what it found and closes the flag.
 
+## Training companion
+
+Courtly stays a multi-club marketplace, and it also helps players and families
+with the weekly routine of training. See
+[`docs/TRAINING_COMPANION.md`](docs/TRAINING_COMPANION.md) for the full contract.
+
+- **Calendar and re-booking.** Students switch My bookings between a list and a
+  month calendar, filter by club, coach, or sport, and use **Book again** to
+  reopen a club's booking page with the same Class, coach, and venue
+  preselected and the next available times one tap away.
+- **Find a time and saved clubs.** Explore searches live availability across
+  clubs by day, sport, time of day, Class type, and area, and students can save
+  clubs they like.
+- **Coach feedback and progress.** Coaches run a Class from their phone: take
+  the roll at the start (Present, Late, Absent, Excused), then share feedback
+  per learner with strengths, focus areas, and a next goal, plus an internal
+  note only the club sees. Learners get a Progress view with attendance
+  streaks, monthly activity, their current goal, and a feedback timeline.
+- **Families.** A guardian can switch the student app to a managed child's view
+  and read that child's schedule and shared coach feedback; booking stays the
+  bounded guardian flow, and cancellation or payment is still arranged with the
+  club.
+- **Waitlists.** A full group Class offers a waitlist. When a place frees up,
+  the next student is offered it and the place is held for a limited time so a
+  public booking cannot take it first.
+- **Package credits.** Every credit change is recorded by the database in an
+  append-only history that students and clubs can open, and students are
+  reminded when a package is nearly used or about to expire.
+- **Public profiles.** Club booking pages lead with a description, sports,
+  starting price, areas, cancellation notice, contact options, and what happens
+  after booking. Coaches publish a portable profile with bio, languages, levels,
+  age groups, and self-reported qualifications.
+- **Club tools.** Clubs keep training groups (club-local cohorts that prefill a
+  booking series), manage waitlists, and see Growth insights: an anonymous
+  daily funnel from page views to bookings, re-booking and waitlist conversion,
+  returning students, and feedback coverage. Funnel counters store no visitor,
+  account, or device identifiers.
+- **Installable.** The web manifest lets players add Courtly to a home screen;
+  there is deliberately no offline cache for signed-in data.
+
 ## Account conversations and session chat
 
 Chat combines direct account conversations with the conversation attached to every booked Class. Signed-in students, coaches, and clubs can start a conversation with another registered account by searching its public name or username, or by entering its exact email. This uses the same bounded, authenticated account search as roster discovery: partial email addresses are never exposed, results contain only public profile fields, and opening the same pair again returns their existing conversation. In both apps Chat takes the tab-bar slot Alerts used to hold; Alerts live under the bell at the top right.
@@ -393,6 +433,6 @@ Courtly ships a platform admin console at `/admin`, separate from `STUDENT`, `CO
 - Stripe-backed package and Class checkout is available in the student UI, but clubs and connected-account IDs are provisioned externally. Rentals remain simulated. Stripe-backed payment reversals are provider-confirmed; automated coach payouts/settlement reconciliation and business subscription billing are not connected.
 - Booking lifecycle emails can be sent through Resend when configured. Successful live Stripe Package/Class payments queue payment-receipt email through the same transactional outbox; rental receipts, chat, staff and coach invitations, and reminder email are not yet connected. SMS, push notifications, and automated WhatsApp delivery are also absent. Session reminders continue to post in chat.
 - Marketing is globally hard-disabled in backend code: every outbound item categorised `MARKETING` is suppressed, even if a stored account preference is true. There is no environment switch or campaign sender; enabling marketing requires a reviewed code, consent, unsubscribe, DNC, and operational change.
-- When the production Family feature gate is explicitly enabled, Family manages child identity, privacy, consent, bounded public club Class booking, export, deletion requests, and verified handover. Guardian bookings are unpaid and package-free, and the guardian arranges payment with the club. Guardian payment or package purchase, rentals, Calendar, staff/directory actions, chat membership, and child booking cancellation/reschedule self-service are not implemented; co-guardian invitations and automated deletion processing are also deferred. Handover additionally requires transactional email and the dedicated token keyring.
+- When the production Family feature gate is explicitly enabled, Family manages child identity, privacy, consent, bounded public club Class booking, read-only child schedule and coach-feedback progress, export, deletion requests, and verified handover. Guardian bookings are unpaid and package-free, and the guardian arranges payment with the club. Guardian payment or package purchase, rentals, Calendar, staff/directory actions, chat membership, and child booking cancellation/reschedule self-service are not implemented; co-guardian invitations and automated deletion processing are also deferred. Handover additionally requires transactional email and the dedicated token keyring.
 - Google Calendar is a one-way projection of confirmed Courtly Classes, not a two-way calendar editor. External edits never alter Courtly, and cached free/busy checks deliberately fail open when fresh data is unavailable.
-- Route-based travel calculations and waitlists are intentionally left for later integrations.
+- Route-based travel calculations are intentionally left for later integrations. Waitlists cover self-managed students only; a guardian cannot yet waitlist a child, and confirming a waitlist offer books the place unpaid like any other Class.

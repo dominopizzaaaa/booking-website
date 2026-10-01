@@ -87,7 +87,7 @@ const staffViewPermissions: Partial<Record<string, ClubPermission[]>> = {
   rentals: ['RENTALS_VIEW', 'RENTALS_MANAGE'],
   packages: ['PACKAGES_VIEW', 'PACKAGES_MANAGE'],
   payments: ['PAYMENTS_VIEW', 'PAYMENTS_RECORD', 'PAYMENTS_REVERSE', 'PAYOUTS_RECORD'],
-  insights: ['PAYMENTS_VIEW', 'AUDIT_VIEW', 'SAFEGUARDING_VIEW'],
+  insights: ['PAYMENTS_VIEW', 'AUDIT_VIEW', 'SAFEGUARDING_VIEW', 'BOOKINGS_VIEW'],
   settings: ['SETTINGS_MANAGE'],
 };
 
@@ -120,7 +120,7 @@ const staffToolDescriptions: Partial<Record<string, string>> = {
   locations: 'Review club venues and rental configuration.', team: 'Review the coach roster.',
   availability: 'Manage coach availability.', rentals: 'Review owned-venue reservations.',
   packages: 'Review class and rental credit packages.', payments: 'Review receipts and payouts.',
-  insights: 'Open reporting and the club audit log.', settings: 'Manage club settings.',
+  insights: 'Open growth insights, reporting and the club audit log.', settings: 'Manage club settings.',
 };
 
 function StaffLanding({ data, onNavigate, home }: { data: WorkspaceResponse; onNavigate: (view: string) => void; home: boolean }) {
@@ -588,7 +588,7 @@ export default function WorkspaceApp() {
                 : 'Message students and clubs, or use + in a schedulable conversation to propose a session.',
             }}
           />
-          : view === 'profile' ? <ProfileView data={data} onEditProfile={() => setProfileEditorOpen(true)} onSwitchWorkspace={() => setWorkspaceOpen(true)} onBusinessSettings={() => navigate('settings')} onHelp={replayProductTour} onSignOut={() => void signOut()} onNavigate={navigate} />
+          : view === 'profile' ? <ProfileView data={data} onEditProfile={() => setProfileEditorOpen(true)} onSwitchWorkspace={() => setWorkspaceOpen(true)} onBusinessSettings={() => navigate('settings')} onHelp={replayProductTour} onSignOut={() => void signOut()} onNavigate={navigate} refresh={refresh} />
           : view === 'calendar' || view === 'bookings' ? <CalendarView key={`${data.business.id}:${view}`} data={data} onNew={() => setBookingOpen(true)} onBooking={bookingId => void openBookingById(bookingId)} listOnly={view === 'bookings'} />
           : <ManagementView key={`${data.business.id}:${view}`} view={view} data={data} refresh={refresh} />}
       </main>

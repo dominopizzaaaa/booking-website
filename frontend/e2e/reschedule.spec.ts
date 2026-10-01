@@ -383,7 +383,10 @@ test.describe('two-sided rescheduling', () => {
 
     await switchToUser(page, journey.studentEmail);
     const originalEnd = new Date(journey.originalStartAt).getTime() + 60 * 60_000;
-    await page.clock.install({ time: new Date(originalEnd - 1_000) });
+    // The installed clock keeps running in real time, so leave enough margin
+    // for the student app to load before the original lesson end.
+    const marginMs = 30_000;
+    await page.clock.install({ time: new Date(originalEnd - marginMs) });
 
     const dialog = await openStudentBooking(page, journey);
     const incoming = dialog.getByRole('region', { name: 'Proposed new time' });
@@ -391,7 +394,7 @@ test.describe('two-sided rescheduling', () => {
     await expect(incoming.getByRole('button', { name: 'Accept new time', exact: true })).toBeVisible();
     await expect(incoming.getByRole('button', { name: 'Keep original time', exact: true })).toBeVisible();
 
-    await page.clock.runFor(1_050);
+    await page.clock.runFor(marginMs + 50);
 
     await expect(incoming.getByRole('heading', { name: 'Reschedule request needs closing', exact: true })).toBeVisible();
     await expect(incoming).toContainText(

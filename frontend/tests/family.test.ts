@@ -1,19 +1,30 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  ApiError,
   completeFamilyHandover,
   createFamilyChild,
   createFamilyHandover,
   loadFamily,
+  loadFamilyChildProgress,
+  loadFamilyChildSchedule,
   renewFamilyChildConsent,
   updateFamilyChild,
 } from '../src/lib/api';
-import { isFamilyConsentRenewalChild, type FamilyChild } from '../src/lib/types';
+import { isFamilyConsentRenewalChild, type AuthSession, type Business, type ChildScheduleItem, type FamilyChild, type Membership } from '../src/lib/types';
 import {
+  attendanceLabel,
   canStartFamilyHandover,
+  canViewFamilyTraining,
+  classWhenLabel,
+  clubTimeZoneNote,
+  familyBookingTargets,
   familySports,
   familyUsernamePattern,
   requiredActionCopy,
+  safeExternalUrl,
+  scheduleStatusLabel,
   singaporeCivilDate,
+  splitChildSchedule,
   validPastDate,
 } from '../src/components/family/family-helpers';
 
@@ -192,5 +203,125 @@ describe('Family API contract', () => {
     await completeFamilyHandover('secret/token', 'A secure password');
     expect(calls[0].url).toBe('/api/family/handovers/secret%2Ftoken/complete');
     expect(JSON.parse(String(calls[0].init.body))).toEqual({ password: 'A secure password' });
+  });
+});
+
+describe('Family schedule and progress entry points', () => {
+  const withPermissions = (permissions: FamilyChild['link']['permissions'], overrides: Partial<FamilyChild> = {}) => managedChild({
+    ...overrides,
+    link: { ...managedChild().link, permissions, ...(overrides.link ?? {}) },
+  });
+
+  it('offers the read-only projections only where the server would authorize them', () => {
+    expect(canViewFamilyTraining(withPermissions(['BOOKINGS_MANAGE']), '2026-09-29')).toBe(true);
+    expect(canViewFamilyTraining(withPermissions(['PROFILE_MANAGE', 'CONSENT_MANAGE']), '2026-09-29')).toBe(false);
+    // Stale policy, withdrawn link, restricted child, or a completed handover all fail closed.
+    expect(canViewFamilyTraining(withPermissions(['BOOKINGS_MANAGE']), '2027-01-01')).toBe(false);
+    expect(canViewFamilyTraining(withPermissions(['BOOKINGS_MANAGE'], { link: { ...managedChild().link, status: 'WITHDRAWN', permissions: ['BOOKINGS_MANAGE'] } }), '2026-09-29')).toBe(false);
+    expect(canViewFamilyTraining(withPermissions(['BOOKINGS_MANAGE'], { accountStatus: 'DELETION_REQUESTED' }), '2026-09-29')).toBe(false);
+    expect(canViewFamilyTraining(withPermissions(['BOOKINGS_MANAGE'], { accountControl: 'SELF' }), '2026-09-29')).toBe(false);
+  });
+
+  type MembershipFixture = { active?: boolean; business: Partial<Business> };
+  function session(accountType: AuthSession['user']['accountType'], memberships: MembershipFixture[] = []): Pick<AuthSession, 'user' | 'memberships'> {
+    return {
+      user: { id: 'guardian', name: 'Avery', email: 'avery@example.test', accountType },
+      memberships: memberships.map((membership, index): Membership => ({
+        id: `membership-${index}`, userId: 'guardian', businessId: `business-${index}`, instructorId: null,
+        active: membership.active ?? true, createdAt: '2026-01-01T00:00:00.000Z',
+        business: {
+          id: `business-${index}`, name: `Club ${index}`, slug: `club-${index}`, ownerName: 'Owner', email: 'club@example.test',
+          timezone: 'Asia/Singapore', currency: 'SGD', color: '#214e3e', tagline: '', cancellationHours: 24,
+          kind: 'CLUB', isDemo: false, legacyReadOnly: false, ...membership.business,
+        },
+      })),
+    };
+  }
+
+  it('sends a student guardian to the club directory and a coach guardian to their own clubs', () => {
+    expect(familyBookingTargets(session('STUDENT'))).toEqual([{ href: '/manage?tab=explore', clubName: null }]);
+    expect(familyBookingTargets(session('COACH', [
+      { business: { slug: 'elever badminton', name: 'Elever' } },
+      { active: false, business: { slug: 'inactive', name: 'Old club' } },
+      { business: { slug: 'legacy', name: 'Legacy', legacyReadOnly: true } },
+      { business: { slug: 'solo', name: 'Solo', kind: 'SOLO' } },
+      { business: { slug: 'elever badminton', name: 'Elever duplicate' } },
+    ]))).toEqual([{ href: '/book/elever%20badminton', clubName: 'Elever' }]);
+    expect(familyBookingTargets(session('COACH'))).toEqual([]);
+    expect(familyBookingTargets(session('CLUB', [{ business: {} }]))).toEqual([]);
+    expect(familyBookingTargets(null)).toEqual([]);
+  });
+
+  function item(overrides: Partial<ChildScheduleItem>): ChildScheduleItem {
+    return {
+      participantId: 'participant', bookingId: 'booking',
+      business: { name: 'Elever', slug: 'elever', timezone: 'Asia/Singapore' },
+      serviceName: 'Junior squad', sport: 'Badminton', type: 'GROUP', coachName: 'Dominic Loh',
+      location: { name: 'Court 1', address: '1 Sports Way', area: 'Tampines · East', mapsUrl: 'https://maps.google.com/?q=1' },
+      startAt: '2026-10-04T01:00:00.000Z', endAt: '2026-10-04T02:00:00.000Z',
+      status: 'CONFIRMED', attendance: 'UNMARKED', hasFeedback: false,
+      ...overrides,
+    };
+  }
+
+  it('splits upcoming (including in progress) from recent and orders each for reading', () => {
+    const now = new Date('2026-10-01T10:30:00.000Z').getTime();
+    const items = [
+      item({ participantId: 'past-old', startAt: '2026-09-01T10:00:00.000Z', endAt: '2026-09-01T11:00:00.000Z' }),
+      item({ participantId: 'later', startAt: '2026-10-08T10:00:00.000Z', endAt: '2026-10-08T11:00:00.000Z' }),
+      item({ participantId: 'now', startAt: '2026-10-01T10:00:00.000Z', endAt: '2026-10-01T11:00:00.000Z' }),
+      item({ participantId: 'past-new', startAt: '2026-09-28T10:00:00.000Z', endAt: '2026-09-28T11:00:00.000Z' }),
+    ];
+    const { upcoming, recent } = splitChildSchedule(items, now);
+    expect(upcoming.map(entry => entry.participantId)).toEqual(['now', 'later']);
+    expect(recent.map(entry => entry.participantId)).toEqual(['past-new', 'past-old']);
+  });
+
+  it('formats Class times in the club timezone, not the viewer’s', () => {
+    expect(classWhenLabel(item({}))).toEqual({ date: 'Sun, 4 Oct 2026', time: '9:00 AM – 10:00 AM' });
+    expect(classWhenLabel(item({ business: { name: 'London', slug: 'london', timezone: 'Europe/London' } })))
+      .toEqual({ date: 'Sun, 4 Oct 2026', time: '2:00 AM – 3:00 AM' });
+    expect(clubTimeZoneNote([item({})], 'Asia/Singapore')).toBeNull();
+    expect(clubTimeZoneNote([item({})], 'Europe/London')).toBe('Times are shown in the club’s time zone (Asia/Singapore).');
+    expect(clubTimeZoneNote([item({}), item({ business: { name: 'L', slug: 'l', timezone: 'Europe/London' } })], 'UTC'))
+      .toBe('Times are shown in each club’s own time zone.');
+  });
+
+  it('labels status and attendance without implying attendance before a Class starts', () => {
+    expect(scheduleStatusLabel('PENDING')).toBe('Awaiting confirmation');
+    expect(scheduleStatusLabel('COMPLETED')).toBe('Completed');
+    expect(attendanceLabel('UNMARKED', false, 'CONFIRMED')).toBeNull();
+    expect(attendanceLabel('UNMARKED', true, 'CONFIRMED')).toBe('Attendance not marked yet');
+    expect(attendanceLabel('LATE', true, 'COMPLETED')).toBe('Attended · arrived late');
+    expect(attendanceLabel('PRESENT', true, 'COMPLETED')).toBe('Attended');
+    expect(attendanceLabel('ABSENT', true, 'CANCELLED')).toBeNull();
+  });
+
+  it('links to Maps only for absolute https URLs', () => {
+    expect(safeExternalUrl('https://maps.google.com/?q=Court%201')).toBe('https://maps.google.com/?q=Court%201');
+    for (const value of ['', null, undefined, 'javascript:alert(1)', 'http://maps.example.test', '/relative']) {
+      expect(safeExternalUrl(value), String(value)).toBeNull();
+    }
+  });
+
+  it('requests the child projections with an encoded child id and surfaces the privacy-safe 404', async () => {
+    const calls: Call[] = [];
+    mockJson({ child: { id: 'child/1', name: 'River', username: 'river_tan' }, bookings: [] }, calls);
+    await loadFamilyChildSchedule('child/1');
+    mockJson({ child: { id: 'child/1', name: 'River', username: 'river_tan' } }, calls);
+    await loadFamilyChildProgress('child/1');
+    expect(calls.map(call => call.url)).toEqual([
+      '/api/family/children/child%2F1/schedule',
+      '/api/family/children/child%2F1/progress',
+    ]);
+
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false, status: 404,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ error: 'Child profile not found', code: 'CHILD_NOT_FOUND' }),
+    })));
+    const failure = await loadFamilyChildSchedule('someone-else').catch(error => error);
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(failure).toMatchObject({ status: 404, message: 'Child profile not found' });
   });
 });

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from './db.js';
 import { asyncRoute, HttpError, requireClubPermission } from './http.js';
 import {
-  coachAcceptanceFor, evaluateSlot, hasTimeConflict, lockInstructors, paymentRouteFor, schedulingContext,
+  coachAcceptanceFor, consumeLessonCredit, evaluateSlot, hasTimeConflict, lockInstructors, paymentRouteFor, schedulingContext,
   selectEligibleLessonPackage, type Tx,
 } from './scheduling.js';
 import { bookingInclude, bookingJson } from './serializers.js';
@@ -12,7 +12,6 @@ import { createBookingAccountAlerts } from './account-notifications.js';
 import { notifyWorkspace } from './notifications.js';
 import { ensureChatThread } from './chat-events.js';
 import { reserveBookingUnit } from './venue-allocations.js';
-import { withCreditContext } from './credit-ledger.js';
 
 const seriesParticipantInput = z.object({
   studentId: z.string().min(1),
@@ -107,14 +106,11 @@ export async function createBookingSeriesInTransaction(
       packageId: entry.packageId, businessId, studentId: entry.studentId, serviceId: input.serviceId,
       sessionDates: slots.map(slot => slot.startAt),
     });
-    const reserved = await withCreditContext(tx, {
-      kind: 'BOOKED', actorUserId: actor.userId ?? null,
-      note: `${input.name || 'Booking series'} · ${slots.length} session${slots.length === 1 ? '' : 's'}`,
-    }, () => tx.lessonPackage.updateMany({
-      where: { id: pkg.id, usedCredits: { lte: pkg.totalCredits - slots.length } },
-      data: { usedCredits: { increment: slots.length } },
-    }));
-    if (!reserved.count) throw new HttpError(409, `Not enough package credits for ${entry.student.name}`);
+    // The package row stays locked, so each place below can consume its own
+    // labelled credit without the balance moving in between.
+    if (pkg.totalCredits - pkg.usedCredits < slots.length) {
+      throw new HttpError(409, `Not enough package credits for ${entry.student.name}`);
+    }
     packages.set(entry.studentId, pkg);
   }
 
@@ -154,6 +150,14 @@ export async function createBookingSeriesInTransaction(
       businessId, locationId: input.locationId, unitId: slot.venueUnit.id, unitName: slot.venueUnit.name,
       bookingId: booking.id, startAt: slot.startAt, endAt: slot.endAt,
     });
+    for (const place of booking.participants) {
+      const pkg = packages.get(place.studentId);
+      if (!pkg) continue;
+      await consumeLessonCredit(tx, pkg.id, {
+        bookingId: booking.id, participantId: place.id, startAt: slot.startAt, timezone: ctx.business.timezone,
+        serviceName: ctx.service.name, actorUserId: actor.userId ?? null,
+      });
+    }
     await enqueueCalendarSync(tx, booking.id);
     await ensureChatThread(tx, booking.id);
     await createBookingAccountAlerts(tx, booking.id,

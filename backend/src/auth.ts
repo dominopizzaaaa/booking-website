@@ -9,7 +9,7 @@ import { sharedRateLimit } from './rate-limit.js';
 import { asyncRoute, HttpError, requireAccountCapability, type AccountRequest, type MembershipWithBusiness } from './http.js';
 import { authState, isAccessibleWorkspaceMembership, isSupportedWorkspaceMembership } from './serializers.js';
 import { seedBusiness } from './seed.js';
-import { editableClubAccountProfile, editablePersonalProfile, sportsSchema, updatePersonalProfile, usernameSchema } from './account-profile.js';
+import { editableClubAccountProfile, editableCoachAccountProfile, editablePersonalProfile, sportsSchema, updatePersonalProfile, usernameSchema } from './account-profile.js';
 import { CHILD_AGE, ageOnSingaporeDate, parseDateOfBirth } from './children-policy.js';
 import { loadAccountPolicy } from './account-policy.js';
 import { lockAccountEmailClaim } from './account-email-claim.js';
@@ -574,9 +574,18 @@ authRouter.get('/me', requireAuth, asyncRoute(async (req, res) => {
 }));
 
 authRouter.patch('/me', requireAuth, requireAccountCapability('profileEdit'), asyncRoute(async (req, res) => {
-  const input = req.auth.user.accountType === 'CLUB'
+  const { accountType } = req.auth.user;
+  // A coaching profile describes a person who teaches. Clubs and students get
+  // a sentence rather than a generic unknown-field error.
+  if (accountType !== 'COACH' && req.body && typeof req.body === 'object'
+    && Object.prototype.hasOwnProperty.call(req.body, 'coachProfile')) {
+    throw new HttpError(400, 'Only coach accounts have a coaching profile');
+  }
+  const input = accountType === 'CLUB'
     ? editableClubAccountProfile.parse(req.body)
-    : editablePersonalProfile.parse(req.body);
+    : accountType === 'COACH'
+      ? editableCoachAccountProfile.parse(req.body)
+      : editablePersonalProfile.parse(req.body);
   await updatePersonalProfile(req.auth.user.id, input);
   res.json(await authState(req.auth.user.id, req.auth.membership?.id ?? null, req.auth.staffAccess?.id ?? null));
 }));

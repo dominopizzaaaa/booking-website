@@ -217,8 +217,22 @@ bookingsRouter.patch('/bookings/:id', requireCoachOrClubPermission('BOOKINGS_MAN
   const json = bookingJson(result);
   res.json(hidesFinancials(req.auth) ? withoutBookingFinancials(json) : json);
 }));
+// LATE counts as attended; EXCUSED, like ABSENT, does not.
+const attendanceValue = z.enum(['UNMARKED', 'PRESENT', 'LATE', 'ABSENT', 'EXCUSED']);
+
+// Roll call happens court-side, so attendance opens once the lesson has
+// started rather than after it ends. The other rules are unchanged.
+function assertAttendanceOpen(booking: { status: string; coachAcceptance: string; startAt: Date }) {
+  if (!['CONFIRMED', 'COMPLETED'].includes(booking.status) || booking.coachAcceptance === 'PENDING') {
+    throw new HttpError(400, 'Attendance can only be marked for a confirmed or completed lesson');
+  }
+  if (booking.startAt.getTime() > Date.now()) {
+    throw new HttpError(400, 'Attendance can only be marked once the lesson has started');
+  }
+}
+
 bookingsRouter.patch('/bookings/:id/participants/:participantId', requireCoachOrClubPermission('BOOKINGS_MANAGE'), asyncRoute(async (req, res) => {
-  const body = z.object({ attendance: z.enum(['UNMARKED', 'PRESENT', 'ABSENT']) }).strict().parse(req.body);
+  const body = z.object({ attendance: attendanceValue }).strict().parse(req.body);
   const result = await prisma.$transaction(async tx => {
     const initial = await tx.booking.findFirst({ where: { id: req.params.id, businessId: req.auth.business.id } });
     if (!initial) throw new HttpError(404, 'Booking not found');
@@ -229,16 +243,46 @@ bookingsRouter.patch('/bookings/:id/participants/:participantId', requireCoachOr
     coachScope(req, participant.booking.instructorId);
     if (participant.booking.instructorId !== initial.instructorId) throw new HttpError(409, 'Session changed. Please retry.');
     assertWritableClubBooking(participant.booking);
-    if (!['CONFIRMED', 'COMPLETED'].includes(participant.booking.status)
-      || participant.booking.coachAcceptance === 'PENDING') {
-      throw new HttpError(400, 'Attendance can only be marked for a confirmed or completed lesson');
-    }
-    if (participant.booking.endAt.getTime() > Date.now()) {
-      throw new HttpError(400, 'Attendance can only be marked after the lesson has ended');
-    }
+    assertAttendanceOpen(participant.booking);
     return tx.participant.update({ where: { id: participant.id }, data: body });
   });
   res.json({ id: result.id, attendance: result.attendance });
+}));
+
+// "Mark all present" and similar roll-call actions. One value is applied to
+// the named participants (or every active one) in a single transaction, so a
+// stale or foreign participant ID leaves the whole roll unchanged.
+bookingsRouter.patch('/bookings/:id/participants', requireCoachOrClubPermission('BOOKINGS_MANAGE'), asyncRoute(async (req, res) => {
+  const body = z.object({
+    attendance: attendanceValue,
+    participantIds: z.array(z.string().trim().min(1).max(200)).min(1).max(500).optional(),
+  }).strict().parse(req.body);
+  const participants = await prisma.$transaction(async tx => {
+    const initial = await tx.booking.findFirst({ where: { id: req.params.id, businessId: req.auth.business.id } });
+    if (!initial) throw new HttpError(404, 'Booking not found');
+    coachScope(req, initial.instructorId);
+    await lockInstructors(tx, [initial.instructorId]);
+    const current = await tx.booking.findUniqueOrThrow({ where: { id: initial.id }, include: { business: true } });
+    coachScope(req, current.instructorId);
+    if (current.instructorId !== initial.instructorId) throw new HttpError(409, 'Session changed. Please retry.');
+    assertWritableClubBooking(current);
+    assertAttendanceOpen(current);
+    const requested = body.participantIds ? [...new Set(body.participantIds)] : null;
+    const targets = await tx.participant.findMany({
+      where: { bookingId: current.id, cancelledAt: null, ...(requested ? { id: { in: requested } } : {}) },
+      select: { id: true },
+      orderBy: { id: 'asc' },
+    });
+    if (requested && targets.length !== requested.length) throw new HttpError(404, 'Participant not found');
+    if (targets.length) {
+      await tx.participant.updateMany({
+        where: { id: { in: targets.map(target => target.id) }, bookingId: current.id, cancelledAt: null },
+        data: { attendance: body.attendance },
+      });
+    }
+    return targets.map(target => ({ id: target.id, attendance: body.attendance }));
+  });
+  res.json({ participants });
 }));
 
 // A club may assign a student to a coach without asking the student, but the

@@ -16,15 +16,18 @@ import {
   Clock3,
   Compass,
   ExternalLink,
+  Heart,
   Home,
   HelpCircle,
   Info,
+  List as ListIcon,
   LoaderCircle,
   LogOut,
   MapPin,
   MessageCircle,
   PackageCheck,
   Pencil,
+  ReceiptText,
   Plus,
   RefreshCw,
   Search,
@@ -66,6 +69,12 @@ import {
   declineAccountReschedule,
   loadAccountPackages,
   loadAccountPackageOffers,
+  loadAccountProgress,
+  loadFamilyBookingChildren,
+  loadFavoriteClubs,
+  markFeedbackViewed,
+  removeFavoriteClub,
+  saveFavoriteClub,
   loadAccountClubs,
   loadAccountBookings,
   loadAuthSession,
@@ -82,6 +91,26 @@ import {
   searchAccounts,
 } from '@/lib/api';
 import { alertAppearance, alertPageSize, sortAlerts } from '@/lib/alerts';
+import { rebookHref } from '@/lib/booking-links';
+import { packageWarnings, sortPackagesByAttention } from '@/lib/package-insights';
+import { childNamedIn, manageHref, resolvePlayer, SELF_PLAYER } from '@/lib/player-view';
+import { withFavorite } from '@/lib/session-search';
+import {
+  bookingCancelled, bookingState, incomingRequest, isInProgress, isUpcoming, outgoingRequest,
+} from '@/lib/student-bookings';
+import {
+  accountBookingEvent, bookingSportResolver, dayKeyFor, readHomeView, writeHomeView, type HomeView,
+} from '@/lib/student-calendar';
+import { BookingCalendar } from '@/components/student/booking-calendar';
+import { ChildPlayerView, type ChildSegment } from '@/components/student/child-player-view';
+import { FindATime } from '@/components/student/find-a-time';
+import { PackageActivityDialog, PackageWarnings } from '@/components/student/package-extras';
+import { PlayerSwitcher } from '@/components/student/player-switcher';
+import { ProgressCard } from '@/components/student/progress-card';
+import { ProgressView } from '@/components/student/progress-view';
+import { EmptyState, ErrorNotice, LoadingScreen, type Conflict } from '@/components/student/shared';
+import { compactButton, field, panel, primaryButton, secondaryButton, statusClass } from '@/components/student/styles';
+import { WaitlistPanel } from '@/components/student/waitlist-panel';
 import { alertsButtonLabel, chatBadge, chatTabLabel } from '@/lib/chat';
 import { destroyProductTour, startProductTour, type ProductTourContext } from '@/lib/product-tour';
 import { ChatInbox } from '@/components/chat/chat-inbox';
@@ -92,12 +121,14 @@ import type {
   AccountPackage,
   AuthSession,
   CheckoutAcceptance,
+  FamilyBookingChild,
   CheckoutPolicyKind,
   CheckoutReview,
   PackageOffer,
   PackageOfferBusiness,
   PaymentCapabilities,
   PaymentIntent,
+  ProgressSummary,
   PublicBookingBusiness,
   PublicLocation,
   RentalDetail,
@@ -111,14 +142,13 @@ import {
 } from '@/lib/policies';
 import { cn, dateKey, initials, money, shortDate, time } from '@/lib/utils';
 
-type StudentTab = 'home' | 'explore' | 'book' | 'chat' | 'alerts' | 'profile';
+type StudentTab = 'home' | 'explore' | 'book' | 'chat' | 'alerts' | 'profile' | 'progress';
 /** Which step the booking dialog is showing. */
 type BookingDialogMode = 'details' | 'cancel' | 'reschedule';
 type BookingFilter = 'all' | 'upcoming' | 'completed' | 'cancelled';
-type ClubRelationshipFilter = 'all' | 'known' | 'discover';
+type ClubRelationshipFilter = 'all' | 'known' | 'discover' | 'saved';
 type ExploreSegment = 'classes' | 'rentals';
 type PaymentUiMode = 'loading' | 'live' | 'simulated' | 'disabled';
-type Conflict = { date: string; reason: string };
 type LiveCheckoutSession = {
   localIntentId: string; clientSecret: string; connectedAccountId: string; amount: number; currency: string;
   kind: 'PACKAGE' | 'BOOKING'; targetId: string; label: string; clubName: string; retrySignature: string;
@@ -138,6 +168,7 @@ type StudentNotification = {
   actionNeeded?: boolean;
   createdAt?: string;
   businessSlug?: string;
+  packageId?: string;
 };
 type KnownClub = {
   business: PublicBookingBusiness;
@@ -151,15 +182,6 @@ type ExploreClub = {
   known?: KnownClub;
 };
 
-const primaryButton =
-  'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#174c3c] px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[#103d2f] disabled:cursor-not-allowed disabled:opacity-45 disabled:shadow-none';
-const secondaryButton =
-  'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-[#dce3da] bg-white px-4 py-2.5 text-sm font-medium text-[#344d40] transition hover:border-[#bdcbbb] hover:bg-[#f3f6f1] disabled:cursor-not-allowed disabled:opacity-45';
-const panel =
-  'min-w-0 rounded-2xl border border-[#e5e9e4] bg-white shadow-[0_8px_30px_rgba(29,57,43,0.035)] [&_*]:min-w-0 [&_p]:break-words';
-const field =
-  '!min-h-12 !rounded-xl !border-[#dfe5df] !px-3.5 !text-base sm:!text-sm';
-
 // Chat sits in the tab bar; Alerts moved to the header bell, the way a
 // notifications heart sits above a feed, but keeps its own ?tab=alerts page.
 const tabs: Array<{ id: StudentTab; label: string; icon: typeof Home }> = [
@@ -170,9 +192,11 @@ const tabs: Array<{ id: StudentTab; label: string; icon: typeof Home }> = [
   { id: 'profile', label: 'Profile', icon: UserRound },
 ];
 const tabTitles: Record<StudentTab, string> = {
-  home: 'Home', explore: 'Explore', book: 'Book', chat: 'Chat', alerts: 'Alerts', profile: 'Profile',
+  home: 'Home', explore: 'Explore', book: 'Book', chat: 'Chat', alerts: 'Alerts', profile: 'Profile', progress: 'Progress',
 };
-const studentTabIds = new Set<StudentTab>([...tabs.map((tab) => tab.id), 'alerts']);
+// Alerts and Progress are route-only destinations: reachable from the bell
+// and the Home progress card, but deliberately not extra tab-bar buttons.
+const studentTabIds = new Set<StudentTab>([...tabs.map((tab) => tab.id), 'alerts', 'progress']);
 
 function studentTab(value: string | null): StudentTab {
   return value && studentTabIds.has(value as StudentTab) ? (value as StudentTab) : 'home';
@@ -235,42 +259,6 @@ function isStudentSession(session: AuthSession | null) {
   return session?.user.accountType === 'STUDENT';
 }
 
-function bookingCancelled(item: AccountBooking) {
-  return (
-    item.booking.status === 'CANCELLED' ||
-    item.participant.cancelled === true ||
-    !!item.participant.cancelledAt
-  );
-}
-
-function bookingState(item: AccountBooking, now = Date.now()) {
-  if (bookingCancelled(item)) return 'Cancelled';
-  const startsAt = new Date(item.booking.startAt).getTime();
-  const endsAt = new Date(item.booking.endAt).getTime();
-  if (
-    item.booking.status === 'COMPLETED' ||
-    endsAt <= now
-  ) {
-    return 'Completed';
-  }
-  if (startsAt <= now) return 'In progress';
-  if (item.awaitingCoach || item.booking.coachAcceptance === 'PENDING') return 'Awaiting coach';
-  if (item.booking.status === 'PENDING') return 'Awaiting confirmation';
-  return 'Confirmed';
-}
-
-function isUpcoming(item: AccountBooking, now = Date.now()) {
-  return (
-    !bookingCancelled(item) &&
-    item.booking.status !== 'COMPLETED' &&
-    new Date(item.booking.startAt).getTime() > now
-  );
-}
-
-function isInProgress(item: AccountBooking, now = Date.now()) {
-  return bookingState(item, now) === 'In progress';
-}
-
 function rescheduleNoticeHours(item: AccountBooking) {
   // The coach's own protection window, which can be stricter than the club's
   // cancellation notice. The server is the authority; this mirrors it so the
@@ -306,21 +294,6 @@ function canChangeBooking(
     serverAllows !== false &&
     (kind === 'cancel' || item.booking.type === 'PRIVATE')
   );
-}
-
-/** A proposal the student has to answer, rather than one they raised. */
-function incomingRequest(item: AccountBooking) {
-  const request = item.rescheduleRequest;
-  return request && request.status === 'PENDING' && request.requestedByRole !== 'STUDENT'
-    ? request
-    : null;
-}
-
-function outgoingRequest(item: AccountBooking) {
-  const request = item.rescheduleRequest;
-  return request && request.status === 'PENDING' && request.requestedByRole === 'STUDENT'
-    ? request
-    : null;
 }
 
 function rescheduleAcceptanceClosed(item: AccountBooking, now = Date.now()) {
@@ -391,6 +364,7 @@ function parseNotifications(value: unknown): StudentNotification[] | null {
         actionNeeded: typeof item.actionNeeded === 'boolean' ? item.actionNeeded : undefined,
         createdAt,
         businessSlug: typeof business?.slug === 'string' ? business.slug : undefined,
+        packageId: typeof item.packageId === 'string' ? item.packageId : undefined,
       },
     ];
   });
@@ -512,12 +486,18 @@ function ExploreClubCard({
   club,
   onViewPackages,
   canBook = true,
+  saved,
+  onToggleSaved,
 }: {
   club: ExploreClub;
   onViewPackages?: (club: ExploreClub) => void;
   canBook?: boolean;
+  /** Undefined when saved clubs are unavailable; the heart is then omitted. */
+  saved?: boolean;
+  onToggleSaved?: (club: ExploreClub, saved: boolean) => void;
 }) {
   const { business, directory, known } = club;
+  const areas = directory?.areas?.filter((area) => area.trim()) ?? [];
   return (
     <article className={cn(panel, 'overflow-hidden')}>
       <div
@@ -532,7 +512,28 @@ function ExploreClubCard({
             <p className="mt-1 text-xs leading-relaxed text-[#59675c]">
               {business.tagline || `Coaching with ${business.ownerName}`}
             </p>
+            {areas.length > 0 && (
+              <p className="!mt-1.5 flex items-start gap-1 text-[11px] text-[#59675c]">
+                <MapPin size={12} aria-hidden="true" className="mt-0.5 shrink-0" />
+                <span><span className="sr-only">Areas: </span>{areas.join(', ')}</span>
+              </p>
+            )}
           </div>
+          {saved !== undefined && onToggleSaved && (
+            <button
+              type="button"
+              aria-pressed={saved}
+              aria-label={`Save ${business.name}`}
+              title={saved ? 'Saved' : 'Save club'}
+              onClick={() => onToggleSaved(club, !saved)}
+              className={cn(
+                '-mr-2 -mt-2 grid h-11 w-11 shrink-0 place-items-center rounded-full transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a]',
+                saved ? 'text-[#b3483a] hover:bg-[#fbefeb]' : 'text-[#59675c] hover:bg-[#f0f4ec]',
+              )}
+            >
+              <Heart size={19} aria-hidden="true" fill={saved ? 'currentColor' : 'none'} strokeWidth={1.8} />
+            </button>
+          )}
         </div>
 
         {directory && directory.sports.length > 0 && (
@@ -640,15 +641,21 @@ function packageCoverage(pkg: AccountPackage) {
 
 function PackageCard({
   pkg,
+  nowMs,
   onFindRental,
+  onViewActivity,
+  onBuyAnother,
 }: {
   pkg: AccountPackage;
+  nowMs: number;
   onFindRental: (pkg: AccountPackage) => void;
+  onViewActivity: (pkg: AccountPackage) => void;
+  onBuyAnother?: (pkg: AccountPackage) => void;
 }) {
   const coverage = packageCoverage(pkg);
   const active = pkg.state === 'ACTIVE';
   return (
-    <article className={cn(panel, 'p-5')}>
+    <article className={cn(panel, 'p-5')} aria-label={`${pkg.name} from ${pkg.business.name}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[1.4px] text-[#59675c]">{pkg.business.name}</p>
@@ -668,6 +675,7 @@ function PackageCard({
           <dd className="mt-1 text-sm font-semibold text-[#456049]">{shortDate(pkg.expiresAt)}</dd>
         </div>
       </dl>
+      <PackageWarnings pkg={pkg} nowMs={nowMs} className="mt-3" />
       <div className="mt-4 space-y-2 text-xs leading-relaxed text-[#59675c]">
         <p><strong className="font-semibold text-[#415244]">Classes:</strong> {coverage.classes.length ? coverage.classes.join(', ') : 'None'}</p>
         <p><strong className="font-semibold text-[#415244]">Venue rentals:</strong> {coverage.rentals.length ? coverage.rentals.join(', ') : 'None'}</p>
@@ -689,6 +697,16 @@ function PackageCard({
           )}
         </div>
       )}
+      <div className="mt-4 flex flex-wrap gap-2 border-t border-[#edf0e8] pt-4">
+        <button type="button" className={compactButton} onClick={() => onViewActivity(pkg)} aria-label={`View activity for ${pkg.name}`}>
+          <ReceiptText size={14} aria-hidden="true" /> View activity
+        </button>
+        {onBuyAnother && (
+          <button type="button" className={compactButton} onClick={() => onBuyAnother(pkg)} aria-label={`Buy another package from ${pkg.business.name}`}>
+            <WalletCards size={14} aria-hidden="true" /> Buy another package
+          </button>
+        )}
+      </div>
     </article>
   );
 }
@@ -735,10 +753,12 @@ function RentalCard({
 }
 
 function HomePackageSummary({
-  loading, error, packages, onOpen,
+  loading, error, packages, nowMs, onOpen, onViewActivity, onBuyAnother, emptyAction,
 }: {
-  loading: boolean; error: string; packages: AccountPackage[]; onOpen: () => void;
+  loading: boolean; error: string; packages: AccountPackage[]; nowMs: number; onOpen: () => void;
+  onViewActivity: (pkg: AccountPackage) => void; onBuyAnother: (pkg: AccountPackage) => void; emptyAction?: ReactNode;
 }) {
+  const shown = sortPackagesByAttention(packages, nowMs).slice(0, 2);
   return (
     <section data-tour="student-packages" aria-labelledby="home-packages-heading" className={cn(panel, 'mt-7 p-5')}>
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -756,15 +776,32 @@ function HomePackageSummary({
         <p role="alert" className="mt-4 text-xs text-[#8b4d3c]">{error}</p>
       ) : packages.length ? (
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          {packages.slice(0, 2).map((pkg) => (
-            <div key={pkg.id} className="rounded-xl bg-[#f4f7f0] p-4">
-              <p className="text-sm font-semibold text-[#304b39]">{pkg.name}</p>
-              <p className="mt-1 text-xs text-[#59675c]">{pkg.remainingCredits} of {pkg.totalCredits} credits left · {pkg.business.name}</p>
-            </div>
-          ))}
+          {shown.map((pkg) => {
+            const attention = packageWarnings(pkg, nowMs).length > 0;
+            return (
+              <div key={pkg.id} className="rounded-xl bg-[#f4f7f0] p-4">
+                <p className="text-sm font-semibold text-[#304b39]">{pkg.name}</p>
+                <p className="mt-1 text-xs text-[#59675c]">{pkg.remainingCredits} of {pkg.totalCredits} credits left · {pkg.business.name}</p>
+                <PackageWarnings pkg={pkg} nowMs={nowMs} className="mt-2" />
+                <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1">
+                  <button type="button" className="min-h-10 text-xs font-semibold text-[#174c3c] underline underline-offset-2" onClick={() => onViewActivity(pkg)} aria-label={`View activity for ${pkg.name}`}>
+                    View activity
+                  </button>
+                  {attention && (
+                    <button type="button" className="min-h-10 text-xs font-semibold text-[#174c3c] underline underline-offset-2" onClick={() => onBuyAnother(pkg)} aria-label={`Buy another package from ${pkg.business.name}`}>
+                      Buy another package
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
       ) : (
-        <p className="mt-4 text-xs leading-relaxed text-[#59675c]">No active package credits. Browse a club in Explore to see its offers.</p>
+        <div className="mt-4">
+          <p className="text-xs leading-relaxed text-[#59675c]">No active package credits. Browse a club in Explore to see its offers.</p>
+          {emptyAction && <div className="mt-3 flex flex-wrap gap-2">{emptyAction}</div>}
+        </div>
       )}
     </section>
   );
@@ -1114,14 +1151,6 @@ function LiveCheckoutDialog({ checkout, publishableKey, testMode, busy, onBusyCh
   );
 }
 
-function statusClass(state: string) {
-  if (state === 'Cancelled') return 'bg-[#f8e8e3] text-[#8b4d3c]';
-  if (state === 'Awaiting confirmation' || state === 'Awaiting coach') return 'bg-[#f8eed3] text-[#70582e]';
-  if (state === 'Completed') return 'bg-[#e8edf2] text-[#4f687d]';
-  if (state === 'In progress') return 'bg-[#dfeee7] text-[#39705a]';
-  return 'bg-[#e9f0df] text-[#4f6847]';
-}
-
 function LocationIcon({ location, size = 18 }: { location?: PublicLocation; size?: number }) {
   const Icon =
     location?.type === 'HOME' ? Home : location?.type === 'ONLINE' ? Video : MapPin;
@@ -1138,29 +1167,6 @@ function Detail({ icon, label, children }: { icon: ReactNode; label: string; chi
         </p>
         <div className="mt-1 text-sm leading-relaxed text-[#415244]">{children}</div>
       </div>
-    </div>
-  );
-}
-
-function ErrorNotice({ message, conflicts = [] }: { message: string; conflicts?: Conflict[] }) {
-  return (
-    <div
-      role="alert"
-      className="rounded-xl border border-[#eedbd5] bg-[#fff7f3] p-4 text-sm leading-relaxed text-[#925541]"
-    >
-      <div className="flex items-start gap-2.5">
-        <Info size={17} className="mt-0.5 shrink-0" />
-        <span>{message}</span>
-      </div>
-      {conflicts.length > 0 && (
-        <ul className="mt-3 space-y-2 pl-7">
-          {conflicts.map((conflict, index) => (
-            <li key={`${conflict.date}-${index}`}>
-              <strong>{conflict.date}</strong> — {conflict.reason}
-            </li>
-          ))}
-        </ul>
-      )}
     </div>
   );
 }
@@ -1187,29 +1193,6 @@ function SuccessNotice({
       <CheckCheck aria-hidden="true" size={18} className="mt-0.5 shrink-0" />
       {message}
     </div>
-  );
-}
-
-function EmptyState({
-  icon,
-  title,
-  children,
-  action,
-}: {
-  icon: ReactNode;
-  title: string;
-  children: ReactNode;
-  action?: ReactNode;
-}) {
-  return (
-    <section className={cn(panel, 'px-6 py-10 text-center sm:px-10')}>
-      <span className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-[#eef3e8] text-[#4f6847]">
-        {icon}
-      </span>
-      <h2 className="mt-5 text-xl font-semibold tracking-tight text-[#263e33]">{title}</h2>
-      <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-[#59675c]">{children}</p>
-      {action && <div className="mt-6">{action}</div>}
-    </section>
   );
 }
 
@@ -1303,18 +1286,7 @@ function BookingLinkForm({ id }: { id: string }) {
   );
 }
 
-function LoadingScreen({ text }: { text: string }) {
-  return (
-    <div role="status" className="flex min-h-[55vh] flex-col items-center justify-center gap-4">
-      <span className="grid h-12 w-12 place-items-center rounded-2xl bg-[#e9f0e2] text-[#174c3c]">
-        <LoaderCircle size={23} className="animate-spin" />
-      </span>
-      <p className="text-sm text-[#59675c]">{text}</p>
-    </div>
-  );
-}
-
-function CompactBooking({ item, nowMs }: { item: AccountBooking; nowMs: number }) {
+function CompactBooking({ item, nowMs, canBookAgain = false }: { item: AccountBooking; nowMs: number; canBookAgain?: boolean }) {
   const state = bookingState(item, nowMs);
   return (
     <article className="flex items-start gap-3 rounded-xl border border-[#e8ece5] bg-white p-4">
@@ -1335,6 +1307,15 @@ function CompactBooking({ item, nowMs }: { item: AccountBooking; nowMs: number }
           {shortDate(item.booking.startAt, item.business.timezone)} ·{' '}
           {time(item.booking.startAt, item.business.timezone)} · {item.booking.instructorName}
         </p>
+        {canBookAgain && state === 'Completed' && canRebook(item) && (
+          <Link
+            href={rebookHref(item.business.slug, item.booking)}
+            className="mt-2 inline-flex min-h-10 items-center gap-1.5 text-xs font-semibold text-[#174c3c] underline-offset-2 hover:underline"
+            aria-label={`Book ${item.booking.serviceName} at ${item.business.name} again`}
+          >
+            <RefreshCw size={13} aria-hidden="true" /> Book again
+          </Link>
+        )}
       </div>
     </article>
   );
@@ -1349,14 +1330,21 @@ function CompactBooking({ item, nowMs }: { item: AccountBooking; nowMs: number }
  * lesson, club, time, status — and anything asking for a decision. Everything
  * else lives one tap away in the detail dialog.
  */
+function canRebook(item: AccountBooking) {
+  // Retained direct-route history belongs to retired solo practices.
+  return item.paymentRoute !== 'DIRECT' && item.booking.paymentRoute !== 'DIRECT' && !!item.business.slug;
+}
+
 function BookingRow({
   item,
   nowMs,
   onOpen,
+  canBookAgain = false,
 }: {
   item: AccountBooking;
   nowMs: number;
   onOpen: (item: AccountBooking) => void;
+  canBookAgain?: boolean;
 }) {
   const state = bookingState(item, nowMs);
   const incoming = incomingRequest(item);
@@ -1398,6 +1386,17 @@ function BookingRow({
         </span>
         <ChevronRight size={17} className="shrink-0 text-[#59675c]" aria-hidden="true" />
       </button>
+      {canBookAgain && state === 'Completed' && canRebook(item) && (
+        <div className="flex justify-end border-t border-[#f0f2ed] px-4 py-2 sm:px-5">
+          <Link
+            href={rebookHref(item.business.slug, item.booking)}
+            className="inline-flex min-h-10 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-[#174c3c] hover:bg-[#f3f6f1] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a]"
+            aria-label={`Book ${item.booking.serviceName} at ${item.business.name} again`}
+          >
+            <RefreshCw size={13} aria-hidden="true" /> Book again
+          </Link>
+        </div>
+      )}
     </article>
   );
 }
@@ -1728,6 +1727,19 @@ function BookingDialog({
                 if something has come up.
               </p>
             )}
+            {canUseCommerce && canRebook(item) && (
+              <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e4e9df] bg-[#f8faf6] p-4">
+                <p className="text-xs leading-relaxed text-[#59675c]">
+                  Same Class, coach and venue — choose a new time on the club’s page.
+                </p>
+                <Link
+                  href={rebookHref(item.business.slug, item.booking)}
+                  className={state === 'Completed' || state === 'Cancelled' ? primaryButton : secondaryButton}
+                >
+                  <RefreshCw size={14} aria-hidden="true" /> Book again
+                </Link>
+              </div>
+            )}
           </>
         )}
 
@@ -1851,16 +1863,26 @@ function BookingDialog({
  * is the point of the dialog — an alert that cannot take you to the thing it
  * describes leaves the reader to go hunting.
  */
+type AlertDestination = {
+  label: string;
+  run: () => void;
+};
+
 function AlertDialog({
   alert,
   club,
   onClose,
   onOpenBooking,
+  destinations = [],
+  showBookingLink = true,
 }: {
   alert: StudentNotification | null;
   club?: KnownClub;
   onClose: () => void;
   onOpenBooking: (bookingId: string) => void;
+  /** Where a typed alert leads (progress, waitlist, packages), most useful first. */
+  destinations?: AlertDestination[];
+  showBookingLink?: boolean;
 }) {
   if (!alert) return null;
   const appearance = alertAppearance(alert);
@@ -1892,10 +1914,20 @@ function AlertDialog({
           </p>
         )}
         <div className="mt-6 flex flex-wrap gap-2.5 border-t border-[#edf0e8] pt-5">
-          {alert.bookingId && (
+          {destinations.map((destination, index) => (
+            <button
+              key={destination.label}
+              type="button"
+              className={index === 0 ? primaryButton : secondaryButton}
+              onClick={destination.run}
+            >
+              {destination.label} <ArrowRight size={15} aria-hidden="true" />
+            </button>
+          ))}
+          {alert.bookingId && showBookingLink && (
             <button
               type="button"
-              className={primaryButton}
+              className={destinations.length ? secondaryButton : primaryButton}
               onClick={() => onOpenBooking(alert.bookingId!)}
             >
               Go to this booking <ArrowRight size={15} />
@@ -2111,6 +2143,7 @@ function AppHeader({
   alertsUnread,
   onOpenAlerts,
   wide,
+  playerSwitcher,
 }: {
   userName: string;
   activeTab: StudentTab;
@@ -2119,17 +2152,19 @@ function AppHeader({
   alertsUnread: number;
   onOpenAlerts: () => void;
   wide: boolean;
+  playerSwitcher?: ReactNode;
 }) {
   const title = tabTitles[activeTab];
   const alertsActive = activeTab === 'alerts';
   return (
     <header className="student-header sticky top-0 z-40 border-b border-[#e7ebe4] bg-white/90 backdrop-blur-xl">
       <div className={cn('mx-auto flex min-h-16 items-center justify-between gap-4 px-4 sm:min-h-[72px] sm:px-6', wide ? 'max-w-5xl' : 'max-w-3xl')}>
-        <Link href={homeHref} aria-label="Courtly student home" className="inline-flex min-h-11 items-center">
+        <Link href={homeHref} aria-label="Courtly student home" className="inline-flex min-h-11 shrink-0 items-center">
           <CourtlyLogo />
         </Link>
-        <div className="flex items-center gap-2">
-          <span className="hidden text-[11px] font-medium text-[#59675c] sm:inline">{title}</span>
+        <div className="flex min-w-0 items-center gap-2">
+          {playerSwitcher}
+          <span className={cn('hidden text-[11px] font-medium text-[#59675c]', playerSwitcher ? 'lg:inline' : 'sm:inline')}>{title}</span>
           <button
             data-tour="student-alerts"
             type="button"
@@ -2137,7 +2172,7 @@ function AppHeader({
             aria-current={alertsActive ? 'page' : undefined}
             onClick={onOpenAlerts}
             className={cn(
-              'relative grid h-11 w-11 place-items-center rounded-full transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a] focus-visible:ring-offset-2',
+              'relative grid h-11 w-11 shrink-0 place-items-center rounded-full transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a] focus-visible:ring-offset-2',
               alertsActive ? 'bg-[#e8efe0] text-[#174c3c]' : 'text-[#48604f] hover:bg-[#f0f4ec]',
             )}
           >
@@ -2157,7 +2192,7 @@ function AppHeader({
             aria-current={activeTab === 'profile' ? 'page' : undefined}
             title={`Signed in as ${userName}`}
             onClick={onOpenProfile}
-            className="grid h-11 w-11 place-items-center rounded-full border border-[#dfe6da] bg-[#edf2e7] text-[10px] font-bold text-[#4f6847] transition hover:border-[#b8c8b1] hover:bg-[#e5eddd] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a] focus-visible:ring-offset-2"
+            className="grid h-11 w-11 shrink-0 place-items-center rounded-full border border-[#dfe6da] bg-[#edf2e7] text-[10px] font-bold text-[#4f6847] transition hover:border-[#b8c8b1] hover:bg-[#e5eddd] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a] focus-visible:ring-offset-2"
           >
             {initials(userName)}
           </button>
@@ -2237,6 +2272,7 @@ export function StudentApp({ slug }: { slug?: string }) {
   const requestedTab = searchParams.get('tab');
   const activeTab = studentTab(requestedTab);
   const chatThreadId = activeTab === 'chat' ? searchParams.get('thread') : null;
+  const requestedPlayer = searchParams.get('player');
   const [session, setSession] = useState<AuthSession | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState('');
@@ -2330,7 +2366,21 @@ export function StudentApp({ slug }: { slug?: string }) {
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState('');
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [homeView, setHomeView] = useState<HomeView>('list');
+  const [favorites, setFavorites] = useState<Set<string>>(() => new Set());
+  const [favoritesAvailable, setFavoritesAvailable] = useState(false);
+  const [favoriteStatus, setFavoriteStatus] = useState('');
+  const [homeProgress, setHomeProgress] = useState<ProgressSummary | null>(null);
+  const [homeProgressLoading, setHomeProgressLoading] = useState(false);
+  const [waitlistReload, setWaitlistReload] = useState(0);
+  const [activityPackage, setActivityPackage] = useState<AccountPackage | null>(null);
+  const [familyPlayers, setFamilyPlayers] = useState<FamilyBookingChild[]>([]);
+  const [familyPlayersStatus, setFamilyPlayersStatus] = useState<'idle' | 'loading' | 'ready' | 'unavailable'>('idle');
+  const [bookingForName, setBookingForName] = useState('');
   const successNoticeRef = useRef<HTMLDivElement>(null);
+  const pendingFocusIdRef = useRef<string | null>(null);
+  const suppressMainFocusRef = useRef(false);
+  const homeProgressRequestRef = useRef(0);
   const mainRef = useRef<HTMLElement>(null);
   const replayTourRef = useRef(false);
   const previousTabRouteRef = useRef(requestedTab);
@@ -2352,6 +2402,17 @@ export function StudentApp({ slug }: { slug?: string }) {
   const canUseCalendar = !!session && session.user.capabilities?.calendar !== false;
   const canEditProfile = !!session && session.user.capabilities?.profileEdit !== false;
   const canUseFamily = session?.user.capabilities?.familyManagement === true;
+  const studentUserId = isStudentSession(session) ? session!.user.id : null;
+  // The child view is resolved only against the server's current list of
+  // children this adult may view; until that list is known it shows nothing.
+  const playersKnown = !!session && (!canUseFamily || familyPlayersStatus === 'ready' || familyPlayersStatus === 'unavailable');
+  const playerResolution = resolvePlayer(
+    requestedPlayer,
+    playersKnown ? (familyPlayersStatus === 'ready' ? familyPlayers : []) : null,
+    activeTab,
+  );
+  const activeChild = playerResolution.status === 'child' ? playerResolution.child : null;
+  const childViewActive = playerResolution.status === 'child' || playerResolution.status === 'loading';
 
   const tabHref = useCallback((tab: StudentTab) => {
     const params = new URLSearchParams();
@@ -2386,18 +2447,66 @@ export function StudentApp({ slug }: { slug?: string }) {
     if (pendingBookingIdRef.current && activeTab === 'home') return;
     pendingBookingIdRef.current = null;
     setBookingNavigationStatus('');
+    // A child view's own Schedule/Progress tabs move focus themselves.
+    if (suppressMainFocusRef.current) {
+      suppressMainFocusRef.current = false;
+      return;
+    }
+    const sectionId = pendingFocusIdRef.current;
+    pendingFocusIdRef.current = null;
     const frame = window.requestAnimationFrame(() => {
+      const section = sectionId ? document.getElementById(sectionId) : null;
+      if (section) {
+        section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        section.focus({ preventScroll: true });
+        return;
+      }
       mainRef.current?.focus({ preventScroll: true });
     });
     return () => window.cancelAnimationFrame(frame);
   }, [activeTab, requestedTab]);
 
   useEffect(() => {
+    if (playerResolution.status !== 'invalid') return;
+    // A stale or foreign child ID simply falls back to the adult's own view.
+    router.replace(manageHref(activeTab, { slug }), { scroll: false });
+  }, [activeTab, playerResolution.status, router, slug]);
+
+  useEffect(() => {
+    if (!studentUserId) return;
+    setHomeView(readHomeView(studentUserId));
+  }, [studentUserId]);
+
+  useEffect(() => {
+    if (!studentUserId || !canUseFamily) {
+      setFamilyPlayers([]);
+      setFamilyPlayersStatus(studentUserId ? 'unavailable' : 'idle');
+      return;
+    }
+    let ignore = false;
+    setFamilyPlayersStatus('loading');
+    loadFamilyBookingChildren()
+      .then((value) => {
+        if (ignore) return;
+        setFamilyPlayers(value.children ?? []);
+        setFamilyPlayersStatus('ready');
+      })
+      .catch(() => {
+        // Family switched off (503), not yet eligible, or an older API: the
+        // switcher is an extra, so it quietly stays hidden.
+        if (ignore) return;
+        setFamilyPlayers([]);
+        setFamilyPlayersStatus('unavailable');
+      });
+    return () => { ignore = true; };
+  }, [canUseFamily, studentUserId]);
+
+  useEffect(() => {
     if (activeTab !== 'alerts') setAlertsStatus('');
   }, [activeTab]);
 
   useEffect(() => {
-    if (!session || !isStudentSession(session) || activeTab !== 'home' || !bookingsReady) return;
+    if (!session || !isStudentSession(session) || activeTab !== 'home' || !bookingsReady || childViewActive) return;
     const studentSession = session;
     const context: ProductTourContext = {
       kind: 'student',
@@ -2411,7 +2520,7 @@ export function StudentApp({ slug }: { slug?: string }) {
       window.clearTimeout(timer);
       destroyProductTour();
     };
-  }, [activeTab, bookingsReady, session]);
+  }, [activeTab, bookingsReady, childViewActive, session]);
 
   useEffect(() => {
     const bookingId = pendingBookingIdRef.current;
@@ -2573,6 +2682,35 @@ export function StudentApp({ slug }: { slug?: string }) {
     }
   }, [canUseRentals, router]);
 
+  const refreshFavorites = useCallback(async () => {
+    if (!canSearchPeople) {
+      setFavorites(new Set());
+      setFavoritesAvailable(false);
+      return;
+    }
+    try {
+      const value = await loadFavoriteClubs();
+      setFavorites(new Set(value.favorites.map((favorite) => favorite.slug)));
+      setFavoritesAvailable(true);
+    } catch {
+      // Saved clubs are additive; without them Explore works exactly as before.
+      setFavoritesAvailable(false);
+    }
+  }, [canSearchPeople]);
+
+  const refreshHomeProgress = useCallback(async () => {
+    const request = ++homeProgressRequestRef.current;
+    setHomeProgressLoading(true);
+    try {
+      const value = await loadAccountProgress();
+      if (homeProgressRequestRef.current === request) setHomeProgress(value);
+    } catch {
+      if (homeProgressRequestRef.current === request) setHomeProgress(null);
+    } finally {
+      if (homeProgressRequestRef.current === request) setHomeProgressLoading(false);
+    }
+  }, []);
+
   const refreshNotifications = useCallback(async () => {
     setNotificationsLoading(true);
     setNotificationError('');
@@ -2621,7 +2759,9 @@ export function StudentApp({ slug }: { slug?: string }) {
     void refreshPackages();
     void refreshPaymentCapabilities();
     void refreshRentals();
-  }, [session, refreshBookings, refreshClubDirectory, refreshNotifications, refreshPackages, refreshPaymentCapabilities, refreshRentals]);
+    void refreshFavorites();
+    void refreshHomeProgress();
+  }, [session, refreshBookings, refreshClubDirectory, refreshFavorites, refreshHomeProgress, refreshNotifications, refreshPackages, refreshPaymentCapabilities, refreshRentals]);
 
   useEffect(() => {
     if (!isStudentSession(session) || !canUsePayments) return;
@@ -2751,10 +2891,12 @@ export function StudentApp({ slug }: { slug?: string }) {
       const matchesClub = !clubSlug || club.business.slug === clubSlug;
       const matchesRelationship =
         clubRelationship === 'all' ||
-        (clubRelationship === 'known' ? !!club.known : !club.known);
+        (clubRelationship === 'saved'
+          ? favorites.has(club.business.slug)
+          : clubRelationship === 'known' ? !!club.known : !club.known);
       return matchesSearch && matchesSport && matchesClub && matchesRelationship;
     });
-  }, [clubRelationship, clubSearch, clubSlug, clubSport, exploreClubs]);
+  }, [clubRelationship, clubSearch, clubSlug, clubSport, exploreClubs, favorites]);
   const filteredKnownClubs = filteredExploreClubs.filter((club) => club.known);
   const filteredDiscoveryClubs = filteredExploreClubs.filter((club) => !club.known);
   const exploreLoading = clubDirectoryLoading || !bookingsReady;
@@ -2835,6 +2977,23 @@ export function StudentApp({ slug }: { slug?: string }) {
     ? `Payment availability could not be checked. ${paymentCapabilitiesError}`
     : 'Online payment is not enabled for this Courtly deployment.';
   const stripeTestMode = paymentCapabilities?.publishableKey?.startsWith('pk_test_') ?? false;
+  // Bookings are shown on the day they happen at their club; "today" follows
+  // the learner's first club, which for almost everyone is Singapore time.
+  const calendarTimezone = bookings[0]?.business.timezone || 'Asia/Singapore';
+  const todayKey = dayKeyFor(new Date(nowMs), calendarTimezone) || dateKey(new Date(nowMs));
+  const sportOf = useMemo(
+    () => bookingSportResolver(clubDirectory, homeProgress?.feedback ?? []),
+    [clubDirectory, homeProgress],
+  );
+  const calendarEvents = useMemo(
+    () => bookings.map((item) => accountBookingEvent(item, nowMs, sportOf(item))),
+    [bookings, nowMs, sportOf],
+  );
+  const canFindTime = canUseCommerce && canSearchPeople;
+
+  useEffect(() => {
+    if (!favoritesAvailable && clubRelationship === 'saved') setClubRelationship('all');
+  }, [clubRelationship, favoritesAvailable]);
 
   useEffect(() => {
     if (!canUseRentals || !openRentalId) return;
@@ -2902,14 +3061,127 @@ export function StudentApp({ slug }: { slug?: string }) {
     };
   }, [dialogMode, actionBooking, rescheduleDate, slotsVersion]);
 
+  // The tab bar always belongs to the signed-in adult, so choosing a tab
+  // also leaves any child view.
   function selectTab(tab: StudentTab) {
     setNotice('');
     setBookingNavigationStatus('');
     if (tab !== 'alerts') setAlertsStatus('');
-    if (tab !== activeTab || requestedTab === null) {
+    if (tab !== 'book') setBookingForName('');
+    if (tab !== activeTab || requestedTab === null || !!requestedPlayer) {
       router.push(tabHref(tab), { scroll: false });
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  /** Open a tab and land on one of its sections, focusing its heading. */
+  function goToSection(tab: StudentTab, sectionId: string) {
+    setOpenAlertId(null);
+    if (tab === 'explore') setExploreSegment('classes');
+    if (tab === activeTab && requestedTab !== null && !requestedPlayer) {
+      window.requestAnimationFrame(() => {
+        const section = document.getElementById(sectionId);
+        if (!section) return;
+        section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        section.focus({ preventScroll: true });
+      });
+      return;
+    }
+    pendingFocusIdRef.current = sectionId;
+    selectTab(tab);
+  }
+
+  function chooseHomeView(view: HomeView) {
+    setHomeView(view);
+    if (studentUserId) writeHomeView(studentUserId, view);
+  }
+
+  function choosePlayer(value: string) {
+    const tab = activeTab === 'progress' ? 'progress' : 'home';
+    setOpenBookingId(null);
+    setOpenAlertId(null);
+    router.push(manageHref(tab, { slug, player: value === SELF_PLAYER ? null : value }), { scroll: false });
+  }
+
+  function changeChildSegment(segment: ChildSegment) {
+    if (!activeChild) return;
+    const tab = segment === 'progress' ? 'progress' : 'home';
+    if (tab === activeTab) return;
+    suppressMainFocusRef.current = true;
+    router.push(manageHref(tab, { slug, player: activeChild.id }), { scroll: false });
+  }
+
+  function bookForChild(child: FamilyBookingChild) {
+    selectTab('book');
+    setBookingForName(child.displayName);
+  }
+
+  async function toggleSavedClub(club: ExploreClub, saved: boolean) {
+    const slugToSave = club.business.slug;
+    setFavorites((current) => withFavorite(current, slugToSave, saved));
+    setFavoriteStatus('');
+    try {
+      if (saved) await saveFavoriteClub(slugToSave);
+      else await removeFavoriteClub(slugToSave);
+      setFavoriteStatus(saved ? `${club.business.name} saved.` : `${club.business.name} removed from saved clubs.`);
+    } catch (error) {
+      // Optimistic, so undo exactly the change that failed.
+      setFavorites((current) => withFavorite(current, slugToSave, !saved));
+      setFavoriteStatus(`${club.business.name} could not be ${saved ? 'saved' : 'removed'}. ${messageOf(error)}`);
+    }
+  }
+
+  function openPackageActivity(pkg: AccountPackage) {
+    setOpenAlertId(null);
+    setActivityPackage(pkg);
+  }
+
+  function buyAnotherPackage(pkg: Pick<AccountPackage, 'business'>) {
+    if (!canUseCommerce) return;
+    setActivityPackage(null);
+    setOpenAlertId(null);
+    openPackageOffers({ business: pkg.business });
+  }
+
+  /**
+   * Typed alerts lead somewhere more useful than a booking: coach feedback to
+   * Progress, waitlist news to the waitlist, package reminders to the
+   * package. A waitlist booking ID names a Class the learner is not in yet,
+   * so "Go to this booking" is offered only for the learner's own sessions.
+   */
+  function alertDestinations(alert: StudentNotification): { destinations: AlertDestination[]; showBookingLink: boolean } {
+    const ownBooking = !!alert.bookingId && bookings.some((item) => item.booking.id === alert.bookingId);
+    if (alert.type === 'FEEDBACK_SHARED') {
+      const child = !ownBooking && familyPlayersStatus === 'ready' ? childNamedIn(alert.title, familyPlayers) : null;
+      if (child) {
+        return {
+          destinations: [{
+            label: `See ${child.displayName}’s progress`,
+            run: () => { setOpenAlertId(null); router.push(manageHref('progress', { slug, player: child.id }), { scroll: false }); },
+          }],
+          showBookingLink: false,
+        };
+      }
+      return { destinations: [{ label: 'See coach feedback', run: () => { setOpenAlertId(null); selectTab('progress'); } }], showBookingLink: ownBooking };
+    }
+    if (alert.type === 'WAITLIST_OFFERED' || alert.type === 'WAITLIST_CLOSED') {
+      return {
+        destinations: [{
+          label: alert.type === 'WAITLIST_OFFERED' ? 'Review the held place' : 'View your waitlist',
+          run: () => { setWaitlistReload((value) => value + 1); goToSection('home', 'student-waitlist-heading'); },
+        }],
+        showBookingLink: ownBooking,
+      };
+    }
+    if ((alert.type === 'PACKAGE_LOW' || alert.type === 'PACKAGE_EXPIRING') && canUseCommerce) {
+      const pkg = alert.packageId ? packages.find((candidate) => candidate.id === alert.packageId) : undefined;
+      const destinations: AlertDestination[] = [];
+      if (pkg) destinations.push({ label: 'View package activity', run: () => openPackageActivity(pkg) });
+      destinations.push({ label: 'View my packages', run: () => { setPackagesExpanded(true); goToSection('profile', 'student-packages-heading'); } });
+      if (pkg) destinations.push({ label: 'Buy another package', run: () => buyAnotherPackage(pkg) });
+      return { destinations, showBookingLink: false };
+    }
+    return { destinations: [], showBookingLink: true };
   }
   function replayProductTour() {
     replayTourRef.current = true;
@@ -3714,6 +3986,9 @@ export function StudentApp({ slug }: { slug?: string }) {
         alertsUnread={unread}
         onOpenAlerts={() => selectTab('alerts')}
         wide={activeTab === 'chat'}
+        playerSwitcher={familyPlayersStatus === 'ready' && familyPlayers.length > 0 ? (
+          <PlayerSwitcher players={familyPlayers} value={activeChild?.id ?? SELF_PLAYER} onChange={choosePlayer} />
+        ) : undefined}
       />
       <BottomNavigation activeTab={activeTab} onChange={selectTab} unread={chatUnread} />
       <main
@@ -3739,7 +4014,7 @@ export function StudentApp({ slug }: { slug?: string }) {
             {checkoutReturnStatus.message}
           </div>
         )}
-        {bookingsError && (
+        {bookingsError && !childViewActive && (
           <div className="mb-6 space-y-3">
             <ErrorNotice message={bookingsError} />
             <button type="button" className={secondaryButton} onClick={() => void refreshBookings()}>
@@ -3748,7 +4023,25 @@ export function StudentApp({ slug }: { slug?: string }) {
           </div>
         )}
 
-        {activeTab === 'home' && (
+        {playerResolution.status === 'loading' && <LoadingScreen text="Opening the player view…" />}
+        {activeChild && (
+          <ChildPlayerView
+            key={activeChild.id}
+            child={activeChild}
+            userId={session.user.id}
+            nowMs={nowMs}
+            todayKey={todayKey}
+            segment={activeTab === 'progress' ? 'progress' : 'schedule'}
+            onSegment={changeChildSegment}
+            onBook={() => bookForChild(activeChild)}
+            onExit={() => {
+              choosePlayer(SELF_PLAYER);
+              window.requestAnimationFrame(() => mainRef.current?.focus({ preventScroll: true }));
+            }}
+          />
+        )}
+
+        {activeTab === 'home' && !childViewActive && (
           <section id="student-home-panel" data-tour="student-home" aria-label="Home" className="student-tab-panel student-tab-home">
             <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
               <div>
@@ -3792,99 +4085,223 @@ export function StudentApp({ slug }: { slug?: string }) {
               <SuccessNotice message={notice} noticeRef={successNoticeRef} className="mt-6" />
             )}
 
+            <WaitlistPanel
+              enabled={canUseCommerce}
+              nowMs={nowMs}
+              packages={packages}
+              canUsePackages={canUseCommerce}
+              reloadKey={waitlistReload}
+              onBooked={() => {
+                void refreshBookings();
+                void refreshPackages();
+                void refreshNotifications();
+              }}
+            />
+
             {canUseCommerce && <HomePackageSummary
               loading={packagesLoading}
               error={packagesError}
               packages={activePackages}
+              nowMs={nowMs}
               onOpen={() => { setPackagesExpanded(true); selectTab('profile'); }}
+              onViewActivity={openPackageActivity}
+              onBuyAnother={buyAnotherPackage}
+              emptyAction={
+                <button type="button" className={compactButton} onClick={() => selectTab('explore')}>
+                  <Compass size={14} aria-hidden="true" /> Explore clubs
+                </button>
+              }
             />}
+
+            <ProgressCard
+              summary={homeProgress}
+              loading={homeProgressLoading}
+              onOpen={() => selectTab('progress')}
+              emptyAction={canFindTime ? (
+                <button type="button" className={compactButton} onClick={() => goToSection('explore', 'student-find-time-heading')}>
+                  <Search size={14} aria-hidden="true" /> Find a time
+                </button>
+              ) : undefined}
+            />
 
             {bookingsLoading ? (
               <LoadingScreen text="Gathering your sessions…" />
             ) : bookings.length === 0 && !bookingsError ? (
               <div className="mt-8">
-                <EmptyState
-                  icon={<CalendarDays size={23} />}
-                  title={slug ? 'Book your first session with this club' : 'Open your club’s booking page'}
-                  action={
-                    slug && canUseCommerce ? (
-                      <Link href={`/book/${encodeURIComponent(slug)}`} className={primaryButton}>
-                        Open booking page <ArrowRight size={15} />
-                      </Link>
-                    ) : (
-                      <BookingLinkForm id="student-home-booking-link" />
-                    )
-                  }
-                >
-                  {slug && canUseCommerce
-                    ? 'Choose a session on the club’s booking page. It will appear here after you book.'
-                    : canUseCommerce
-                      ? 'Paste the booking link your club sent you to choose a session.'
-                      : 'Guardian booking and commerce for children are not available.'}
-                </EmptyState>
+                {slug && canUseCommerce ? (
+                  <EmptyState
+                    icon={<CalendarDays size={23} />}
+                    title="Book your first session with this club"
+                    action={
+                      <div className="flex flex-wrap justify-center gap-2.5">
+                        <Link href={`/book/${encodeURIComponent(slug)}`} className={primaryButton}>
+                          Open booking page <ArrowRight size={15} />
+                        </Link>
+                        {canFindTime && (
+                          <button type="button" className={secondaryButton} onClick={() => goToSection('explore', 'student-find-time-heading')}>
+                            <Search size={15} aria-hidden="true" /> Find a time at any club
+                          </button>
+                        )}
+                      </div>
+                    }
+                  >
+                    Choose a session on the club’s booking page. It will appear here after you book.
+                  </EmptyState>
+                ) : canUseCommerce ? (
+                  <EmptyState
+                    icon={<CalendarDays size={23} />}
+                    title="Find your first session"
+                    action={
+                      <div className="space-y-5">
+                        <div className="flex flex-wrap justify-center gap-2.5">
+                          {canFindTime && (
+                            <button type="button" className={primaryButton} onClick={() => goToSection('explore', 'student-find-time-heading')}>
+                              <Search size={15} aria-hidden="true" /> Find a time
+                            </button>
+                          )}
+                          <button type="button" className={canFindTime ? secondaryButton : primaryButton} onClick={() => selectTab('explore')}>
+                            <Compass size={15} aria-hidden="true" /> Explore clubs
+                          </button>
+                        </div>
+                        <details className="mx-auto max-w-md rounded-xl border border-[#e4e9df] px-4 py-3 text-left">
+                          <summary className="min-h-8 cursor-pointer text-xs font-semibold text-[#344d40]">Have a booking link from your club?</summary>
+                          <div className="mt-3"><BookingLinkForm id="student-home-booking-link" /></div>
+                        </details>
+                      </div>
+                    }
+                  >
+                    Search open times across every club, or browse clubs, coaches and venues. Sessions you book appear here.
+                  </EmptyState>
+                ) : (
+                  <EmptyState icon={<CalendarDays size={23} />} title="No sessions yet">
+                    Guardian booking and commerce for children are not available.
+                  </EmptyState>
+                )}
               </div>
             ) : (
               <div data-tour="student-bookings" className="mt-8 space-y-10">
-                {current.length > 0 && (
-                  <section aria-labelledby="current-bookings">
-                    <div className="mb-4 flex items-end justify-between gap-4">
-                      <div>
-                        <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#174c3c]">
-                          Happening now
-                        </p>
-                        <h2 id="current-bookings" className="mt-1 text-xl font-semibold tracking-tight">
-                          In progress
-                        </h2>
-                      </div>
-                      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#174c3c]">
-                        <span className="h-2 w-2 animate-pulse rounded-full bg-[#5c9278]" /> Live
-                      </span>
-                    </div>
-                    <div className="space-y-3">
-                      {current.map((item) => (
-                        <BookingRow key={item.participant.id} item={item} nowMs={nowMs} onOpen={openBookingRow} />
-                      ))}
-                    </div>
-                  </section>
-                )}
-                {upcoming.length > 0 && (
-                  <section aria-labelledby="upcoming-bookings">
-                    <div className="mb-4 flex items-end justify-between gap-4">
-                      <div>
-                        <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">
-                          Next up
-                        </p>
-                        <h2 id="upcoming-bookings" className="mt-1 text-xl font-semibold tracking-tight">
-                          Upcoming sessions
-                        </h2>
-                      </div>
-                      <span className="text-xs text-[#59675c]">
-                        {upcoming.length} booking{upcoming.length === 1 ? '' : 's'}
-                      </span>
-                    </div>
-                    <div className="space-y-3">
-                      {upcoming.map((item) => (
-                        <BookingRow key={item.participant.id} item={item} nowMs={nowMs} onOpen={openBookingRow} />
-                      ))}
-                    </div>
-                  </section>
-                )}
-                {history.length > 0 && (
-                  <section aria-labelledby="booking-history">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-xs text-[#59675c]">
+                    {upcoming.length} upcoming · {history.length} in your history
+                  </p>
+                  <div data-tour="student-view-toggle" role="group" aria-label="Show bookings as" className="inline-flex gap-1 rounded-xl bg-[#eaf0e5] p-1">
+                    {(['list', 'calendar'] as const).map((view) => (
+                      <button
+                        key={view}
+                        type="button"
+                        aria-pressed={homeView === view}
+                        onClick={() => chooseHomeView(view)}
+                        className={cn(
+                          'inline-flex min-h-10 items-center gap-1.5 rounded-lg px-4 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#327a5a]',
+                          homeView === view ? 'bg-white text-[#174c3c] shadow-sm' : 'text-[#59675c] hover:bg-white/60',
+                        )}
+                      >
+                        {view === 'list' ? <ListIcon size={14} aria-hidden="true" /> : <CalendarDays size={14} aria-hidden="true" />}
+                        {view === 'list' ? 'List' : 'Calendar'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {homeView === 'calendar' ? (
+                  <section aria-labelledby="student-calendar-heading">
                     <div className="mb-4">
-                      <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">
-                        Looking back
-                      </p>
-                      <h2 id="booking-history" className="mt-1 text-xl font-semibold tracking-tight">
-                        Booking history
-                      </h2>
+                      <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">Month view</p>
+                      <h2 id="student-calendar-heading" className="mt-1 text-xl font-semibold tracking-tight">Calendar</h2>
                     </div>
-                    <div className="space-y-3">
-                      {history.map((item) => (
-                        <BookingRow key={item.participant.id} item={item} nowMs={nowMs} onOpen={openBookingRow} />
-                      ))}
-                    </div>
+                    <BookingCalendar
+                      idPrefix="student-calendar"
+                      label="Your booking calendar"
+                      events={calendarEvents}
+                      todayKey={todayKey}
+                      onOpen={(event) => openBooking(event.id)}
+                      emptyDayAction={canFindTime ? (
+                        <button type="button" className={compactButton} onClick={() => goToSection('explore', 'student-find-time-heading')}>
+                          <Search size={13} aria-hidden="true" /> Find a time
+                        </button>
+                      ) : undefined}
+                    />
                   </section>
+                ) : (
+                  <>
+                    {current.length > 0 && (
+                      <section aria-labelledby="current-bookings">
+                        <div className="mb-4 flex items-end justify-between gap-4">
+                          <div>
+                            <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#174c3c]">
+                              Happening now
+                            </p>
+                            <h2 id="current-bookings" className="mt-1 text-xl font-semibold tracking-tight">
+                              In progress
+                            </h2>
+                          </div>
+                          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#174c3c]">
+                            <span className="h-2 w-2 animate-pulse rounded-full bg-[#5c9278]" /> Live
+                          </span>
+                        </div>
+                        <div className="space-y-3">
+                          {current.map((item) => (
+                            <BookingRow key={item.participant.id} item={item} nowMs={nowMs} onOpen={openBookingRow} />
+                          ))}
+                        </div>
+                      </section>
+                    )}
+                    {upcoming.length > 0 && (
+                      <section aria-labelledby="upcoming-bookings">
+                        <div className="mb-4 flex items-end justify-between gap-4">
+                          <div>
+                            <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">
+                              Next up
+                            </p>
+                            <h2 id="upcoming-bookings" className="mt-1 text-xl font-semibold tracking-tight">
+                              Upcoming sessions
+                            </h2>
+                          </div>
+                          <span className="text-xs text-[#59675c]">
+                            {upcoming.length} booking{upcoming.length === 1 ? '' : 's'}
+                          </span>
+                        </div>
+                        <div className="space-y-3">
+                          {upcoming.map((item) => (
+                            <BookingRow key={item.participant.id} item={item} nowMs={nowMs} onOpen={openBookingRow} />
+                          ))}
+                        </div>
+                      </section>
+                    )}
+                    {upcoming.length === 0 && current.length === 0 && canUseCommerce && (
+                      <section aria-labelledby="no-upcoming-bookings" className="rounded-2xl border border-dashed border-[#dfe5dc] bg-white px-5 py-6 text-center">
+                        <h2 id="no-upcoming-bookings" className="text-base font-semibold text-[#304b39]">Nothing booked yet</h2>
+                        <p className="!mt-1 text-xs text-[#59675c]">Book again from your history, or find an open time at any club.</p>
+                        <div className="mt-4 flex flex-wrap justify-center gap-2">
+                          {canFindTime && (
+                            <button type="button" className={compactButton} onClick={() => goToSection('explore', 'student-find-time-heading')}>
+                              <Search size={13} aria-hidden="true" /> Find a time
+                            </button>
+                          )}
+                          <button type="button" className={compactButton} onClick={() => selectTab('explore')}>
+                            <Compass size={13} aria-hidden="true" /> Explore clubs
+                          </button>
+                        </div>
+                      </section>
+                    )}
+                    {history.length > 0 && (
+                      <section aria-labelledby="booking-history">
+                        <div className="mb-4">
+                          <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">
+                            Looking back
+                          </p>
+                          <h2 id="booking-history" className="mt-1 text-xl font-semibold tracking-tight">
+                            Booking history
+                          </h2>
+                        </div>
+                        <div className="space-y-3">
+                          {history.map((item) => (
+                            <BookingRow key={item.participant.id} item={item} nowMs={nowMs} onOpen={openBookingRow} canBookAgain={canUseCommerce} />
+                          ))}
+                        </div>
+                      </section>
+                    )}
+                  </>
                 )}
                 <section aria-labelledby="recent-activity">
                   <div className="mb-4 flex items-end justify-between gap-4">
@@ -4034,6 +4451,8 @@ export function StudentApp({ slug }: { slug?: string }) {
               </div>
             )}
 
+            {canFindTime && <FindATime userId={session.user.id} todayKey={dateKey(new Date(nowMs))} sports={clubSports} />}
+
             {clubDirectoryError && exploreClubs.length > 0 && (
               <div className="mt-6 space-y-3">
                 <ErrorNotice message={`We couldn’t load every club. ${clubDirectoryError}`} />
@@ -4086,6 +4505,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                     ['all', 'All clubs'],
                     ['known', 'Your clubs'],
                     ['discover', 'Discover'],
+                    ...(favoritesAvailable ? [['saved', 'Saved'] as const] : []),
                   ] as const).map(([value, label]) => (
                     <button
                       key={value}
@@ -4146,6 +4566,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                 ? 'Loading clubs…'
                 : `${filteredExploreClubs.length} club${filteredExploreClubs.length === 1 ? '' : 's'} found`}
             </p>
+            {favoriteStatus && <p role="status" className="!mt-1 text-xs text-[#59675c]">{favoriteStatus}</p>}
 
             {exploreLoading ? (
               <LoadingScreen text="Finding clubs…" />
@@ -4165,6 +4586,20 @@ export function StudentApp({ slug }: { slug?: string }) {
                   {clubDirectoryError
                     ? 'Your bookings are still available. Try loading the directory again when you are ready.'
                     : 'Come back soon as more bookable clubs join Courtly.'}
+                </EmptyState>
+              </div>
+            ) : filteredExploreClubs.length === 0 && clubRelationship === 'saved' && favorites.size === 0 ? (
+              <div className="mt-6">
+                <EmptyState
+                  icon={<Heart size={23} />}
+                  title="No saved clubs yet"
+                  action={
+                    <button type="button" className={secondaryButton} onClick={() => setClubRelationship('all')}>
+                      Browse all clubs
+                    </button>
+                  }
+                >
+                  Tap the heart on any club to keep it here for quick booking.
                 </EmptyState>
               </div>
             ) : filteredExploreClubs.length === 0 ? (
@@ -4202,7 +4637,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                       <span className="text-xs text-[#59675c]">{filteredKnownClubs.length} shown</span>
                     </div>
                     <div className="grid gap-4 sm:grid-cols-2">
-                      {filteredKnownClubs.map((club) => <ExploreClubCard key={club.business.slug} club={club} canBook={canUseCommerce} onViewPackages={canUseCommerce ? openPackageOffers : undefined} />)}
+                      {filteredKnownClubs.map((club) => <ExploreClubCard key={club.business.slug} club={club} canBook={canUseCommerce} onViewPackages={canUseCommerce ? openPackageOffers : undefined} saved={favoritesAvailable ? favorites.has(club.business.slug) : undefined} onToggleSaved={toggleSavedClub} />)}
                     </div>
                   </section>
                 )}
@@ -4216,7 +4651,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                       <span className="text-xs text-[#59675c]">{filteredDiscoveryClubs.length} shown</span>
                     </div>
                     <div className="grid gap-4 sm:grid-cols-2">
-                      {filteredDiscoveryClubs.map((club) => <ExploreClubCard key={club.business.slug} club={club} canBook={canUseCommerce} onViewPackages={canUseCommerce ? openPackageOffers : undefined} />)}
+                      {filteredDiscoveryClubs.map((club) => <ExploreClubCard key={club.business.slug} club={club} canBook={canUseCommerce} onViewPackages={canUseCommerce ? openPackageOffers : undefined} saved={favoritesAvailable ? favorites.has(club.business.slug) : undefined} onToggleSaved={toggleSavedClub} />)}
                     </div>
                   </section>
                 )}
@@ -4282,6 +4717,12 @@ export function StudentApp({ slug }: { slug?: string }) {
                   ? 'The club directory could not be loaded.'
                   : `${bookClubs.length} bookable club${bookClubs.length === 1 ? '' : 's'} found.`}
             </p>
+            {bookingForName && canUseCommerce && (
+              <div role="status" className="mt-6 flex gap-2.5 rounded-2xl border border-[#dfe7d8] bg-[#f0f5ea] p-4 text-xs leading-relaxed text-[#3d5a41]">
+                <UsersRound size={16} aria-hidden="true" className="mt-0.5 shrink-0" />
+                <p>Booking for {bookingForName}? Choose a club below, then pick {bookingForName} as the player on its booking page.</p>
+              </div>
+            )}
             {canUseCommerce && linkedSlugIsNew && (
               <div className="mt-6 flex flex-col gap-3 rounded-2xl border border-[#dfe7d8] bg-[#f0f5ea] p-5 sm:flex-row sm:items-center sm:justify-between">
                 <div>
@@ -4310,7 +4751,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                 </EmptyState>
               </div>
             ) : bookClubs.length === 0 ? (
-              <div className="mt-8"><EmptyState icon={<Compass size={23} />} title="No clubs are bookable yet">Clubs appear here as soon as they publish a class with a coach, venue, and availability.</EmptyState></div>
+              <div className="mt-8"><EmptyState icon={<Compass size={23} />} title="No clubs are bookable yet" action={canFindTime ? <button type="button" className={secondaryButton} onClick={() => goToSection('explore', 'student-find-time-heading')}><Search size={15} aria-hidden="true" /> Find a time</button> : undefined}>Clubs appear here as soon as they publish a class with a coach, venue, and availability.</EmptyState></div>
             ) : (
               <div className="mt-8">
                 <fieldset>
@@ -4396,6 +4837,30 @@ export function StudentApp({ slug }: { slug?: string }) {
           <section aria-label="Chat unavailable" className={cn(panel, 'p-8 text-center')}><ShieldCheck size={23} className="mx-auto text-[#71865f]" /><h1 className="mt-4 text-xl font-semibold">Chat is unavailable for this account</h1><p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-[#59675c]">Courtly applies this restriction from the account policy returned by the server.</p></section>
         )}
 
+        {activeTab === 'progress' && !childViewActive && (
+          <section id="student-progress-panel" aria-label="Progress" className="student-tab-panel student-tab-progress">
+            <ProgressView
+              idPrefix="student-progress"
+              eyebrowText="Your training"
+              title="Progress"
+              description="What you have attended across every club, and the notes your coaches have shared."
+              load={loadAccountProgress}
+              serverFilters
+              markViewed={markFeedbackViewed}
+              backAction={
+                <button type="button" onClick={() => selectTab('home')} className="mb-4 inline-flex min-h-10 items-center gap-1 text-xs font-semibold text-[#174c3c]">
+                  <ArrowRight size={13} aria-hidden="true" className="rotate-180" /> Back to Home
+                </button>
+              }
+              emptyAction={canFindTime ? (
+                <button type="button" className={secondaryButton} onClick={() => goToSection('explore', 'student-find-time-heading')}>
+                  <Search size={15} aria-hidden="true" /> Find a time
+                </button>
+              ) : undefined}
+            />
+          </section>
+        )}
+
         {activeTab === 'alerts' && (
           <section id="student-alerts-panel" aria-label="Alerts" className="student-tab-panel student-tab-alerts">
             <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
@@ -4439,8 +4904,16 @@ export function StudentApp({ slug }: { slug?: string }) {
               <LoadingScreen text="Checking for updates…" />
             ) : visibleNotifications.length === 0 ? (
               <div className="mt-8">
-                <EmptyState icon={<CheckCheck size={23} />} title="You’re all caught up">
-                  Booking confirmations, changes, and useful reminders will appear here.
+                <EmptyState
+                  icon={<CheckCheck size={23} />}
+                  title="You’re all caught up"
+                  action={canFindTime ? (
+                    <button type="button" className={secondaryButton} onClick={() => goToSection('explore', 'student-find-time-heading')}>
+                      <Search size={15} aria-hidden="true" /> Find a time
+                    </button>
+                  ) : undefined}
+                >
+                  Booking confirmations, changes, coach feedback, waitlist offers and package reminders will appear here.
                 </EmptyState>
               </div>
             ) : (
@@ -4756,7 +5229,7 @@ export function StudentApp({ slug }: { slug?: string }) {
               <div className="flex flex-wrap items-end justify-between gap-3">
                 <div>
                   <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">Credits across clubs</p>
-                  <h2 id="student-packages-heading" className="mt-1 text-xl font-semibold tracking-tight">My Packages</h2>
+                  <h2 id="student-packages-heading" tabIndex={-1} className="mt-1 text-xl font-semibold tracking-tight outline-none">My Packages</h2>
                 </div>
                 <button
                   type="button"
@@ -4775,7 +5248,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                   ) : packagesError ? (
                     <div className="space-y-3"><ErrorNotice message={packagesError} /><button type="button" className={secondaryButton} onClick={() => void refreshPackages()}><RefreshCw size={14} /> Try packages again</button></div>
                   ) : packages.length ? (
-                    <div className="grid gap-4 sm:grid-cols-2">{packages.map((pkg) => <PackageCard key={pkg.id} pkg={pkg} onFindRental={findRentalForPackage} />)}</div>
+                    <div className="grid gap-4 sm:grid-cols-2">{packages.map((pkg) => <PackageCard key={pkg.id} pkg={pkg} nowMs={nowMs} onFindRental={findRentalForPackage} onViewActivity={openPackageActivity} onBuyAnother={buyAnotherPackage} />)}</div>
                   ) : (
                     <EmptyState icon={<PackageCheck size={23} />} title="No packages yet" action={<button type="button" className={primaryButton} onClick={() => selectTab('explore')}>Explore club packages <ArrowRight size={15} /></button>}>Packages you buy from a club will appear here with their remaining credits and eligible activities.</EmptyState>
                   )}
@@ -4813,7 +5286,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                   </div>
                 ) : filteredHistory.length ? (
                   filteredHistory.map((item) => (
-                    <CompactBooking key={item.participant.id} item={item} nowMs={nowMs} />
+                    <CompactBooking key={item.participant.id} item={item} nowMs={nowMs} canBookAgain={canUseCommerce} />
                   ))
                 ) : (
                   <p className="rounded-2xl border border-dashed border-[#dfe5dc] bg-white px-5 py-8 text-center text-sm text-[#59675c]">
@@ -4921,7 +5394,13 @@ export function StudentApp({ slug }: { slug?: string }) {
         club={clubs.find((club) => club.business.slug === openAlert?.businessSlug)}
         onClose={() => setOpenAlertId(null)}
         onOpenBooking={openAlertBooking}
+        {...(openAlert ? alertDestinations(openAlert) : {})}
       />
+      {canUseCommerce && <PackageActivityDialog
+        pkg={offersClub || liveCheckout || checkoutReviewState ? null : activityPackage}
+        onClose={() => setActivityPackage(null)}
+        onBuyAnother={activityPackage ? () => buyAnotherPackage(activityPackage) : undefined}
+      />}
     </div>
   );
 }

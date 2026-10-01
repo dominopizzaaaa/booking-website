@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -40,10 +41,12 @@ import {
   cancelAccountBooking,
   createFamilyChildBooking,
   createPublicBooking,
+  joinWaitlist,
   loadAccountBookings,
   loadAccountPackages,
   loadAuthSession,
   loadFamilyBookingChildren,
+  loadNextAvailableSlots,
   loadPublicBusiness,
   loadSlots,
   isMfaLoginChallenge,
@@ -55,6 +58,7 @@ import {
 import { storeMfaLoginChallenge } from '@/lib/account-security';
 import type {
   AccountBooking,
+  AccountWaitlistEntry,
   AuthSession,
   BookingResult,
   PublicBookingBusiness,
@@ -73,15 +77,26 @@ import {
 import { isFamilyBookingAuthorityError } from "@/components/family/family-booking-errors";
 import { singaporeCivilDate, validPastDate } from "@/components/family/family-helpers";
 import { cn, coversWeeklyOccurrences, dateKey, money, shortDate, time } from "@/lib/utils";
-
-const button =
-  "inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#174c3c] px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[#103d2f] disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none";
-const secondary =
-  "inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-[#dce3da] bg-white px-4 py-2.5 text-sm font-medium text-[#344d40] transition hover:border-[#bdcbbb] hover:bg-[#f3f6f1] disabled:cursor-not-allowed disabled:opacity-40";
-const field =
-  "!min-h-12 !rounded-xl !border-[#dfe5df] !px-3.5 !text-base sm:!text-sm";
-const panel =
-  "min-w-0 rounded-2xl border border-[#e5e9e4] bg-white [&_*]:min-w-0 [&_p]:break-words [&_a]:min-h-11";
+import { parseBookingPreselection } from "@/lib/booking-links";
+import {
+  bookingReturnPath,
+  clubDecisionSummary,
+  fullGroupSlots,
+  isFullGroupSlot,
+  preselectedDate,
+  preselectionBanner,
+  resolveBookingPreselection,
+  sameInstant,
+  signInHref,
+  type VenueConfirmation,
+} from "@/lib/club-profile";
+import { button, field, panel, secondary } from "@/components/booking/styles";
+import { ClubDecisionHeader } from "@/components/booking/club-decision-header";
+import { CoachChoiceCard } from "@/components/booking/coach-choice-card";
+import { FullSlotWaitlist } from "@/components/booking/full-slot-waitlist";
+import { NextAvailableStrip, type NextAvailableState } from "@/components/booking/next-available-strip";
+import { PreselectionBanner } from "@/components/booking/preselection-banner";
+import { WaitlistDialog } from "@/components/booking/waitlist-dialog";
 const venueMessage = "Venue to be arranged — booking does not reserve a court";
 const steps = [
   "Class",
@@ -662,6 +677,12 @@ function DateSlots({
   minimumDate: string;
 }) {
   const [week, setWeek] = useState(date || minimumDate);
+  // A date chosen from outside the week strip (a link or "Next available")
+  // brings its week into view, so the selected day is never off-screen.
+  useEffect(() => {
+    if (!date) return;
+    setWeek((current) => (date < current || date > plusDays(current, 6) ? date : current));
+  }, [date]);
   const dates = Array.from({ length: 7 }, (_, i) => plusDays(week, i));
   const available = slots.filter((slot) => slot.available);
   return (
@@ -831,6 +852,15 @@ function DateSlots({
   );
 }
 
+/** Shown while the booking page's query-string preselection is resolved. */
+export function PublicBookingLoading() {
+  return (
+    <PublicShell>
+      <Loading text="Finding your next great class…" />
+    </PublicShell>
+  );
+}
+
 export function PublicBooking({ slug }: { slug: string }) {
   const account = useAccountSession();
   const [data, setData] = useState<PublicBusiness | null>(null);
@@ -869,6 +899,23 @@ export function PublicBooking({ slug }: { slug: string }) {
   >([]);
   const [result, setResult] = useState<BookingResult | FamilyChildBookingResult | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
+  // "Book again" and search links arrive with a Class, coach, venue and
+  // sometimes an exact slot. They are suggestions: applied once, and only
+  // where the catalogue can still book them.
+  const searchParams = useSearchParams();
+  const preselection = useMemo(() => parseBookingPreselection(searchParams), [searchParams]);
+  // A further booking made after the receipt is an ordinary visit again.
+  const [attributionCleared, setAttributionCleared] = useState(false);
+  const bookingSource = attributionCleared ? "DIRECT" : preselection.source;
+  const rebooking = bookingSource === "REBOOK";
+  const preselectionApplied = useRef(false);
+  const pendingStart = useRef<{ startAt: string; date: string } | null>(null);
+  const [banner, setBanner] = useState<{ title: string; text: string } | null>(null);
+  const [missedStartAt, setMissedStartAt] = useState("");
+  const [clubDetailsOpen, setClubDetailsOpen] = useState<boolean | null>(null);
+  const [nextAvailable, setNextAvailable] = useState<NextAvailableState | null>(null);
+  const [waitlistSlot, setWaitlistSlot] = useState<Slot | null>(null);
+  const [waitlistEntries, setWaitlistEntries] = useState<Record<string, AccountWaitlistEntry>>({});
   const load = useCallback(async () => {
     setLoading(true);
     setLoadError("");
@@ -885,6 +932,39 @@ export function PublicBooking({ slug }: { slug: string }) {
   useEffect(() => {
     void load();
   }, [load]);
+  useEffect(() => {
+    if (!data || preselectionApplied.current) return;
+    preselectionApplied.current = true;
+    const resolved = resolveBookingPreselection(data, preselection);
+    const zone = data.business.timezone;
+    let when: string | undefined;
+    if (resolved.serviceId) {
+      setServiceId(resolved.serviceId);
+      setLocationId(resolved.locationId);
+      setInstructorId(resolved.instructorId);
+      if (resolved.complete) {
+        const day = preselectedDate(preselection, zone, dateKey(new Date(), zone));
+        if (day) {
+          setDate(day);
+          if (preselection.startAt) {
+            pendingStart.current = { startAt: preselection.startAt, date: day };
+            when = `${shortDate(preselection.startAt, zone)} at ${time(preselection.startAt, zone)}`;
+          }
+        }
+        setStep(2);
+      } else {
+        setStep(1);
+      }
+    }
+    setBanner(preselectionBanner({
+      source: preselection.source,
+      resolved,
+      serviceName: data.services.find((value) => value.id === resolved.serviceId)?.name,
+      coachName: data.instructors.find((value) => value.id === resolved.instructorId)?.name,
+      venueName: data.locations.find((value) => value.id === resolved.locationId)?.name,
+      when,
+    }));
+  }, [data, preselection]);
   useEffect(() => {
     const value = new URLSearchParams(window.location.search).get("packageId")?.trim() ?? "";
     setRequestedPackageId(value);
@@ -1021,7 +1101,16 @@ export function PublicBooking({ slug }: { slug: string }) {
     setSlot(null);
     loadSlots(slug, { serviceId, locationId, instructorId, date })
       .then((value) => {
-        if (!ignore) setSlots(value.slots);
+        if (ignore) return;
+        setSlots(value.slots);
+        const wanted = pendingStart.current;
+        if (!wanted) return;
+        pendingStart.current = null;
+        // A person who moved to another day meanwhile has chosen for themselves.
+        if (wanted.date !== date) return;
+        const match = value.slots.find((candidate) => sameInstant(candidate.startAt, wanted.startAt));
+        if (match?.available) setSlot(match);
+        else setMissedStartAt(wanted.startAt);
       })
       .catch((error) => {
         if (!ignore) setSlotsError(messageOf(error));
@@ -1033,6 +1122,24 @@ export function PublicBooking({ slug }: { slug: string }) {
       ignore = true;
     };
   }, [slug, serviceId, locationId, instructorId, date, slotsVersion]);
+  useEffect(() => {
+    if (!rebooking || !serviceId || !locationId || !instructorId) {
+      setNextAvailable(null);
+      return;
+    }
+    let ignore = false;
+    setNextAvailable({ loading: true, slots: [], error: "" });
+    loadNextAvailableSlots(slug, { serviceId, instructorId, locationId, limit: 5 })
+      .then((value) => {
+        if (!ignore) setNextAvailable({ loading: false, slots: value.slots.filter((candidate) => candidate.available !== false).slice(0, 5), error: "" });
+      })
+      .catch((error) => {
+        if (!ignore) setNextAvailable({ loading: false, slots: [], error: messageOf(error) });
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [rebooking, slug, serviceId, locationId, instructorId]);
 
   const service = data?.services.find((value) => value.id === serviceId);
   const location = data?.locations.find((value) => value.id === locationId);
@@ -1093,6 +1200,24 @@ export function PublicBooking({ slug }: { slug: string }) {
     ) ?? [];
   const timezone = data?.business.timezone ?? "Asia/Singapore";
   const today = dateKey(new Date(), timezone);
+  const currentYear = Number(today.slice(0, 4));
+  // Only a signed-in, self-managed student may queue for themselves; a visitor
+  // is asked to sign in first. Guardians cannot waitlist a child.
+  const waitlistMode: "join" | "sign-in" | null =
+    service?.type !== "GROUP" || account.loading
+      ? null
+      : !account.session
+        ? "sign-in"
+        : !bookingForChild && isStudentSession(account.session)
+            && account.session.user.accountControl !== "GUARDIAN_MANAGED" && canUseCommerce
+          ? "join"
+          : null;
+  const fullSlots = waitlistMode && !slotsLoading && !slotsError ? fullGroupSlots(slots, service?.type) : [];
+  const waitlistKey = (startAt: string) => `${serviceId}|${instructorId}|${locationId}|${Date.parse(startAt)}`;
+  const missedSlot = missedStartAt ? slots.find((candidate) => sameInstant(candidate.startAt, missedStartAt)) : undefined;
+  const venueConfirmation: VenueConfirmation = location
+    ? isPendingVenue(location) ? "SELECTED" : "NONE"
+    : data?.locations.some((value) => value.active && value.requiresApproval) ? "SOME" : "NONE";
   const canContinue = (canUseCommerce || canManageFamily) && (
     step === 0
       ? !!serviceId
@@ -1208,6 +1333,32 @@ export function PublicBooking({ slug }: { slug: string }) {
           : "",
     );
   }
+  function chooseNextAvailable(candidate: Slot) {
+    const key = dateKey(candidate.startAt, timezone);
+    setAgreed(false);
+    setMissedStartAt("");
+    if (key === date && !slotsLoading) {
+      setSlot(slots.find((value) => value.available && sameInstant(value.startAt, candidate.startAt)) ?? candidate);
+      return;
+    }
+    // The day's grid reloads first; the slot is selected once it arrives.
+    pendingStart.current = { startAt: candidate.startAt, date: key };
+    setDate(key);
+  }
+  async function confirmWaitlist(): Promise<AccountWaitlistEntry> {
+    const target = waitlistSlot;
+    if (!target) throw new Error("Choose a full time to join its waitlist.");
+    try {
+      const { entry } = await joinWaitlist(slug, { serviceId, instructorId, locationId, startAt: target.startAt });
+      setWaitlistEntries((current) => ({ ...current, [waitlistKey(target.startAt)]: entry }));
+      return entry;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) await account.refresh();
+      // A place may have opened (or the Class moved) since the grid loaded.
+      if (error instanceof ApiError && error.status === 409) setSlotsVersion((value) => value + 1);
+      throw error;
+    }
+  }
   async function submit() {
     if (
       !data ||
@@ -1251,6 +1402,8 @@ export function PublicBooking({ slug }: { slug: string }) {
             ...(selectedPackage ? { packageId: selectedPackage.id } : {}),
             notes: notes.trim(),
             address: location.type === "HOME" ? address.trim() : undefined,
+            // Funnel attribution only; a plain visit is the server's default.
+            ...(bookingSource !== "DIRECT" ? { source: bookingSource } : {}),
           });
       if (!value.bookings?.length) {
         setSubmitError(
@@ -1323,6 +1476,9 @@ export function PublicBooking({ slug }: { slug: string }) {
           location={location}
           onBookAgain={() => {
             setResult(null);
+            setAttributionCleared(true);
+            setBanner(null);
+            setMissedStartAt("");
             setStep(0);
             setServiceId("");
             setLocationId("");
@@ -1374,27 +1530,25 @@ export function PublicBooking({ slug }: { slug: string }) {
   return (
     <PublicShell business={data.business} homeHref={shellHomeHref}>
       <main className="!mx-auto max-w-6xl px-4 pb-40 pt-5 sm:px-8 sm:pb-10 sm:pt-10">
-        <div className="!mb-5 flex min-w-0 items-center gap-3 sm:!mb-8">
-          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-[#dce4d4] bg-[#eaf0df] text-sm font-semibold text-[#658051]">
-            {data.business.name
-              .split(/\s+/)
-              .map((part) => part[0])
-              .slice(0, 2)
-              .join("")}
-          </span>
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold">
-              {data.business.name}
-            </p>
-            <p className="!mt-0.5 truncate text-[11px] text-[#87927e]">
-              {data.business.tagline ||
-                "A little more time doing what you love."}
-            </p>
-          </div>
-          <span className="ml-auto hidden items-center gap-1.5 text-[11px] text-[#85917b] sm:flex">
-            <Sparkles size={13} /> Your next chapter starts here
-          </span>
-        </div>
+        <ClubDecisionHeader
+          business={data.business}
+          summary={clubDecisionSummary(data)}
+          venueConfirmation={venueConfirmation}
+          // Open while choosing a Class; afterwards it folds away until asked for.
+          open={clubDetailsOpen ?? step === 0}
+          onOpenChange={setClubDetailsOpen}
+        />
+        {banner && bookingSource !== "DIRECT" && (
+          <PreselectionBanner
+            kind={bookingSource}
+            title={banner.title}
+            text={banner.text}
+            onDismiss={() => {
+              setBanner(null);
+              heading.current?.focus({ preventScroll: true });
+            }}
+          />
+        )}
         <nav aria-label="Booking progress" className="!mb-7 sm:!mb-10">
           <div className="flex items-start">
             {steps.map((label, index) => (
@@ -1648,8 +1802,16 @@ export function PublicBooking({ slug }: { slug: string }) {
                             <LocationIcon location={value} size={19} />
                           </span>
                           <div className="min-w-0 flex-1">
-                            <span className="text-sm font-semibold">
-                              {value.name}
+                            <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                              <span className="text-sm font-semibold">
+                                {value.name}
+                              </span>
+                              {value.area?.trim() && (
+                                <span className="inline-flex items-center gap-1 rounded-md bg-[#eef3e8] px-1.5 py-0.5 text-[11px] font-medium text-[#3f5a46]">
+                                  <span className="sr-only">Area: </span>
+                                  {value.area.trim()}
+                                </span>
+                              )}
                             </span>
                             <p className="!mt-1 text-xs leading-relaxed text-[#86917e]">
                               {value.type === "HOME"
@@ -1702,69 +1864,83 @@ export function PublicBooking({ slug }: { slug: string }) {
                       Choose a location above to see your available coaches.
                     </p>
                   ) : (
-                    <div className="grid gap-3 sm:grid-cols-2">
+                    <ul role="list" aria-label="Coaches" className="grid gap-3 sm:grid-cols-2">
                       {eligibleInstructors.map((value) => (
-                        <button
-                          type="button"
+                        <CoachChoiceCard
                           key={value.id}
-                          onClick={() => {
+                          coach={value}
+                          selected={instructorId === value.id}
+                          currentYear={currentYear}
+                          onSelect={() => {
                             setInstructorId(value.id);
                             setSlot(null);
                           }}
-                          aria-pressed={instructorId === value.id}
-                          className={cn(
-                            "flex min-h-[72px] items-center gap-3 rounded-xl border p-3.5 text-left transition sm:p-4",
-                            instructorId === value.id
-                              ? "border-[#65885c] bg-[#f6f9f1] ring-1 ring-[#65885c]"
-                              : "border-[#e5e9e0] hover:border-[#b2c2a7]",
-                          )}
-                        >
-                          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[#e8eedf] text-xs font-semibold text-[#738958]">
-                            {value.initials || value.name.slice(0, 2)}
-                          </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="block text-sm font-semibold">
-                              {value.name}
-                            </span>
-                            <span className="!mt-1 block text-[11px] leading-relaxed text-[#86917e]">
-                              {value.specialty ||
-                                "Here to help you find your game"}
-                            </span>
-                          </span>
-                          <span
-                            className={cn(
-                              "grid h-6 w-6 shrink-0 place-items-center rounded-full border",
-                              instructorId === value.id
-                                ? "border-[#174c3c] bg-[#174c3c] text-white"
-                                : "border-[#dce3d6]",
-                            )}
-                          >
-                            {instructorId === value.id && <Check size={13} />}
-                          </span>
-                        </button>
+                        />
                       ))}
-                    </div>
+                    </ul>
                   )}
                 </section>
               </div>
             )}
             {step === 2 && (
               <section className={cn(panel, "p-5 sm:p-7")}>
+                {nextAvailable && (
+                  <NextAvailableStrip
+                    state={nextAvailable}
+                    coachName={instructor?.name}
+                    timezone={timezone}
+                    selectedStartAt={slot?.startAt ?? ""}
+                    onChoose={chooseNextAvailable}
+                  />
+                )}
+                {missedStartAt && !slotsLoading && (
+                  <div role="status" className="!mb-5 flex items-start gap-2.5 rounded-xl border border-[#eadfca] bg-[#fff9ec] p-3.5 text-xs leading-relaxed text-[#5f4b1f]">
+                    <Info size={15} aria-hidden="true" className="!mt-0.5 shrink-0" />
+                    <span>
+                      {missedSlot && isFullGroupSlot(missedSlot, service?.type)
+                        ? waitlistMode
+                          ? `${time(missedStartAt, timezone)} is full. You can join its waitlist below, or choose another time.`
+                          : `${time(missedStartAt, timezone)} is full. Please choose another time.`
+                        : `${shortDate(missedStartAt, timezone)} at ${time(missedStartAt, timezone)} is no longer available. Please choose another time.`}
+                    </span>
+                  </div>
+                )}
                 <DateSlots
                   date={date}
                   onDateChange={(value) => {
                     setDate(value);
                     setSlot(null);
+                    setMissedStartAt("");
                   }}
                   slots={slots}
                   loading={slotsLoading}
                   error={slotsError}
                   onRetry={() => setSlotsVersion((value) => value + 1)}
                   selected={slot?.startAt ?? ""}
-                  onSelect={setSlot}
+                  onSelect={(value) => {
+                    setSlot(value);
+                    setMissedStartAt("");
+                  }}
                   timezone={timezone}
                   minimumDate={today}
                 />
+                {waitlistMode && (
+                  <FullSlotWaitlist
+                    slots={fullSlots}
+                    timezone={timezone}
+                    mode={waitlistMode}
+                    signInHrefFor={(value) => signInHref(bookingReturnPath(slug, {
+                      serviceId,
+                      instructorId,
+                      locationId,
+                      date: dateKey(value.startAt, timezone),
+                      startAt: value.startAt,
+                      source: bookingSource,
+                    }))}
+                    joinedEntryFor={(value) => waitlistEntries[waitlistKey(value.startAt)]}
+                    onJoin={setWaitlistSlot}
+                  />
+                )}
                 <div className="!mt-6 flex items-start gap-2 border-t border-[#edf0e8] pt-4 text-[11px] leading-relaxed text-[#8b9681]">
                   <Info size={14} className="!mt-0.5 shrink-0" />
                   <span>
@@ -2367,6 +2543,16 @@ export function PublicBooking({ slug }: { slug: string }) {
             </div>
           </aside>
         </div>
+        <WaitlistDialog
+          open={!!waitlistSlot}
+          onOpenChange={(open) => {
+            if (!open) setWaitlistSlot(null);
+          }}
+          summary={waitlistSlot
+            ? `${service?.name ?? "This Class"}${instructor ? ` with ${instructor.name}` : ""} · ${shortDate(waitlistSlot.startAt, timezone)}, ${time(waitlistSlot.startAt, timezone)}${location ? ` at ${location.name}` : ""}.`
+            : ""}
+          onConfirm={confirmWaitlist}
+        />
         <div
           className="fixed inset-x-0 bottom-0 z-50 border-t border-[#dfe5dc] bg-white/95 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2.5 shadow-[0_-12px_30px_rgba(28,48,41,0.09)] backdrop-blur-xl sm:hidden"
           role="region"

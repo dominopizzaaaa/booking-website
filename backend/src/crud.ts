@@ -33,7 +33,7 @@ const instructorJson = (instructor: Instructor) => ({ id: instructor.id, name: i
   color: instructor.color, email: instructor.email, specialty: instructor.specialty,
   rescheduleNoticeHours: instructor.rescheduleNoticeHours, active: instructor.active });
 const locationJson = (location: Location) => ({ id: location.id, name: location.name, address: location.address,
-  type: location.type, color: location.color, requiresApproval: location.requiresApproval,
+  area: location.area, type: location.type, color: location.color, requiresApproval: location.requiresApproval,
   classUnitSchedulingEnabled: location.classUnitSchedulingEnabled,
   travelMinutes: location.travelMinutes, notes: location.notes, source: location.source, placeId: location.placeId,
   mapsUrl: location.mapsUrl, latitude: location.latitude, longitude: location.longitude, active: location.active });
@@ -48,6 +48,7 @@ const businessJson = (business: Business) => ({ id: business.id, name: business.
   supportEmail: business.supportEmail, supportAddress: business.supportAddress,
   gstRegistrationStatus: business.gstRegistrationStatus, gstRegistrationNumber: business.gstRegistrationNumber,
   pricesIncludeGst: business.pricesIncludeGst,
+  description: business.description, publicPhone: business.publicPhone, websiteUrl: business.websiteUrl,
   kind: business.kind, isDemo: business.isDemo });
 function studentJson(student: StudentWithBookings) {
   const lastBookingAt = student.participants.reduce<Date | null>((latest, participant) =>
@@ -305,6 +306,9 @@ crudRouter.delete('/instructors/:id', requireClubPermission('ROSTER_MANAGE'), as
 }));
 
 const locationSchema = z.object({ name: nameSchema, address: z.string().trim().max(500).default(''),
+  // A neighbourhood label for Explore search, e.g. "Tampines · East". Free
+  // text by design: Courtly does not geocode or validate regions.
+  area: z.string().trim().max(60, 'Keep the area to 60 characters').default(''),
   type: z.enum(['FACILITY', 'RENTED', 'HOME', 'ONLINE']).default('FACILITY'), color: colorSchema.default('sage'),
   requiresApproval: z.boolean().default(false), travelMinutes: z.number().int().min(0).max(240).default(20),
   notes: z.string().trim().max(2000).default(''),
@@ -623,6 +627,19 @@ const nullableMerchantText = (maximum: number) => z.string().trim().max(maximum)
 const merchantSupportEmail = z.string().trim().max(254).refine(
   value => !value || z.string().email().safeParse(value).success, 'Use a valid support email',
 ).transform(value => value.toLowerCase());
+// Only https links are published so a club page never sends visitors to an
+// insecure or script URL. An empty string clears the link.
+const publicWebsiteUrl = z.string().trim().max(200, 'Keep the website link to 200 characters').refine(value => {
+  if (!value) return true;
+  // Matches the database check exactly, which is case-sensitive.
+  if (!/^https:\/\/\S+$/.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && !!url.hostname;
+  } catch {
+    return false;
+  }
+}, 'Use a full https:// website link');
 const businessSchema = z.object({ name: nameSchema.optional(), ownerName: nameSchema.optional(), email: emailSchema.optional(),
   timezone: z.string().trim().max(100).refine(zone => IANAZone.isValidZone(zone), 'Choose a valid IANA timezone').optional(),
   currency: z.string().trim().regex(/^[A-Za-z]{3}$/, 'Use a three-letter currency code').transform(value => value.toUpperCase()).optional(),
@@ -635,6 +652,9 @@ const businessSchema = z.object({ name: nameSchema.optional(), ownerName: nameSc
   gstRegistrationStatus: z.enum(['NOT_DECLARED', 'NOT_REGISTERED', 'REGISTERED']).optional(),
   gstRegistrationNumber: nullableMerchantText(120).optional(),
   pricesIncludeGst: z.boolean().nullable().optional(),
+  description: z.string().trim().max(1200, 'Keep the club description to 1200 characters').optional(),
+  publicPhone: z.string().trim().max(40, 'Keep the public phone number to 40 characters').optional(),
+  websiteUrl: publicWebsiteUrl.optional(),
 }).strict();
 crudRouter.patch('/business', requireClubPermission('SETTINGS_MANAGE'), requireRecentAuth, asyncRoute(async (req, res) => {
   const input = businessSchema.parse(req.body);

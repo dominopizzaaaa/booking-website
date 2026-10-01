@@ -833,21 +833,25 @@ async function createReservation(req: AccountRequest, locationId: string, input:
     const pkg = input.packageId
       ? await eligiblePackage(tx, input.packageId, req.auth.user.id, location, input.startAt)
       : null;
-    if (pkg) {
-      const consumed = await withCreditContext(tx, {
-        kind: 'RENTAL_RESERVED', actorUserId: req.auth.user.id,
-        note: `${location.name} · ${unit.name}`,
-      }, () => tx.lessonPackage.updateMany({
-        where: { id: pkg.id, usedCredits: { lt: pkg.totalCredits } }, data: { usedCredits: { increment: 1 } },
-      }));
-      if (!consumed.count) throw new HttpError(409, 'This rental package has no credits remaining');
-    }
+    // eligiblePackage holds the package row lock, so the balance checked here
+    // is still the balance when the reservation below consumes the credit.
+    if (pkg && pkg.usedCredits >= pkg.totalCredits) throw new HttpError(409, 'This rental package has no credits remaining');
     const reservation = await tx.venueReservation.create({ data: {
       businessId: location.businessId, locationId: location.id, unitId: unit.id, userId: req.auth.user.id,
       startAt: input.startAt, endAt, duration: input.duration, price: amount, status: 'CONFIRMED',
       paymentStatus: pkg ? 'PACKAGE' : 'PAID', packageId: pkg?.id ?? null, creditConsumed: !!pkg,
       notes: JSON.stringify({ cancellationHours: location.rentalCancellationHours, unitName: unit.name }),
     }, include: reservationInclude });
+    if (pkg) {
+      // Consumed after the reservation exists so the credit history names it.
+      const consumed = await withCreditContext(tx, {
+        kind: 'RENTAL_RESERVED', reservationId: reservation.id, actorUserId: req.auth.user.id,
+        note: `${location.name} · ${unit.name}`,
+      }, () => tx.lessonPackage.updateMany({
+        where: { id: pkg.id, usedCredits: { lt: pkg.totalCredits } }, data: { usedCredits: { increment: 1 } },
+      }));
+      if (!consumed.count) throw new HttpError(409, 'This rental package has no credits remaining');
+    }
     await reserveRentalUnit(tx, {
       businessId: location.businessId, locationId: location.id, unitId: unit.id, unitName: unit.name,
       reservationId: reservation.id, startAt: input.startAt, endAt,

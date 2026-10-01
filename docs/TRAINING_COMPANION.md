@@ -109,6 +109,11 @@ own bookings; club-side staff need the named permission):
   each guardian of a managed child who holds an ACTIVE link with
   BOOKINGS_MANAGE and current consent (`subjectName` = child's name).
 
+`GET /bookings/:id/feedback` lists only places that already have a feedback
+row; the roster itself comes from the booking. The PUT answers 200 for both
+create and update. The share alert names the coach when a coach shares, and the
+club otherwise.
+
 Attendance (bookings.ts): values `UNMARKED | PRESENT | LATE | ABSENT |
 EXCUSED`; LATE counts as attended. Attendance opens once the lesson **has
 started** (court-side roll call) instead of after it ends; all other rules are
@@ -128,6 +133,9 @@ Learner:
   `currentGoal` is the newest shared feedback's non-empty `nextGoal`. `feedback`
   lists shared feedback newest first (max 50). `filters` lists the learner's
   own clubs, coach names and sports.
+- `stats.clubs` and `stats.coaches` count attended sessions; a portable coach
+  counts once across clubs. `filters` always come from the learner's whole
+  history, not the filtered view. Cancelled bookings and places are ignored.
 - `POST /api/account/feedback/:id/viewed` → `{ ok: true }`; sets
   `firstViewedAt` once, only for the caller's own shared feedback (404
   otherwise).
@@ -196,7 +204,26 @@ Workspace routes (`coachScope` applies):
   `position` is 1-based among WAITING entries; `placesFree` excludes held offers.
 - `POST /api/waitlist/:id/offer` (BOOKINGS_MANAGE) → manual out-of-order offer
   of a free place; 409 when no place is free.
-- `DELETE /api/waitlist/:id` (BOOKINGS_MANAGE) → REMOVED.
+- `DELETE /api/waitlist/:id` (BOOKINGS_MANAGE) → REMOVED, with a
+  `WAITLIST_CLOSED` alert to the student.
+
+Implementation notes:
+
+- Closing logic lives in `scheduling.ts` (`closeLiveWaitlistEntries`) so
+  `cancelBooking` can close a queue without importing `waitlist.ts`, which
+  imports scheduling. `GROUP_FULL_REASON` ("This group is full") is the shared
+  reason the booking page uses to recognise a full group slot.
+- Repeating a decline, withdraw or remove that already happened returns 200;
+  acting on an entry closed some other way returns 409. Accept errors carry
+  `code: 'WAITLIST_OFFER_EXPIRED'` or `'WAITLIST_CLOSED'`.
+- A student who gets a place in the group by any other route has their live
+  entry closed ("You already have a place in this Class."); a freed hold is
+  re-offered by the next sweep.
+- Expired offers send no alert. When fewer than 10 minutes remain to make an
+  offer, waiting entries close while live offers keep their deadlines. If the
+  Class's service, venue or coach is no longer bookable, the queue closes.
+- When a waitlisted student takes a place, the ordinary booking notice is
+  retitled "Waitlist place taken · <name>" instead of adding a second notice.
 
 ## 5. Package credit activity
 
@@ -298,8 +325,14 @@ Insights; package credit activity in finance.
 
 Family: each child card links to its schedule and progress projections.
 
-The app ships a web manifest (installable), but no service worker or offline
-cache: authenticated booking data must never be served stale.
+The app ships a web manifest (installable, `start_url` `/`, which routes each
+account type to its own app), but no service worker or offline cache:
+authenticated booking data must never be served stale.
+
+Credits are consumed one place at a time, after each place exists, so every
+`BOOKED` and `RENTAL_RESERVED` ledger row names its exact booking, participant
+or reservation. The package row lock taken during eligibility keeps the
+up-front balance check valid until the last place consumes its credit.
 
 ## Deliberately out of scope
 

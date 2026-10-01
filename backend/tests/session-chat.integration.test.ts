@@ -106,6 +106,23 @@ describe.sequential('Session chat', () => {
     expect(extra.status).toBe(400);
   });
 
+  it('lets a first read and a first message from the same person land together', async () => {
+    // The club has never opened these threads, so each pair of requests
+    // creates that thread's first read position at the same moment. Several
+    // threads at once make the find-then-insert window easy to hit.
+    const threads = [];
+    for (const [index, name] of ['Amelia', 'Bea', 'Cal', 'Dev', 'Eli', 'Fay'].entries()) {
+      threads.push(await threadFor(await bookFor(await student(`${name} Concurrent`), f.starts.plus({ weeks: index }))));
+    }
+    const responses = await Promise.all(threads.flatMap(thread => [
+      request(app).post(`/api/chats/${thread.id}/read`).set('Cookie', clubCookie()).send({}),
+      request(app).post(`/api/chats/${thread.id}/messages`).set('Cookie', clubCookie()).send({ body: 'Courts are ready.' }),
+    ]));
+    expect(responses.map(response => response.status)).toEqual(threads.flatMap(() => [200, 201]));
+    expect(await prisma.chatReadState.count({ where: { threadId: { in: threads.map(thread => thread.id) }, userId: f.user.id } }))
+      .toBe(threads.length);
+  });
+
   it('rejects oversized thread and proposal path identifiers before querying chat state', async () => {
     const tooLong = 'x'.repeat(201);
     await request(app).get(`/api/chats/${tooLong}`).set('Cookie', coachCookie()).expect(400);

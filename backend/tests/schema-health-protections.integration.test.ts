@@ -1,3 +1,4 @@
+import type { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { inspectSchema } from '../src/schema-health.js';
 import { prisma, verifyTestDatabase } from './fixtures.js';
@@ -5,6 +6,7 @@ import { prisma, verifyTestDatabase } from './fixtures.js';
 beforeAll(verifyTestDatabase, 15_000);
 afterAll(async () => { await prisma.$disconnect(); });
 
+const trainingCompanion = 'training companion feedback, waitlist, credit ledger and discovery tables';
 const protections = [
   { table: 'AccountSecurityEvent', trigger: 'AccountSecurityEvent_immutable', missing: 'account security' },
   { table: 'AccountSecurityEvent', trigger: 'AccountSecurityEvent_truncate_guard', missing: 'account security' },
@@ -72,6 +74,10 @@ const protections = [
     trigger: 'ChatSafetyAuditEvent_append_only_truncate',
     missing: 'chat safeguarding retention triggers',
   },
+  { table: 'LessonPackage', trigger: 'LessonPackage_credit_ledger', missing: trainingCompanion },
+  { table: 'PackageCreditEvent', trigger: 'PackageCreditEvent_append_only', missing: trainingCompanion },
+  { table: 'SessionFeedback', trigger: 'SessionFeedback_identity_guard', missing: trainingCompanion },
+  { table: 'WaitlistEntry', trigger: 'WaitlistEntry_lifecycle_guard', missing: trainingCompanion },
 ] as const;
 
 describe.sequential('schema protection readiness', () => {
@@ -89,5 +95,17 @@ describe.sequential('schema protection readiness', () => {
       await prisma.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`);
     }
     expect((await inspectSchema(prisma)).missing).not.toContain(missing);
+  });
+
+  it('fails closed when the package credit ledger trigger has been dropped', async () => {
+    const rollback = new Error('Restore the dropped ledger trigger');
+    // DDL is transactional in PostgreSQL, so the drop never escapes this probe.
+    await expect(prisma.$transaction(async tx => {
+      await tx.$executeRawUnsafe('DROP TRIGGER "LessonPackage_credit_ledger" ON "LessonPackage"');
+      const health = await inspectSchema(tx as unknown as PrismaClient);
+      expect(health).toEqual({ ready: false, missing: [trainingCompanion] });
+      throw rollback;
+    })).rejects.toBe(rollback);
+    expect(await inspectSchema(prisma)).toEqual({ ready: true, missing: [] });
   });
 });
