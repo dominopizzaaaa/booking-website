@@ -57,6 +57,7 @@ import { NotificationPreferencesCard } from '@/components/notification-preferenc
 import { PaymentReceiptsPanel } from '@/components/payment-receipts-panel';
 import { AccountRentalHistory } from '@/components/account-rental-dialog';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+import { Disclosure, SeeMoreButton } from '@/components/ui/progressive-disclosure';
 import {
   ApiError,
   acceptAccountReschedule,
@@ -2345,6 +2346,9 @@ export function StudentApp({ slug }: { slug?: string }) {
   const [dialogMode, setDialogMode] = useState<BookingDialogMode>('details');
   const [openAlertId, setOpenAlertId] = useState<string | null>(null);
   const [showAllAlerts, setShowAllAlerts] = useState(false);
+  const [showAllUpcoming, setShowAllUpcoming] = useState(false);
+  const [showHomeHistory, setShowHomeHistory] = useState(false);
+  const [showProfileHistory, setShowProfileHistory] = useState(false);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [bookingPaymentOutcome, setBookingPaymentOutcome] = useState<'SUCCEEDED' | 'FAILED'>('SUCCEEDED');
@@ -2934,6 +2938,13 @@ export function StudentApp({ slug }: { slug?: string }) {
   }, [eligibleRentalPackages, selectedRentalPackageId]);
   const current = useMemo(() => bookings.filter((item) => isInProgress(item, nowMs)), [bookings, nowMs]);
   const upcoming = useMemo(() => bookings.filter((item) => isUpcoming(item, nowMs)), [bookings, nowMs]);
+  const prioritizedUpcoming = useMemo(
+    () => [...upcoming].sort((a, b) => {
+      const actionDifference = Number(!!incomingRequest(b)) - Number(!!incomingRequest(a));
+      return actionDifference || new Date(a.booking.startAt).getTime() - new Date(b.booking.startAt).getTime();
+    }),
+    [upcoming],
+  );
   const history = useMemo(
     () =>
       bookings
@@ -4098,32 +4109,6 @@ export function StudentApp({ slug }: { slug?: string }) {
               }}
             />
 
-            {canUseCommerce && <HomePackageSummary
-              loading={packagesLoading}
-              error={packagesError}
-              packages={activePackages}
-              nowMs={nowMs}
-              onOpen={() => { setPackagesExpanded(true); selectTab('profile'); }}
-              onViewActivity={openPackageActivity}
-              onBuyAnother={buyAnotherPackage}
-              emptyAction={
-                <button type="button" className={compactButton} onClick={() => selectTab('explore')}>
-                  <Compass size={14} aria-hidden="true" /> Explore clubs
-                </button>
-              }
-            />}
-
-            <ProgressCard
-              summary={homeProgress}
-              loading={homeProgressLoading}
-              onOpen={() => selectTab('progress')}
-              emptyAction={canFindTime ? (
-                <button type="button" className={compactButton} onClick={() => goToSection('explore', 'student-find-time-heading')}>
-                  <Search size={14} aria-hidden="true" /> Find a time
-                </button>
-              ) : undefined}
-            />
-
             {bookingsLoading ? (
               <LoadingScreen text="Gathering your sessions…" />
             ) : bookings.length === 0 && !bookingsError ? (
@@ -4262,10 +4247,25 @@ export function StudentApp({ slug }: { slug?: string }) {
                           </span>
                         </div>
                         <div className="space-y-3">
-                          {upcoming.map((item) => (
+                          {prioritizedUpcoming.slice(0, 3).map((item) => (
                             <BookingRow key={item.participant.id} item={item} nowMs={nowMs} onOpen={openBookingRow} />
                           ))}
                         </div>
+                        <div id="upcoming-booking-list" hidden={!showAllUpcoming} className="mt-3 space-y-3">
+                          {prioritizedUpcoming.slice(3).map((item) => (
+                            <BookingRow key={item.participant.id} item={item} nowMs={nowMs} onOpen={openBookingRow} />
+                          ))}
+                        </div>
+                        {prioritizedUpcoming.length > 3 && (
+                          <SeeMoreButton
+                            expanded={showAllUpcoming}
+                            controls="upcoming-booking-list"
+                            hiddenCount={prioritizedUpcoming.length - 3}
+                            noun="sessions"
+                            onToggle={() => setShowAllUpcoming((value) => !value)}
+                            className="mt-3 w-full"
+                          />
+                        )}
                       </section>
                     )}
                     {upcoming.length === 0 && current.length === 0 && canUseCommerce && (
@@ -4286,18 +4286,23 @@ export function StudentApp({ slug }: { slug?: string }) {
                     )}
                     {history.length > 0 && (
                       <section aria-labelledby="booking-history">
-                        <div className="mb-4">
-                          <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">
-                            Looking back
-                          </p>
-                          <h2 id="booking-history" className="mt-1 text-xl font-semibold tracking-tight">
-                            Booking history
-                          </h2>
+                        <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+                          <div>
+                            <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">Past sessions</p>
+                            <h2 id="booking-history" className="!mt-1 text-xl font-semibold tracking-tight">History</h2>
+                          </div>
+                          <SeeMoreButton
+                            expanded={showHomeHistory}
+                            controls="home-booking-history-list"
+                            hiddenCount={history.length}
+                            noun="sessions"
+                            onToggle={() => setShowHomeHistory((value) => !value)}
+                          />
                         </div>
-                        <div className="space-y-3">
-                          {history.map((item) => (
-                            <BookingRow key={item.participant.id} item={item} nowMs={nowMs} onOpen={openBookingRow} canBookAgain={canUseCommerce} />
-                          ))}
+                        <div id="home-booking-history-list" hidden={!showHomeHistory} className="space-y-3">
+                            {history.map((item) => (
+                              <BookingRow key={item.participant.id} item={item} nowMs={nowMs} onOpen={openBookingRow} canBookAgain={canUseCommerce} />
+                            ))}
                         </div>
                       </section>
                     )}
@@ -4354,6 +4359,32 @@ export function StudentApp({ slug }: { slug?: string }) {
                 </section>
               </div>
             )}
+
+            <ProgressCard
+              summary={homeProgress}
+              loading={homeProgressLoading}
+              onOpen={() => selectTab('progress')}
+              emptyAction={canFindTime ? (
+                <button type="button" className={compactButton} onClick={() => goToSection('explore', 'student-find-time-heading')}>
+                  <Search size={14} aria-hidden="true" /> Find a time
+                </button>
+              ) : undefined}
+            />
+
+            {canUseCommerce && <HomePackageSummary
+              loading={packagesLoading}
+              error={packagesError}
+              packages={activePackages}
+              nowMs={nowMs}
+              onOpen={() => { setPackagesExpanded(true); selectTab('profile'); }}
+              onViewActivity={openPackageActivity}
+              onBuyAnother={buyAnotherPackage}
+              emptyAction={
+                <button type="button" className={compactButton} onClick={() => selectTab('explore')}>
+                  <Compass size={14} aria-hidden="true" /> Explore clubs
+                </button>
+              }
+            />}
           </section>
         )}
 
@@ -4400,12 +4431,16 @@ export function StudentApp({ slug }: { slug?: string }) {
               ))}
             </div>
 
-            {canSearchPeople && <section className={cn(panel, 'mt-5 p-4 sm:p-5')} aria-labelledby="student-people-search-title">
+            {canSearchPeople && <Disclosure
+              title="Find people"
+              summary="Search players, coaches, and clubs."
+              className="mt-5"
+            ><section aria-labelledby="student-people-search-title">
               <div className="flex items-start gap-3">
                 <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#eef3e8] text-[#4f6847]"><UsersRound size={18} /></span>
                 <div>
                   <h2 id="student-people-search-title" className="text-sm font-semibold text-[#304b39]">Find people</h2>
-                  <p className="mt-1 text-xs leading-relaxed text-[#59675c]">Search players, coaches, and clubs by name, username, or exact email address.</p>
+                  <p className="!mt-1 text-xs text-[#59675c]">Use a name, username, or exact email.</p>
                 </div>
               </div>
               <form onSubmit={submitPeopleSearch} className="mt-4 flex flex-col gap-2 sm:flex-row">
@@ -4435,7 +4470,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                   ))}
                 </ul>
               )}
-            </section>}
+            </section></Disclosure>}
 
             {exploreSegment === 'classes' ? (
               <div id="student-classes-marketplace" role="tabpanel" aria-labelledby="student-explore-classes-tab">
@@ -4498,7 +4533,8 @@ export function StudentApp({ slug }: { slug?: string }) {
                 </div>
               </div>
 
-              <fieldset className="mt-5">
+              <Disclosure title="More club filters" summary="Relationship or sport" className="mt-4">
+              <fieldset>
                 <legend className="text-xs font-semibold text-[#465e4c]">Relationship</legend>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {([
@@ -4559,6 +4595,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                   </div>
                 </fieldset>
               )}
+              </Disclosure>
             </div>
 
             <p role="status" aria-live="polite" className="mt-5 text-xs font-medium text-[#59675c]">
@@ -5241,8 +5278,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                   <PackageCheck size={15} /> {packagesExpanded ? 'Hide packages' : 'View My Packages'}
                 </button>
               </div>
-              {packagesExpanded && (
-                <div id="student-package-list" className="mt-5">
+                <div id="student-package-list" hidden={!packagesExpanded} className="mt-5">
                   {packagesLoading ? (
                     <LoadingScreen text="Loading your packages…" />
                   ) : packagesError ? (
@@ -5253,14 +5289,24 @@ export function StudentApp({ slug }: { slug?: string }) {
                     <EmptyState icon={<PackageCheck size={23} />} title="No packages yet" action={<button type="button" className={primaryButton} onClick={() => selectTab('explore')}>Explore club packages <ArrowRight size={15} /></button>}>Packages you buy from a club will appear here with their remaining credits and eligible activities.</EmptyState>
                   )}
                 </div>
-              )}
             </section>}
 
             <section className="mt-9" aria-labelledby="profile-booking-history">
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">All your sessions</p>
-                <h2 id="profile-booking-history" className="mt-1 text-xl font-semibold tracking-tight">Booking history</h2>
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-[1.7px] text-[#59675c]">All your sessions</p>
+                  <h2 id="profile-booking-history" className="mt-1 text-xl font-semibold tracking-tight">Booking history</h2>
+                </div>
+                <SeeMoreButton
+                  expanded={showProfileHistory}
+                  controls="profile-booking-history-content"
+                  hiddenCount={bookings.length}
+                  noun="bookings"
+                  collapsedLabel="View booking history"
+                  onToggle={() => setShowProfileHistory((value) => !value)}
+                />
               </div>
+              <div id="profile-booking-history-content" hidden={!showProfileHistory}>
               <div role="group" aria-label="Filter booking history" className="mt-4 flex gap-2 overflow-x-auto pb-2">
                 {(['all', 'upcoming', 'completed', 'cancelled'] as BookingFilter[]).map((filter) => (
                   <button
@@ -5293,6 +5339,7 @@ export function StudentApp({ slug }: { slug?: string }) {
                     No {historyFilter === 'all' ? '' : `${historyFilter} `}bookings to show.
                   </p>
                 )}
+              </div>
               </div>
             </section>
 

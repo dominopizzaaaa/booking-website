@@ -15,6 +15,7 @@ import {
 import { shiftDay } from '@/lib/student-calendar';
 import type { SessionSearchResponse, SessionTimeOfDay } from '@/lib/types';
 import { cn, money, time } from '@/lib/utils';
+import { Disclosure } from '@/components/ui/progressive-disclosure';
 import { ErrorNotice } from './shared';
 import { compactButton, eyebrow, field, panel, primaryButton } from './styles';
 
@@ -131,6 +132,9 @@ export function FindATime({
               {sports.map(sport => <option key={sport.key} value={sport.label}>{sport.label}</option>)}
             </select>
           </div>
+        </div>
+        <Disclosure title="More filters" summary="Time, Class type, area, or club" className="mt-3">
+          <div className="grid gap-3 sm:grid-cols-2">
           <div>
             <label htmlFor="find-time-time" className="text-xs font-semibold text-[#465e4c]">Time of day</label>
             <select id="find-time-time" value={form.timeOfDay} onChange={(event) => update('timeOfDay', event.target.value as SessionTimeOfDay)} className={cn(field, 'mt-2 w-full bg-white')} aria-describedby="find-time-time-hint">
@@ -152,16 +156,18 @@ export function FindATime({
             <label htmlFor="find-time-keyword" className="text-xs font-semibold text-[#465e4c]">Club name</label>
             <input id="find-time-keyword" type="search" maxLength={60} value={form.q} onChange={(event) => update('q', event.target.value)} placeholder="Optional" className={cn(field, 'mt-2 w-full')} />
           </div>
-        </div>
+          </div>
+        </Disclosure>
         <button type="submit" className={cn(primaryButton, 'mt-4 w-full sm:w-auto')} disabled={loading}>
           {loading ? <LoaderCircle size={15} className="animate-spin" /> : <Search size={15} aria-hidden="true" />} Find times
         </button>
       </form>
 
       {recents.length > 0 && (
-        <div className="mt-4">
+        <Disclosure title="Recent searches" summary={`${recents.length} saved on this device`} className="mt-4">
+        <div>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#465e4c]"><History size={13} aria-hidden="true" /> Recent searches</h3>
+            <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#465e4c]"><History size={13} aria-hidden="true" /> Search again</span>
             <button type="button" className="min-h-10 text-[11px] font-semibold text-[#174c3c] underline underline-offset-2" onClick={clearRecents}>Clear recent searches</button>
           </div>
           <ul className="mt-2 flex flex-wrap gap-2">
@@ -177,6 +183,7 @@ export function FindATime({
             })}
           </ul>
         </div>
+        </Disclosure>
       )}
 
       {error && <div className="mt-4"><ErrorNotice message={error} /></div>}

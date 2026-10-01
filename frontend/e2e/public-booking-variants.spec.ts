@@ -337,7 +337,7 @@ async function loginStudent(page: Page) {
 
 async function openLiveBooking(page: Page) {
   await page.goto(`/book/${setup.slug}`);
-  await expect(page.getByRole('heading', { name: 'Good days start with a class.', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Choose a class', exact: true })).toBeVisible();
 }
 
 function visibleBookingAction(page: Page, name: string | RegExp) {
@@ -566,7 +566,7 @@ test('a recurring conflict is atomic and sends the student back to choose anothe
   expect(partialBookings).toEqual([]);
 
   await page.getByRole('button', { name: 'Choose a different time', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Make a little time for your game.', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Choose a date and time', exact: true })).toBeVisible();
   await expect(visibleBookingAction(page, 'Continue')).toBeDisabled();
   await expectNoHorizontalOverflow(page);
 });
@@ -580,7 +580,7 @@ test('invalid slugs and slot failures provide working retry controls', async ({ 
   const fixture = retryCatalog(retrySlug);
   await page.route(`**/api/public/${retrySlug}`, route => fulfillJson(route, fixture));
   await page.getByRole('button', { name: 'Try again', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Good days start with a class.', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Choose a class', exact: true })).toBeVisible();
 
   let slotsAvailable = false;
   const date = futureSingaporeDate(20);

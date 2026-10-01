@@ -7,6 +7,7 @@ import { ArrowRight, CalendarDays, Check, CircleDot, Eye, EyeOff, Layers3, Loade
 import { ApiError, isMfaLoginChallenge, loginAccount, registerAccount } from '@/lib/api';
 import { storeMfaLoginChallenge } from '@/lib/account-security';
 import { CourtlyLogo } from '@/components/public-booking';
+import { Disclosure } from '@/components/ui/progressive-disclosure';
 import type { AccountType, AuthSession } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { markProductTourPending } from '@/lib/product-tour';
@@ -200,13 +201,15 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
               {fieldError('accountType')}
             </fieldset>
             {accountType && accountType !== 'CLUB' && <section className="rounded-xl border border-[#dfe7d8] bg-[#f3f7ef] p-4" aria-labelledby="personal-account-guide">
-              <h2 id="personal-account-guide" className="text-sm font-semibold text-[#304b39]">One personal account, with Family for children</h2>
-              <p className="mt-1.5 text-xs leading-relaxed text-[#59675c]">Use your own name, date of birth, email, and password here. Parents and guardians do not need a separate account type: an adult Player or Coach can open Family after signing in and add more than one child.</p>
-              <dl className="mt-3 grid gap-2 text-[11px] leading-relaxed text-[#59675c]">
-                <div><dt className="inline font-semibold text-[#405941]">Under 13: </dt><dd className="inline">an adult creates their managed profile and books for them.</dd></div>
-                <div><dt className="inline font-semibold text-[#405941]">Ages 13–17: </dt><dd className="inline">they may have their own login, but cannot book or pay on Courtly yet. Keep them in Family if you need to book for them.</dd></div>
-                <div><dt className="inline font-semibold text-[#405941]">Age 18+: </dt><dd className="inline">they use their own account for bookings and payments.</dd></div>
-              </dl>
+              <h2 id="personal-account-guide" className="text-sm font-semibold text-[#304b39]">Create the adult’s own account</h2>
+              <p className="mt-1.5 text-xs leading-relaxed text-[#59675c]">Use your own name, date of birth, email, and password. After signing in, an adult Player or Coach can add each child separately in Family.</p>
+              <Disclosure title="How accounts work by age" className="mt-3 border-[#dfe7d8]" contentClassName="text-[11px] leading-relaxed text-[#59675c]">
+                <dl className="mt-2 grid gap-2">
+                  <div><dt className="inline font-semibold text-[#405941]">Under 13: </dt><dd className="inline">an adult creates their managed profile and books for them.</dd></div>
+                  <div><dt className="inline font-semibold text-[#405941]">Ages 13–17: </dt><dd className="inline">they may have their own login, but cannot book or pay on Courtly yet. Keep them in Family if you need to book for them.</dd></div>
+                  <div><dt className="inline font-semibold text-[#405941]">Age 18+: </dt><dd className="inline">they use their own account for bookings and payments.</dd></div>
+                </dl>
+              </Disclosure>
             </section>}
             {accountType === 'CLUB' && <div><label htmlFor="auth-business" className="!mb-2 !text-sm !font-medium !text-[#52634b]">Club or academy name</label><input id="auth-business" className={input} value={values.businessName} onChange={event => update('businessName', event.target.value)} required minLength={2} maxLength={120} autoComplete="organization" placeholder="e.g. Oakwood Tennis Academy" disabled={!!busy} aria-invalid={errorField === 'businessName'} aria-describedby={describedBy('businessName')} />{fieldError('businessName')}</div>}
             <div><label htmlFor="auth-name" className="!mb-2 !text-sm !font-medium !text-[#52634b]">{accountType === 'CLUB' ? 'Contact name' : 'Your full name'}</label><input id="auth-name" className={input} value={values.name} onChange={event => update('name', event.target.value)} required minLength={2} maxLength={120} autoComplete="name" placeholder="e.g. Jamie Lee" disabled={!!busy} aria-invalid={errorField === 'name'} aria-describedby={describedBy('name')} />{fieldError('name')}</div>

@@ -521,6 +521,7 @@ test('club catalog calls lessons Classes and submits only roster-owned coach det
 
   await page.goto('/?tab=explore');
   await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: /^See \d+ more tools$/ }).click();
   await expect(page.getByRole('button', { name: 'Open Classes', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Open Services', exact: true })).toHaveCount(0);
 
@@ -819,7 +820,7 @@ test('public booking can drop a preselected package that expires before the fina
 
   const visibleAction = (name: string) => page.getByRole('button', { name, exact: true }).filter({ visible: true });
   await page.goto(`/book/${business.slug}?packageId=${packageId}`);
-  await expect(page.getByRole('heading', { name: 'Good days start with a class.', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Choose a class', exact: true })).toBeVisible();
   await page.getByRole('button', { name: new RegExp(privateService.name) }).click();
   await visibleAction('Continue').click();
   await page.getByRole('button', { name: new RegExp(location.name) }).click();
@@ -1023,6 +1024,7 @@ test('package offers submit both class and rental eligibility scopes', async ({ 
   });
 
   await page.goto('/?tab=explore');
+  await page.getByRole('button', { name: /^See \d+ more tools$/ }).click();
   await page.getByRole('button', { name: 'Open Packages', exact: true }).click();
   await expect(page.locator('main').getByRole('heading', { name: 'Package offers', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Create offer', exact: true }).first().click();
@@ -1060,6 +1062,7 @@ test('rental marketplace loads details and submits the selected slot reservation
 
   await page.goto('/?tab=explore');
   await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: /^See \d+ more tools$/ }).click();
   await page.getByRole('button', { name: 'Open Rent a court', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Explore training grounds', exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: rental.name, exact: true })).toBeVisible();
@@ -1113,6 +1116,7 @@ test('an affiliated coach can view and cancel account-wide rental history from w
   const requests = await mockMarketplace(page, { initialReservations: [otherClubReservation] });
 
   await page.goto('/?tab=explore');
+  await page.getByRole('button', { name: /^See \d+ more tools$/ }).click();
   await page.getByRole('button', { name: 'Open Rent a court', exact: true }).click();
   const history = page.getByRole('region', { name: 'My rental reservations', exact: true });
   await expect(history).toContainText(otherClubReservation.locationName);
@@ -1145,6 +1149,7 @@ test('workspace rental retry rotates the checkout key after a definitive failure
   });
 
   await page.goto('/?tab=explore');
+  await page.getByRole('button', { name: /^See \d+ more tools$/ }).click();
   await page.getByRole('button', { name: 'Open Rent a court', exact: true }).click();
   await page.getByRole('button', { name: `View times for ${rental.name}`, exact: true }).click();
   const dialog = page.getByRole('dialog', { name: rental.name });

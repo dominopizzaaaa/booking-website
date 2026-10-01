@@ -133,7 +133,7 @@ test.describe('every screen fits the screen it is on', () => {
     // A booking page is the first thing a prospective student ever sees, and
     // they see it on a phone.
     await page.goto(`/book/${slug}`);
-    await expect(page.getByRole('heading', { name: 'Good days start with a class.', exact: true }))
+    await expect(page.getByRole('heading', { name: 'Choose a class', exact: true }))
       .toBeVisible({ timeout: 45_000 });
     await expectNoSidewaysScroll(page);
 

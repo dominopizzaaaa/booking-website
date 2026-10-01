@@ -83,7 +83,7 @@ export function NotificationPreferencesCard({ className }: { className?: string 
       <div className="flex items-center gap-2"><Bell size={17} className="text-[#839677]" aria-hidden="true" /><h2 id={headingId} className="text-[#294735]">Email notifications</h2></div>
     </div>
     <div className="px-5 pb-5 sm:px-6 sm:pb-6">
-      <p className="text-xs leading-relaxed text-stone-500">Choose which account emails Courtly may send you. These choices follow your account across every club.</p>
+      <p className="text-xs leading-relaxed text-stone-500">These choices follow your account across every club.</p>
       {pending === 'loading' ? (
         <p role="status" className="mt-4 flex items-center gap-2 rounded-xl bg-[#f5f7f1] p-4 text-xs text-stone-500"><Loader2 size={15} className="animate-spin" aria-hidden="true" />Loading email preferences…</p>
       ) : error && !preferences ? (

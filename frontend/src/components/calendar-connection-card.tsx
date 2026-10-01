@@ -5,6 +5,7 @@ import { AlertTriangle, CalendarDays, Check, Loader2, RefreshCw, Unplug } from '
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+import { Disclosure } from '@/components/ui/progressive-disclosure';
 import {
   beginGoogleCalendarConnection,
   disconnectGoogleCalendar,
@@ -289,11 +290,6 @@ export function CalendarConnectionCard({ accountType, returnTo, className }: Cal
             {status.state === 'REAUTH_REQUIRED' && status.error && <p role="status" className="mt-4 rounded-xl bg-amber-50 p-3 text-[11px] leading-relaxed text-amber-800">{status.error}</p>}
             {status.state === 'ACTIVE' && status.error && <p role="alert" className="mt-4 rounded-xl bg-amber-50 p-3 text-[11px] leading-relaxed text-amber-800">{status.error}</p>}
 
-            {status.state !== 'DISCONNECTED' && status.state !== 'DISCONNECTING' && <div className="mt-5 space-y-3">
-              <PreferenceSwitch id={syncLabelId} checked={status.syncEnabled} disabled={!!pending} label="Sync Courtly lessons" description="Add and update confirmed Courtly lessons in this Google Calendar." onChange={checked => void updatePreference('syncEnabled', checked)} />
-              <PreferenceSwitch id={busyLabelId} checked={status.busyCheckEnabled} disabled={!!pending} label="Check Google busy times" description="Use cached busy times from Google when Courtly checks your availability. Event details stay private." onChange={checked => void updatePreference('busyCheckEnabled', checked)} />
-            </div>}
-
             <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
               {status.state === 'DISCONNECTED' && <Button type="button" className="w-full sm:w-auto" disabled={!!pending} onClick={() => void connect()}>{pending === 'connect' && <Loader2 size={14} className="animate-spin" />}{pending === 'connect' ? 'Opening Google…' : 'Connect Google Calendar'}</Button>}
               {(status.state === 'REAUTH_REQUIRED' || status.state === 'ERROR') && <Button type="button" className="w-full sm:w-auto" disabled={!!pending} onClick={() => void connect()}>{pending === 'connect' && <Loader2 size={14} className="animate-spin" />}{pending === 'connect' ? 'Opening Google…' : 'Reconnect Google Calendar'}</Button>}
@@ -301,11 +297,20 @@ export function CalendarConnectionCard({ accountType, returnTo, className }: Cal
               {status.state !== 'DISCONNECTED' && status.state !== 'DISCONNECTING' && <Button type="button" variant="ghost" className="w-full text-[#8b4d3c] sm:w-auto" disabled={!!pending} onClick={() => { setActionError(''); setConfirmDisconnect(true); }}><Unplug size={14} />Disconnect</Button>}
             </div>
 
-            {(dateTime(status.lastSyncedAt) || dateTime(status.lastBusyAt)) && <p className="mt-4 text-[10px] leading-relaxed text-stone-500">{dateTime(status.lastSyncedAt) && `Last synced ${dateTime(status.lastSyncedAt)}.`}{dateTime(status.lastSyncedAt) && dateTime(status.lastBusyAt) ? ' ' : ''}{dateTime(status.lastBusyAt) && `Busy times last checked ${dateTime(status.lastBusyAt)}.`}</p>}
+            {status.state !== 'DISCONNECTED' && status.state !== 'DISCONNECTING' && <Disclosure
+              title="Sync preferences"
+              summary={`${status.syncEnabled ? 'Lesson sync on' : 'Lesson sync off'} · ${status.busyCheckEnabled ? 'Busy-time checks on' : 'Busy-time checks off'}`}
+              className="mt-5"
+              contentClassName="space-y-3"
+            >
+              <PreferenceSwitch id={syncLabelId} checked={status.syncEnabled} disabled={!!pending} label="Sync Courtly lessons" description="Add and update confirmed Courtly lessons in this Google Calendar." onChange={checked => void updatePreference('syncEnabled', checked)} />
+              <PreferenceSwitch id={busyLabelId} checked={status.busyCheckEnabled} disabled={!!pending} label="Check Google busy times" description="Use cached busy times from Google when Courtly checks your availability. Event details stay private." onChange={checked => void updatePreference('busyCheckEnabled', checked)} />
+              {(dateTime(status.lastSyncedAt) || dateTime(status.lastBusyAt)) && <p className="text-[10px] leading-relaxed text-stone-500">{dateTime(status.lastSyncedAt) && `Last synced ${dateTime(status.lastSyncedAt)}.`}{dateTime(status.lastSyncedAt) && dateTime(status.lastBusyAt) ? ' ' : ''}{dateTime(status.lastBusyAt) && `Busy times last checked ${dateTime(status.lastBusyAt)}.`}</p>}
+            </Disclosure>}
           </>}
       </div> : null}
 
-    <p className="mt-5 rounded-xl bg-[#f5f7f1] p-3 text-[10px] leading-relaxed text-stone-600"><strong className="font-semibold text-[#405941]">Courtly stays authoritative.</strong> Editing or deleting a Google event never changes the Courtly booking.</p>
+    <p className="mt-5 text-[10px] leading-relaxed text-stone-500">Google is a calendar copy. Courtly bookings always stay authoritative.</p>
     {actionError && !confirmDisconnect && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-3 text-xs leading-relaxed text-red-700">{actionError}</p>}
 
     <Dialog open={confirmDisconnect} onOpenChange={open => { if (pending !== 'disconnect') { setConfirmDisconnect(open); if (!open) setActionError(''); } }}>

@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+import { Disclosure } from '@/components/ui/progressive-disclosure';
 import { ApiError, loadFamilyChildProgress, loadFamilyChildSchedule } from '@/lib/api';
 import { attendanceLabel, childScheduleState } from '@/lib/student-bookings';
 import { childScheduleEvent, readHomeView, writeHomeView, type HomeView } from '@/lib/student-calendar';
@@ -224,8 +225,7 @@ export function ChildPlayerView({
       <div className="mt-5 flex gap-2.5 rounded-xl border border-[#dfe7d8] bg-[#f0f5ea] p-4 text-xs leading-relaxed text-[#3d5a41]">
         <ShieldCheck size={16} aria-hidden="true" className="mt-0.5 shrink-0" />
         <p>
-          You’re viewing {name}’s schedule and coach feedback as their guardian. Courtly never signs you in as {name};
-          to book, choose a club and pick {name} on its booking page.
+          Guardian view only. To book, choose a club and select {name} on its booking page.
         </p>
       </div>
       <div className="mt-4 flex flex-wrap gap-2.5">
@@ -306,10 +306,9 @@ export function ChildPlayerView({
                     )}
                   </section>
                   {recent.length > 0 && (
-                    <section aria-labelledby="child-recent">
-                      <h2 id="child-recent" className="text-xl font-semibold tracking-tight">Recent</h2>
-                      <ul className="mt-3 space-y-3">{recent.map(item => <ScheduleRow key={item.participantId} item={item} nowMs={nowMs} onOpen={() => setOpenId(item.participantId)} />)}</ul>
-                    </section>
+                    <Disclosure title="Recent sessions" summary={`${recent.length} past or cancelled`}>
+                      <ul className="space-y-3">{recent.map(item => <ScheduleRow key={item.participantId} item={item} nowMs={nowMs} onOpen={() => setOpenId(item.participantId)} />)}</ul>
+                    </Disclosure>
                   )}
                 </div>
               )}

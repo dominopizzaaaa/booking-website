@@ -10,6 +10,7 @@ import { PrivacyRequestsPanel } from '@/components/privacy/privacy-requests-pane
 import { AccountRentalDialog, AccountRentalHistory } from '@/components/account-rental-dialog';
 import { CourtlyLogo } from '@/components/public-booking';
 import { Button } from '@/components/ui/button';
+import { Disclosure } from '@/components/ui/progressive-disclosure';
 import { acceptClubStaffInvitation, acceptCoachInvitation, ApiError, loadAuthSession, loadClubStaffInvitations, loadCoachInvitations, loadRentals, mutate, searchAccounts, switchWorkspaceAccess, updateAuthAccount, updateClubProfile } from '@/lib/api';
 import type { AccountDirectoryUser, AuthSession, ClubStaffInvitation, ClubStaffWorkspaceAccess, CoachInvitation, Membership, RentalListing } from '@/lib/types';
 import { initials, money } from '@/lib/utils';
@@ -491,8 +492,8 @@ export default function AccountPage() {
                 <div className="mt-5 flex flex-wrap justify-center gap-2 border-t border-[#edf0e8] pt-5"><Button variant="outline" disabled={loading || !!switching} onClick={() => { void load(); }}><RefreshCw size={14} />Refresh access</Button>{canUseWorkspace && state.business && state.accessMode !== 'NONE' && <Button disabled={!!switching} onClick={() => { router.replace('/'); router.refresh(); }}>Open current workspace<ArrowRight size={14} /></Button>}{state.user.accountType === 'STUDENT' && <Button variant="outline" asChild><Link href="/manage">Open player app<ArrowRight size={14} /></Link></Button>}</div>
               </section>
 
-              {canSearchPeople && <section data-tour="account-people" className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-people-heading">
-                <div className="flex items-start gap-3"><UsersRound size={19} className="mt-0.5 shrink-0 text-[#6f865f]" /><div><h2 id="account-people-heading" className="text-base text-[#405941]">Find people on Courtly</h2><p className="mt-1 text-xs leading-relaxed text-stone-500">Search players, coaches, and clubs by name, username, or exact email address. Results show public profile details only.</p></div></div>
+              {canSearchPeople && <Disclosure title="Find people on Courtly" summary="Search public profiles by name, username, or exact email." className="rounded-2xl bg-white shadow-sm" contentClassName="px-5 pb-5 sm:px-6 sm:pb-6">
+                <div data-tour="account-people">
                 <form className="mt-5 flex flex-col gap-2 sm:flex-row" onSubmit={submitPeopleSearch}>
                   <label htmlFor="account-people-search" className="sr-only">Search all Courtly accounts</label>
                   <input id="account-people-search" type="search" className={`${inputClass} min-w-0 flex-1`} value={peopleQuery} onChange={event => { setPeopleQuery(event.target.value); setPeople([]); setPeopleSearchedFor(''); setPeopleError(''); }} placeholder="Name, @username, or exact email" />
@@ -501,10 +502,11 @@ export default function AccountPage() {
                 {peopleError && <p role="alert" className="mt-3 rounded-xl bg-red-50 p-3 text-xs text-red-700">{peopleError}</p>}
                 {!peopleLoading && !peopleError && peopleSearchedFor && !people.length && <p role="status" className="mt-3 text-xs text-stone-500">No accounts matched “{peopleSearchedFor}”.</p>}
                 {people.length > 0 && <ul aria-label="Account search results" className="mt-4 grid gap-2 sm:grid-cols-2">{people.map(person => <li key={person.username} className="min-w-0 rounded-xl border border-[#e4e9df] bg-[#fafbf8] p-3"><div className="flex items-start gap-2.5"><span aria-hidden="true" className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[#e8efe0] text-[11px] font-bold text-[#4f6847]">{initials(person.name)}</span><div className="min-w-0"><p className="truncate text-sm font-semibold text-[#304b39]">{person.name}</p><p className="truncate text-xs text-stone-500">@{person.username} · {person.accountType.toLowerCase()}</p>{person.sports.length > 0 && <p className="truncate text-[11px] text-stone-500">{person.sports.join(', ')}</p>}</div></div></li>)}</ul>}
-              </section>}
+                </div>
+              </Disclosure>}
 
-              {canUseRentals && <section data-tour="account-rentals" className="rounded-2xl border border-[#e2e7dd] bg-white p-5 shadow-sm sm:p-6" aria-labelledby="account-rentals-heading">
-                <div className="flex items-start gap-3"><Compass size={19} className="mt-0.5 shrink-0 text-[#6f865f]" /><div><h2 id="account-rentals-heading" className="text-base text-[#405941]">Explore rental venues</h2><p className="mt-1 text-xs leading-relaxed text-stone-500">Find a court or training space even before a club hires you.</p></div></div>
+              {canUseRentals && <Disclosure title="Explore rental venues" summary="Find a court or training space outside your club work." className="rounded-2xl bg-white shadow-sm" contentClassName="px-5 pb-5 sm:px-6 sm:pb-6">
+                <div data-tour="account-rentals">
                 <form role="search" aria-label="Filter rental venues" className="mt-5 flex flex-col gap-2 sm:flex-row sm:items-end" onSubmit={submitRentalFilters}>
                   <div className="min-w-0 flex-1"><label htmlFor="account-rental-sport" className="text-xs font-semibold text-[#405941]">Filter rental venues by sport</label><input id="account-rental-sport" type="search" className={`${inputClass} mt-1.5 w-full`} value={rentalSport} onChange={event => setRentalSport(event.target.value)} placeholder="Tennis, badminton, padel…" /></div>
                   <div className="flex gap-2"><Button type="submit" className="flex-1 sm:flex-none" disabled={rentalsLoading}>{rentalsLoading && <Loader2 size={14} className="animate-spin" />}Apply filters</Button>{(rentalSport || appliedRentalSport) && <Button type="button" variant="outline" className="flex-1 sm:flex-none" disabled={rentalsLoading} onClick={clearRentalFilters}>Clear filters</Button>}</div>
@@ -513,7 +515,8 @@ export default function AccountPage() {
                   : rentalsError ? <p role="alert" className="mt-5 rounded-xl bg-red-50 p-3 text-xs text-red-700">{rentalsError}</p>
                     : rentals.length ? <><div className="mt-5 grid gap-3 sm:grid-cols-2">{rentals.map(rental => <article key={rental.id} className="flex flex-col rounded-xl border border-[#e4e9df] p-4"><div className="flex items-start gap-2"><MapPin size={15} className="mt-0.5 shrink-0 text-[#71865f]" /><div className="min-w-0"><h3 className="truncate text-sm font-semibold text-[#344b39]">{rental.name}</h3><p className="mt-1 text-xs text-stone-500">{rental.sport || 'Multi-sport'} · {rental.club.name}</p><p className="mt-2 text-xs font-semibold text-[#50704c]">From {money(rental.price, rental.currency)} per hour</p></div></div><Button type="button" variant="outline" size="sm" className="mt-4 self-start" aria-label={`View available times for ${rental.name}`} onClick={() => setSelectedRentalId(rental.id)}>View times<ArrowRight size={13} /></Button></article>)}</div>{rentalsNextCursor && <Button type="button" variant="outline" className="mt-4" disabled={rentalsLoadingMore} onClick={() => void loadMoreRentals()}>{rentalsLoadingMore && <Loader2 size={14} className="animate-spin" />}Load more venues</Button>}</>
                       : <p className="mt-5 rounded-xl bg-[#f7f9f4] p-4 text-xs text-stone-500">{appliedRentalSport ? `No rental venues match “${appliedRentalSport}”.` : 'No rental venues are listed yet. Check back soon.'}</p>}
-              </section>}
+                </div>
+              </Disclosure>}
             </div>
             {canUseRentals && <AccountRentalDialog rentalId={selectedRentalId} onClose={() => setSelectedRentalId(null)} />}
           </> : null}

@@ -26,6 +26,11 @@ async function openWorkspaceTab(page: Page, label: WorkspaceTab) {
   return navigation;
 }
 
+async function revealAllWorkspaceTools(page: Page) {
+  const reveal = page.getByRole('button', { name: /^See \d+ more tools$/ });
+  if (await reveal.isVisible()) await reveal.click();
+}
+
 test.beforeEach(async ({ page }) => {
   const demo = await page.request.post('/api/auth/demo', { data: {} });
   expect(demo.ok()).toBeTruthy();
@@ -64,6 +69,58 @@ test('demo workspace loads, persists, and adapts to the screen', async ({ page }
   const second = await (await page.request.get('/api/workspace')).json();
   expect(second.business.id).toBe(data.business.id);
   expect(errors).toEqual([]);
+});
+
+test('Explore progressively reveals secondary tools with the keyboard', async ({ page }) => {
+  await page.goto('/?tab=explore');
+  await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible({ timeout: 45_000 });
+  await expect(page.getByRole('button', { name: 'Open Calendar', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Open Classes', exact: true })).toHaveCount(0);
+
+  const more = page.getByRole('button', { name: /^See \d+ more tools$/ });
+  await expect(more).toHaveAttribute('aria-expanded', 'false');
+  await more.focus();
+  await more.press('Enter');
+
+  const less = page.getByRole('button', { name: 'Show less', exact: true });
+  await expect(less).toBeFocused();
+  await expect(less).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.getByRole('button', { name: 'Open Classes', exact: true })).toBeVisible();
+
+  await less.press('Enter');
+  await expect(more).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Open Classes', exact: true })).toHaveCount(0);
+});
+
+test('Home prioritizes urgent follow-ups and progressively reveals the rest', async ({ page }) => {
+  const item = (id: string, severity: 'urgent' | 'attention' | 'info', title: string, sortAt: string) => ({
+    id, category: 'payment', severity, sortAt, title, detail: `${title} detail`,
+    entityType: 'participant', entityId: id, destination: { view: 'payments', params: {} },
+  });
+  await page.route('**/api/operations/inbox*', route => route.fulfill({ json: {
+    items: [
+      item('info-1', 'info', 'Later payment review', '2026-10-01T08:00:00.000Z'),
+      item('attention-1', 'attention', 'Payment needs attention', '2026-10-01T09:00:00.000Z'),
+      item('urgent-2', 'urgent', 'Second urgent follow-up', '2026-10-01T11:00:00.000Z'),
+      item('urgent-1', 'urgent', 'First urgent follow-up', '2026-10-01T10:00:00.000Z'),
+    ],
+    nextCursor: null,
+    counts: { all: 4, coach: 0, venue: 0, attendance: 0, reschedule: 0, payment: 4, rental: 0 },
+  } }));
+
+  await page.goto('/?tab=home');
+  await expect(page.getByRole('heading', { name: 'Needs your attention', exact: true })).toBeVisible({ timeout: 45_000 });
+  const followUps = page.locator('[aria-labelledby="attention-heading"]');
+  await expect(followUps.getByText('First urgent follow-up', { exact: true })).toBeVisible();
+  await expect(followUps.getByText('Second urgent follow-up', { exact: true })).toBeVisible();
+  await expect(followUps.getByText('Payment needs attention', { exact: true })).toBeVisible();
+  await expect(followUps.getByText('Later payment review', { exact: true })).toHaveCount(0);
+
+  const more = followUps.getByRole('button', { name: 'See 1 more follow-up', exact: true });
+  await more.focus();
+  await more.press('Enter');
+  await expect(followUps.getByText('Later payment review', { exact: true })).toBeVisible();
+  await expect(followUps.getByRole('button', { name: 'Show less', exact: true })).toBeFocused();
 });
 
 test('club can inspect lessons and open booking form', async ({ page }) => {
@@ -189,6 +246,7 @@ test('navigation shows every connected management screen', async ({ page }) => {
   for (const [view, label, heading] of destinations) {
     await openWorkspaceTab(page, 'Explore');
     await expect(page.getByRole('heading', { name: 'Explore', exact: true })).toBeVisible();
+    await revealAllWorkspaceTools(page);
     await page.getByRole('button', { name: `Open ${label}`, exact: true }).click();
     await expect(page.locator('main').getByRole('heading', { name: heading, exact: true })).toBeVisible();
     await expect(page).toHaveURL(new RegExp(`\\?tab=explore&view=${view}$`));

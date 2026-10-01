@@ -218,19 +218,24 @@ export function AdminConsole() {
         <h1 className="!mt-1.5 !text-[27px] !font-medium !leading-tight !tracking-[-0.9px] sm:!text-[31px]">Every workspace, at a glance</h1>
         <p className="!mt-2 max-w-xl text-sm leading-relaxed text-[#59675c]">
           {businessDeletionMode === 'demo-only'
-            ? 'Monitor providers, activity and payments across the whole platform. Demo data can be purged; real provider workspaces are retention protected and cannot be deleted from this console.'
-            : 'Monitor providers, activity and payments across the whole platform. Deletions here are permanent and cascade to every record a business owns.'}
+            ? 'Monitor platform activity. Demo data can be purged; real provider workspaces are retention protected.'
+            : 'Monitor platform activity. Business deletions are permanent and cascade to every record the business owns.'}
         </p>
 
-        <section className="!mt-6 grid grid-cols-2 gap-3 sm:!mt-7 sm:grid-cols-3 lg:grid-cols-4">
+        <section className="!mt-6 grid grid-cols-2 gap-3 sm:!mt-7 sm:grid-cols-4" aria-label="Key platform totals">
           <StatCard icon={<Building2 size={16} />} label="Businesses" value={t?.businesses} hint={t ? `${t.realBusinesses} real · ${t.demoBusinesses} demo` : undefined} />
           <StatCard icon={<Users size={16} />} label="Students" value={t?.students} hint={t ? `${t.memberships} business affiliations` : undefined} />
           <StatCard icon={<CalendarClock size={16} />} label="Bookings" value={t?.bookings} hint={t ? `${t.upcomingBookings} upcoming` : undefined} />
           <StatCard icon={<TrendingUp size={16} />} label="New this week" value={t?.bookingsLast7Days} hint="bookings created" />
-          <StatCard icon={<Wallet size={16} />} label="Student payments" value={t?.paymentsCount} hint={t ? `${formatMoney(t.paymentsTotal)} collected` : undefined} />
-          <StatCard icon={<Layers3 size={16} />} label="Packages" value={t?.packages} hint="prepaid plans" />
-          <StatCard icon={<MessageCircle size={16} />} label="Conversations" value={t?.chatThreads} hint={t?.chatMessages !== undefined ? `${t.chatMessages.toLocaleString()} messages` : undefined} />
         </section>
+        <details className="!mt-3 rounded-2xl border border-[#e1e7dd] bg-white">
+          <summary className="min-h-11 cursor-pointer px-4 py-3 text-xs font-semibold text-[#5b6c53] marker:text-[#6f865f]">More platform totals</summary>
+          <div className="grid grid-cols-2 gap-3 border-t border-[#e6eae3] p-3 sm:grid-cols-3">
+            <StatCard icon={<Wallet size={16} />} label="Student payments" value={t?.paymentsCount} hint={t ? `${formatMoney(t.paymentsTotal)} collected` : undefined} />
+            <StatCard icon={<Layers3 size={16} />} label="Packages" value={t?.packages} hint="prepaid plans" />
+            <StatCard icon={<MessageCircle size={16} />} label="Conversations" value={t?.chatThreads} hint={t?.chatMessages !== undefined ? `${t.chatMessages.toLocaleString()} messages` : undefined} />
+          </div>
+        </details>
 
         <div role="group" aria-label="Console section" className="!mt-8 inline-grid grid-cols-2 rounded-xl border border-[#dce4d4] bg-white p-1 sm:grid-cols-4">
           {(['businesses', 'privacy', 'reports', 'chats'] as Section[]).map(option => (

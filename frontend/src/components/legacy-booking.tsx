@@ -23,12 +23,14 @@ import {
 import {
   useCallback,
   useEffect,
+  useId,
   useState,
   type ReactNode,
 } from 'react';
 import { ApiError, api, loadSlots } from '@/lib/api';
 import type { Booking, Participant, PublicBookingBusiness, PublicLocation, Slot } from '@/lib/types';
 import { cn, dateKey, money, shortDate, time } from '@/lib/utils';
+import { Disclosure, SeeMoreButton } from '@/components/ui/progressive-disclosure';
 
 const primaryButton =
   'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#174c3c] px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[#103d2f] disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none';
@@ -276,8 +278,13 @@ function DateSlots({
   minimumDate: string;
 }) {
   const [week, setWeek] = useState(date || minimumDate);
+  const [showAllTimes, setShowAllTimes] = useState(false);
+  const timesId = useId();
+  useEffect(() => setShowAllTimes(false), [date]);
   const dates = Array.from({ length: 7 }, (_, index) => plusDays(week, index));
   const available = slots.filter((candidate) => candidate.available);
+  const collapsedTimes = available.filter((candidate, index) => index < 8 || candidate.startAt === selected);
+  const visibleTimes = showAllTimes ? available : collapsedTimes;
 
   return (
     <div className="space-y-6">
@@ -368,13 +375,16 @@ function DateSlots({
           </button>
         ))}
       </div>
-      <div className="border-t border-[#eef0eb] pt-5">
+      <div className="border-t border-[#eef0eb] pt-5" aria-busy={loading}>
         <div className="!mb-4 flex flex-wrap items-center justify-between gap-2">
           <h3 className="!text-sm">Available start times</h3>
           <span className="flex items-center gap-1 text-[11px] text-[#59675c]">
             <Clock3 size={12} /> {timezone.replaceAll('_', ' ')}
           </span>
         </div>
+        <p role="status" aria-live="polite" className="sr-only">
+          {loading ? 'Checking availability.' : error ? 'Available times could not be loaded.' : available.length === 1 ? '1 available time loaded.' : `${available.length} available times loaded.`}
+        </p>
         {loading ? (
           <div
             role="status"
@@ -414,8 +424,9 @@ function DateSlots({
             </button>
           </div>
         ) : (
-          <div role="radiogroup" aria-label="Available start times" className="grid grid-cols-3 gap-2 sm:grid-cols-4">
-            {available.map((candidate) => (
+          <>
+          <div id={timesId} role="radiogroup" aria-label="Available start times" className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+            {visibleTimes.map((candidate) => (
               <button
                 key={candidate.startAt}
                 type="button"
@@ -440,6 +451,17 @@ function DateSlots({
               </button>
             ))}
           </div>
+          {collapsedTimes.length < available.length && (
+            <SeeMoreButton
+              expanded={showAllTimes}
+              onToggle={() => setShowAllTimes((value) => !value)}
+              controls={timesId}
+              hiddenCount={available.length - visibleTimes.length}
+              noun="times"
+              className="!mt-2"
+            />
+          )}
+          </>
         )}
       </div>
     </div>
@@ -711,13 +733,13 @@ export function LegacyBooking({ token }: { token: string }) {
         <div className="!mb-8 flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
           <div>
             <p className="!mb-2 text-[10px] font-semibold uppercase tracking-[2px] text-[#59675c]">
-              Existing private booking link
+              Private booking link
             </p>
             <h1 className="!text-3xl !font-medium !tracking-tight sm:!text-4xl">
               Your booking
             </h1>
             <p className="!mt-3 text-sm text-[#59675c]">
-              View or update this booking without signing in.
+              Check the details or make an available change.
             </p>
           </div>
           <Link href="/manage" className={secondaryButton}>
@@ -796,6 +818,13 @@ export function LegacyBooking({ token }: { token: string }) {
                     'Details provided by your coach'}
                 </p>
               </DetailRow>
+            </div>
+            <Disclosure
+              title="Player and payment details"
+              summary={`${participant.name || 'Your session'} · ${money(participant.price ?? booking.price, business.currency)} · ${participant.paid ? 'marked paid' : 'payment arranged with your coach'}`}
+              className="!mt-6"
+              contentClassName="grid gap-6 sm:grid-cols-2"
+            >
               <DetailRow icon={<UserRound size={18} />} title="Booked for">
                 {participant.name || 'Your session'}
               </DetailRow>
@@ -807,7 +836,7 @@ export function LegacyBooking({ token }: { token: string }) {
                     : 'Payment arranged with your coach'}
                 </p>
               </DetailRow>
-            </div>
+            </Disclosure>
             {pending && (
               <div className="!mt-6 flex gap-2.5 rounded-xl border border-[#eee5ce] bg-[#fcf8ec] p-4 text-xs leading-relaxed text-[#70582e]">
                 <Info size={16} className="!mt-0.5 shrink-0" />
@@ -825,7 +854,7 @@ export function LegacyBooking({ token }: { token: string }) {
 
         {action === 'none' && (
           <section className={cn(panel, 'mt-5 p-5 sm:p-6')}>
-            <h2 className="!text-base">Plans change. We get it.</h2>
+            <h2 className="!text-base">Change this booking</h2>
             <p className="!mt-2 text-xs leading-relaxed text-[#59675c]">
               {cancelled
                 ? 'This booking is cancelled. Sign in to your account when you are ready to book again.'

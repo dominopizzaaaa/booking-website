@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * Long free text (a club description, a coach bio) clamped to a few lines with
- * a More/Less toggle. The toggle appears only when the text really overflows,
+ * a See more/Show less toggle. The toggle appears only when the text really overflows,
  * so short bios never offer a button that does nothing.
  */
 export function ClampedText({
@@ -50,7 +50,7 @@ export function ClampedText({
           onClick={() => setExpanded((value) => !value)}
           className="!mt-1 inline-flex min-h-9 items-center rounded-md px-0.5 text-xs font-semibold text-[#2f5a43] underline underline-offset-2 hover:text-[#174c3c]"
         >
-          {expanded ? "Less" : "More"}
+          {expanded ? "Show less" : "See more"}
         </button>
       )}
     </div>
