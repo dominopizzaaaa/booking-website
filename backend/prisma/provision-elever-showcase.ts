@@ -57,6 +57,8 @@ const allApplicationTables = [
   'PrivacyRequestEvent', 'PrivacyRequest', 'RateLimitCounter', 'RescheduleRequest',
   'Service', 'ServiceInstructor', 'ServiceLocation', 'Student', 'User', 'VenueOpeningHour', 'VenueReservation',
   'VenueUnit', 'VenueUnitAllocation',
+  'SessionFeedback', 'WaitlistEntry', 'PackageCreditEvent', 'TrainingGroupMember', 'TrainingGroup',
+  'FavoriteClub', 'ClubFunnelCounter',
 ] as const;
 
 // These retained-history triggers deliberately reject TRUNCATE, including on

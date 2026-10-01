@@ -16,6 +16,7 @@ import { notifyWorkspace } from './notifications.js';
 import { enqueueCalendarSync } from './calendar-sync.js';
 import { noteStudentLeft } from './chat-events.js';
 import { loadAccountPolicy } from './account-policy.js';
+import { offerWaitlistPlaces } from './waitlist.js';
 import {
   acceptRescheduleRequest,
   assertInsideRescheduleWindow,
@@ -467,6 +468,8 @@ publicRouter.post('/manage/:token/cancel', bookingLimit, asyncRoute(async (req, 
       await tx.booking.update({ where: { id: participant.bookingId }, data: { status: 'CANCELLED' } });
       await releaseBookingUnit(tx, participant.bookingId);
     }
+    // A freed group place goes to the waitlist before it reappears publicly.
+    await offerWaitlistPlaces(tx, participant.bookingId);
     await enqueueCalendarSync(tx, participant.bookingId);
     await noteStudentLeft(tx, participant.bookingId, participant.student);
     await notifyWorkspace(tx, {
@@ -543,6 +546,8 @@ publicRouter.post('/account/bookings/:participantId/cancel', bookingLimit, requi
       await tx.booking.update({ where: { id: participant.bookingId }, data: { status: 'CANCELLED' } });
       await releaseBookingUnit(tx, participant.bookingId);
     }
+    // A freed group place goes to the waitlist before it reappears publicly.
+    await offerWaitlistPlaces(tx, participant.bookingId);
     await enqueueCalendarSync(tx, participant.bookingId);
     await noteStudentLeft(tx, participant.bookingId, participant.student);
     await notifyWorkspace(tx, { businessId: participant.booking.businessId, instructorId: participant.booking.instructorId, bookingId: participant.bookingId, type: 'CANCELLATION', actionNeeded: true, title: 'Student cancelled a booking', message: 'The student cancelled through their account. Any consumed package credit was restored. Cancellation notice queued; no external message sent.' });

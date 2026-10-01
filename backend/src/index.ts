@@ -6,10 +6,14 @@ import { startChatReminderWorker } from './chat.js';
 import { assertSchemaReady } from './schema-health.js';
 import { createEmailProvider } from './email-provider.js';
 import { startOutboundWorker } from './outbound-worker.js';
+import { startWaitlistWorker } from './waitlist.js';
+import { startPackageAlertWorker } from './package-activity.js';
 await prisma.$connect();
 await assertSchemaReady(prisma);
 const stopCalendarWorker = startCalendarWorker();
 const stopChatReminderWorker = startChatReminderWorker();
+const stopWaitlistWorker = startWaitlistWorker();
+const stopPackageAlertWorker = startPackageAlertWorker();
 const emailProvider = createEmailProvider({ mode: config.email.mode, apiKey: config.email.apiKey });
 const stopOutboundWorker = startOutboundWorker({
   provider: emailProvider, from: { email: config.email.fromAddress || 'disabled@courtly.invalid', name: config.email.fromName },
@@ -19,6 +23,8 @@ const server = app.listen(config.port, () => console.log(`Courtly API listening 
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
   stopCalendarWorker();
   stopChatReminderWorker();
+  stopWaitlistWorker();
+  stopPackageAlertWorker();
   stopOutboundWorker();
   server.close(() => { void prisma.$disconnect().then(() => process.exit(0)); });
 });

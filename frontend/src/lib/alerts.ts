@@ -7,8 +7,11 @@ import {
   CircleCheck,
   Handshake,
   Info,
+  ListOrdered,
+  MessageSquareText,
   ShieldAlert,
   UserCheck,
+  Ticket,
   Wallet,
   type LucideIcon,
 } from 'lucide-react';
@@ -32,6 +35,9 @@ export type AlertKind =
   | 'pending'
   | 'integrity'
   | 'attendance'
+  | 'feedback'
+  | 'waitlist'
+  | 'package'
   | 'notice';
 
 export type AlertAppearance = {
@@ -51,6 +57,9 @@ const appearances: Record<AlertKind, AlertAppearance> = {
   pending: { kind: 'pending', icon: CircleAlert, label: 'Needs you', tone: 'bg-[#f6ebd5] text-[#94793c]' },
   integrity: { kind: 'integrity', icon: ShieldAlert, label: 'Review', tone: 'bg-[#f0e6ef] text-[#7d5f7c]' },
   attendance: { kind: 'attendance', icon: UserCheck, label: 'Attendance', tone: 'bg-[#e8eee3] text-[#65795a]' },
+  feedback: { kind: 'feedback', icon: MessageSquareText, label: 'Coach feedback', tone: 'bg-[#e2ece8] text-[#3f6b5c]' },
+  waitlist: { kind: 'waitlist', icon: ListOrdered, label: 'Waitlist', tone: 'bg-[#f3ead6] text-[#856a33]' },
+  package: { kind: 'package', icon: Ticket, label: 'Package', tone: 'bg-[#e9e7f2] text-[#5f5a85]' },
   notice: { kind: 'notice', icon: Bell, label: 'Update', tone: 'bg-[#eceeea] text-[#7d857b]' },
 };
 
@@ -81,6 +90,11 @@ const byType: Record<string, AlertKind> = {
   RESCHEDULE_WITHDRAWN: 'reschedule',
   PAYMENT_RECORDED: 'payment',
   PAYMENT_REVERSED: 'payment',
+  FEEDBACK_SHARED: 'feedback',
+  WAITLIST_OFFERED: 'waitlist',
+  WAITLIST_CLOSED: 'waitlist',
+  PACKAGE_LOW: 'package',
+  PACKAGE_EXPIRING: 'package',
 };
 
 function kindFromWording(text: string): AlertKind {

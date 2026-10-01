@@ -1155,7 +1155,7 @@ describe.sequential('Student account notifications', () => {
 
     const inbox = await request(app).get('/api/account/notifications').set('Cookie', session.cookie).expect(200);
     expect(inbox.body).toEqual({ notifications: [{
-      id: own.id, userId: account.id, businessId: f.business.id, bookingId: created.bookings[0]!.id,
+      id: own.id, userId: account.id, businessId: f.business.id, bookingId: created.bookings[0]!.id, packageId: null,
       type: 'BOOKING_CREATED', title: 'Booking confirmed', message: expect.any(String),
       read: false, actionNeeded: false, createdAt: own.createdAt.toISOString(),
       business: { name: f.business.name, slug: f.business.slug },
