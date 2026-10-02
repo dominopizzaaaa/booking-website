@@ -8,7 +8,7 @@ import { skipRateLimits } from './config.js';
 import { sharedRateLimit } from './rate-limit.js';
 import { asyncRoute, HttpError, type AccountRequest, type AccountType } from './http.js';
 import { loadAccountPolicy } from './account-policy.js';
-import { ageOnSingaporeDate } from './children-policy.js';
+import { ageOnSingaporeDate, SINGAPORE_TIME_ZONE } from './children-policy.js';
 import {
   bookingInput, bookableInstructorWhere, createBookingsInTransaction, evaluateSlot, lockInstructors, schedulingContext, type Tx,
 } from './scheduling.js';
@@ -709,6 +709,10 @@ function publicSchedulingOption(option: SchedulingOption, role: ChatRole | 'ADMI
 async function conversationJson(
   thread: LoadedThread, viewer: ChatViewer | null, role: ChatRole | 'ADMIN',
   db: Tx | typeof prisma = prisma,
+  // List rows never offer scheduling or coach assignment; only an open
+  // thread does. Skipping those lookups keeps the inbox to one query per page
+  // instead of one per conversation.
+  { summary = false }: { summary?: boolean } = {},
 ) {
   if (thread.kind === 'SESSION' && thread.booking) {
     const session = thread.booking;
@@ -718,14 +722,14 @@ async function conversationJson(
       timezone: session.business.timezone,
       business: { name: session.business.name, slug: session.business.slug },
       assignedCoach: membersJson(session, viewer?.userId ?? null).find(member => member.role === 'COACH') ?? null,
-      schedulingOptions: (await schedulingOptionsFor(thread, db)).map(option => publicSchedulingOption(option, role)),
+      schedulingOptions: summary ? [] : (await schedulingOptionsFor(thread, db)).map(option => publicSchedulingOption(option, role)),
     };
   }
   const members = accountMembersJson(thread, viewer?.userId ?? null);
   const directMembers = members.filter(member => !member.assigned);
   const other = directMembers.find(member => !member.isYou) ?? directMembers[0] ?? null;
   const assigned = members.find(member => member.assigned) ?? null;
-  const canAssignCoach = !!viewer && role === 'CLUB' && !!thread.businessId
+  const canAssignCoach = !summary && !!viewer && role === 'CLUB' && !!thread.businessId
     && viewer.clubBusinessIds.includes(thread.businessId)
     && directMembers.some(member => member.role === 'STUDENT')
     && directMembers.some(member => member.role === 'CLUB');
@@ -734,11 +738,13 @@ async function conversationJson(
     select: { id: true, user: { select: { name: true, username: true, sports: true } } },
     orderBy: { user: { name: 'asc' } },
   }) : null;
-  const options = await schedulingOptionsFor(thread, db);
+  const options = summary ? [] : await schedulingOptionsFor(thread, db);
   return {
     title: other?.name ?? 'Conversation',
     subtitle: assigned ? `Coach ${assigned.name} assigned` : other ? `${other.role[0]}${other.role.slice(1).toLowerCase()} account` : '',
-    timezone: thread.business?.timezone ?? options[0]?.timezone ?? 'UTC',
+    // A conversation with no club has no business clock; Courtly operates on
+    // Singapore time, which is also the default for every club.
+    timezone: thread.business?.timezone ?? options[0]?.timezone ?? SINGAPORE_TIME_ZONE,
     business: thread.business ? { name: thread.business.name, slug: thread.business.slug } : null,
     assignedCoach: assigned,
     ...(assignableCoaches ? {
@@ -935,14 +941,18 @@ async function listThreads(
 export async function listChatThreads(viewer: ChatViewer, query: z.infer<typeof listQuery>) {
   const includeAccountChats = query.contract === 'accounts';
   const { page, nextCursor } = await listThreads(accessibleThreadsWhere(viewer, includeAccountChats), query);
-  const unread = await unreadCounts(viewer, page.map(thread => thread.id));
+  const [unread, unreadThreads] = await Promise.all([
+    unreadCounts(viewer, page.map(thread => thread.id)),
+    unreadThreadCount(viewer, prisma, includeAccountChats),
+  ]);
   return {
     threads: await Promise.all(page.map(async thread => threadSummaryJson(
       thread, viewer.userId, unread.get(thread.id) ?? 0, await conversationJson(thread, viewer,
-        thread.kind === 'SESSION' && thread.booking ? chatRoleIn(viewer, thread.booking)! : accountRoleIn(viewer, thread)!),
+        thread.kind === 'SESSION' && thread.booking ? chatRoleIn(viewer, thread.booking)! : accountRoleIn(viewer, thread)!,
+        prisma, { summary: true }),
     ))),
     nextCursor,
-    unreadThreads: await unreadThreadCount(viewer, prisma, includeAccountChats),
+    unreadThreads,
     accountChatAvailable: includeAccountChats,
   };
 }
@@ -961,7 +971,7 @@ export async function listChatThreadsForAdmin(query: z.infer<typeof listQuery>) 
   const countByThread = new Map(counts.map(count => [count.threadId, count._count._all]));
   return {
     threads: await Promise.all(page.map(async thread => ({
-      ...threadSummaryJson(thread, null, 0, await conversationJson(thread, null, 'ADMIN')),
+      ...threadSummaryJson(thread, null, 0, await conversationJson(thread, null, 'ADMIN', prisma, { summary: true })),
       messageCount: countByThread.get(thread.id) ?? 0,
     }))),
     nextCursor,
@@ -1094,6 +1104,9 @@ async function lockThreadAccessForWrite(tx: Tx, viewer: ChatViewer, threadId: st
       where: { threadId, source: 'CLUB_ASSIGNED', removedAt: null },
       select: { membership: { select: { instructorId: true } } },
     })).flatMap(member => member.membership?.instructorId ? [member.membership.instructorId] : []);
+    // Assignment takes the conversation lock held above, so an empty roster
+    // cannot gain a coach before commit and the row locks below would be no-ops.
+    if (!assignedInstructorIds.length) return;
     // Instructor lifecycle writers take the scheduling lock before changing
     // roster rows. Follow that order here too, or a proposal could retain a
     // row share lock while waiting on a deletion that needs the same row.
@@ -1936,7 +1949,11 @@ chatRouter.get('/unread', asyncRoute(async (req, res) => {
 }));
 
 chatRouter.post('/accounts', chatCreateLimit, asyncRoute(async (req, res) => {
-  res.json({ threadId: await openAccountChat(chatViewerFor(req.auth), req.body) });
+  const viewer = chatViewerFor(req.auth);
+  const threadId = await openAccountChat(viewer, req.body);
+  // Return the opened conversation too, so the client can show it without a
+  // second round trip. Older clients read only threadId.
+  res.json({ threadId, thread: await chatThreadForViewer(viewer, threadId) });
 }));
 
 chatRouter.post('/bookings/:bookingId', asyncRoute(async (req, res) => {
