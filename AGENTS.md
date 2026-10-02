@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 4.7.1** · Last updated 2026-10-02
+**Version 4.8.0** · Last updated 2026-10-02
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -125,6 +125,7 @@ backend/           Express + Prisma API (TypeScript, ESM)
     reschedule.ts  Two-sided reschedule requests
     chat.ts        Account + session chat, scheduling proposals, reminder worker
     chat-events.ts Thread creation and lifecycle system lines (no scheduling imports)
+    chat-schedule-detect.ts Pure rule-based reader of a session being arranged in chat
     integrity.ts   Club safeguard: detection + review routes
     privacy.ts     Public DPO metadata and tracked data-subject requests
     safeguarding.ts  Club/platform safeguarding review queues
@@ -292,6 +293,7 @@ make an optional capability appear ready without its actual prerequisites.
 | Change live Stripe orchestration | `backend/src/payments/`, then the student checkout UI |
 | Change transactional email | `backend/src/outbound-events.ts`, `outbound-worker.ts`, `email-provider.ts`, and `email-templates.ts` |
 | Change account/session chat, proposals or reminders | `backend/src/chat.ts`, `chat-events.ts`, then `frontend/src/components/chat/` |
+| Change detected session suggestions in chat | `backend/src/chat-schedule-detect.ts` and its unit test, `scheduleSuggestionFor()` in `chat.ts`, then `chat/schedule-suggestion-card.tsx` and the propose dialog prefill |
 | Change child age, account gates, or capabilities | `backend/src/children-policy.ts`, `account-policy.ts`, `auth.ts`, `http.ts`, then serializers/types |
 | Change guardian consent, child profiles, export, deletion, or handover | `backend/src/family.ts`, `backend/prisma/schema.prisma`, its migration, then `frontend/src/components/family/` |
 | Change guardian-authorized child Class booking | `backend/src/family.ts`, `scheduling.ts`, then `frontend/src/components/public-booking.tsx` and Family booking tests |
@@ -1028,6 +1030,40 @@ session, locking the thread row so several API processes cannot double-post.
 Tests must pass `businessIds` to `sendDueSessionReminders()` so a sweep never
 writes into another tenant's data in a shared database.
 
+### Detected session suggestions
+
+While a student and coach talk a one-to-one session through (an `ACCOUNT`
+thread, or a `PRIVATE` session thread), the thread detail carries a
+`scheduleSuggestion`: the date, time, length and venue the newest 40 messages
+have converged on. It is a shortcut into the ordinary proposal dialog only;
+nothing is proposed, held or booked until someone sends that proposal, which
+re-validates everything as before.
+
+- Detection is deterministic and in-house (`chat-schedule-detect.ts`). Chat
+  text never goes to an external model or vendor. Keep it pure and cover a new
+  rule in `backend/tests/chat-schedule-detect.test.ts`.
+- Messages replay into one running draft after the latest `PROPOSAL` message;
+  later messages edit it ("can shift to 12pm?" keeps the date and length).
+  Clauses with busy language ("i got stuff at 10am", "can't tmr") mark their
+  times and dates as conflicts, not offers. A turned-down date waits for a new
+  one; a refusal or cancellation with nothing new on offer clears the plan.
+- Relative dates use the message's own send time in the conversation timezone.
+  Before 04:00, "tomorrow" and weekday names still mean what they meant the
+  evening before. Bare hours prefer plausible coaching times (12 is noon, 3 is
+  3pm, 7–11 are morning) unless context words or the time already under
+  discussion say otherwise. Bare numbers need a time cue so counts, prices,
+  courts and phone numbers are ignored; slash dates are day/month.
+- Venues match only the pair's server-authored scheduling options. Only a
+  `STUDENT` or `COACH` participant who can propose receives a suggestion, and
+  it carries no price. Availability is an advisory, unlocked `evaluateSlot`
+  without student locks. The suggestion is hidden when a live (`OPEN` or
+  `ACCEPTED`) proposal or the session's own booking already has that start.
+- `ChatScheduleDismissal` keeps one row per thread and person holding the
+  dismissed suggestion key (a digest of the source message and draft). A
+  changed plan has a new key, so the card returns. Dismissal is
+  `POST /api/chats/:threadId/schedule-suggestion/dismiss` and never affects the
+  other person.
+
 ### Chat safeguarding
 
 People may report a message or conversation and may directionally block the
@@ -1457,6 +1493,19 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 4.8.0 — 2026-10-02
+
+Chats now notice a one-to-one session being arranged and offer it as a
+ready-made proposal to both the student and the coach. A deterministic,
+in-house reader replays the conversation into one draft date, time, length and
+venue. It follows counter-offers, ignores busy times, reads late-night
+"tomorrow" as the coming day, and infers am/pm the way a coach would. The card
+pre-fills the existing proposal dialog and is hidden by a live proposal for
+that time. A per-person dismissal is stored in the new `ChatScheduleDismissal`
+table so it follows the person across devices. Schema health, the Elever
+truncate order, and backend, frontend and three-viewport browser tests cover
+the boundary.
 
 ### 4.7.1 — 2026-10-02
 

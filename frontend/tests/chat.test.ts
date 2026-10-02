@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   alertsButtonLabel, blockedComposerMessage, chatBadge, chatListTime, chatMemberSummary, chatPreview, chatReportCategories, chatReportCategoryLabel, chatSessionLine, chatTabLabel,
   chatThreadAvatar, chatThreadSubtitle, chatThreadTimezone, chatThreadTitle, endsChatRun, groupChatDays, listNames,
-  nextSessionDate, proposalResponseLabel, proposalStatusLine, safeguardingSeverityOrder, safeguardingStatusLabel, safeguardingStatusOrder, startsChatRun,
+  durationLabel, nextSessionDate, proposalResponseLabel, scheduleSuggestionSummary, proposalStatusLine, safeguardingSeverityOrder, safeguardingStatusLabel, safeguardingStatusOrder, startsChatRun,
 } from '../src/lib/chat';
-import type { ChatMessage, ChatThreadSummary, SessionProposal } from '../src/lib/types';
+import type { ChatMessage, ChatScheduleSuggestion, ChatThreadSummary, SessionProposal } from '../src/lib/types';
 
 const zone = 'Asia/Singapore';
 // 2026-10-14 10:00 in Singapore.
@@ -232,5 +232,47 @@ describe('nextSessionDate', () => {
 
   it('rolls a long-past session forward into the future', () => {
     expect(nextSessionDate('2026-09-01T02:00:00.000Z', zone, now)).toBe('2026-10-20');
+  });
+});
+
+describe('scheduleSuggestionSummary', () => {
+  const suggestion = (overrides: Partial<ChatScheduleSuggestion> = {}): ChatScheduleSuggestion => ({
+    key: 'a'.repeat(32), timezone: zone, date: '2026-10-17',
+    startAt: '2026-10-17T04:00:00.000Z', endAt: '2026-10-17T05:30:00.000Z', durationMinutes: 90,
+    locationMentioned: false,
+    option: {
+      businessSlug: 'kallang-racket-club', businessName: 'Kallang Racket Club', serviceId: 'service',
+      serviceName: 'Private Tennis', locationId: 'location', locationName: 'Kallang', durationMinutes: 60,
+    },
+    availability: { status: 'AVAILABLE' },
+    ...overrides,
+  });
+
+  it('reads the agreed time in the conversation timezone and flags a different class length', () => {
+    expect(scheduleSuggestionSummary(suggestion())).toEqual({
+      when: 'Sat 17 Oct · 12:00 PM – 1:30 PM',
+      where: 'Kallang (venue not mentioned)',
+      lengthNote: 'Private Tennis runs 1 h, so the proposal ends at 1:00 PM.',
+      availability: 'Open to book',
+    });
+  });
+
+  it('omits what nobody said and explains why a time cannot be booked', () => {
+    expect(scheduleSuggestionSummary(suggestion({
+      endAt: null, durationMinutes: null, locationMentioned: true,
+      availability: { status: 'UNAVAILABLE', reason: 'Outside working hours at this location' },
+    }))).toEqual({
+      when: 'Sat 17 Oct · 12:00 PM',
+      where: 'Kallang',
+      lengthNote: null,
+      availability: 'Not bookable: Outside working hours at this location',
+    });
+    expect(scheduleSuggestionSummary(suggestion({ availability: { status: 'UNKNOWN' } })).availability).toBeNull();
+  });
+
+  it('labels class lengths in hours and minutes', () => {
+    expect(durationLabel(45)).toBe('45 min');
+    expect(durationLabel(60)).toBe('1 h');
+    expect(durationLabel(90)).toBe('1 h 30 min');
   });
 });

@@ -1754,6 +1754,8 @@ model ChatThread {
   proposals       SessionProposal[]
   safetyReports   ChatSafetyReport[]
 
+  scheduleDismissals ChatScheduleDismissal[]
+
   @@unique([id, businessId])
   @@unique([bookingId, businessId])
   @@index([businessId, lastMessageAt])
@@ -1901,6 +1903,22 @@ model ChatReadState {
   /// SQL adds a cascading foreign key to User.
   userId     String
   lastReadAt DateTime   @default(now())
+
+  @@id([threadId, userId])
+  @@index([userId])
+}
+
+/// One person's dismissal of the session the chat detected. Only the latest
+/// matters: a new message produces a new suggestion key, so the card returns
+/// when the plan changes. Saved server-side so a dismissal follows the person
+/// across devices.
+model ChatScheduleDismissal {
+  threadId      String
+  thread        ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  /// SQL adds a cascading foreign key to User.
+  userId        String
+  suggestionKey String
+  dismissedAt   DateTime   @default(now())
 
   @@id([threadId, userId])
   @@index([userId])

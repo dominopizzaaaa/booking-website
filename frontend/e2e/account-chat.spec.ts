@@ -74,6 +74,12 @@ async function sendMessage(page: Page, message: string, threadId: string) {
   await expect(page.getByRole('log').getByText(message, { exact: true })).toBeVisible();
 }
 
+// The privacy note sits in the collapsed "Conversation details" disclosure.
+async function openConversationDetails(page: Page) {
+  const details = page.locator('details').filter({ has: page.locator('summary', { hasText: 'Conversation details' }) });
+  if (await details.getAttribute('open') === null) await details.locator('summary').click();
+}
+
 async function expectInsideViewport(page: Page, locator: Locator) {
   const box = await locator.boundingBox();
   expect(box).not.toBeNull();
@@ -222,6 +228,7 @@ test('a club can bring its coach into an account conversation and plan a session
 
     const message = `Student context before coach access ${run}`;
     await sendMessage(page, message, createdThreadId);
+    await openConversationDetails(page);
     await expect(page.getByText(/Visible to the people in this conversation/)).toBeVisible();
     await expectInsideViewport(page, page.locator('.chat-thread-pane'));
 
@@ -270,6 +277,7 @@ test('a club can bring its coach into an account conversation and plan a session
     const log = await openAccountThread(page, studentName);
     await expect(log.getByText(studentMessage, { exact: true })).toBeVisible();
     await expect(log.getByText(clubMessage, { exact: true })).toBeVisible();
+    await openConversationDetails(page);
     await expect(page.getByText(`Visible to the people in this conversation, including ${coachName}. Courtly does not monitor every message; authorized reviewers can review relevant context after a report.`, { exact: true })).toBeVisible();
 
     const slotsResponse = page.waitForResponse(response => {
@@ -434,5 +442,121 @@ test('a club can bring its coach into an account conversation and plan a session
     await expect(page.getByRole('button', { name: 'Manage conversation coach', exact: true })).toHaveCount(0);
     expect(adminMutations).toEqual([]);
     await expectInsideViewport(page, page.locator('.chat-thread-pane'));
+  });
+});
+
+test('a session talked through in chat becomes a ready-made proposal', async ({ page }, testInfo) => {
+  test.setTimeout(150_000);
+  const baseURL = String(testInfo.project.use.baseURL ?? process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:3000');
+  const run = `${projectId(testInfo.project.name)}_${Date.now().toString(36)}`.slice(-24);
+  const studentName = `Plan Student ${run}`;
+  const studentEmail = `plan-student-${run}@example.test`;
+  const coachName = `Plan Coach ${run}`;
+  const coachUsername = `pcoach_${run}`.slice(0, 30);
+  const coachEmail = `plan-coach-${run}@example.test`;
+  const clubEmail = `plan-club-${run}@example.test`;
+  const serviceName = `Plan lesson ${run}`;
+
+  const studentAccount = await isolatedApiContext(baseURL);
+  const coachAccount = await isolatedApiContext(baseURL);
+  const clubAccount = await isolatedApiContext(baseURL);
+  await responseJson(await studentAccount.post('/api/auth/register', {
+    data: {
+      accountType: 'STUDENT', name: studentName, username: `pstudent_${run}`.slice(0, 30), email: studentEmail,
+      password, sports: ['Tennis'], dateOfBirth: '1990-01-01', ...currentLegalAcceptance,
+    },
+  }));
+  await responseJson(await coachAccount.post('/api/auth/register', {
+    data: {
+      accountType: 'COACH', name: coachName, username: coachUsername, email: coachEmail,
+      password, sports: ['Tennis'], dateOfBirth: '1990-01-01', ...currentLegalAcceptance,
+    },
+  }));
+  const clubAuth = await responseJson<AuthSession>(await clubAccount.post('/api/auth/register', {
+    data: {
+      accountType: 'CLUB', businessName: `Plan Club ${run}`, name: `Plan Operator ${run}`,
+      username: `pclub_${run}`.slice(0, 30), email: clubEmail, password, sports: ['Tennis'], ...currentLegalAcceptance,
+    },
+  }));
+  expect(clubAuth.business).not.toBeNull();
+  const roster = await responseJson<{ instructorId: string | null }>(await clubAccount.post('/api/staff', { data: { email: coachEmail } }));
+  const instructorId = roster.instructorId!;
+  const location = await responseJson<{ id: string }>(await clubAccount.post('/api/locations', {
+    data: { name: `Plan Court ${run}`, address: '12 Planning Road', type: 'FACILITY', requiresApproval: false },
+  }));
+  await responseJson(await clubAccount.post('/api/services', {
+    data: {
+      name: serviceName, description: 'A private class used by the chat suggestion journey.', category: 'Tennis',
+      type: 'PRIVATE', duration: 60, price: 9_000, capacity: 1, bufferMinutes: 0, noticeHours: 0, color: 'sage', active: true,
+      locations: [{ locationId: location.id, price: 9_000, duration: 60, instructorIds: [instructorId] }],
+    },
+  }));
+  for (let dayOfWeek = 0; dayOfWeek < 7; dayOfWeek += 1) {
+    await responseJson(await clubAccount.post('/api/availability', {
+      data: { instructorId, locationId: location.id, dayOfWeek, startTime: '08:00', endTime: '20:00' },
+    }));
+  }
+
+  const { threadId } = await responseJson<{ threadId: string }>(await studentAccount.post('/api/chats/accounts', {
+    data: { username: coachUsername },
+  }));
+  const day = futureSingaporeDate(3);
+  const dayWords = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', timeZone: timezone })
+    .format(new Date(`${day}T04:00:00Z`));
+  const say = async (context: APIRequestContext, body: string) => responseJson(
+    await context.post(`/api/chats/${threadId}/messages`, { data: { body } }),
+  );
+  await say(coachAccount, 'hello');
+  await say(coachAccount, `Do you want to have a session on ${dayWords} 9am-1030am?`);
+  await say(studentAccount, 'Can shift to 12pm? i got stuff at 10am');
+
+  const suggestionCard = page.getByRole('region', { name: 'Sounds like you’re planning a session' });
+
+  await test.step('the student sees the counter-offer, not the original time, and sends it', async () => {
+    await signInAs(page, studentEmail);
+    await page.goto(`/manage?tab=chat&thread=${encodeURIComponent(threadId)}`);
+    await expect(suggestionCard).toBeVisible();
+    await expect(suggestionCard).toContainText('12:00 PM – 1:30 PM');
+    await expect(suggestionCard).toContainText('venue not mentioned');
+    await expect(suggestionCard).toContainText(`${serviceName} runs 1 h, so the proposal ends at 1:00 PM.`);
+    await expect(suggestionCard).toContainText('Open to book');
+    await expectInsideViewport(page, suggestionCard);
+
+    await suggestionCard.getByRole('button', { name: 'Propose this time', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Propose a session' });
+    await expect(dialog).toContainText('Filled in from your conversation');
+    await expect(dialog.getByLabel('Date', { exact: true })).toHaveValue(day);
+    await expect(dialog.getByRole('button', { name: '12:00 PM', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expectInsideViewport(page, dialog);
+
+    const proposal = mutationResponse(page, 'POST', `/api/chats/${threadId}/proposals`);
+    await dialog.getByRole('button', { name: 'Send proposal', exact: true }).click();
+    const sent = await proposal;
+    expect(sent.request().postDataJSON()).toMatchObject({
+      startAt: new Date(`${day}T04:00:00.000Z`).toISOString(), serviceId: expect.any(String), locationId: location.id,
+    });
+    await responseJson(sent);
+    await expect(dialog).toBeHidden();
+    await expect(page.locator('article.chat-proposal').filter({ hasText: serviceName })).toContainText('Waiting for');
+    await expect(suggestionCard).toHaveCount(0);
+  });
+
+  await test.step('a dismissed plan stays dismissed on another device, for that person only', async () => {
+    await say(coachAccount, `also free ${dayWords} 4pm at Plan Court ${run} if you want a second one`);
+    await page.reload();
+    await expect(suggestionCard).toContainText('4:00 PM');
+    await expect(suggestionCard).not.toContainText('venue not mentioned');
+    const dismissal = mutationResponse(page, 'POST', `/api/chats/${threadId}/schedule-suggestion/dismiss`);
+    await suggestionCard.getByRole('button', { name: 'Dismiss suggested session', exact: true }).click();
+    await responseJson(await dismissal);
+    await expect(suggestionCard).toHaveCount(0);
+    await page.reload();
+    await expect(page.getByRole('log')).toBeVisible();
+    await expect(suggestionCard).toHaveCount(0);
+
+    const otherDevice = await responseJson<ChatThreadDetail>(await studentAccount.get(`/api/chats/${threadId}?contract=accounts`));
+    expect(otherDevice.scheduleSuggestion).toBeNull();
+    const coachView = await responseJson<ChatThreadDetail>(await coachAccount.get(`/api/chats/${threadId}?contract=accounts`));
+    expect(coachView.scheduleSuggestion?.startAt).toBe(new Date(`${day}T08:00:00.000Z`).toISOString());
   });
 });

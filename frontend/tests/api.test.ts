@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ApiError, adminBusinesses, adminLogin, adminSession, api, applyAdminSafeguardingAccountAction, assignChatCoach, beginGoogleCalendarConnection, blockChatAccount, cancelAccountBooking, cancelPrivacyRequest,
   counterChatProposal, createAccountChat, createPrivacyRequest, disconnectGoogleCalendar,
-  loadAccountBookings, loadAccountClubs, loadAdminPrivacyRequestEvents, loadAdminPrivacyRequests, loadAdminSafeguardingReport, loadAdminSafeguardingReports, loadCalendarConnection, loadChatThread, loadChatThreads, loadClubSafeguardingReport, loadPrivacyRequests, loadSlots, loadWorkspace,
+  loadAccountBookings, loadAccountClubs, loadAdminPrivacyRequestEvents, loadAdminPrivacyRequests, loadAdminSafeguardingReport, loadAdminSafeguardingReports, loadCalendarConnection, loadChatThread, loadChatThreads, dismissChatScheduleSuggestion, loadClubSafeguardingReport, loadPrivacyRequests, loadSlots, loadWorkspace,
   normalizeCalendarConnection, proposeChatSession, removeChatCoach, reportChatMessage, respondToRescheduleRequest, reversePayment, searchVenues,
   syncGoogleCalendar, unblockChatAccount, updateAdminSafeguardingReport, updateCalendarConnection, updateClubSafeguardingReport,
   completeMfaLogin, confirmAccountEmailChange, confirmTotpEnrollment, disableAccountMfa, isMfaLoginChallenge,
@@ -679,6 +679,20 @@ describe('generalized chat requests', () => {
     expect(detail.safety).toMatchObject({
       blockTarget: { name: 'Marcus Tan', username: 'marcus_tan' },
       canBlock: true, canUnblock: false, messagingBlocked: false,
+    });
+  });
+
+  it('treats a missing schedule suggestion from an older API as none', async () => {
+    respond(accountDetail);
+    expect((await loadChatThread('account-thread')).scheduleSuggestion).toBeNull();
+  });
+
+  it('dismisses a schedule suggestion by its key', async () => {
+    respond({ ok: true });
+    await dismissChatScheduleSuggestion('thread/1', 'a'.repeat(32));
+    expect(calls[0]).toMatchObject({
+      url: '/api/chats/thread%2F1/schedule-suggestion/dismiss',
+      init: { method: 'POST', body: JSON.stringify({ key: 'a'.repeat(32) }) },
     });
   });
 

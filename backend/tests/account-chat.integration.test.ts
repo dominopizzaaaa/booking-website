@@ -316,6 +316,65 @@ describe.sequential('Account chat', () => {
     expect((await prisma.chatThread.findUniqueOrThrow({ where: { id: threadId } })).kind).toBe('ACCOUNT');
   });
 
+  it('suggests the session a student and coach are arranging, per person and until it is proposed', async () => {
+    const student = await person('Suggestion Student');
+    const threadId = (await openConversation(student.cookie, club.coachUser.username).expect(200)).body.threadId as string;
+    const day = club.starts.startOf('day');
+    const dayWords = day.toFormat('d LLL').toLowerCase();
+    const say = (cookie: string, body: string) => request(app).post(`/api/chats/${threadId}/messages`)
+      .set('Cookie', cookie).send({ body }).expect(201);
+    const suggestionFor = async (cookie: string) => (await request(app).get(`/api/chats/${threadId}`)
+      .query({ contract: 'accounts' }).set('Cookie', cookie).expect(200)).body.scheduleSuggestion;
+    const at = (hour: number, minute = 0) => day.set({ hour, minute }).toUTC().toISO();
+
+    expect(await suggestionFor(student.cookie)).toBeNull();
+    await say(club.coachCookie, 'hello');
+    await say(club.coachCookie, `Do you want to have a session on ${dayWords} 9am-1030am?`);
+    for (const cookie of [student.cookie, club.coachCookie]) {
+      expect(await suggestionFor(cookie)).toMatchObject({
+        startAt: at(9), endAt: at(10, 30), durationMinutes: 90, locationMentioned: false,
+        timezone: 'Asia/Singapore', availability: { status: 'AVAILABLE' },
+        option: {
+          businessSlug: club.business.slug, serviceId: club.service.id, locationId: club.location.id,
+          locationName: club.location.name, durationMinutes: 60,
+        },
+      });
+    }
+
+    await say(student.cookie, 'Can shift to 12pm? i got stuff at 10am');
+    const moved = await suggestionFor(student.cookie);
+    expect(moved).toMatchObject({ startAt: at(12), endAt: at(13, 30), availability: { status: 'AVAILABLE' } });
+    expect(moved).not.toHaveProperty('price');
+
+    // Dismissal belongs to the person, not the conversation.
+    await request(app).post(`/api/chats/${threadId}/schedule-suggestion/dismiss`).set('Cookie', student.cookie)
+      .send({ key: 'not-a-key' }).expect(400);
+    await request(app).post(`/api/chats/${threadId}/schedule-suggestion/dismiss`).set('Cookie', student.cookie)
+      .send({ key: moved.key }).expect(200);
+    expect(await prisma.chatScheduleDismissal.count({ where: { threadId } })).toBe(1);
+    expect(await suggestionFor(student.cookie)).toBeNull();
+    expect(await suggestionFor(club.coachCookie)).toMatchObject({ key: moved.key, startAt: at(12) });
+    await request(app).post(`/api/chats/${threadId}/schedule-suggestion/dismiss`).set('Cookie', club.cookie)
+      .send({ key: moved.key }).expect(404);
+
+    // A changed plan brings the card back, and the coach's hours decide availability.
+    await say(club.coachCookie, 'can do 8pm-9:30pm instead?');
+    expect(await suggestionFor(student.cookie)).toMatchObject({
+      startAt: at(20), availability: { status: 'UNAVAILABLE', reason: 'Outside working hours at this location' },
+    });
+    await say(student.cookie, `make it 2pm at ${club.location.name}`);
+    const final = await suggestionFor(student.cookie);
+    expect(final).toMatchObject({ startAt: at(14), endAt: at(15, 30), locationMentioned: true, availability: { status: 'AVAILABLE' } });
+
+    // Sending it as a real proposal replaces the suggestion for both people.
+    await request(app).post(`/api/chats/${threadId}/proposals`).set('Cookie', club.coachCookie)
+      .send(proposalBody(final.startAt)).expect(201);
+    expect(await suggestionFor(student.cookie)).toBeNull();
+    expect(await suggestionFor(club.coachCookie)).toBeNull();
+    await say(student.cookie, `ok see you ${dayWords} 2pm`);
+    expect(await suggestionFor(student.cookie)).toBeNull();
+  });
+
   it('includes account conversations in the read-only admin console without leaking account identifiers', async () => {
     const original = config.adminPassword;
     const originalOperators = config.adminOperators;

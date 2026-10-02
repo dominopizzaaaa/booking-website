@@ -130,6 +130,7 @@ describe('Google Calendar configuration', () => {
       chatSafeguardingAssigneeIdentity: true,
       distributedRateLimits: true,
       trainingCompanion: true,
+      chatScheduleDismissals: true,
     }]);
 
     const response = await request(app).get('/api/health').expect(200);
@@ -163,6 +164,7 @@ describe('Google Calendar configuration', () => {
       chatSafeguardingIndexes: true, chatSafeguardingTriggers: true, chatSafeguardingAssigneeIdentity: true,
       distributedRateLimits: true,
       trainingCompanion: true,
+      chatScheduleDismissals: true,
     }]);
 
     const response = await request(app).get('/api/health').expect(200);
@@ -203,6 +205,7 @@ describe('Google Calendar configuration', () => {
       chatSafeguardingAssigneeIdentity: true,
       distributedRateLimits: true,
       trainingCompanion: true,
+      chatScheduleDismissals: true,
     }]);
 
     const response = await request(app).get('/api/health').expect(503);
@@ -291,6 +294,7 @@ describe('Google Calendar configuration', () => {
       chatSafeguardingAssigneeIdentity: true,
       distributedRateLimits: true,
       trainingCompanion: true,
+      chatScheduleDismissals: true,
     }]);
 
     const response = await request(app).get('/api/health').expect(200);
@@ -334,6 +338,7 @@ describe('Google Calendar configuration', () => {
       chatSafeguardingAssigneeIdentity: true,
       distributedRateLimits: true,
       trainingCompanion: true,
+      chatScheduleDismissals: true,
     }]);
 
     const response = await request(app).get('/api/health').expect(200);

@@ -549,8 +549,30 @@ export type ChatAssignableCoach = { membershipId: string; name: string; username
 export type ChatSchedulingOption = {
   businessName: string; businessSlug: string; timezone: string; instructorId: string; instructorName: string;
   serviceId: string; serviceName: string; locationId: string; locationName: string;
+  /** Minutes a session runs; absent from APIs that predate chat suggestions. */
+  duration?: number;
   /** Student-facing catalogue terms; omitted from coach payloads. */
   price?: number; currency?: string;
+};
+/**
+ * A session the chat noticed two people arranging. It is only a shortcut into
+ * the proposal dialog: nothing is proposed or booked until someone sends it.
+ */
+export type ChatScheduleSuggestion = {
+  /** Identifies this exact plan; dismissing it hides only this version. */
+  key: string;
+  timezone: string;
+  date: string;
+  startAt: string;
+  /** Null when nobody said how long the session runs. */
+  endAt: string | null;
+  durationMinutes: number | null;
+  locationMentioned: boolean;
+  option: {
+    businessSlug: string; businessName: string; serviceId: string; serviceName: string;
+    locationId: string; locationName: string; durationMinutes: number;
+  };
+  availability: { status: 'AVAILABLE' | 'UNAVAILABLE' | 'UNKNOWN'; reason?: string };
 };
 export type ChatProposalSchedulingChoice = Pick<ChatSchedulingOption, 'businessSlug' | 'serviceId' | 'locationId'>;
 export type ChatConversation = {
@@ -608,6 +630,7 @@ export type ChatThreadList = {
 export type ChatThreadDetail = ChatThreadBase & ChatThreadContext & {
   viewer: { role: ChatViewerRole; canPost: boolean; canPropose: boolean; canAssignCoach: boolean };
   messages: ChatMessage[]; hasEarlier: boolean; safety: ChatSafety;
+  scheduleSuggestion: ChatScheduleSuggestion | null;
 };
 export type ChatProposalAction = 'accept' | 'decline' | 'withdraw';
 export type ChatReportCategory = 'GROOMING_SEXUAL' | 'HARASSMENT' | 'SELF_HARM_IMMEDIATE_DANGER' | 'SPAM_OTHER';

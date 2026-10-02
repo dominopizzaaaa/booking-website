@@ -15,6 +15,7 @@ import {
 import {
   chatEligible, chatWhen, ensureChatThread, postChatSystemLine, postThreadSystemLine, silentChatEventsFor, type ChatRole,
 } from './chat-events.js';
+import { detectScheduleDraft, type ScheduleDraft } from './chat-schedule-detect.js';
 
 /**
  * Who is reading. Chat belongs to the global account, like Calendar, so a
@@ -626,6 +627,8 @@ type SchedulingOption = {
   businessId: string; businessName: string; businessSlug: string; timezone: string;
   price: number; currency: string;
   instructorId: string; instructorName: string; serviceId: string; serviceName: string;
+  /** Minutes a session of this Class runs at this venue. */
+  duration: number;
   locationId: string; locationName: string; address?: string;
 };
 
@@ -645,15 +648,15 @@ async function schedulingOptionsFor(
           instructor: { is: bookableInstructorWhere(booking.businessId) },
         } },
       },
-      select: { price: true, location: { select: { address: true } } },
+      select: { price: true, duration: true, location: { select: { address: true } } },
     });
     if (!assignment) return [];
     return [{
       businessId: booking.businessId, businessName: booking.business.name, businessSlug: booking.business.slug,
       timezone: booking.business.timezone, price: assignment.price, currency: booking.business.currency,
       instructorId: booking.instructorId, instructorName: booking.instructor.name,
-      serviceId: booking.serviceId, serviceName: booking.service.name, locationId: booking.locationId,
-      locationName: booking.location.name, address: assignment.location.address,
+      serviceId: booking.serviceId, serviceName: booking.service.name, duration: assignment.duration,
+      locationId: booking.locationId, locationName: booking.location.name, address: assignment.location.address,
     }];
   }
   if (thread.kind !== 'ACCOUNT') return [];
@@ -678,6 +681,7 @@ async function schedulingOptionsFor(
         select: {
           serviceLocation: { select: {
             price: true,
+            duration: true,
             service: { select: { id: true, name: true } },
             location: { select: { id: true, name: true, address: true } },
           } },
@@ -692,6 +696,7 @@ async function schedulingOptionsFor(
     price: assignment.serviceLocation.price, currency: instructor.business.currency,
     instructorId: instructor.id, instructorName: instructor.name,
     serviceId: assignment.serviceLocation.service.id, serviceName: assignment.serviceLocation.service.name,
+    duration: assignment.serviceLocation.duration,
     locationId: assignment.serviceLocation.location.id, locationName: assignment.serviceLocation.location.name,
     address: assignment.serviceLocation.location.address,
   })));
@@ -712,8 +717,9 @@ async function conversationJson(
   // List rows never offer scheduling or coach assignment; only an open
   // thread does. Skipping those lookups keeps the inbox to one query per page
   // instead of one per conversation.
-  { summary = false }: { summary?: boolean } = {},
+  { summary = false, schedulingOptions }: { summary?: boolean; schedulingOptions?: SchedulingOption[] } = {},
 ) {
+  const loadOptions = async () => summary ? [] : schedulingOptions ?? await schedulingOptionsFor(thread, db);
   if (thread.kind === 'SESSION' && thread.booking) {
     const session = thread.booking;
     return {
@@ -722,7 +728,7 @@ async function conversationJson(
       timezone: session.business.timezone,
       business: { name: session.business.name, slug: session.business.slug },
       assignedCoach: membersJson(session, viewer?.userId ?? null).find(member => member.role === 'COACH') ?? null,
-      schedulingOptions: summary ? [] : (await schedulingOptionsFor(thread, db)).map(option => publicSchedulingOption(option, role)),
+      schedulingOptions: (await loadOptions()).map(option => publicSchedulingOption(option, role)),
     };
   }
   const members = accountMembersJson(thread, viewer?.userId ?? null);
@@ -738,7 +744,7 @@ async function conversationJson(
     select: { id: true, user: { select: { name: true, username: true, sports: true } } },
     orderBy: { user: { name: 'asc' } },
   }) : null;
-  const options = summary ? [] : await schedulingOptionsFor(thread, db);
+  const options = await loadOptions();
   return {
     title: other?.name ?? 'Conversation',
     subtitle: assigned ? `Coach ${assigned.name} assigned` : other ? `${other.role[0]}${other.role.slice(1).toLowerCase()} account` : '',
@@ -754,6 +760,106 @@ async function conversationJson(
     } : {}),
     schedulingOptions: options.map(option => publicSchedulingOption(option, role)),
   };
+}
+
+/** How many of the newest messages are read for a session being arranged. */
+const scheduleSuggestionWindow = 40;
+
+/** A venue named in the chat wins; then a Class whose length matches what was said. */
+function suggestionOption(options: SchedulingOption[], draft: ScheduleDraft) {
+  const atVenue = draft.locationId ? options.filter(option => option.locationId === draft.locationId) : [];
+  const pool = atVenue.length ? atVenue : options;
+  return pool.find(option => draft.durationMinutes !== null && option.duration === draft.durationMinutes) ?? pool[0];
+}
+
+/**
+ * Whether the coach can teach then. Advisory only and never locked: the
+ * proposal and its acceptance check availability again before booking.
+ */
+async function suggestionAvailability(option: SchedulingOption, startAt: Date, db: Tx | typeof prisma) {
+  const evaluate = async (tx: Tx) => {
+    const context = await schedulingContext(tx, option.businessId, option.serviceId, option.instructorId, option.locationId);
+    return evaluateSlot(tx, context, startAt);
+  };
+  try {
+    const slot = db === prisma ? await prisma.$transaction(evaluate, { timeout: 10_000 }) : await evaluate(db as Tx);
+    return slot.available
+      ? { status: 'AVAILABLE' as const }
+      : { status: 'UNAVAILABLE' as const, reason: slot.reason ?? 'Not available' };
+  } catch (error) {
+    // Inside a caller's transaction only a catalogue miss is safe to absorb;
+    // a database error has already aborted that transaction.
+    if (db !== prisma && !(error instanceof HttpError)) throw error;
+    return { status: 'UNKNOWN' as const };
+  }
+}
+
+/**
+ * The session the conversation seems to be arranging, offered as a ready-made
+ * proposal. Hidden once the reader dismisses this exact plan, or once a live
+ * proposal or the chat's own session already covers that start time.
+ */
+async function scheduleSuggestionFor(
+  thread: LoadedThread,
+  viewer: ChatViewer,
+  messages: ChatMessage[],
+  options: SchedulingOption[],
+  timezone: string,
+  db: Tx | typeof prisma,
+) {
+  const venues = [...new Map(options.map(option => [option.locationId, {
+    id: option.locationId, name: option.locationName, address: option.address ?? null,
+  }])).values()];
+  const draft = detectScheduleDraft(messages.slice(-scheduleSuggestionWindow), { timezone, venues });
+  if (!draft) return null;
+  if (thread.booking && thread.booking.startAt.getTime() === draft.startAt.getTime()) return null;
+  const key = createHash('sha256')
+    .update([draft.sourceMessageId, draft.date, draft.startMinutes, draft.endMinutes ?? '', draft.locationId ?? ''].join('|'))
+    .digest('hex').slice(0, 32);
+  const [dismissal, covered] = await Promise.all([
+    db.chatScheduleDismissal.findUnique({
+      where: { threadId_userId: { threadId: thread.id, userId: viewer.userId } }, select: { suggestionKey: true },
+    }),
+    db.sessionProposal.findFirst({
+      where: { threadId: thread.id, startAt: draft.startAt, status: { in: ['OPEN', 'ACCEPTED'] } }, select: { id: true },
+    }),
+  ]);
+  if (dismissal?.suggestionKey === key || covered) return null;
+  const option = suggestionOption(options, draft);
+  const endAt = draft.durationMinutes !== null ? new Date(draft.startAt.getTime() + draft.durationMinutes * 60_000) : null;
+  return {
+    key,
+    timezone,
+    date: draft.date,
+    startAt: draft.startAt.toISOString(),
+    endAt: endAt?.toISOString() ?? null,
+    durationMinutes: draft.durationMinutes,
+    locationMentioned: draft.locationId !== null,
+    option: {
+      businessSlug: option.businessSlug, businessName: option.businessName,
+      serviceId: option.serviceId, serviceName: option.serviceName,
+      locationId: option.locationId, locationName: option.locationName,
+      durationMinutes: option.duration,
+    },
+    availability: await suggestionAvailability(option, draft.startAt, db),
+  };
+}
+
+export async function dismissScheduleSuggestion(viewer: ChatViewer, threadId: string, rawInput: unknown) {
+  const input = z.object({
+    key: z.string().regex(/^[0-9a-f]{32}$/, 'That suggestion could not be found'),
+  }).strict().parse(rawInput);
+  await prisma.$transaction(async tx => {
+    const { thread, role } = await loadAccessibleThread(viewer, threadId, tx);
+    if (role !== 'STUDENT' && role !== 'COACH') {
+      throw new HttpError(403, 'Only a coach and student in this conversation see session suggestions');
+    }
+    await tx.chatScheduleDismissal.upsert({
+      where: { threadId_userId: { threadId: thread.id, userId: viewer.userId } },
+      create: { threadId: thread.id, userId: viewer.userId, suggestionKey: input.key },
+      update: { suggestionKey: input.key, dismissedAt: new Date() },
+    });
+  });
 }
 
 async function buildThreadDetail(
@@ -788,7 +894,8 @@ async function buildThreadDetail(
     ? await db.sessionProposal.findMany({ where: { id: { in: proposalIds } }, include: proposalInclude })
     : [];
   const students = thread.kind === 'SESSION' && thread.booking ? activeStudents(thread.booking) : accountStudents(thread);
-  const conversation = await conversationJson(thread, viewer, role, db);
+  const schedulingOptions = await schedulingOptionsFor(thread, db);
+  const conversation = await conversationJson(thread, viewer, role, db, { schedulingOptions });
   const validProposal = (proposal: FullProposal) => thread.kind === 'SESSION'
     || conversation.schedulingOptions.some(option => option.businessSlug === proposal.business.slug
       && option.serviceId === proposal.serviceId && option.instructorId === proposal.instructorId
@@ -807,6 +914,16 @@ async function buildThreadDetail(
   ]);
   const reportedMessageIds = new Set(viewerReports.flatMap(report => report.messageId ? [report.messageId] : []));
   const messagingAllowed = thread.kind !== 'ACCOUNT' || !messaging.blocked;
+  // Coaches and students plan their next session here; the club reads
+  // along but books through its own workspace.
+  const canPropose = messagingAllowed && (role === 'STUDENT' || role === 'COACH') && students.length > 0
+    && conversation.schedulingOptions.length > 0;
+  // Only the newest page is read for a plan in progress, and only in a
+  // one-to-one conversation: a group session is proposed to everyone at once.
+  const scheduleSuggestion = !options.before && viewer && canPropose
+    && (thread.kind === 'ACCOUNT' || thread.booking?.type === 'PRIVATE')
+    ? await scheduleSuggestionFor(thread, viewer, messages, schedulingOptions, conversation.timezone, db)
+    : null;
   const safety = {
     canReport: participant,
     blockTarget: messaging.blockTarget,
@@ -827,10 +944,7 @@ async function buildThreadDetail(
     viewer: {
       role,
       canPost: participant && messagingAllowed,
-      // Coaches and students plan their next session here; the club reads
-      // along but books through its own workspace.
-      canPropose: messagingAllowed && (role === 'STUDENT' || role === 'COACH') && students.length > 0
-        && conversation.schedulingOptions.length > 0,
+      canPropose,
       canAssignCoach: thread.kind === 'ACCOUNT' && role === 'CLUB' && !!thread.businessId
         && !!viewer?.clubBusinessIds.includes(thread.businessId)
         && activeAccountMembers(thread).some(member => member.source !== 'CLUB_ASSIGNED' && member.user.accountType === 'STUDENT'),
@@ -848,6 +962,7 @@ async function buildThreadDetail(
       canBlock: messaging.canBlock, canUnblock: messaging.canUnblock, reason: messaging.reason,
     },
     blockTarget: messaging.blockTarget,
+    scheduleSuggestion,
     hasEarlier,
   };
 }
@@ -2026,6 +2141,11 @@ chatRouter.delete('/:threadId/coach', chatWriteLimit, asyncRoute(async (req, res
   const viewer = chatViewerFor(req.auth);
   const threadId = await removeConversationCoach(viewer, chatId.parse(req.params.threadId), req.body);
   res.json({ thread: await chatThreadForViewer(viewer, threadId) });
+}));
+
+chatRouter.post('/:threadId/schedule-suggestion/dismiss', chatWriteLimit, asyncRoute(async (req, res) => {
+  await dismissScheduleSuggestion(chatViewerFor(req.auth), chatId.parse(req.params.threadId), req.body);
+  res.json({ ok: true });
 }));
 
 chatRouter.post('/:threadId/read', asyncRoute(async (req, res) => {

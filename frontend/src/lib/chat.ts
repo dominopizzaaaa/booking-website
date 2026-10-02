@@ -3,6 +3,7 @@ import type {
   ChatMember,
   ChatMessage,
   ChatReportCategory,
+  ChatScheduleSuggestion,
   SafeguardingReportSeverity,
   SafeguardingReportStatus,
   ChatSession,
@@ -210,4 +211,38 @@ export function nextSessionDate(startAt: string, timezone: string, now = Date.no
   let candidate = addDaysKey(dateKey(startAt, timezone), 7, timezone);
   while (candidate <= today) candidate = addDaysKey(candidate, 7, timezone);
   return candidate;
+}
+
+/**
+ * How a detected session reads on its card: the agreed time, where it would
+ * happen, and anything that would differ once it is sent as a proposal.
+ */
+export function scheduleSuggestionSummary(suggestion: ChatScheduleSuggestion) {
+  const zone = suggestion.timezone;
+  const day = formatInTimeZone(suggestion.startAt, zone, 'EEE d MMM');
+  const start = formatInTimeZone(suggestion.startAt, zone, 'h:mm a');
+  const end = suggestion.endAt ? formatInTimeZone(suggestion.endAt, zone, 'h:mm a') : null;
+  const classLength = suggestion.option.durationMinutes;
+  const lengthNote = suggestion.durationMinutes !== null && suggestion.durationMinutes !== classLength
+    ? `${suggestion.option.serviceName} runs ${durationLabel(classLength)}, so the proposal ends at ${
+      formatInTimeZone(new Date(Date.parse(suggestion.startAt) + classLength * 60_000), zone, 'h:mm a')}.`
+    : null;
+  const availability = suggestion.availability.status === 'AVAILABLE' ? 'Open to book'
+    : suggestion.availability.status === 'UNAVAILABLE' ? `Not bookable: ${suggestion.availability.reason ?? 'Not available'}`
+      : null;
+  return {
+    when: `${day} · ${end ? `${start} – ${end}` : start}`,
+    where: suggestion.locationMentioned
+      ? suggestion.option.locationName
+      : `${suggestion.option.locationName} (venue not mentioned)`,
+    lengthNote,
+    availability,
+  };
+}
+
+export function durationLabel(minutes: number) {
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (!hours) return `${rest} min`;
+  return rest ? `${hours} h ${rest} min` : `${hours} h`;
 }
