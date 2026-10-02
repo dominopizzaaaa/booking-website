@@ -42,11 +42,13 @@ export type ChatThreadSummaryWire = ChatThreadSummary | (
 );
 
 type SuggestionWire = { scheduleSuggestion?: ChatThreadDetail['scheduleSuggestion'] };
+/** Read receipts arrived after suggestions; an older API sends neither. */
+type ReceiptWire = { othersReadAt?: string | null };
 
 export type ChatThreadDetailWire = ((
-  Omit<AccountDetail, 'messages' | 'safety' | 'scheduleSuggestion'> & { messages: ChatMessageWire[] } & DetailSafetyWire
+  Omit<AccountDetail, 'messages' | 'safety' | 'scheduleSuggestion' | 'othersReadAt'> & { messages: ChatMessageWire[] } & DetailSafetyWire
 ) | (
-  Omit<SessionDetail, 'kind' | 'conversation' | 'members' | 'viewer' | 'messages' | 'safety' | 'scheduleSuggestion'> & {
+  Omit<SessionDetail, 'kind' | 'conversation' | 'members' | 'viewer' | 'messages' | 'safety' | 'scheduleSuggestion' | 'othersReadAt'> & {
     kind?: 'SESSION';
     conversation?: ChatConversation | null;
     members: LegacyChatMember[];
@@ -56,7 +58,7 @@ export type ChatThreadDetailWire = ((
     messaging?: Partial<ChatMessaging>;
     blockTarget?: ChatThreadDetail['safety']['blockTarget'];
   }
-)) & SuggestionWire;
+)) & SuggestionWire & ReceiptWire;
 
 export type ChatThreadListWire = Omit<ChatThreadList, 'threads' | 'accountChatAvailable'> & {
   threads: ChatThreadSummaryWire[];
@@ -157,6 +159,7 @@ export function normalizeChatThreadDetail(thread: ChatThreadDetailWire): ChatThr
       messages: thread.messages.map(message => normalizeMessage(message)),
       safety: normalizeSafety(thread),
       scheduleSuggestion: thread.scheduleSuggestion ?? null,
+      othersReadAt: thread.othersReadAt ?? null,
     };
   }
   const session = thread.session;
@@ -171,6 +174,7 @@ export function normalizeChatThreadDetail(thread: ChatThreadDetailWire): ChatThr
     messages: thread.messages.map(message => normalizeMessage(message, session)),
     safety: normalizeSafety(thread),
     scheduleSuggestion: thread.scheduleSuggestion ?? null,
+    othersReadAt: thread.othersReadAt ?? null,
   };
 }
 

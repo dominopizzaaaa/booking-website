@@ -539,7 +539,7 @@ async function seedSessionChats(tx: Prisma.TransactionClient, context: SeedChatC
       threadId: thread.id, kind: 'SYSTEM', event: 'OPENED', senderRole: 'SYSTEM', createdAt: thread.createdAt,
       body: chatOpeningLine({
         serviceName: name(context.services, booking.serviceId), instructorName: name(context.instructors, booking.instructorId),
-        locationName: name(context.locations, booking.locationId), startAt: booking.startAt as Date, timezone,
+        locationName: name(context.locations, booking.locationId), startAt: booking.startAt as Date,
       }),
     };
   });
@@ -579,7 +579,7 @@ async function seedSessionChats(tx: Prisma.TransactionClient, context: SeedChatC
     messages.push({
       threadId: thread.id, kind: 'PROPOSAL', senderUserId: coach.userId, senderRole: 'COACH', senderName: coach.name,
       proposalId, createdAt: now.minus({ minutes: 135 }).toJSDate(),
-      body: `${coach.name} proposed the next session: ${name(context.services, lesson.serviceId)} on ${chatWhen(startAt.toJSDate(), timezone)}.`,
+      body: `${coach.name} proposed the next session: ${name(context.services, lesson.serviceId)} on ${chatWhen(startAt.toJSDate())}.`,
     });
     thread.lastMessageAt = now.minus({ minutes: 135 }).toJSDate();
   }

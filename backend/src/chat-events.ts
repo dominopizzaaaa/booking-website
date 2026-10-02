@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import { DateTime } from 'luxon';
+import { SINGAPORE_TIME_ZONE } from './children-policy.js';
 
 type Tx = Prisma.TransactionClient;
 
@@ -34,8 +35,15 @@ export function silentChatEventsFor(role: ChatRole): ChatSystemEvent[] {
   return role === 'CLUB' ? ['OPENED', 'REMINDER'] : ['OPENED'];
 }
 
-export const chatWhen = (date: Date, timezone: string) =>
-  DateTime.fromJSDate(date, { zone: timezone }).setLocale('en').toFormat("ccc, d LLL 'at' h:mm a");
+/**
+ * Every time a chat shows or reads is Singapore time, whichever club the
+ * conversation belongs to. Courtly operates in Singapore, and one clock means
+ * "tomorrow at 5pm" reads the same for everyone in a conversation.
+ */
+export const CHAT_TIME_ZONE = SINGAPORE_TIME_ZONE;
+
+export const chatWhen = (date: Date) =>
+  DateTime.fromJSDate(date, { zone: CHAT_TIME_ZONE }).setLocale('en').toFormat("ccc, d LLL 'at' h:mm a");
 
 const sessionSelect = {
   id: true, businessId: true, startAt: true, status: true, paymentRoute: true,
@@ -52,9 +60,9 @@ export const chatEligible = (booking: Pick<ChatSession, 'paymentRoute' | 'busine
   booking.paymentRoute === 'CLUB' && booking.business.kind === 'CLUB' && !booking.business.legacyReadOnly;
 
 export function chatOpeningLine(session: {
-  serviceName: string; instructorName: string; locationName: string; startAt: Date; timezone: string;
+  serviceName: string; instructorName: string; locationName: string; startAt: Date;
 }) {
-  return `This is the chat for ${session.serviceName} on ${chatWhen(session.startAt, session.timezone)} `
+  return `This is the chat for ${session.serviceName} on ${chatWhen(session.startAt)} `
     + `with ${session.instructorName} at ${session.locationName}. Your coach, the club and everyone booked into `
     + 'this session can read and reply here.';
 }
@@ -81,7 +89,7 @@ export async function ensureChatThread(tx: Tx, bookingId: string) {
         threadId: thread.id, kind: 'SYSTEM', event: 'OPENED', senderRole: 'SYSTEM',
         body: chatOpeningLine({
           serviceName: session.service.name, instructorName: session.instructor.name,
-          locationName: session.location.name, startAt: session.startAt, timezone: session.business.timezone,
+          locationName: session.location.name, startAt: session.startAt,
         }),
         createdAt: now,
       },
@@ -131,7 +139,7 @@ export async function describeSession(tx: Tx, bookingId: string) {
   if (!session) return null;
   return {
     ...session,
-    when: chatWhen(session.startAt, session.business.timezone),
+    when: chatWhen(session.startAt),
   };
 }
 

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   alertsButtonLabel, blockedComposerMessage, chatBadge, chatListTime, chatMemberSummary, chatPreview, chatReportCategories, chatReportCategoryLabel, chatSessionLine, chatTabLabel,
-  chatThreadAvatar, chatThreadSubtitle, chatThreadTimezone, chatThreadTitle, endsChatRun, groupChatDays, listNames,
-  durationLabel, nextSessionDate, proposalResponseLabel, scheduleSuggestionSummary, proposalStatusLine, safeguardingSeverityOrder, safeguardingStatusLabel, safeguardingStatusOrder, startsChatRun,
+  chatThreadAvatar, chatThreadSubtitle, chatThreadTitle, CHAT_TIME_ZONE, endsChatRun, groupChatDays, listNames,
+  durationLabel, messageReceipt, nextSessionDate, receiptLabel, proposalResponseLabel, scheduleSuggestionSummary, proposalStatusLine, safeguardingSeverityOrder, safeguardingStatusLabel, safeguardingStatusOrder, startsChatRun,
 } from '../src/lib/chat';
 import type { ChatMessage, ChatScheduleSuggestion, ChatThreadSummary, SessionProposal } from '../src/lib/types';
 
@@ -97,8 +97,12 @@ describe('chatPreview', () => {
 });
 
 describe('session and member lines', () => {
-  it('shows the session time in the club’s zone', () => {
-    expect(chatSessionLine({ startAt: '2026-10-21T02:00:00.000Z', timezone: zone })).toBe('Wed, 21 Oct · 10:00 AM');
+  it('shows the session time on Singapore time, whatever the club’s own zone', () => {
+    expect(CHAT_TIME_ZONE).toBe(zone);
+    expect(chatSessionLine({ startAt: '2026-10-21T02:00:00.000Z' })).toBe('Wed, 21 Oct · 10:00 AM');
+    // A London club's 3am UTC session is still read as 11am in the chat.
+    expect(chatSessionLine({ startAt: '2026-10-21T03:00:00.000Z', timezone: 'Europe/London' } as { startAt: string }))
+      .toBe('Wed, 21 Oct · 11:00 AM');
   });
 
   it('names a private student but counts a group', () => {
@@ -136,7 +140,6 @@ describe('generalized thread presentation', () => {
   it('uses server-authored account conversation context without a session', () => {
     expect(chatThreadTitle(accountThread)).toBe('Kallang Racket Club');
     expect(chatThreadSubtitle(accountThread)).toBe('Club · Coach Marcus Tan');
-    expect(chatThreadTimezone(accountThread)).toBe(zone);
     expect(chatThreadAvatar(accountThread)).toEqual({ kind: 'initials', label: 'Kallang Racket Club' });
   });
 
@@ -164,7 +167,6 @@ describe('generalized thread presentation', () => {
     expect(chatThreadTitle(thread)).toBe('Group Tennis');
     expect(chatThreadSubtitle(thread)).toBe('Wed, 21 Oct · 10:00 AM · Kallang Racket Club · Cancelled');
     expect(chatThreadSubtitle(thread, false)).toBe('Wed, 21 Oct · 10:00 AM · Cancelled');
-    expect(chatThreadTimezone(thread)).toBe(zone);
     expect(chatThreadAvatar(thread)).toEqual({ kind: 'group', label: 'Group Tennis' });
   });
 });
@@ -257,6 +259,10 @@ describe('scheduleSuggestionSummary', () => {
     });
   });
 
+  it('keeps the chat on Singapore time even when the server names another zone', () => {
+    expect(scheduleSuggestionSummary(suggestion({ timezone: 'Europe/London' })).when).toBe('Sat 17 Oct · 12:00 PM – 1:30 PM');
+  });
+
   it('omits what nobody said and explains why a time cannot be booked', () => {
     expect(scheduleSuggestionSummary(suggestion({
       endAt: null, durationMinutes: null, locationMentioned: true,
@@ -274,5 +280,24 @@ describe('scheduleSuggestionSummary', () => {
     expect(durationLabel(45)).toBe('45 min');
     expect(durationLabel(60)).toBe('1 h');
     expect(durationLabel(90)).toBe('1 h 30 min');
+  });
+});
+
+describe('messageReceipt', () => {
+  const sent = '2026-10-14T01:00:00.000Z';
+
+  it('marks only your own messages: a clock, one tick, then two once someone reads past it', () => {
+    expect(messageReceipt(message({ mine: false }), null)).toBeNull();
+    expect(messageReceipt(message({ mine: true, kind: 'SYSTEM' }), null)).toBeNull();
+    expect(messageReceipt(message({ mine: true, createdAt: sent }), null, true)).toBe('sending');
+    expect(messageReceipt(message({ mine: true, createdAt: sent }), null)).toBe('sent');
+    expect(messageReceipt(message({ mine: true, createdAt: sent }), '2026-10-14T00:59:59.999Z')).toBe('sent');
+    expect(messageReceipt(message({ mine: true, createdAt: sent }), sent)).toBe('read');
+    expect(messageReceipt(message({ mine: true, createdAt: sent }), '2026-10-14T03:00:00.000Z')).toBe('read');
+    expect(messageReceipt(message({ mine: true, createdAt: sent }), 'not a date')).toBe('sent');
+  });
+
+  it('names each mark for screen readers', () => {
+    expect(['sending', 'sent', 'read'].map(receipt => receiptLabel(receipt as 'sending'))).toEqual(['Sending', 'Sent', 'Read']);
   });
 });

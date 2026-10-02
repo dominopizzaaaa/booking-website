@@ -1,4 +1,4 @@
-import express, { type ErrorRequestHandler, type Router } from 'express';
+import express, { type ErrorRequestHandler, type RequestHandler, type Router } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
@@ -23,6 +23,7 @@ import { chatRouter } from './chat.js';
 import { clubStaffAccessRouter, clubStaffInvitationRouter } from './staff-access.js';
 import { bookingSeriesRouter } from './booking-series.js';
 import { HttpError, requireAccountCapability, requireAccountReady } from './http.js';
+import type { AccountCapability } from './children-policy.js';
 import { prisma } from './db.js';
 import { inspectSchema } from './schema-health.js';
 import { paymentsRouter, stripeWebhookHandler } from './payments/routes.js';
@@ -147,17 +148,24 @@ app.use('/api', requireAuth, requireAccountReady);
 // per route. A capability middleware mounted on the bare /api prefix would
 // otherwise reject unrelated routes mounted after it.
 app.use('/api', discoveryRouter, progressRouter, waitlistAccountRouter, packageActivityAccountRouter);
-app.use('/api', requireAccountCapability('directory'), accountDirectoryRouter);
-app.use('/api', requireAccountCapability('payments'), paymentsRouter);
+// The groups below share the bare /api prefix, so each capability guard
+// applies only to its own router's routes. Ungated, a teen account (no
+// payments, commerce or rentals) was refused Chat and Calendar as well.
+const capabilityGate = (capability: AccountCapability, router: Router): RequestHandler => {
+  const guard = requireAccountCapability(capability);
+  return (req, res, next) => (routerHandles(router, req.method, req.path) ? guard(req, res, next) : next());
+};
+app.use('/api', capabilityGate('directory', accountDirectoryRouter), accountDirectoryRouter);
+app.use('/api', capabilityGate('payments', paymentsRouter), paymentsRouter);
 // A coach can review and accept invitations before selecting a workspace.
-app.use('/api', requireAccountCapability('staffAccess'), coachInvitationRouter);
-app.use('/api', requireAccountCapability('staffAccess'), clubStaffInvitationRouter);
+app.use('/api', capabilityGate('staffAccess', coachInvitationRouter), coachInvitationRouter);
+app.use('/api', capabilityGate('staffAccess', clubStaffInvitationRouter), clubStaffInvitationRouter);
 // Commerce contains both global student checkout routes and club-workspace
 // management routes, so each endpoint applies its own narrower guard.
-app.use('/api', requireAccountCapability('commerce'), commerceRouter);
+app.use('/api', capabilityGate('commerce', commerceRouter), commerceRouter);
 // Rental discovery is global to every signed-in account; manager mutations
 // apply their club-only checks inside the router.
-app.use('/api', requireAccountCapability('rentals'), rentalsRouter);
+app.use('/api', capabilityGate('rentals', rentalsRouter), rentalsRouter);
 // Calendar grants belong to the global person, not a selected workspace.
 app.use('/api/calendar', requireAccountCapability('calendar'), calendarRouter);
 // Chat is account-level: people keep direct conversations and session chats

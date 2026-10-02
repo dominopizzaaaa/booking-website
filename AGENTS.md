@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 4.10.0** · Last updated 2026-10-03
+**Version 4.11.0** · Last updated 2026-10-03
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -510,6 +510,10 @@ to matter:
 - Account-level routers for these features are mounted on `/api` immediately
   after authentication and apply capability/role guards per route: a
   capability guard mounted on the bare `/api` prefix rejects every later route.
+  The directory, payments, staff-invitation, commerce and rentals groups that
+  do share the bare prefix wrap their guard in `capabilityGate()` in `app.ts`,
+  which applies it only to that router's own routes. A teen account (no
+  payments, commerce or rentals) therefore still reaches Chat and Calendar.
 
 ### Legal publication and compliance records
 
@@ -953,8 +957,8 @@ pair of registered accounts. Starting one with `POST /api/chats/accounts` takes
 a public username selected through the existing authenticated account search
 and returns the existing thread for that pair when one already exists. The
 response carries `threadId` plus the opened thread detail, so the client shows
-it without a second request. A conversation with no club behind it displays
-times in `Asia/Singapore`, never UTC. List rows omit `schedulingOptions` and
+it without a second request. Every chat time is Singapore time (see **Chat
+clock and read receipts**). List rows omit `schedulingOptions` and
 `assignableCoaches`; only the thread detail computes them. Its
 direct participants are persisted in `ChatThreadMember`; session membership
 must never be copied there.
@@ -1061,6 +1065,28 @@ query count far more than with rows. Keep these rules when changing it:
   be replaced by the next poll, so a slow connection would never show the
   conversation. Deliberate reloads after a mutation still supersede.
 
+### Chat clock and read receipts
+
+Chat runs on one clock: `CHAT_TIME_ZONE` (`Asia/Singapore`) in
+`chat-events.ts` and `frontend/src/lib/chat.ts`. That clock is used whichever
+club a conversation belongs to. `chatWhen()` writes system, proposal and
+reminder lines on it, `conversation.timezone` is always that zone, and schedule
+detection reads "tomorrow at 5pm" on it. The browser formats message times,
+day headings, list ages, proposal cards, suggestions and the propose dialog in
+it. `session.timezone`, `proposal.timezone` and scheduling options still carry
+the club's own zone as data; chat display does not use them.
+
+The thread detail carries `othersReadAt`: the latest `ChatReadState.lastReadAt`
+of anyone other than the reader. The sender's own text messages show a clock
+while sending, one tick once stored, and two ticks once `createdAt <=
+othersReadAt` (`messageReceipt()`). In a group, one reader is enough, as in
+Telegram. Read positions move only through `markRead` (opening a thread, or
+sending, proposing or answering in it), so the receipt never claims more than
+a real visit. List rows carry no receipt. Sending queues behind read marks on
+the conversation lock, so chat write transactions use `{ timeout: 30_000 }`
+like the rest of the codebase. Prisma's five-second default turned a slow
+remote database into send failures (HTTP 500).
+
 ### Detected session suggestions
 
 While a student and coach talk a one-to-one session through (an `ACCOUNT`
@@ -1078,7 +1104,7 @@ re-validates everything as before.
   Clauses with busy language ("i got stuff at 10am", "can't tmr") mark their
   times and dates as conflicts, not offers. A turned-down date waits for a new
   one; a refusal or cancellation with nothing new on offer clears the plan.
-- Relative dates use the message's own send time in the conversation timezone.
+- Relative dates use the message's own send time on the chat's Singapore clock.
   Before 04:00, "tomorrow" and weekday names still mean what they meant the
   evening before. Bare hours prefer plausible coaching times (12 is noon, 3 is
   3pm, 7–11 are morning) unless context words or the time already under
@@ -1551,6 +1577,19 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 4.11.0 — 2026-10-03
+
+Chat now runs on Singapore time throughout and shows Telegram-style receipts.
+Message, list, proposal, suggestion and dialog times, server-written chat lines,
+and schedule detection all use `CHAT_TIME_ZONE`, whatever zone the club keeps.
+Thread details report `othersReadAt`, so the sender's messages show a clock,
+then one tick, then two once someone else has read them. Sending no longer
+fails as a server error on a slow database: chat write transactions take the
+codebase's 30-second limit instead of Prisma's five seconds. Bare-`/api`
+capability guards are now scoped to their own routers with `capabilityGate()`,
+so a teen account can open Chat and Calendar as `docs/CHILD_ACCOUNTS.md`
+promises. Backend, frontend and three-viewport browser tests cover each change.
 
 ### 4.10.0 — 2026-10-03
 

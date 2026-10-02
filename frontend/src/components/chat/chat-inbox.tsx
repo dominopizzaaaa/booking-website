@@ -9,6 +9,8 @@ import {
   CalendarPlus,
   CalendarX2,
   Check,
+  CheckCheck,
+  Clock3,
   Flag,
   Info,
   Loader2,
@@ -55,14 +57,16 @@ import {
   chatSessionLine,
   chatThreadAvatar,
   chatThreadSubtitle,
-  chatThreadTimezone,
   chatThreadTitle,
-  endsChatRun,
+  CHAT_TIME_ZONE,
   groupChatDays,
+  messageReceipt,
   proposalResponseLabel,
   proposalStatusLine,
   proposalTone,
+  receiptLabel,
   startsChatRun,
+  type ChatReceipt,
 } from '@/lib/chat';
 import {
   cachedInbox, cachedThread, chatCacheScope, forgetThread, pendingInbox, prefetchInbox, rememberInbox, rememberThread,
@@ -263,7 +267,6 @@ function ChatList({
                   ? directMembers.map(member => member.name).join(' & ') || chatThreadTitle(thread)
                   : chatThreadTitle(thread);
                 const subtitle = chatThreadSubtitle(thread, showClub);
-                const timezone = chatThreadTimezone(thread);
                 return <li key={thread.id}>
                   <button
                     ref={element => onThreadButtonRef(thread.id, element)}
@@ -279,7 +282,7 @@ function ChatList({
                     <span className="min-w-0 flex-1">
                       <span className="flex items-baseline gap-2">
                         <span className={cn('truncate text-sm text-[#263a30]', unread ? 'font-bold' : 'font-semibold')}>{title}</span>
-                        <span className="ml-auto shrink-0 text-[11px] text-[#59675c]">{chatListTime(thread.lastMessageAt, timezone, nowMs)}</span>
+                        <span className="ml-auto shrink-0 text-[11px] text-[#59675c]">{chatListTime(thread.lastMessageAt, CHAT_TIME_ZONE, nowMs)}</span>
                       </span>
                       <span className="mt-0.5 block truncate text-[11px] text-[#59675c]">
                         {subtitle}
@@ -345,8 +348,18 @@ function MessageReportButton({ message, onReport }: { message: ChatMessage; onRe
   </button>;
 }
 
-function TextMessage({ message, timezone, showSender, showTime, pending = false, onReport }: { message: ChatMessage; timezone: string; showSender: boolean; showTime: boolean; pending?: boolean; onReport: (message: ChatMessage) => void }) {
+/** A clock while sending, one tick once stored, two once someone has read it. */
+function ReceiptMark({ receipt }: { receipt: ChatReceipt }) {
+  const Icon = receipt === 'sending' ? Clock3 : receipt === 'read' ? CheckCheck : Check;
+  return <span className={cn('inline-flex', receipt === 'read' && 'text-[#a8e6bf]')} title={receiptLabel(receipt)}>
+    <Icon size={14} strokeWidth={2.4} aria-hidden="true" />
+    <span className="sr-only">{receiptLabel(receipt)}</span>
+  </span>;
+}
+
+function TextMessage({ message, timezone, showSender, receipt, onReport }: { message: ChatMessage; timezone: string; showSender: boolean; receipt: ChatReceipt | null; onReport: (message: ChatMessage) => void }) {
   const role = message.senderRole === 'SYSTEM' ? null : roleLabel[message.senderRole];
+  const pending = receipt === 'sending';
   // The log region announces the confirmed message; announcing its pending
   // copy as well would read every sent message twice.
   return <li aria-hidden={pending || undefined} className={cn('flex px-1', message.mine ? 'justify-end' : 'justify-start')}>
@@ -354,13 +367,22 @@ function TextMessage({ message, timezone, showSender, showTime, pending = false,
       {showSender && !message.mine && <p className="!mb-1 !ml-1 text-[11px] font-semibold text-[#4d5e51]">{message.senderName}{role && <span className="font-normal text-[#59675c]"> · {role}</span>}</p>}
       {message.mine && <span className="sr-only">You said:</span>}
       <p className={cn(
-        'whitespace-pre-wrap break-words rounded-[20px] px-3.5 py-2 text-sm leading-relaxed [overflow-wrap:anywhere]',
+        'relative whitespace-pre-wrap break-words rounded-[20px] px-3.5 py-2 text-sm leading-relaxed [overflow-wrap:anywhere]',
+        // A sending message keeps full contrast; its clock already says it is on its way.
         message.mine ? 'rounded-br-md bg-[#214e3e] text-white' : 'rounded-bl-md border border-[#e3e8df] bg-white text-[#263a30]',
-        pending && 'opacity-70',
-      )}>{message.body}</p>
-      {(showTime || pending || message.canReport || message.reportedByViewer) && <div className={cn('flex min-h-11 items-center gap-1', message.mine ? 'mr-1' : 'ml-1')}>
-        {pending ? <span className="text-[11px] text-[#59675c]">Sending…</span>
-          : showTime && <time dateTime={message.createdAt} className="text-[11px] text-[#59675c]">{time(message.createdAt, timezone)}</time>}
+      )}>
+        <span>{message.body}</span>
+        {/* Holds room at the end of the last line, so the corner time never covers the text. */}
+        <span aria-hidden="true" className={cn('inline-block', receipt ? 'w-[4.5rem]' : 'w-14')} />
+        <span className={cn(
+          'absolute bottom-1.5 right-3 inline-flex items-center gap-1 text-[11px] leading-none',
+          message.mine ? 'text-[#d3e4d8]' : 'text-[#59675c]',
+        )}>
+          <time dateTime={message.createdAt}>{time(message.createdAt, timezone)}</time>
+          {receipt && <ReceiptMark receipt={receipt} />}
+        </span>
+      </p>
+      {(message.canReport || message.reportedByViewer) && <div className={cn('flex min-h-11 items-center gap-1', message.mine ? 'mr-1' : 'ml-1')}>
         <MessageReportButton message={message} onReport={onReport} />
       </div>}
     </div>
@@ -376,7 +398,7 @@ function ProposalMessage({ message, proposal, busy, onAct, onCounter, onOpenBook
   onOpenBooking?: (bookingId: string) => void;
   onReport: (message: ChatMessage) => void;
 }) {
-  const zone = proposal.timezone;
+  const zone = CHAT_TIME_ZONE;
   const summaryId = useId();
   const tone = proposalTone(proposal);
   const bookingId = proposal.responses.find(response => response.status === 'ACCEPTED' && response.bookingId
@@ -885,13 +907,15 @@ function ChatThreadPane({ threadId, initialDetail, cacheScope, mode, fullscreen,
 
   const session = detail.kind === 'SESSION' ? detail.session : null;
   const conversation = detail.kind === 'ACCOUNT' ? detail.conversation : null;
-  const zone = chatThreadTimezone(detail);
+  const zone = CHAT_TIME_ZONE;
   const directMembers = detail.members.filter(member => !member.assigned);
   const title = mode === 'admin' && conversation
     ? directMembers.map(member => member.name).join(' & ') || chatThreadTitle(detail)
     : chatThreadTitle(detail);
-  const baseSubtitle = session ? `${chatSessionLine(session)} · ${session.locationName}` : chatThreadSubtitle(detail, true);
-  const subtitle = conversation ? `${baseSubtitle}${baseSubtitle ? ' · ' : ''}${zone}` : baseSubtitle;
+  // Every time in a chat is Singapore time; the header says so once.
+  const subtitle = session
+    ? `${chatSessionLine(session)} SGT · ${session.locationName}`
+    : [chatThreadSubtitle(detail, true), 'Times in SGT'].filter(Boolean).join(' · ');
   const days = groupChatDays(messages, zone);
   const canLoadEarlier = earlierHasMore ?? detail.hasEarlier;
   const suggestion = mode === 'participant' && detail.viewer.canPropose && detail.viewer.canPost
@@ -962,8 +986,9 @@ function ChatThreadPane({ threadId, initialDetail, cacheScope, mode, fullscreen,
                   onOpenBooking={mode === 'participant' ? onOpenBooking : undefined}
                   onReport={setReportMessage} />;
               }
-              return <TextMessage key={message.id} message={message} timezone={zone} pending={message === pendingMessage}
-                showSender={startsChatRun(dayGroup.messages, index)} showTime={endsChatRun(dayGroup.messages, index)} onReport={setReportMessage} />;
+              return <TextMessage key={message.id} message={message} timezone={zone}
+                receipt={mode === 'participant' ? messageReceipt(message, detail.othersReadAt, message === pendingMessage) : null}
+                showSender={startsChatRun(dayGroup.messages, index)} onReport={setReportMessage} />;
             })}
           </ol>
         </section>)}

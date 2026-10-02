@@ -4,7 +4,7 @@ import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from 'rea
 import { CalendarPlus, Loader2, Send } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { ApiError, loadSlots } from '@/lib/api';
-import { nextSessionDate } from '@/lib/chat';
+import { CHAT_TIME_ZONE, nextSessionDate } from '@/lib/chat';
 import type {
   ChatConversation,
   ChatProposalSchedulingChoice,
@@ -74,10 +74,12 @@ export function ProposeSessionDialog({ open, onOpenChange, session, conversation
   const schedulingOptions = conversation?.schedulingOptions ?? [];
   const prefill = counterTo ? null : suggestion ?? null;
   const defaultOption = proposalOption(schedulingOptions, counterTo, prefill);
-  const defaultZone = session?.timezone ?? defaultOption?.timezone ?? conversation?.timezone ?? 'UTC';
+  // Times are picked and shown on the chat's Singapore clock, like every
+  // other time in the conversation.
+  const zone = CHAT_TIME_ZONE;
   const initialDate = counterTo
-    ? dateKey(counterTo.startAt, counterTo.timezone || defaultZone)
-    : prefill ? prefill.date : nextSessionDate(session?.startAt ?? '', defaultZone);
+    ? dateKey(counterTo.startAt, zone)
+    : prefill ? prefill.date : nextSessionDate(session?.startAt ?? '', zone);
   const [businessSlug, setBusinessSlug] = useState(defaultOption?.businessSlug ?? '');
   const [serviceId, setServiceId] = useState(defaultOption?.serviceId ?? '');
   const [locationId, setLocationId] = useState(defaultOption?.locationId ?? '');
@@ -111,7 +113,6 @@ export function ProposeSessionDialog({ open, onOpenChange, session, conversation
   const selectedOption = schedulingOptions.find(option =>
     option.businessSlug === businessSlug && option.serviceId === serviceId && option.locationId === locationId
   ) ?? null;
-  const zone = session?.timezone ?? selectedOption?.timezone ?? conversation?.timezone ?? 'UTC';
   const slotBusinessSlug = session?.businessSlug ?? selectedOption?.businessSlug ?? '';
   const slotServiceId = session?.serviceId ?? selectedOption?.serviceId ?? '';
   const slotInstructorId = session?.instructorId ?? selectedOption?.instructorId ?? '';
@@ -251,7 +252,7 @@ export function ProposeSessionDialog({ open, onOpenChange, session, conversation
               </select>
             </div>
             {selectedOption && <p className="text-[11px] leading-relaxed text-[#59675c]">
-              Coach {selectedOption.instructorName} · Times shown in {selectedOption.timezone}
+              Coach {selectedOption.instructorName} · Times in SGT
               {Number.isFinite(selectedOption.price) && selectedOption.currency
                 ? ` · ${selectedOption.price === 0 ? 'Free' : money(selectedOption.price!, selectedOption.currency)}`
                 : ''}
@@ -267,7 +268,7 @@ export function ProposeSessionDialog({ open, onOpenChange, session, conversation
         </div>
         <fieldset aria-describedby={timesId} className="min-w-0 border-0 p-0">
           <legend className="mb-2 text-[14px] font-semibold text-[#4d5e51]">Available times</legend>
-          <p id={timesId} className="sr-only">Times are shown in {zone}.</p>
+          <p id={timesId} className="sr-only">Times are shown in Singapore time (SGT).</p>
           {slotsLoading ? <p role="status" className="flex items-center gap-2 rounded-xl bg-[#f5f7f1] p-3 text-xs text-[#59675c]"><Loader2 size={14} className="animate-spin" aria-hidden="true" />Checking the coach’s availability…</p>
             : slotsError ? <p role="alert" className="rounded-xl bg-[#fff6f1] p-3 text-xs text-[#8b4d3c]">{slotsError}</p>
               : choices.length ? <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
