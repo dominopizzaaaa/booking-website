@@ -360,8 +360,17 @@ test('a coach edits a coaching profile with a live booking-page preview', async 
   await panel.getByRole('button', { name: 'Edit coaching profile', exact: true }).click();
 
   const dialog = page.getByRole('dialog', { name: 'Edit coaching profile', exact: true });
+  // Each missing detail in the preview's checklist moves focus to the field that fills it.
+  const languages = dialog.getByLabel('Languages', { exact: true });
+  await dialog.getByRole('button', { name: 'Add the languages you coach in', exact: true }).click();
+  await expect(languages).toBeFocused();
   await dialog.getByLabel('Bio', { exact: true }).fill('Patient technical coach for juniors and adults.');
-  await dialog.getByLabel('Languages', { exact: true }).fill('English, Malay, english');
+  await languages.fill('English, Malay, english');
+  await languages.press('Enter');
+  await languages.pressSequentially('French,');
+  await dialog.getByRole('button', { name: 'Remove French', exact: true }).click();
+  await expect(languages).toBeFocused();
+  await expect(dialog.getByRole('list', { name: 'Languages added', exact: true }).getByRole('listitem')).toHaveText(['English', 'Malay']);
   await dialog.getByRole('checkbox', { name: 'Intermediate', exact: true }).check();
   await dialog.getByRole('checkbox', { name: 'Adults', exact: true }).check();
   await dialog.getByLabel('Qualifications (self-reported)', { exact: true }).fill('ITF Level 1\nFirst Aid');

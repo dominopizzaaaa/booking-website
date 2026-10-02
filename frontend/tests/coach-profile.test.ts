@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  coachProfileError, coachProfileFromDraft, distinctEntries, draftFromCoachProfile, emptyCoachProfile, parseLanguages,
-  parseQualifications, profileIsEmpty, yearsCoachingLabel,
+  absorbEntries, coachProfileChecklist, coachProfileError, coachProfileFromDraft, distinctEntries, draftFromCoachProfile,
+  emptyCoachProfile, parseLanguages, parseQualifications, profileIsEmpty, yearsCoachingLabel,
 } from '../src/lib/coach-profile';
 
 describe('list parsing', () => {
@@ -12,6 +12,17 @@ describe('list parsing', () => {
 
   it('keeps commas inside a qualification line', () => {
     expect(parseQualifications('ITF Level 1, 2019\n\n First Aid \r\nfirst aid')).toEqual(['ITF Level 1, 2019', 'First Aid']);
+  });
+});
+
+describe('absorbEntries', () => {
+  it('leaves text without a separator in the field', () => {
+    expect(absorbEntries(['English'], ' Mal', /,/u)).toEqual({ entries: ['English'], pending: ' Mal' });
+  });
+
+  it('adds each complete pasted segment and keeps the unfinished tail', () => {
+    expect(absorbEntries(['English'], 'Malay, english,  Tam', /,/u)).toEqual({ entries: ['English', 'Malay'], pending: 'Tam' });
+    expect(absorbEntries([], 'ITF Level 1, 2019\r\nFirst Aid\n', /\r?\n/u)).toEqual({ entries: ['ITF Level 1, 2019', 'First Aid'], pending: '' });
   });
 });
 
@@ -62,6 +73,12 @@ describe('preview helpers', () => {
     expect(yearsCoachingLabel(2025, 2026)).toBe('Coaching since 2025 · 1 year');
     expect(yearsCoachingLabel(2026, 2026)).toBe('Started coaching this year');
     expect(yearsCoachingLabel(null, 2026)).toBeNull();
+  });
+
+  it('lists which public details are still missing, in editor order', () => {
+    const checklist = coachProfileChecklist({ ...emptyCoachProfile, bio: '  ', languages: ['English'], coachingSince: 2015 });
+    expect(checklist.map(item => item.key)).toEqual(['bio', 'levels', 'ageGroups', 'languages', 'experience', 'qualifications']);
+    expect(checklist.filter(item => item.done).map(item => item.key)).toEqual(['languages', 'experience']);
   });
 
   it('knows when a card would show only a name', () => {
