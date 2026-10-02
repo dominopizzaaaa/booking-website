@@ -8,12 +8,13 @@ import { skipRateLimits } from './config.js';
 import { sharedRateLimit } from './rate-limit.js';
 import { asyncRoute, HttpError, type AccountRequest, type AccountType } from './http.js';
 import { loadAccountPolicy } from './account-policy.js';
-import { ageOnSingaporeDate, SINGAPORE_TIME_ZONE } from './children-policy.js';
+import { ageOnSingaporeDate } from './children-policy.js';
 import {
   bookingInput, bookableInstructorWhere, createBookingsInTransaction, evaluateSlot, lockInstructors, schedulingContext, type Tx,
 } from './scheduling.js';
 import {
-  chatEligible, chatWhen, ensureChatThread, postChatSystemLine, postThreadSystemLine, silentChatEventsFor, type ChatRole,
+  CHAT_TIME_ZONE, chatEligible, chatWhen, ensureChatThread, postChatSystemLine, postThreadSystemLine, silentChatEventsFor,
+  type ChatRole,
 } from './chat-events.js';
 import { detectScheduleDraft, type ScheduleDraft } from './chat-schedule-detect.js';
 
@@ -727,14 +728,6 @@ function publicSchedulingOption(option: SchedulingOption, role: ChatRole | 'ADMI
   return coachSafe;
 }
 
-/** The clock a conversation's times are read and written in. */
-function conversationTimezone(thread: LoadedThread, options: SchedulingOption[]) {
-  if (thread.kind === 'SESSION' && thread.booking) return thread.booking.business.timezone;
-  // A conversation with no club has no business clock; Courtly operates on
-  // Singapore time, which is also the default for every club.
-  return thread.business?.timezone ?? options[0]?.timezone ?? SINGAPORE_TIME_ZONE;
-}
-
 async function conversationJson(
   thread: LoadedThread, viewer: ChatViewer | null, role: ChatRole | 'ADMIN',
   db: Tx | typeof prisma = prisma,
@@ -749,7 +742,7 @@ async function conversationJson(
     return {
       title: session.service.name,
       subtitle: `${session.instructor.name} · ${session.business.name}`,
-      timezone: session.business.timezone,
+      timezone: CHAT_TIME_ZONE,
       business: { name: session.business.name, slug: session.business.slug },
       assignedCoach: membersJson(session, viewer?.userId ?? null).find(member => member.role === 'COACH') ?? null,
       schedulingOptions: (await loadOptions()).map(option => publicSchedulingOption(option, role)),
@@ -772,7 +765,7 @@ async function conversationJson(
   return {
     title: other?.name ?? 'Conversation',
     subtitle: assigned ? `Coach ${assigned.name} assigned` : other ? `${other.role[0]}${other.role.slice(1).toLowerCase()} account` : '',
-    timezone: conversationTimezone(thread, options),
+    timezone: CHAT_TIME_ZONE,
     business: thread.business ? { name: thread.business.name, slug: thread.business.slug } : null,
     assignedCoach: assigned,
     ...(assignableCoaches ? {
@@ -883,7 +876,19 @@ export async function dismissScheduleSuggestion(viewer: ChatViewer, threadId: st
       create: { threadId: thread.id, userId: viewer.userId, suggestionKey: input.key },
       update: { suggestionKey: input.key, dismissedAt: new Date() },
     });
+  }, { timeout: 30_000 });
+}
+
+/**
+ * How far anyone else in the conversation has read, for the sender's ticks:
+ * one once a message is stored, two once someone else has read past it. A
+ * read position only moves when that person opens or writes in the chat.
+ */
+async function lastReadByOthers(db: Tx | typeof prisma, threadId: string, viewerId: string) {
+  const { _max } = await db.chatReadState.aggregate({
+    where: { threadId, userId: { not: viewerId } }, _max: { lastReadAt: true },
   });
+  return _max.lastReadAt;
 }
 
 async function buildThreadDetail(
@@ -932,7 +937,7 @@ async function buildThreadDetail(
   // along but books through its own workspace.
   const canPropose = messagingAllowed && (role === 'STUDENT' || role === 'COACH') && students.length > 0
     && schedulingOptions.length > 0;
-  const [proposals, viewerReports, conversation, scheduleSuggestion] = await Promise.all([
+  const [proposals, viewerReports, conversation, scheduleSuggestion, othersReadAt] = await Promise.all([
     proposalIds.length
       ? db.sessionProposal.findMany({ where: { id: { in: proposalIds } }, include: proposalInclude })
       : [],
@@ -945,8 +950,9 @@ async function buildThreadDetail(
     // one-to-one conversation: a group session is proposed to everyone at once.
     !options.before && viewer && canPropose
       && (thread.kind === 'ACCOUNT' || thread.booking?.type === 'PRIVATE')
-      ? scheduleSuggestionFor(thread, viewer, messages, schedulingOptions, conversationTimezone(thread, schedulingOptions), db)
+      ? scheduleSuggestionFor(thread, viewer, messages, schedulingOptions, CHAT_TIME_ZONE, db)
       : null,
+    viewer ? lastReadByOthers(db, thread.id, viewer.userId) : null,
   ]);
   const validProposal = (proposal: FullProposal) => thread.kind === 'SESSION'
     || conversation.schedulingOptions.some(option => option.businessSlug === proposal.business.slug
@@ -995,6 +1001,7 @@ async function buildThreadDetail(
     },
     blockTarget: messaging.blockTarget,
     scheduleSuggestion,
+    othersReadAt: othersReadAt?.toISOString() ?? null,
     hasEarlier,
   };
 }
@@ -1223,7 +1230,7 @@ async function postProposalMessage(
   details: { serviceName: string; timezone: string },
 ) {
   const createdAt = new Date();
-  const when = chatWhen(proposal.startAt, details.timezone);
+  const when = chatWhen(proposal.startAt);
   await tx.chatMessage.create({
     data: {
       threadId, kind: 'PROPOSAL', senderUserId: author.userId, senderRole: author.role, senderName: author.name,
@@ -1508,7 +1515,7 @@ export async function acceptProposal(viewer: ChatViewer, proposalId: string, raw
     });
     await settleProposal(tx, proposal, 'ACCEPTED', students);
     const responderName = displayNameForThread(thread, role, viewer);
-    const when = chatWhen(proposal.startAt, proposal.business.timezone);
+    const when = chatWhen(proposal.startAt);
     const booked = `${student.name} is booked for ${proposal.service.name} on ${when}`;
     const status = booking.status === 'PENDING'
       ? ' The club is confirming the venue before it goes on the calendar.'
@@ -1542,7 +1549,7 @@ export async function declineProposal(viewer: ChatViewer, proposalId: string, ra
     const responderName = displayNameForThread(thread, role, viewer);
     await proposalSystemLine(tx, thread, {
       event: 'PROPOSAL_DECLINED',
-      body: `${responderName} declined ${chatWhen(proposal.startAt, proposal.business.timezone)}.`
+      body: `${responderName} declined ${chatWhen(proposal.startAt)}.`
         + (input.message ? ` “${input.message}”` : ''),
       actor: { userId: viewer.userId, name: responderName },
     });
@@ -1624,7 +1631,7 @@ export async function withdrawProposal(viewer: ChatViewer, proposalId: string, r
     const name = displayNameForThread(thread, role, viewer);
     await proposalSystemLine(tx, thread, {
       event: 'PROPOSAL_WITHDRAWN',
-      body: `${name} withdrew the proposed time (${chatWhen(proposal.startAt, proposal.business.timezone)}).`,
+      body: `${name} withdrew the proposed time (${chatWhen(proposal.startAt)}).`,
       actor: { userId: viewer.userId, name },
     });
     await markRead(tx, thread.id, viewer.userId, new Date());
@@ -1648,7 +1655,7 @@ export async function openBookingChat(viewer: ChatViewer, bookingId: string) {
     const threadId = await ensureChatThread(tx, booking.id);
     if (!threadId) throw new HttpError(404, 'Chat not found');
     return threadId;
-  });
+  }, { timeout: 30_000 });
 }
 
 const accountChatInput = z.object({
@@ -1712,7 +1719,7 @@ export async function openAccountChat(viewer: ChatViewer, rawInput: unknown) {
     });
     await markRead(tx, thread.id, viewer.userId, now);
     return thread.id;
-  });
+  }, { timeout: 30_000 });
 }
 
 function assertCoachAssignableRoom(viewer: ChatViewer, thread: LoadedThread, role: ChatRole) {
@@ -1764,7 +1771,7 @@ export async function assignConversationCoach(viewer: ChatViewer, threadId: stri
       actor: { userId: viewer.userId, name: viewer.name },
     });
     return thread.id;
-  });
+  }, { timeout: 30_000 });
 }
 
 export async function removeConversationCoach(viewer: ChatViewer, threadId: string, rawInput: unknown) {
@@ -1783,7 +1790,7 @@ export async function removeConversationCoach(viewer: ChatViewer, threadId: stri
       actor: { userId: viewer.userId, name: viewer.name },
     });
     return thread.id;
-  });
+  }, { timeout: 30_000 });
 }
 
 function reportReceipt(report: {
@@ -1911,7 +1918,7 @@ export async function reportChatSafetyConcern(viewer: ChatViewer, threadId: stri
       select: { id: true, category: true, status: true, severity: true, childInvolved: true, createdAt: true },
     });
     return { report: reportReceipt(report), created: true };
-  });
+  }, { timeout: 30_000 });
 }
 
 export async function setChatAccountBlock(viewer: ChatViewer, threadId: string, blocked: boolean) {
@@ -1931,13 +1938,16 @@ export async function setChatAccountBlock(viewer: ChatViewer, threadId: string, 
       if (!removed.count) throw new HttpError(403, 'You can only remove a block that you placed');
     }
     return threadDetailInTransaction(tx, viewer, threadId);
-  });
+  }, { timeout: 30_000 });
 }
 
 export async function postChatMessage(viewer: ChatViewer, threadId: string, rawInput: unknown) {
   const input = z.object({
     body: z.string().trim().min(1, 'Write a message first').max(2000, 'Keep messages under 2,000 characters'),
   }).strict().parse(rawInput);
+  // A send queues behind read marks and other sends on the conversation lock.
+  // Against a remote database that queue alone can outlast Prisma's
+  // five-second default, which failed the send as a server error.
   return prisma.$transaction(async tx => {
     await lockThreadAccessForWrite(tx, viewer, threadId);
     const { thread, role } = await loadAccessibleThread(viewer, threadId, tx);
@@ -1952,7 +1962,7 @@ export async function postChatMessage(viewer: ChatViewer, threadId: string, rawI
     await touchThread(tx, thread.id, createdAt);
     await markRead(tx, thread.id, viewer.userId, createdAt);
     return messageJson(message, viewer.userId);
-  });
+  }, { timeout: 30_000 });
 }
 
 export async function markChatRead(viewer: ChatViewer, threadId: string, includeAccountChats = true) {
@@ -1993,7 +2003,6 @@ async function remindSession(tx: Tx, bookingId: string, now: Date) {
     where: { id: bookingId },
     select: {
       startAt: true, status: true, coachAcceptance: true,
-      business: { select: { timezone: true } },
       service: { select: { name: true } }, instructor: { select: { name: true } }, location: { select: { name: true } },
       participants: { where: { cancelledAt: null }, select: { id: true }, take: 1 },
     },
@@ -2006,7 +2015,7 @@ async function remindSession(tx: Tx, bookingId: string, now: Date) {
   if (locked.reminderStartAt?.getTime() === booking.startAt.getTime()) return false;
   await tx.chatThread.update({ where: { id: threadId }, data: { reminderStartAt: booking.startAt } });
   await postChatSystemLine(tx, bookingId, {
-    event: 'REMINDER', body: reminderText(booking, booking.business.timezone, now),
+    event: 'REMINDER', body: reminderText(booking, CHAT_TIME_ZONE, now),
   });
   return true;
 }

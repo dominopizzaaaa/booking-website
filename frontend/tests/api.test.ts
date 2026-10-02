@@ -687,6 +687,13 @@ describe('generalized chat requests', () => {
     expect((await loadChatThread('account-thread')).scheduleSuggestion).toBeNull();
   });
 
+  it('shows one tick until the API reports how far the other side has read', async () => {
+    respond(accountDetail);
+    expect((await loadChatThread('account-thread')).othersReadAt).toBeNull();
+    respond({ ...accountDetail, othersReadAt: '2026-10-14T02:00:00.000Z' });
+    expect((await loadChatThread('account-thread')).othersReadAt).toBe('2026-10-14T02:00:00.000Z');
+  });
+
   it('dismisses a schedule suggestion by its key', async () => {
     respond({ ok: true });
     await dismissChatScheduleSuggestion('thread/1', 'a'.repeat(32));

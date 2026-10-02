@@ -37,6 +37,13 @@ export const blockedComposerMessage = (blockedByViewer: boolean, reason: null | 
 };
 import { addDaysKey, dateKey } from './utils';
 
+/**
+ * Chat reads every conversation on Singapore time, whichever club it belongs
+ * to, so a time in a message, a proposal and a reminder all mean the same hour
+ * for everyone in it. The server writes its own chat lines on this clock too.
+ */
+export const CHAT_TIME_ZONE = 'Asia/Singapore';
+
 const minute = 60_000;
 const hour = 60 * minute;
 const day = 24 * hour;
@@ -73,8 +80,8 @@ export function chatPreview(message: ChatMessage | null) {
   return `${author}: ${message.body}`;
 }
 
-export function chatSessionLine(session: Pick<ChatSession, 'startAt' | 'timezone'>) {
-  return formatInTimeZone(session.startAt, session.timezone, "EEE, d MMM '·' h:mm a");
+export function chatSessionLine(session: Pick<ChatSession, 'startAt'>) {
+  return formatInTimeZone(session.startAt, CHAT_TIME_ZONE, "EEE, d MMM '·' h:mm a");
 }
 
 /** "Coach Sarah Lim · 5 students · Kallang Racket Club" */
@@ -109,9 +116,6 @@ export function chatThreadSubtitle(thread: ChatThreadDisplay, showBusiness = tru
   ].filter(Boolean).join(' · ');
 }
 
-export function chatThreadTimezone(thread: ChatThreadDisplay) {
-  return thread.kind === 'SESSION' ? thread.session.timezone : thread.conversation.timezone;
-}
 
 /** Avatar content stays a group glyph for group sessions and initials otherwise. */
 export function chatThreadAvatar(thread: ChatThreadDisplay): { kind: 'group' | 'initials'; label: string } {
@@ -152,6 +156,24 @@ export function groupChatDays(messages: ChatMessage[], timezone: string, now = D
   }
   return days;
 }
+
+export type ChatReceipt = 'sending' | 'sent' | 'read';
+
+/**
+ * The Telegram-style mark on your own message: a clock while it is on its
+ * way, one tick once Courtly has stored it, two once someone else in the
+ * conversation has read past it. Other people's messages carry no mark.
+ */
+export function messageReceipt(
+  message: Pick<ChatMessage, 'mine' | 'kind' | 'createdAt'>, othersReadAt: string | null, pending = false,
+): ChatReceipt | null {
+  if (!message.mine || message.kind === 'SYSTEM') return null;
+  if (pending) return 'sending';
+  const readAt = othersReadAt ? Date.parse(othersReadAt) : Number.NaN;
+  return Number.isFinite(readAt) && Date.parse(message.createdAt) <= readAt ? 'read' : 'sent';
+}
+
+export const receiptLabel = (receipt: ChatReceipt) => ({ sending: 'Sending', sent: 'Sent', read: 'Read' })[receipt];
 
 const sameAuthor = (a: ChatMessage, b: ChatMessage) =>
   a.kind !== 'SYSTEM' && b.kind !== 'SYSTEM' && a.mine === b.mine
@@ -218,7 +240,7 @@ export function nextSessionDate(startAt: string, timezone: string, now = Date.no
  * happen, and anything that would differ once it is sent as a proposal.
  */
 export function scheduleSuggestionSummary(suggestion: ChatScheduleSuggestion) {
-  const zone = suggestion.timezone;
+  const zone = CHAT_TIME_ZONE;
   const day = formatInTimeZone(suggestion.startAt, zone, 'EEE d MMM');
   const start = formatInTimeZone(suggestion.startAt, zone, 'h:mm a');
   const end = suggestion.endAt ? formatInTimeZone(suggestion.endAt, zone, 'h:mm a') : null;

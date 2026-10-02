@@ -554,4 +554,25 @@ test('a session talked through in chat becomes a ready-made proposal', async ({ 
     const coachView = await responseJson<ChatThreadDetail>(await coachAccount.get(`/api/chats/${threadId}?contract=accounts`));
     expect(coachView.scheduleSuggestion?.startAt).toBe(new Date(`${day}T08:00:00.000Z`).toISOString());
   });
+
+  await test.step('a sent message shows one tick on Singapore time, then two once the coach reads it', async () => {
+    await expect(page.locator('.chat-thread-header')).toContainText('Times in SGT');
+    const note = `Ticks check ${run}`;
+    await page.getByLabel('Message', { exact: true }).fill(note);
+    const posted = mutationResponse(page, 'POST', `/api/chats/${threadId}/messages`);
+    await page.getByRole('button', { name: 'Send message', exact: true }).click();
+    const { message } = await responseJson<{ message: ChatMessage }>(await posted);
+    const bubble = page.getByRole('log').getByRole('listitem').filter({ hasText: note });
+    await expect(bubble.getByText('Sent', { exact: true })).toBeAttached();
+    // The browser runs on its own zone; the chat still reads Singapore time.
+    const singaporeTime = new Intl.DateTimeFormat('en-US', {
+      hour: 'numeric', minute: '2-digit', hour12: true, timeZone: timezone,
+    }).format(new Date(message.createdAt)).replace(/\s+/g, ' ');
+    await expect(bubble.locator('time')).toHaveText(singaporeTime);
+    await expectInsideViewport(page, bubble);
+
+    await responseJson(await coachAccount.post(`/api/chats/${threadId}/read?contract=accounts`, { data: {} }));
+    await expect(bubble.getByText('Read', { exact: true })).toBeAttached({ timeout: 15_000 });
+    await expect(bubble.getByText('Sent', { exact: true })).toHaveCount(0);
+  });
 });

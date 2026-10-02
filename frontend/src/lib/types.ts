@@ -631,6 +631,8 @@ export type ChatThreadDetail = ChatThreadBase & ChatThreadContext & {
   viewer: { role: ChatViewerRole; canPost: boolean; canPropose: boolean; canAssignCoach: boolean };
   messages: ChatMessage[]; hasEarlier: boolean; safety: ChatSafety;
   scheduleSuggestion: ChatScheduleSuggestion | null;
+  /** How far anyone else has read: your messages up to here show two ticks. */
+  othersReadAt: string | null;
 };
 export type ChatProposalAction = 'accept' | 'decline' | 'withdraw';
 export type ChatReportCategory = 'GROOMING_SEXUAL' | 'HARASSMENT' | 'SELF_HARM_IMMEDIATE_DANGER' | 'SPAM_OTHER';
