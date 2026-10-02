@@ -47,6 +47,32 @@ export function parseQualifications(text: string) {
   return distinctEntries(text.split(/\r?\n/u));
 }
 
+/**
+ * Fold typed or pasted text into a list entered one item at a time. Every
+ * complete segment joins the list and the text after the last separator stays
+ * in the field, so pasting "English, Malay" adds two entries at once.
+ */
+export function absorbEntries(entries: readonly string[], text: string, separator: RegExp) {
+  const parts = text.split(separator);
+  const pending = parts.pop() ?? '';
+  if (!parts.length) return { entries: [...entries], pending: text };
+  return { entries: distinctEntries([...entries, ...parts]), pending: pending.trimStart() };
+}
+
+export type CoachProfileDetail = 'bio' | 'levels' | 'ageGroups' | 'languages' | 'experience' | 'qualifications';
+
+/** The details students weigh when choosing a coach, in the order the editor asks for them. */
+export function coachProfileChecklist(profile: CoachProfile): Array<{ key: CoachProfileDetail; label: string; done: boolean }> {
+  return [
+    { key: 'bio', label: 'Bio', done: profile.bio.trim().length > 0 },
+    { key: 'levels', label: 'Levels', done: profile.coachingLevels.length > 0 },
+    { key: 'ageGroups', label: 'Age groups', done: profile.coachingAgeGroups.length > 0 },
+    { key: 'languages', label: 'Languages', done: profile.languages.length > 0 },
+    { key: 'experience', label: 'Coaching since', done: profile.coachingSince !== null },
+    { key: 'qualifications', label: 'Qualifications', done: profile.qualifications.length > 0 },
+  ];
+}
+
 export type CoachProfileDraft = {
   bio: string; languages: string; coachingLevels: CoachingLevel[]; coachingAgeGroups: CoachingAgeGroup[];
   qualifications: string; coachingSince: string;
