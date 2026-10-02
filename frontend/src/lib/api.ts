@@ -748,6 +748,10 @@ export async function unblockChatAccount(threadId: string): Promise<ChatThreadDe
   });
   return normalizeChatThreadDetail('thread' in result ? result.thread : result);
 }
+export const dismissChatScheduleSuggestion = (threadId: string, key: string) =>
+  api<{ ok: true }>(`/chats/${encodeURIComponent(threadId)}/schedule-suggestion/dismiss`, {
+    method: 'POST', body: JSON.stringify({ key }),
+  });
 export async function markChatRead(threadId: string) {
   const options = { method: 'POST', body: JSON.stringify({}) };
   try {

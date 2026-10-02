@@ -41,10 +41,12 @@ export type ChatThreadSummaryWire = ChatThreadSummary | (
   }
 );
 
-export type ChatThreadDetailWire = (
-  Omit<AccountDetail, 'messages' | 'safety'> & { messages: ChatMessageWire[] } & DetailSafetyWire
+type SuggestionWire = { scheduleSuggestion?: ChatThreadDetail['scheduleSuggestion'] };
+
+export type ChatThreadDetailWire = ((
+  Omit<AccountDetail, 'messages' | 'safety' | 'scheduleSuggestion'> & { messages: ChatMessageWire[] } & DetailSafetyWire
 ) | (
-  Omit<SessionDetail, 'kind' | 'conversation' | 'members' | 'viewer' | 'messages' | 'safety'> & {
+  Omit<SessionDetail, 'kind' | 'conversation' | 'members' | 'viewer' | 'messages' | 'safety' | 'scheduleSuggestion'> & {
     kind?: 'SESSION';
     conversation?: ChatConversation | null;
     members: LegacyChatMember[];
@@ -54,7 +56,7 @@ export type ChatThreadDetailWire = (
     messaging?: Partial<ChatMessaging>;
     blockTarget?: ChatThreadDetail['safety']['blockTarget'];
   }
-);
+)) & SuggestionWire;
 
 export type ChatThreadListWire = Omit<ChatThreadList, 'threads' | 'accountChatAvailable'> & {
   threads: ChatThreadSummaryWire[];
@@ -154,6 +156,7 @@ export function normalizeChatThreadDetail(thread: ChatThreadDetailWire): ChatThr
       viewer: { ...thread.viewer, canAssignCoach: thread.viewer.canAssignCoach ?? false },
       messages: thread.messages.map(message => normalizeMessage(message)),
       safety: normalizeSafety(thread),
+      scheduleSuggestion: thread.scheduleSuggestion ?? null,
     };
   }
   const session = thread.session;
@@ -167,6 +170,7 @@ export function normalizeChatThreadDetail(thread: ChatThreadDetailWire): ChatThr
     viewer: { ...thread.viewer, canAssignCoach: false },
     messages: thread.messages.map(message => normalizeMessage(message, session)),
     safety: normalizeSafety(thread),
+    scheduleSuggestion: thread.scheduleSuggestion ?? null,
   };
 }
 

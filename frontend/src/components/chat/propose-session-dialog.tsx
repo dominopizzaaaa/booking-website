@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from 'react';
 import { CalendarPlus, Loader2, Send } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { ApiError, loadSlots } from '@/lib/api';
@@ -8,6 +8,7 @@ import { nextSessionDate } from '@/lib/chat';
 import type {
   ChatConversation,
   ChatProposalSchedulingChoice,
+  ChatScheduleSuggestion,
   ChatSchedulingOption,
   ChatSession,
   SessionProposal,
@@ -22,6 +23,8 @@ type ProposeSessionDialogProps = {
   conversation: ChatConversation | null;
   /** Present when answering a proposal with a different time ("Edit"). */
   counterTo?: SessionProposal | null;
+  /** A session detected in the conversation; opens the dialog already filled in. */
+  suggestion?: ChatScheduleSuggestion | null;
   onSubmit: (startAt: string, message: string, scheduling?: ChatProposalSchedulingChoice) => Promise<void>;
 };
 
@@ -35,7 +38,18 @@ function uniqueBy<T>(values: T[], key: (value: T) => string) {
   });
 }
 
-function proposalOption(options: ChatSchedulingOption[], proposal?: SessionProposal | null) {
+function proposalOption(
+  options: ChatSchedulingOption[],
+  proposal?: SessionProposal | null,
+  suggestion?: ChatScheduleSuggestion | null,
+) {
+  if (!proposal && suggestion) {
+    return options.find(option =>
+      option.businessSlug === suggestion.option.businessSlug
+      && option.serviceId === suggestion.option.serviceId
+      && option.locationId === suggestion.option.locationId
+    ) ?? options[0] ?? null;
+  }
   if (!proposal) return options[0] ?? null;
   return options.find(option =>
     option.businessSlug === proposal.businessSlug
@@ -56,13 +70,14 @@ function conflictReason(error: unknown) {
  * are offered; the server checks again, including the student's own diary,
  * when the proposal is sent and again when it is accepted.
  */
-export function ProposeSessionDialog({ open, onOpenChange, session, conversation, counterTo, onSubmit }: ProposeSessionDialogProps) {
+export function ProposeSessionDialog({ open, onOpenChange, session, conversation, counterTo, suggestion, onSubmit }: ProposeSessionDialogProps) {
   const schedulingOptions = conversation?.schedulingOptions ?? [];
-  const defaultOption = proposalOption(schedulingOptions, counterTo);
+  const prefill = counterTo ? null : suggestion ?? null;
+  const defaultOption = proposalOption(schedulingOptions, counterTo, prefill);
   const defaultZone = session?.timezone ?? defaultOption?.timezone ?? conversation?.timezone ?? 'UTC';
   const initialDate = counterTo
     ? dateKey(counterTo.startAt, counterTo.timezone || defaultZone)
-    : nextSessionDate(session?.startAt ?? '', defaultZone);
+    : prefill ? prefill.date : nextSessionDate(session?.startAt ?? '', defaultZone);
   const [businessSlug, setBusinessSlug] = useState(defaultOption?.businessSlug ?? '');
   const [serviceId, setServiceId] = useState(defaultOption?.serviceId ?? '');
   const [locationId, setLocationId] = useState(defaultOption?.locationId ?? '');
@@ -74,6 +89,9 @@ export function ProposeSessionDialog({ open, onOpenChange, session, conversation
   const [note, setNote] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // The suggested time is selected once, when its slots first arrive; after
+  // that the person's own choice wins.
+  const prefillApplied = useRef<string | null>(null);
   const dateId = useId();
   const businessId = useId();
   const serviceSelectId = useId();
@@ -105,7 +123,7 @@ export function ProposeSessionDialog({ open, onOpenChange, session, conversation
       option.businessSlug === businessSlug && option.serviceId === serviceId && option.locationId === locationId
     );
     if (currentStillExists) return;
-    const option = proposalOption(schedulingOptions, counterTo);
+    const option = proposalOption(schedulingOptions, counterTo, prefill);
     setBusinessSlug(option?.businessSlug ?? '');
     setServiceId(option?.serviceId ?? '');
     setLocationId(option?.locationId ?? '');
@@ -113,7 +131,7 @@ export function ProposeSessionDialog({ open, onOpenChange, session, conversation
 
   useEffect(() => {
     if (!open) return;
-    const option = proposalOption(schedulingOptions, counterTo);
+    const option = proposalOption(schedulingOptions, counterTo, prefill);
     setBusinessSlug(option?.businessSlug ?? '');
     setServiceId(option?.serviceId ?? '');
     setLocationId(option?.locationId ?? '');
@@ -121,9 +139,10 @@ export function ProposeSessionDialog({ open, onOpenChange, session, conversation
     setSelected('');
     setNote('');
     setError('');
+    prefillApplied.current = null;
   // The starting date is chosen each time the dialog opens, not on every
   // render, so a slow poll cannot reset a date someone has picked.
-  }, [open, counterTo?.id]);
+  }, [open, counterTo?.id, prefill?.key]);
 
   useEffect(() => {
     if (!open || !date || !slotBusinessSlug || !slotServiceId || !slotInstructorId || !slotLocationId) {
@@ -147,7 +166,26 @@ export function ProposeSessionDialog({ open, onOpenChange, session, conversation
     return () => { active = false; };
   }, [open, date, slotBusinessSlug, slotServiceId, slotInstructorId, slotLocationId]);
 
-  const choices = slots.filter(slot => !counterTo || slot.startAt !== counterTo.startAt);
+  // The chat may agree on a time between the usual grid steps. The server has
+  // already checked the coach can teach then, so offer it alongside them.
+  const suggestedStart = prefill && date === prefill.date
+    && slotServiceId === prefill.option.serviceId && slotLocationId === prefill.option.locationId
+    ? prefill.startAt : null;
+  const choices = useMemo(() => {
+    const base = slots.filter(slot => !counterTo || slot.startAt !== counterTo.startAt);
+    if (!suggestedStart || prefill?.availability.status !== 'AVAILABLE' || slotsLoading
+      || base.some(slot => Date.parse(slot.startAt) === Date.parse(suggestedStart))) return base;
+    return [...base, { startAt: suggestedStart, endAt: suggestedStart, available: true, placesRemaining: 1 }]
+      .sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt));
+  }, [slots, counterTo, suggestedStart, prefill?.availability.status, slotsLoading]);
+
+  useEffect(() => {
+    if (!prefill || !suggestedStart || slotsLoading || prefillApplied.current === prefill.key) return;
+    const match = choices.find(slot => Date.parse(slot.startAt) === Date.parse(suggestedStart));
+    if (!match) return;
+    prefillApplied.current = prefill.key;
+    setSelected(match.startAt);
+  }, [prefill, suggestedStart, slotsLoading, choices]);
   const today = dateKey(new Date(), zone);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -180,6 +218,7 @@ export function ProposeSessionDialog({ open, onOpenChange, session, conversation
           ? <>{session.serviceName} with {session.instructorName} at {session.locationName}. Nothing is booked until{' '}
             {counterTo ? `${counterTo.proposedByYou ? 'the other side' : counterTo.proposedByName} accepts the new time` : 'the other side accepts'}.</>
           : <>Choose the club, class and location, then pick a time. Nothing is booked until the other person accepts.</>}
+        {prefill && <> Filled in from your conversation; change anything before sending.</>}
       </DialogDescription>
       <form className="mt-5 space-y-4" onSubmit={submit}>
         {!session && <div className="space-y-3 rounded-2xl border border-[#e3e8df] bg-[#fafbf8] p-3.5">

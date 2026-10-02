@@ -49,7 +49,7 @@ const allApplicationTables = [
   'ChildAccountHandover', 'GuardianChildLink', 'EmailVerificationClaim', 'SignupAcceptanceEvidence',
   'ClubStaffAccess', 'ClubStaffInvitation',
   'ChatSafetyAuditEvent', 'ChatSafetyReport', 'ChatAccountBlock',
-  'ChatMessage', 'ChatReadState', 'ChatThreadMember', 'ChatThread', 'SessionProposal', 'SessionProposalResponse',
+  'ChatMessage', 'ChatReadState', 'ChatScheduleDismissal', 'ChatThreadMember', 'ChatThread', 'SessionProposal', 'SessionProposalResponse',
   'AvailabilityException', 'Booking', 'BookingSeries', 'BookingSeriesMember', 'Business', 'Instructor', 'IntegrityFlag', 'LessonPackage',
   'LessonPackageLocation', 'LessonPackageService', 'Location', 'Membership', 'Notification', 'PackageOffer',
   'NotificationPreference', 'OutboundDelivery', 'PackageOfferLocation', 'PackageOfferService', 'Participant',

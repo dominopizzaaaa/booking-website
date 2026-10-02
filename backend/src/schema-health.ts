@@ -26,6 +26,7 @@ type SchemaProbe = {
   accountSecurity: boolean;
   distributedRateLimits: boolean;
   trainingCompanion: boolean;
+  chatScheduleDismissals: boolean;
 };
 
 export type SchemaHealth = { ready: boolean; missing: string[] };
@@ -418,7 +419,8 @@ export async function inspectSchema(client: PrismaClient): Promise<SchemaHealth>
             AND tgname = 'WaitlistEntry_lifecycle_guard'
             AND tgenabled <> 'D' AND NOT tgisinternal
         )
-        AS \"trainingCompanion\"
+        AS \"trainingCompanion\",
+      to_regclass(current_schema() || '.\"ChatScheduleDismissal\"') IS NOT NULL AS \"chatScheduleDismissals\"
   `);
   const checks: Array<[keyof SchemaProbe, string]> = [
     ['coachInvitations', 'CoachInvitation'],
@@ -446,6 +448,7 @@ export async function inspectSchema(client: PrismaClient): Promise<SchemaHealth>
     ['chatSafeguardingAssigneeIdentity', 'chat safeguarding assignee identity'],
     ['distributedRateLimits', 'distributed rate-limit counters'],
     ['trainingCompanion', 'training companion feedback, waitlist, credit ledger and discovery tables'],
+    ['chatScheduleDismissals', 'chat schedule suggestion dismissals'],
   ];
   const missing = checks.filter(([key]) => !probe?.[key]).map(([, label]) => label);
   return { ready: missing.length === 0, missing };

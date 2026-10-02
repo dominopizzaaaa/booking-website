@@ -43,6 +43,7 @@ import {
   reportChatMessage,
   respondToChatProposal,
   sendChatMessage,
+  dismissChatScheduleSuggestion,
   unblockChatAccount,
 } from '@/lib/api';
 import {
@@ -70,12 +71,14 @@ import type {
   ChatProposalAction,
   ChatThreadDetail,
   ChatThreadSummary,
+  ChatScheduleSuggestion,
   SessionProposal,
 } from '@/lib/types';
 import { cn, initials, money, time } from '@/lib/utils';
 import { ManageConversationCoachDialog } from './manage-conversation-coach-dialog';
 import { NewConversationDialog } from './new-conversation-dialog';
 import { ProposeSessionDialog } from './propose-session-dialog';
+import { ScheduleSuggestionCard } from './schedule-suggestion-card';
 import { BlockAccountDialog } from '@/components/safeguarding/block-account-dialog';
 import { ReportMessageDialog } from '@/components/safeguarding/report-message-dialog';
 import { Disclosure } from '@/components/ui/progressive-disclosure';
@@ -465,7 +468,9 @@ function ChatThreadPane({ threadId, initialDetail, mode, fullscreen, singlePane,
   // server confirms it, without waiting for a full thread reload.
   const [pendingMessage, setPendingMessage] = useState<ChatMessage | null>(null);
   const [busyProposalId, setBusyProposalId] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<null | { counterTo: SessionProposal | null }>(null);
+  const [dialog, setDialog] = useState<null | { counterTo: SessionProposal | null; suggestion?: ChatScheduleSuggestion }>(null);
+  // Hidden as soon as it is dismissed; the server remembers it across devices.
+  const [hiddenSuggestionKey, setHiddenSuggestionKey] = useState<string | null>(null);
   const [coachDialogOpen, setCoachDialogOpen] = useState(false);
   const [reportMessage, setReportMessage] = useState<ChatMessage | null>(null);
   const [blockDialogOpen, setBlockDialogOpen] = useState(false);
@@ -586,6 +591,7 @@ function ChatThreadPane({ threadId, initialDetail, mode, fullscreen, singlePane,
     setState('loading');
     setDraft('');
     setPendingMessage(null);
+    setHiddenSuggestionKey(null);
     stickToBottom.current = true;
     lastReadMessage.current = null;
     seenMessages.current = null;
@@ -790,6 +796,16 @@ function ChatThreadPane({ threadId, initialDetail, mode, fullscreen, singlePane,
     }
   }
 
+  function dismissSuggestion(suggestion: ChatScheduleSuggestion) {
+    const activeLifecycle = lifecycle.current;
+    setHiddenSuggestionKey(suggestion.key);
+    dismissChatScheduleSuggestion(threadId, suggestion.key).catch(cause => {
+      if (activeLifecycle !== lifecycle.current || revokeAccess(cause)) return;
+      setHiddenSuggestionKey(current => current === suggestion.key ? null : current);
+      toast.error(messageOf(cause));
+    });
+  }
+
   async function submitReport(input: Parameters<typeof reportChatMessage>[1]) {
     const reportedId = input.messageId;
     await reportChatMessage(threadId, input);
@@ -849,6 +865,9 @@ function ChatThreadPane({ threadId, initialDetail, mode, fullscreen, singlePane,
   const subtitle = conversation ? `${baseSubtitle}${baseSubtitle ? ' · ' : ''}${zone}` : baseSubtitle;
   const days = groupChatDays(messages, zone);
   const canLoadEarlier = earlierHasMore ?? detail.hasEarlier;
+  const suggestion = mode === 'participant' && detail.viewer.canPropose && detail.viewer.canPost
+    && !detail.safety.messagingBlocked && detail.scheduleSuggestion?.key !== hiddenSuggestionKey
+    ? detail.scheduleSuggestion : null;
   const statusBadge = session?.status === 'CANCELLED' ? 'Cancelled' : session?.status === 'COMPLETED' ? 'Completed' : session?.status === 'PENDING' ? 'Pending' : null;
 
   return <div className={cn('chat-thread-pane', fullscreen && 'chat-thread-fullscreen')}>
@@ -922,6 +941,13 @@ function ChatThreadPane({ threadId, initialDetail, mode, fullscreen, singlePane,
       </div>
     </div>
 
+    {suggestion && <ScheduleSuggestionCard
+      suggestion={suggestion}
+      disabled={sending || !!busyProposalId}
+      onPropose={() => setDialog({ counterTo: null, suggestion })}
+      onDismiss={() => dismissSuggestion(suggestion)}
+    />}
+
     {detail.safety.messagingBlocked ? <div className="chat-composer flex flex-wrap items-center justify-center gap-2 border-t border-[#e6eae3] bg-white px-3 pt-3 text-center text-xs text-[#59675c]">
       <LockKeyhole size={13} aria-hidden="true" />
       <span>{blockedComposerMessage(detail.safety.blockedByViewer, detail.safety.reason)}</span>
@@ -964,6 +990,7 @@ function ChatThreadPane({ threadId, initialDetail, mode, fullscreen, singlePane,
       session={session}
       conversation={detail.conversation}
       counterTo={dialog.counterTo}
+      suggestion={dialog.suggestion ?? null}
       onSubmit={submitProposal}
     />}
     {conversation && coachDialogOpen && <ManageConversationCoachDialog
