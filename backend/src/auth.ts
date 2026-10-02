@@ -3,7 +3,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
-import { prisma } from './db.js';
+import { prisma, retryingTransaction, serializableTransaction } from './db.js';
 import { config, production, skipRateLimits } from './config.js';
 import { sharedRateLimit } from './rate-limit.js';
 import { asyncRoute, HttpError, requireAccountCapability, type AccountRequest, type MembershipWithBusiness } from './http.js';
@@ -29,23 +29,7 @@ const cookieOptions = { httpOnly: true, secure: production, sameSite: 'lax' as c
 const membershipOrder = [{ createdAt: 'asc' as const }, { id: 'asc' as const }];
 const dummyPasswordHash = '$2b$12$QrsSSNoV/kdmGVRTVVmoIOKhMlSeSPFjGtV8.iKB7MHYFUPprZWyK';
 const bcryptHash = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/;
-const SERIALIZABLE_RETRY_LIMIT = 3;
 const EMAIL_VERIFICATION_LIFETIME_MS = 24 * 60 * 60_000;
-
-async function serializableAuthTransaction<T>(
-  operation: (tx: Prisma.TransactionClient) => Promise<T>,
-) {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      return await prisma.$transaction(operation, {
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      });
-    } catch (error) {
-      if (!(error instanceof Prisma.PrismaClientKnownRequestError)
-        || error.code !== 'P2034' || attempt >= SERIALIZABLE_RETRY_LIMIT) throw error;
-    }
-  }
-}
 
 function selectedMembership(
   accountType: string,
@@ -331,7 +315,7 @@ authRouter.post('/register', registrationLimit, asyncRoute(async (req, res) => {
     });
   }
   const passwordHash = await bcrypt.hash(body.password, 12);
-  const result = await serializableAuthTransaction(async tx => {
+  const result = await serializableTransaction(async tx => {
     const emailClaim = await lockAccountEmailClaim(tx, body.email);
     if (emailClaim.pendingHandover) {
       throw new HttpError(409, 'This record already exists. Please use a different email or username.');
@@ -394,7 +378,7 @@ const verificationToken = z.string().trim().min(20).max(200)
 authRouter.post('/verify-email', emailVerificationAttemptLimit, asyncRoute(async (req, res) => {
   const { token } = z.object({ token: verificationToken }).strict().parse(req.body);
   const tokenHash = emailVerificationTokenDigest(token);
-  const result = await prisma.$transaction(async tx => {
+  const result = await serializableTransaction(async tx => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`courtly:email-verification:${tokenHash}`}, 0))`;
     await tx.$queryRaw`SELECT id FROM "EmailVerificationClaim" WHERE "tokenHash" = ${tokenHash} FOR UPDATE`;
     const claim = await tx.emailVerificationClaim.findUnique({ where: { tokenHash }, include: { user: true } });
@@ -412,7 +396,7 @@ authRouter.post('/verify-email', emailVerificationAttemptLimit, asyncRoute(async
     await tx.user.update({ where: { id: claim.userId }, data: { emailVerifiedAt: now } });
     await tx.emailVerificationClaim.update({ where: { id: claim.id }, data: { consumedAt: now } });
     return { code: null, status: 200, verifiedAt: now };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  });
   if (result.code) throw new HttpError(result.status, 'This verification link is invalid or has expired', { code: result.code });
   res.json({ ok: true, verifiedAt: result.verifiedAt.toISOString() });
 }));
@@ -431,7 +415,7 @@ authRouter.post('/email-verification/resend', requireAuth, emailVerificationLimi
     });
   }
   const issuedAt = new Date();
-  const result = await prisma.$transaction(async tx => {
+  const result = await serializableTransaction(async tx => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`courtly:email-verification-user:${req.auth.user.id}`}, 0))`;
     const user = await tx.user.findUnique({
       where: { id: req.auth.user.id }, select: { id: true, email: true, name: true, emailVerifiedAt: true },
@@ -444,7 +428,7 @@ authRouter.post('/email-verification/resend', requireAuth, emailVerificationLimi
     });
     const { claim } = await createEmailVerification(tx, user, issuedAt);
     return { alreadyVerified: false, expiresAt: claim.expiresAt };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  });
   res.json({
     ok: true, emailQueued: !result.alreadyVerified, alreadyVerified: result.alreadyVerified,
     expiresAt: result.expiresAt?.toISOString() ?? null,
@@ -548,7 +532,9 @@ authRouter.post('/demo', sharedRateLimit({
       }
     }
   }
-  const result = await prisma.$transaction(
+  // Concurrent demo seeds write the same shared tables and can deadlock;
+  // each attempt draws a fresh slug, so a retry never collides with itself.
+  const result = await retryingTransaction(
     tx => seedBusiness(tx, { isDemo: true, slug: `marcus-tan-${randomBytes(6).toString('hex')}` }),
     { timeout: 60_000 },
   );

@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import type { AccountBooking, AuthSession, StudentClubDirectoryEntry } from '../src/lib/types';
+import { openDisclosure } from './progressive-disclosure';
 
 const knownBusiness = {
   name: 'Centre Court Academy',
@@ -131,6 +132,8 @@ test('student Explore separates familiar clubs from discovery and filters the di
   await expect(discover.getByRole('heading', { name: discoveryBusiness.name })).toBeVisible();
   await expect(page.getByRole('status').filter({ hasText: '3 clubs found' })).toBeVisible();
 
+  // Sport and relationship filters are secondary to search and the club list.
+  await openDisclosure(page, 'More club filters');
   const tennisFilter = page.getByRole('button', { name: /^tennis$/i });
   await expect(tennisFilter).toHaveCount(1);
   await tennisFilter.click();

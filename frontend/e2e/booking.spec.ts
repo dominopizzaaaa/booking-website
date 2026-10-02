@@ -199,6 +199,9 @@ test('student creates an account, books, views history, and cancels', async ({ p
   await expect(personalDetails).toContainText('+65 9123 4567');
   await expect(personalDetails).toContainText('Robin Browser Test');
   await expect(page.getByLabel('Full name', { exact: true })).toHaveCount(0);
+  // History is secondary on Profile, so it waits behind its own toggle.
+  await expect(page.getByRole('group', { name: 'Filter booking history' })).toBeHidden();
+  await page.getByRole('button', { name: 'View booking history', exact: true }).click();
   await expect(page.getByRole('group', { name: 'Filter booking history' })).toBeVisible();
   await expect(studentNavigation.getByRole('button', { name: 'Profile', exact: true })).toHaveAttribute('aria-current', 'page');
 
@@ -251,12 +254,16 @@ test('student creates an account, books, views history, and cancels', async ({ p
   const cancellationNotice = page.getByRole('status').filter({ hasText: 'Your booking has been cancelled.' });
   await expect(cancellationNotice).toBeVisible();
   await expect(cancellationNotice).toBeFocused();
-  await expect(page.getByRole('heading', { name: 'Booking history' })).toBeVisible();
-  await expect(page.getByRole('article').filter({ hasText: service.name }).first()).toContainText('Cancelled');
+  // Home lists past sessions under History, collapsed until asked for.
+  const homeHistory = page.locator('section[aria-labelledby="booking-history"]');
+  await expect(homeHistory.getByRole('heading', { name: 'History', exact: true })).toBeVisible();
+  await homeHistory.getByRole('button', { name: /^See \d+ more session/ }).click();
+  await expect(homeHistory.getByRole('article').filter({ hasText: service.name }).first()).toContainText('Cancelled');
 
   await page.reload();
-  await expect(page.getByRole('heading', { name: 'Booking history' })).toBeVisible();
-  await expect(page.getByRole('article').filter({ hasText: service.name }).first()).toContainText('Cancelled');
+  await expect(homeHistory.getByRole('heading', { name: 'History', exact: true })).toBeVisible();
+  await homeHistory.getByRole('button', { name: /^See \d+ more session/ }).click();
+  await expect(homeHistory.getByRole('article').filter({ hasText: service.name }).first()).toContainText('Cancelled');
   const historyResponse = await page.request.get('/api/account/bookings', {
     params: { businessSlug: workspace.business.slug },
   });

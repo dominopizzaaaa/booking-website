@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 4.8.0** · Last updated 2026-10-02
+**Version 4.9.0** · Last updated 2026-10-02
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -106,6 +106,7 @@ backend/           Express + Prisma API (TypeScript, ESM)
   src/
     app.ts         Express wiring, middleware order, /api/health capabilities
     config.ts      Environment reading; every env var enters here
+    db.ts          Prisma client and conflict-retrying transaction helpers
     auth.ts        Sessions, signup evidence, email verification, profiles, workspace switching
     account-security.ts Recovery, verified email change, TOTP MFA, sessions, and step-up routes
     account-security-crypto.ts Versioned claim, TOTP, and recovery-code cryptography
@@ -1187,6 +1188,14 @@ duplicated into either alert store.
   on a schedule, then reload state after waiting. Reschedule decisions also
   lock the request. Financial writes and reversals take the party advisory lock
   and reload state after waiting.
+- Run every Serializable transaction through `serializableTransaction()` in
+  `db.ts` (or `retryingTransaction()` for another isolation level), never a
+  bare `prisma.$transaction(..., { isolationLevel: 'Serializable' })`.
+  PostgreSQL aborts Serializable work from unrelated tenants that merely share
+  an index page, so an unretried transaction turns ordinary simultaneous
+  sign-ups or roster edits into "Another update occurred" 409s. The callback
+  may run several times: keep it database-only, with external effects in the
+  outbox.
 - Tenancy: every query filters by `businessId`. There is no global read. Core
   tenant parents are immutable and relations use the database constraints
   described in §4.
@@ -1208,6 +1217,10 @@ duplicated into either alert store.
   second. Anything a person does with a rendered page belongs in
   `frontend/e2e`, where it runs at all three viewports. Do not reach for a
   browser to test a function, and do not assert layout or focus from Vitest.
+  A journey that needs collapsed or bounded content opens it the way a person
+  would with `openDisclosure()` or `revealChoice()` from
+  `frontend/e2e/progressive-disclosure.ts`; when a UI change collapses content,
+  update every journey that reads it in the same commit.
 - Product tours are versioned per account and role context in
   `frontend/src/lib/product-tour.ts`. New signups set a session hint, unseen
   tour versions launch after their destination shell is ready, and Profile
@@ -1299,7 +1312,10 @@ npm run build --prefix frontend
 CI runs the Playwright suite as a separate `browser-tests` job after the unit,
 type, and build checks pass. It provisions its own migrated PostgreSQL service
 and rebuilds both production bundles, keeping browser-runtime installation and
-journey time outside the main build/test timeout.
+journey time outside the main build/test timeout. A green suite takes a few
+minutes per viewport; every failing journey waits out its 60-second timeout,
+so the job's 40-minute budget leaves room to report a broken run. A cancelled
+browser job is never a pass: read it as failures that outlasted the budget.
 
 Railway probes `/api/live` for process liveness; that route must stay
 independent of PostgreSQL and worker state. `/api/health` is the stricter
@@ -1308,8 +1324,10 @@ contract is unavailable.
 
 Backend Vitest must remain file-serial: `npm test` invokes
 `--no-file-parallelism` because integration and configuration tests share
-mutable process and database state. Do not run its files concurrently. Run the
-Playwright projects in one command from `frontend/`; they share test artifacts.
+mutable process and database state. Do not run its files concurrently. Locally,
+run the Playwright projects in one command from `frontend/`; they share test
+artifacts. `--workers=4` is a useful local sweep and doubles as a concurrency
+check, but the configured default stays one worker.
 
 **Three traps when running e2e locally:**
 
@@ -1493,6 +1511,19 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 4.9.0 — 2026-10-02
+
+Made the browser suite green and CI able to finish. Fifteen journeys still
+expected content that the 2026-10-01 information-hierarchy change had moved
+behind disclosures and bounded lists. They now open it the way a person does,
+through shared `e2e/progressive-disclosure.ts` helpers. Parallel journeys also
+exposed real Serializable conflict 409s on sign-up, roster, staff, security
+and Family writes. Every Serializable transaction, and the demo seed, now
+retries conflict aborts through `db.ts`. The browser CI job now has a
+40-minute budget: on every push since that change, the 32 failing runs, each
+waiting out a 60-second timeout, had pushed it past its 25-minute limit, so CI
+showed cancelled instead of failed.
 
 ### 4.8.0 — 2026-10-02
 

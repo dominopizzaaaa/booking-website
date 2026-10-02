@@ -19,6 +19,7 @@ import type {
   Slot,
 } from '../src/lib/types';
 import { currentLegalAcceptance } from './legal-acceptance';
+import { revealChoice } from './progressive-disclosure';
 
 const password = 'TestingOnly!2026';
 
@@ -351,13 +352,15 @@ async function chooseLessonAndTime(
   date: string,
   timeLabel = '10:00 AM',
 ) {
-  await page.getByRole('button', { name: new RegExp(escapeRegExp(service.name)) }).click();
+  // Classes, venues, coaches and times are bounded lists; later entries
+  // wait behind "See N more …".
+  await (await revealChoice(page, page.getByRole('button', { name: new RegExp(escapeRegExp(service.name)) }))).click();
   await visibleBookingAction(page, 'Continue').click();
-  await page.getByRole('button', { name: new RegExp(escapeRegExp(venue.name)) }).click();
-  await page.getByRole('button', { name: new RegExp(escapeRegExp(setup.coachName)) }).click();
+  await (await revealChoice(page, page.getByRole('button', { name: new RegExp(escapeRegExp(venue.name)) }))).click();
+  await (await revealChoice(page, page.getByRole('button', { name: new RegExp(escapeRegExp(setup.coachName)) }))).click();
   await visibleBookingAction(page, 'Continue').click();
   await page.getByLabel('Choose a date', { exact: true }).fill(date);
-  await page.getByRole('radio', { name: new RegExp(`^${escapeRegExp(timeLabel)}`) }).click();
+  await (await revealChoice(page, page.getByRole('radio', { name: new RegExp(`^${escapeRegExp(timeLabel)}`) }))).click();
   await visibleBookingAction(page, 'Continue').click();
 }
 
@@ -419,14 +422,14 @@ test('a signed-in coach cannot book themself and can safely sign out without los
 test('a student joins an existing group while a full group stays unavailable', async ({ page }) => {
   await loginStudent(page);
   await openLiveBooking(page);
-  await page.getByRole('button', { name: new RegExp(escapeRegExp(setup.groupService.name)) }).click();
+  await (await revealChoice(page, page.getByRole('button', { name: new RegExp(escapeRegExp(setup.groupService.name)) }))).click();
   await visibleBookingAction(page, 'Continue').click();
-  await page.getByRole('button', { name: new RegExp(escapeRegExp(setup.facility.name)) }).click();
-  await page.getByRole('button', { name: new RegExp(escapeRegExp(setup.coachName)) }).click();
+  await (await revealChoice(page, page.getByRole('button', { name: new RegExp(escapeRegExp(setup.facility.name)) }))).click();
+  await (await revealChoice(page, page.getByRole('button', { name: new RegExp(escapeRegExp(setup.coachName)) }))).click();
   await visibleBookingAction(page, 'Continue').click();
   await page.getByLabel('Choose a date', { exact: true }).fill(setup.groupDate);
 
-  await expect(page.getByRole('radio', { name: /10:00 AM.*2 places left/ })).toBeVisible();
+  await revealChoice(page, page.getByRole('radio', { name: /10:00 AM.*2 places left/ }));
   await expect(page.getByRole('radio', { name: '12:00 PM', exact: true })).toHaveCount(0);
   const slots = await responseJson<{ slots: Slot[] }>(await page.request.get(`/api/public/${setup.slug}/slots`, {
     params: {

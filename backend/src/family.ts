@@ -3,7 +3,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
-import { prisma } from './db.js';
+import { prisma, serializableTransaction } from './db.js';
 import { config, skipRateLimits } from './config.js';
 import { sharedRateLimit } from './rate-limit.js';
 import { asyncRoute, HttpError, requireRecentAuth, type AccountRequest } from './http.js';
@@ -28,7 +28,6 @@ import { createBookingsInTransaction, type GuardianBookingInput } from './schedu
 
 const HANDOVER_LIFETIME_MS = 7 * 24 * 60 * 60_000;
 const HANDOVER_COOLDOWN_MS = 60_000;
-const SERIALIZABLE_RETRY_LIMIT = 3;
 const consentDecisionEvents = ['GRANTED', 'RENEWED', 'WITHDRAWN'] as const;
 const familyDashboardEvents = [...consentDecisionEvents, 'DELETION_REQUESTED'] as const;
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -58,29 +57,6 @@ const familyLinkInclude = {
 type FamilyLink = Prisma.GuardianChildLinkGetPayload<{ include: typeof familyLinkInclude }>;
 type FamilyHandover = FamilyLink['child']['childHandovers'][number];
 type ConsentRecord = FamilyLink['consentRecords'][number];
-
-function isSerializationFailure(error: unknown) {
-  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') {
-    return true;
-  }
-  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
-  const metadata = JSON.stringify(error.meta ?? {});
-  return error.code === 'P2010' && (metadata.includes('40001') || metadata.includes('could not serialize access'));
-}
-
-async function serializableFamilyTransaction<T>(
-  operation: (tx: Prisma.TransactionClient) => Promise<T>,
-) {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      return await prisma.$transaction(operation, {
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      });
-    } catch (error) {
-      if (!isSerializationFailure(error) || attempt >= SERIALIZABLE_RETRY_LIMIT) throw error;
-    }
-  }
-}
 
 function dateOnly(value: Date | null) {
   return value?.toISOString().slice(0, 10) ?? null;
@@ -642,7 +618,7 @@ familyRouter.post('/children/:id/bookings', asyncRoute(async (req, res) => {
 
 familyRouter.post('/date-of-birth', asyncRoute(async (req, res) => {
   const body = setDateOfBirthBody.parse(req.body);
-  const result = await serializableFamilyTransaction(async tx => {
+  const result = await serializableTransaction(async tx => {
     await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${req.auth.user.id} FOR UPDATE`;
     const user = await tx.user.findUnique({ where: { id: req.auth.user.id } });
     if (!user) throw new HttpError(401, 'Please sign in to continue');
@@ -680,7 +656,7 @@ familyRouter.post('/children', asyncRoute(async (req, res) => {
 
   let link: FamilyLink;
   try {
-    link = await prisma.$transaction(async tx => {
+    link = await serializableTransaction(async tx => {
       await lockGuardian(tx, req.auth.user.id);
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`courtly:family-username:${body.username}`}, 0))`;
       const child = await tx.user.create({ data: {
@@ -710,7 +686,7 @@ familyRouter.post('/children', asyncRoute(async (req, res) => {
       });
       await appendConsentEvent(tx, createdLink, 'GRANTED');
       return authorizedLink(tx, req.auth.user.id, child.id, 'PROFILE_MANAGE');
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
       throw new HttpError(409, 'That username is already taken', { code: 'USERNAME_TAKEN' });
@@ -724,7 +700,7 @@ familyRouter.post('/children', asyncRoute(async (req, res) => {
 familyRouter.patch('/children/:id', asyncRoute(async (req, res) => {
   const { id } = childParams.parse(req.params);
   const body = updateChildBody.parse(req.body);
-  const child = await prisma.$transaction(async tx => {
+  const child = await serializableTransaction(async tx => {
     const link = await lockedAuthorizedLink(tx, req.auth.user.id, id, 'PROFILE_MANAGE');
     assertManagedChild(link.child);
     if (body.profileVisibility !== undefined
@@ -748,14 +724,14 @@ familyRouter.patch('/children/:id', asyncRoute(async (req, res) => {
       });
     }
     return refreshedChild(tx, req.auth.user.id, id, 'PROFILE_MANAGE');
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  });
   res.json({ child });
 }));
 
 familyRouter.post('/children/:id/consent/withdraw', requireRecentAuth, asyncRoute(async (req, res) => {
   const { id } = childParams.parse(req.params);
   emptyBody.parse(req.body ?? {});
-  const child = await prisma.$transaction(async tx => {
+  const child = await serializableTransaction(async tx => {
     const link = await lockedAuthorizedLink(tx, req.auth.user.id, id, 'CONSENT_MANAGE');
     assertManagedChild(link.child);
     const latest = link.consentRecords.find(record =>
@@ -779,7 +755,7 @@ familyRouter.post('/children/:id/consent/withdraw', requireRecentAuth, asyncRout
     return renewalChildJson(await authorizedLink(
       tx, req.auth.user.id, id, 'CONSENT_MANAGE', ['WITHDRAWN'],
     ));
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  });
   res.json({ child });
 }));
 
@@ -787,7 +763,7 @@ familyRouter.post('/children/:id/consent/renew', requireRecentAuth, asyncRoute(a
   const { id } = childParams.parse(req.params);
   const body = renewConsentBody.parse(req.body);
   assertCurrentPrivacyPolicy(body.privacyPolicyVersion);
-  const child = await prisma.$transaction(async tx => {
+  const child = await serializableTransaction(async tx => {
     const link = await lockedAuthorizedLink(
       tx, req.auth.user.id, id, 'CONSENT_MANAGE', ['ACTIVE', 'WITHDRAWN'],
     );
@@ -814,14 +790,14 @@ familyRouter.post('/children/:id/consent/renew', requireRecentAuth, asyncRoute(a
     return refreshedLink.permissions.includes('PROFILE_MANAGE')
       ? familyChildJson(refreshedLink, tx)
       : renewalChildJson(refreshedLink);
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  });
   res.json({ child });
 }));
 
 familyRouter.post('/children/:id/deletion-request', requireRecentAuth, asyncRoute(async (req, res) => {
   const { id } = childParams.parse(req.params);
   emptyBody.parse(req.body ?? {});
-  const child = await prisma.$transaction(async tx => {
+  const child = await serializableTransaction(async tx => {
     const link = await lockedAuthorizedLink(tx, req.auth.user.id, id, 'DELETION_REQUEST');
     assertManagedChild(link.child);
     const now = new Date();
@@ -833,7 +809,7 @@ familyRouter.post('/children/:id/deletion-request', requireRecentAuth, asyncRout
     });
     await tx.authSession.deleteMany({ where: { userId: id } });
     return refreshedChild(tx, req.auth.user.id, id, 'DELETION_REQUEST');
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  });
   res.json({ child });
 }));
 
@@ -850,7 +826,7 @@ familyRouter.post('/children/:id/handovers', requireRecentAuth, asyncRoute(async
   const tokenHash = familyHandoverTokenDigest(token);
   let result: { handover: FamilyHandover; emailQueued: boolean };
   try {
-    result = await serializableFamilyTransaction(async tx => {
+    result = await serializableTransaction(async tx => {
       const link = await lockedAuthorizedLink(tx, req.auth.user.id, id, 'HANDOVER_MANAGE');
       assertManagedChild(link.child);
       if (link.child.accountStatus !== 'ACTIVE') {
@@ -957,7 +933,7 @@ familyRouter.post('/children/:id/handovers', requireRecentAuth, asyncRoute(async
 familyRouter.delete('/children/:id/handovers/:handoverId', requireRecentAuth, asyncRoute(async (req, res) => {
   const { id, handoverId } = handoverParams.parse(req.params);
   emptyBody.parse(req.body ?? {});
-  await prisma.$transaction(async tx => {
+  await serializableTransaction(async tx => {
     await childLock(tx, id);
     await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${id} FOR UPDATE`;
     await tx.$queryRaw`SELECT id FROM "GuardianChildLink"
@@ -996,7 +972,7 @@ familyRouter.delete('/children/:id/handovers/:handoverId', requireRecentAuth, as
     await suppressQueuedHandoverDelivery(tx, handover.id, now, 'HANDOVER_CANCELLED');
     await appendConsentEvent(tx, link, 'HANDOVER_CANCELLED', { handoverId: handover.id });
     return { error: null };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }).then(result => {
+  }).then(result => {
     if (result.error) throw result.error;
   });
   res.json({ ok: true });
@@ -1005,7 +981,7 @@ familyRouter.delete('/children/:id/handovers/:handoverId', requireRecentAuth, as
 familyRouter.get('/children/:id/export', requireRecentAuth, asyncRoute(async (req, res) => {
   emptyQuery.parse(req.query);
   const { id } = childParams.parse(req.params);
-  const child = await prisma.$transaction(async tx => {
+  const child = await serializableTransaction(async tx => {
     const lockedLink = await lockedAuthorizedLink(
       tx, req.auth.user.id, id, 'DATA_EXPORT', ['ACTIVE'],
     );
@@ -1096,7 +1072,7 @@ familyRouter.get('/children/:id/export', requireRecentAuth, asyncRoute(async (re
       throw new HttpError(404, 'Child profile not found', { code: 'CHILD_NOT_FOUND' });
     }
     return lockedChild;
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  });
   const guardianLinks = child.childLinks.map(({ guardianUserId, guardian, ...link }) => ({
     ...link,
     guardian: guardianUserId === req.auth.user.id ? guardian : null,
@@ -1145,7 +1121,7 @@ familyPublicRouter.get('/handovers/:token', publicHandoverLimit, asyncRoute(asyn
   emptyQuery.parse(req.query);
   const token = publicHandoverToken(req.params);
   const tokenHash = digest(token);
-  const result = await prisma.$transaction(async tx => {
+  const result = await serializableTransaction(async tx => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`courtly:family-handover-token:${tokenHash}`}, 0))`;
     const initial = await tx.childAccountHandover.findUnique({
       where: { tokenHash }, select: { childUserId: true },
@@ -1166,7 +1142,7 @@ familyPublicRouter.get('/handovers/:token', publicHandoverLimit, asyncRoute(asyn
     }
     const error = handoverStateError(handover.status);
     return { handover: error ? null : handover, error };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  });
   if (result.error) throw result.error;
   if (!result.handover) {
     throw new HttpError(404, 'Handover not found', { code: 'HANDOVER_NOT_FOUND' });
@@ -1189,7 +1165,7 @@ familyPublicRouter.post('/handovers/:token/complete', publicHandoverLimit, async
   const passwordHash = await bcrypt.hash(body.password, 12);
   let result: { error: HttpError | null; username?: string; loginEmail?: string };
   try {
-    result = await serializableFamilyTransaction(async tx => {
+    result = await serializableTransaction(async tx => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`courtly:family-handover-token:${tokenHash}`}, 0))`;
       const initial = await tx.childAccountHandover.findUnique({
         where: { tokenHash }, select: { childUserId: true },

@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import type { AccountBooking, AccountPackage, AuthSession, CheckoutKind, CheckoutReview, RentalDetail, RentalListing, RentalReservation } from '../src/lib/types';
+import { openDisclosure } from './progressive-disclosure';
 
 const business = {
   name: 'Riverside Rackets',
@@ -239,6 +240,7 @@ test('student can search accounts, buy an offer, and see package eligibility', a
   await page.keyboard.press('ArrowRight');
   await expect(page.getByRole('tab', { name: 'Classes/clubs' })).toBeFocused();
 
+  await openDisclosure(page, 'Find people');
   await page.getByLabel('Search all Courtly accounts').fill('jamie');
   await page.getByRole('button', { name: 'Search people' }).click();
   const searchResults = page.getByRole('list', { name: 'Account search results' });

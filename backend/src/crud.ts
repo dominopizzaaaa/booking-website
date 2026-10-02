@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { Availability, AvailabilityException, Business, Student, Instructor, Location, Prisma } from '@prisma/client';
 import { DateTime, IANAZone } from 'luxon';
 import { z } from 'zod';
-import { prisma } from './db.js';
+import { prisma, serializableTransaction } from './db.js';
 import { asyncRoute, HttpError, coachScope, coachScoped, requireClubPermission, requireCoachOrClubPermission, requireRecentAuth, initials, type AuthRequest } from './http.js';
 import { bookableInstructorWhere } from './scheduling.js';
 import { packageInclude, packageJson, withoutServiceFinancials } from './serializers.js';
@@ -227,7 +227,7 @@ crudRouter.get('/instructors', requireClubPermission('ROSTER_VIEW'), asyncRoute(
 crudRouter.post('/instructors', requireClubPermission('ROSTER_MANAGE'), asyncRoute(async (req, res) => {
   const input = instructorSchema.parse(req.body);
   const businessId = req.auth.business!.id;
-  const instructor = await prisma.$transaction(async tx => {
+  const instructor = await serializableTransaction(async tx => {
     const user = await tx.user.findUnique({ where: { email: input.email }, select: {
       id: true, name: true, email: true, accountType: true, passwordHash: true,
       memberships: { where: { businessId }, select: { id: true, active: true, instructorId: true } },
@@ -261,7 +261,7 @@ crudRouter.post('/instructors', requireClubPermission('ROSTER_MANAGE'), asyncRou
     const created = await tx.instructor.create({ data: { ...input, name: user.name, email: user.email, businessId, initials: initials(user.name) } });
     await tx.membership.create({ data: { userId: user.id, businessId, instructorId: created.id } });
     return { instructor: created, restored: false };
-  }, { isolationLevel: 'Serializable' });
+  });
   res.status(instructor.restored ? 200 : 201).json(instructorJson(instructor.instructor));
 }));
 crudRouter.patch('/instructors/me', asyncRoute(async (req, res) => {
@@ -383,7 +383,7 @@ crudRouter.get('/students', requireCoachOrClubPermission('STUDENTS_VIEW'), async
 crudRouter.post('/students', requireClubPermission('STUDENTS_MANAGE'), asyncRoute(async (req, res) => {
   const input = connectStudentSchema.parse(req.body);
   const businessId = req.auth.business!.id;
-  const student = await prisma.$transaction(async tx => {
+  const student = await serializableTransaction(async tx => {
     const [matched] = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "User" WHERE email = ${input.email} FOR UPDATE`;
     const user = matched ? await tx.user.findUnique({
       where: { id: matched.id },
@@ -402,7 +402,7 @@ crudRouter.post('/students', requireClubPermission('STUDENTS_MANAGE'), asyncRout
       businessId, userId: user.id, name: user.name, email: user.email, phone: user.phone,
       parentName: user.parentName, initials: initials(user.name), notes: input.notes,
     }, include: studentInclude(businessId) });
-  }, { isolationLevel: 'Serializable' });
+  });
   res.status(201).json(studentJson(student));
 }));
 crudRouter.patch('/students/:id', requireClubPermission('STUDENTS_MANAGE'), asyncRoute(async (req, res) => {

@@ -140,7 +140,10 @@ jobs:
   browser-tests:
     needs: build-and-test
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Passing journeys take a few minutes per viewport; the margin lets a run
+    # with several failing journeys (each waiting out its 60s timeout) still
+    # finish and report them instead of being cancelled.
+    timeout-minutes: 40
 
     services:
       postgres:

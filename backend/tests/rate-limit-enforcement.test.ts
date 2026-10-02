@@ -82,7 +82,15 @@ async function loadAuthHarness() {
       hash: vi.fn(async () => validPasswordHash),
     },
   }));
-  vi.doMock('../src/db.js', () => ({ prisma }));
+  vi.doMock('../src/db.js', () => {
+    const transaction = (operation: (tx: unknown) => Promise<unknown>) => prisma.$transaction(operation);
+    return {
+      prisma,
+      retryingTransaction: transaction,
+      serializableTransaction: transaction,
+      isTransactionConflict: () => false,
+    };
+  });
   vi.doMock('../src/seed.js', () => ({ seedBusiness: vi.fn() }));
   vi.doMock('../src/serializers.js', () => ({
     authState: vi.fn(async () => ({
