@@ -1,11 +1,40 @@
 # AGENTS.md — Courtly
 
-**Version 4.6.0** · Last updated 2026-10-01
+**Version 4.7.0** · Last updated 2026-10-02
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
 as any change it describes, and raise the version number** (patch for a
 correction, minor for new behaviour, major for a reshaped model).
+
+### Read this before changing code
+
+This guide is an implementation map, not a substitute for the source. Treat
+the Prisma schema, committed SQL migrations, route handlers, serializers,
+shared client types, and tests as the executable contract. When they disagree
+with this file, investigate the discrepancy before editing; do not preserve a
+stale sentence merely because it is documented here.
+
+Before an implementation task:
+
+1. Run `git status --short --branch`. Preserve unrelated worktree changes;
+   never reset, restore, reformat, stage, or commit another person's files.
+2. Use §3 to identify the vertical slice, then read the route mount in
+   `backend/src/app.ts`, the relevant policy/serializer, and the existing
+   focused tests before deciding the change is local.
+3. Map every crossed boundary: database, authorization/capability, tenancy,
+   API wire type, frontend API helper, background work, alert/email side
+   effect, accessibility, and deployment configuration. Most regressions occur
+   at one of these boundaries rather than in the edited component.
+4. Make the smallest coherent change, test it at the right level, inspect the
+   final diff, and update this guide when its durable map, workflow, invariant,
+   or operational instruction changed. See **Maintaining this guide** in §7.
+
+Do not claim a feature works from a UI state alone. Trace the server
+authorization, transaction, database constraint, serializer, client use, and
+the test that protects the relevant invariant. Conversely, do not duplicate
+the whole codebase here: record durable decisions, ownership, and non-obvious
+cross-file obligations that let the next agent find the source quickly.
 
 ---
 
@@ -165,6 +194,74 @@ frontend/          Next.js App Router (TypeScript, Tailwind)
 scripts/           Local PostgreSQL, guarded backup/restore, security checks, showcase tools
 ```
 
+### Runtime and contract map
+
+The browser talks only to same-origin `/api/*`. `frontend/next.config.ts`
+rewrites that prefix to the build-time `BACKEND_URL`, and also owns the
+application CSP and response security headers. Do not create a second browser
+API base URL, bypass `src/lib/api.ts`, or weaken that CSP for a convenience
+integration; make the narrow required policy change and test it instead.
+
+`backend/src/index.ts` is the process composition root. It connects Prisma,
+asserts the live schema contract before serving traffic, and starts the Calendar
+sync, chat-reminder, waitlist, package-alert, and outbound-email workers in
+every API process. These workers are deliberately leased/idempotent enough for
+several replicas; there is no separate queue service. A worker change therefore
+has four likely homes: its source module, `index.ts` lifecycle wiring, config
+and health capability reporting, and focused worker tests.
+
+`backend/src/app.ts` is the HTTP composition root. Its ordering is security
+behaviour, not housekeeping: raw Stripe webhook bytes precede JSON parsing;
+public/auth and Family-remediation routes precede `requireAccountReady`; global
+account routers precede the workspace guard; and unknown provider paths are
+made 404 before a prefix-mounted workspace guard can mistake them for a missing
+workspace. Register a new route in the right group and, for a provider route,
+in `providerRouters`; simply exporting a router makes no endpoint reachable.
+
+| Boundary | Canonical source | Keep aligned when it changes |
+| --- | --- | --- |
+| Database shape and hard invariants | `backend/prisma/schema.prisma` and its committed migration SQL | schema health, fixtures/teardown, seed/provisioners, serializers/query shapes, integration tests |
+| HTTP authorization and route reachability | `app.ts`, `auth.ts`, `http.ts`, then the feature router | capability/step-up policy, `app.ts` mount group, client helper/type, route tests |
+| API wire contract | backend serializers/feature JSON and `frontend/src/lib/types.ts` | `frontend/src/lib/api.ts`, compatibility normalizers, pure API tests, rendered consumers |
+| Workspace bootstrap | `backend/src/workspace.ts` | `types.ts`, workspace shell/view permissions, bounded-payload behaviour |
+| Browser request boundary | `frontend/src/lib/api.ts` | typed calls, recent-auth retry path, error handling, rolling-deploy normalizers |
+| Product policy | the named backend policy module and its tests | every caller; React displays server policy but must not reimplement authorization |
+| Durable side effect | mutation transaction plus worker/outbox module | stable dedupe/idempotency, pre-dispatch revalidation, capability/configuration, worker test |
+
+`config.ts` is the sole environment-entry boundary. A new environment variable
+must be validated there and documented in `backend/.env.example`, §9, and the
+README when an operator needs to set it. `/api/live` is dependency-free process
+liveness; `/api/health` performs database/schema readiness and reports
+configuration-derived capabilities. Do not make liveness query PostgreSQL or
+make an optional capability appear ready without its actual prerequisites.
+
+### Important source directories omitted by a shallow feature search
+
+- `backend/src/payments/` splits checkout, policy evidence, provider calls,
+  fulfillment, refunds, receipts, risk cases, Stripe specifics, webhooks, and
+  route mounting. Preserve its transaction/provider-call boundaries.
+- `backend/src/account-profile.ts`, `account-email-claim.ts`,
+  `account-policy.ts`, `children-policy.ts`, and `legal-policy-gate.ts` hold
+  account-shape and policy decisions that many route files consume. Search for
+  their helpers before reproducing a validation or policy check.
+- `backend/src/schema-health.ts`, `seed.ts`, `prisma/seed.ts`, and
+  `prisma/provision-elever-showcase.ts` make a schema change operationally
+  complete; the app refuses a database that fails the runtime probe.
+- `frontend/src/lib/` contains pure formatting, query/link, compatibility,
+  state, and policy-display helpers. Prefer adding a focused helper and its
+  Node-only Vitest test over embedding duplicated logic in a large app shell.
+- `frontend/src/components/workspace/` is the provider shell decomposed by
+  operational area; `student-app.tsx` is the player shell, with supporting
+  components under `student/`; `public-booking.tsx` owns the public club flow.
+  Keep role-specific price/identity redaction intact when sharing a component.
+- `scripts/` contains deliberately guarded local PostgreSQL, backup/restore,
+  static-security, dependency-audit, and showcase utilities. Read a script and
+  its test before changing its safety prompt or database target validation.
+- `.github/workflows/ci.yml` is part of the release contract: CodeQL,
+  dependency/static/history secret checks, backend integration tests, builds,
+  frontend types/unit tests, and a separate three-viewport production-bundle
+  Playwright job all run on pushes and pull requests.
+
 ---
 
 ## 3. Where to look for a given task
@@ -208,9 +305,74 @@ scripts/           Local PostgreSQL, guarded backup/restore, security checks, sh
 | Change platform-admin authentication | `backend/src/admin.ts`, `config.ts`, then `frontend/src/components/admin-console.tsx` |
 | Add an env var | `backend/src/config.ts` + `backend/.env.example` + README |
 
+### Change-impact checklists
+
+Use these as a completion checklist, not as permission to make unrelated
+changes. A row applies only when the task crosses that boundary.
+
+| If you change… | Also inspect or update… |
+| --- | --- |
+| A Prisma model, enum, relation, trigger, constraint, or index | a new committed migration (never `db push`), `schema-health.ts` if runtime readiness depends on it, data-preserving migration audits, seed/Elever truncate order, and DB-invariant tests |
+| A request or response shape | Zod body/query parsing, route guard and mount group, backend serializer/redaction, `frontend/src/lib/types.ts`, `frontend/src/lib/api.ts`, compatibility normalizers, and focused API/UI tests |
+| A workspace collection, permission, or bounded list | `workspace.ts`, `http.ts` permission helpers, types, `workspace/` view gates, pagination/Disclosure behaviour, and coach financial redaction |
+| Booking creation, availability, capacity, attendance, cancellation, or a move | `scheduling.ts`, `reschedule.ts` as applicable, `venue-allocations.ts`, participant/package/Calendar/outbound/chat effects, and concurrency tests |
+| Money, checkout, entitlement, package credit, or a rental cancellation | the payment/commerce/rental module, immutable snapshot/ledger constraints, `credit-ledger.ts`, legal/commercial gates, receipt/refund effects, and financial concurrency tests |
+| A global-account capability, signup, identity, email, MFA, or session | `auth.ts`, `account-policy.ts`, `children-policy.ts`, `account-security.ts`, account serializers/types, rate limits, step-up client flow, and sensitive error non-enumeration |
+| Family policy or a guardian action | `family.ts`, `children-policy.ts`, `account-policy.ts`, child schema/migration, append-only consent sequencing, Family UI, and focused age/IDOR/concurrency/rollout tests |
+| A selected club permission or membership/staff action | `http.ts`, staff/roster router, selected-session state, audit events, staff preset/delegation rules, workspace permission rendering, and recent-auth enforcement |
+| An alert, email, webhook, or any worker-produced state | both alert vocabularies when relevant, outbox/event creation in the source transaction, stable dedupe key, retry/pre-send checks, `index.ts` lifecycle, config/health status, and worker tests |
+| A public profile/discovery/search field | public serializers and privacy bounds, account-search enumeration limits, directory cursor/filter behaviour, public booking UI, and no leakage of email, phone, IDs, DOB, or guardian data |
+| A legal or checkout disclosure | `policies.json`, frontend/backend publication hashes, required acceptance evidence, legal/commercial gates, exact policy tests, and the Singapore compliance register—not just visible copy |
+| Frontend navigation, a dialog, a new first-use flow, or responsive layout | `api.ts` and types if data changes, loading/error/focus/escape behaviour, 390px layout, screen-reader labels, product tour hooks/version if appropriate, and Playwright coverage |
+
+### Route and authority map
+
+Classify a new endpoint before writing it. Mounting a correct handler under the
+wrong prefix is a security or rollout defect.
+
+| Surface | Mount/guard model | Examples |
+| --- | --- | --- |
+| Public | before ordinary authentication | public club page/slots, legacy issued management links, public legal/DPO metadata, Stripe webhook raw-body handler |
+| Authentication and remediation | `authRouter`; security and privacy have deliberately narrow exceptions | registration, verification, sign-in, password reset, MFA completion, account-required remediation, privacy request creation/tracking |
+| Family | feature gate before public handover and signed-in family routers | disabled public claims are 404; disabled signed-in Family routes are 503; normal routes recheck live guardian authority |
+| Global signed-in account | `requireAuth` + `requireAccountReady`, then per-route capability/role | Calendar, Chat, directory, discovery, progress, waitlist, package activity, student self-service, checkout |
+| Provider workspace | matched in `providerRouters`, then `requireAccountCapability('workspace')` + `requireWorkspace` | workspace payload, catalogue, bookings, roster/staff, venues, operations, safeguards, feedback, insights |
+| Platform administration | independent admin session router before ordinary account routing | platform operational queues, chat read-only, demo-only destructive operations in production |
+
+`requireAuth` proves a canonical active session; `requireAccountReady` evaluates
+the live account policy; a capability grants only a product surface; selected
+workspace/membership/staff permissions still decide tenant authority. Never use
+one layer as a substitute for another. Use the shared `http.ts` helpers rather
+than reproducing a check from raw account type, membership count, or browser
+state.
+
 ---
 
 ## 4. Data model notes that are easy to get wrong
+
+### Model ownership map
+
+`backend/prisma/schema.prisma` is the complete source of model names and
+relations. Read the relevant model *and the migration SQL that installed its
+constraints* before altering a query or write path: Prisma relations describe
+ergonomics, while PostgreSQL triggers, composite foreign keys, partial indexes,
+and exclusion constraints enforce historical and concurrent cases.
+
+| Model family | Principal records | Ownership rule to preserve |
+| --- | --- | --- |
+| Identity and access | `User`, `AuthSession`, `Membership`, `Instructor`, `ClubStaffAccess`, invitations | user identity is global; a selected teaching affiliation and selected staff grant are mutually exclusive session modes |
+| Club catalogue and availability | `Business`, `Location`, `VenueUnit`, `Service`, service joins, availability/exception rows | business owns its operational graph; coaches are assigned/bookable through the roster, never by a loose user ID |
+| Classes and scheduling | `Booking`, `Participant`, `BookingSeries`, `VenueUnitAllocation`, `RescheduleRequest` | booking/participant are authoritative after series creation; tenant and contractual snapshots never move or silently recompute |
+| Commerce and financial evidence | package offers/snapshots, `PaymentIntent`, `Payment`, `PaymentReceipt`, refunds, risk cases | authoritative amount/party/route/terms are server-derived and sealed; reversals and refunds retain audit evidence rather than deleting history |
+| Account safety and privacy | signup/verification/security claims, privacy requests, guardian links, consent records, handovers | raw credentials/tokens are not stored; evidence is append-only; managed-child identity is distinct from the guardian |
+| Communications and integrations | notifications, `OutboundDelivery`, Calendar records, chat threads/members/messages/reads | transactional state is durable and privacy-minimized; external provider effects are asynchronous projections, never the source of a booking |
+| Training companion | feedback, waitlist, credit events, training groups, favourites, funnel counters | feedback and credits are per learner/place with database-backed history; analytics stays person-free and groups never grant authority |
+
+When adding a relation, choose deletion semantics deliberately. `Cascade` is
+reserved for an explicitly owned lifecycle; an audit, claim, payment, contract
+snapshot, or cross-tenant relationship may require retention, a soft state
+transition, a restrictive FK, or a migration audit instead. Do not infer a
+safe cascade from the fact that Prisma makes it easy to declare one.
 
 - **Money is integer minor units (cents) everywhere.** Never a float.
 - **Usernames are canonical public identity.** Every `User.username` is
@@ -785,7 +947,11 @@ unread state and proposal UI. A `SESSION` thread belongs to one Class booking;
 an `ACCOUNT` thread is the one reusable direct conversation for a canonical
 pair of registered accounts. Starting one with `POST /api/chats/accounts` takes
 a public username selected through the existing authenticated account search
-and returns the existing thread for that pair when one already exists. Its
+and returns the existing thread for that pair when one already exists. The
+response carries `threadId` plus the opened thread detail, so the client shows
+it without a second request. A conversation with no club behind it displays
+times in `Asia/Singapore`, never UTC. List rows omit `schedulingOptions` and
+`assignableCoaches`; only the thread detail computes them. Its
 direct participants are persisted in `ChatThreadMember`; session membership
 must never be copied there.
 
@@ -1028,6 +1194,44 @@ duplicated into either alert store.
   `frontend/src/lib/alerts.ts`; `frontend/tests/alerts.test.ts` reads both
   backend files and fails when one is added without the other.
 
+### Maintaining this guide and handing off work
+
+`AGENTS.md` is a living operational contract. Update it in the **same commit**
+as source work whenever that work changes any durable product rule, security or
+data invariant, route/mount or file ownership, worker/deployment procedure,
+test requirement, environment variable, rollout gate, known limitation, or
+the quickest safe path to modify a feature. A local refactor with no such
+effect does not need changelog noise, but correct an inaccurate guide whenever
+you find one.
+
+Use this versioning discipline:
+
+- Patch: corrects or clarifies existing guidance without changing behaviour.
+- Minor: adds or materially changes a feature, workflow, integration, safety
+  requirement, test/release procedure, or documented operational boundary.
+- Major: reshapes a core account, tenancy, money, authorization, or runtime
+  model.
+
+Set the date in `Asia/Singapore`, add a concise newest-first changelog entry
+that explains the durable effect and affected boundaries, and update the
+sections where an agent will look before the changelog. Do not claim a legal,
+security, delivery, monitoring, or operational approval without evidence; keep
+unknown owners and facts explicitly `OPEN` or `BLOCKED` in the relevant
+register.
+
+Before a handoff or a requested commit, run the smallest relevant checks first,
+then the wider checks proportionate to risk. Report commands actually run and
+their results. Inspect `git diff --check` and `git diff --cached`; stage exact
+paths, preserve unrelated changes, and never include generated secrets, local
+databases, or another person's unfinished work. Commit and push only when the
+request authorizes it; a passing local test does not authorize a production
+deployment, migration, destructive operation, or external communication.
+
+When a task is blocked, hand over the concrete failing command/error, the
+files and contract inspected, the remaining decision or authority needed, and
+the safest next command. Do not conceal an unverified assumption behind a
+generic “done”.
+
 ---
 
 ## 8. Running things
@@ -1248,6 +1452,22 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 4.7.0 — 2026-10-02
+
+Turned the guide into a maintenance map as well as a product-invariant record.
+It now explains how agents should audit a change, preserve a dirty worktree,
+trace HTTP mount order and worker lifecycle, follow database/API/frontend
+contracts, select the right authority layer, assess cross-file impact, verify
+the result, and keep this guide current with an evidence-based changelog.
+
+### 4.6.1 — 2026-10-02
+
+Made chat faster to open and send in. A sent message appears immediately and
+the composer no longer waits for a full thread reload; opening an account
+conversation returns the thread inline; the inbox list no longer runs a
+scheduling lookup per conversation. A conversation with no club now shows
+Singapore time instead of UTC.
 
 ### 4.5.2 — 2026-10-01
 
