@@ -900,9 +900,14 @@ function ChatThreadPane({ threadId, mode, fullscreen, singlePane, onBack, beginU
         <Plus size={21} strokeWidth={2.2} aria-hidden="true" />
       </button>}
       <label htmlFor={composerId} className="sr-only">Message</label>
+      {/* Grammarly's extension attaches to the composer and logs console errors
+          from its own Iterable messaging; opting out keeps the chat console clean. */}
       <textarea
         id={composerId}
         ref={composerRef}
+        data-gramm="false"
+        data-gramm_editor="false"
+        data-enable-grammarly="false"
         rows={1}
         value={draft}
         maxLength={2000}
