@@ -8,6 +8,7 @@ import type {
   Membership,
   WorkspaceResponse,
 } from '../src/lib/types';
+import { openDisclosure } from './progressive-disclosure';
 
 const soloBusiness: Business & { kind: 'SOLO' } = {
   id: 'calendar-solo',
@@ -217,7 +218,7 @@ test('an eligible coach sees the disconnected card and starts OAuth with the pro
   await expect(card).toBeVisible();
   await expect(card).toContainText('Not connected');
   await expect(card).toContainText('This personal connection follows your Courtly account.');
-  await expect(card).toContainText('Courtly stays authoritative.');
+  await expect(card).toContainText('Courtly bookings always stay authoritative.');
 
   const connectRequest = page.waitForRequest(request =>
     request.method() === 'POST' && new URL(request.url()).pathname === '/api/calendar/google/connect',
@@ -236,7 +237,7 @@ test('an eligible student sees the disconnected account-wide card in Profile', a
   await expect(card).toBeVisible();
   await expect(card).toContainText('Not connected');
   await expect(card.getByRole('button', { name: 'Connect Google Calendar', exact: true })).toBeVisible();
-  await expect(card).toContainText('Editing or deleting a Google event never changes the Courtly booking.');
+  await expect(card).toContainText('Google is a calendar copy. Courtly bookings always stay authoritative.');
 });
 
 test('a club sees coach-owned guidance without requesting personal calendar status', async ({ page }) => {
@@ -349,6 +350,8 @@ test('a connected coach can change preferences, queue a sync, and confirm discon
   await expect(card).toContainText('alex.google@example.test');
   await expect(card).toContainText('Alex coaching');
   await page.screenshot({ path: `.data/screenshots/calendar-coach-${testInfo.project.name}.png`, fullPage: true });
+  await expect(card).toContainText('Lesson sync on · Busy-time checks off');
+  await openDisclosure(card, 'Sync preferences');
 
   const syncSwitch = card.getByRole('switch', { name: 'Sync Courtly lessons', exact: true });
   const busySwitch = card.getByRole('switch', { name: 'Check Google busy times', exact: true });
@@ -424,6 +427,7 @@ test('student calendar controls remain named, keyboard-operable, and contained a
   await expectNoHorizontalOverflow(page);
   await page.screenshot({ path: `.data/screenshots/calendar-student-${testInfo.project.name}.png`, fullPage: true });
 
+  await openDisclosure(card, 'Sync preferences');
   const switches = card.getByRole('switch');
   await expect(switches).toHaveCount(2);
   const busySwitch = card.getByRole('switch', { name: 'Check Google busy times', exact: true });

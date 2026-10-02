@@ -3,6 +3,7 @@ import type {
   AccountBooking, AccountCapabilities, AccountPackage, AccountWaitlistEntry, AuthSession, ChildProgress, ChildSchedule,
   PackageActivity, ProgressSummary, SessionSearchResponse, StudentClubDirectoryEntry,
 } from '../src/lib/types';
+import { openDisclosure } from './progressive-disclosure';
 
 // The training-companion layer of the student app. Every API is mocked so the
 // assertions hold at all three viewports, and they use roles and labels only.
@@ -287,6 +288,8 @@ test('Home switches to a remembered month calendar that opens the same booking d
   await expect(page.getByRole('heading', { name: 'My bookings', exact: true })).toBeVisible();
 
   const history = page.locator('section[aria-labelledby="booking-history"]');
+  // Past sessions stay one tap away so Home leads with what is next.
+  await history.getByRole('button', { name: /^See \d+ more session/ }).click();
   await expect(history.getByRole('link', { name: 'Book Group tennis at Riverside Rackets again' }))
     .toHaveAttribute('href', '/book/riverside-rackets?service=svc-group&coach=coach-jordan&venue=loc-centre&rebook=1');
 
@@ -402,6 +405,9 @@ test('progress separates statistics from coach feedback and records a viewed not
   await expect(navigation.getByRole('button')).toHaveCount(5);
   await expect(page.getByText('Automatic statistics')).toBeVisible();
   await expect(page.getByText('Written by coaches')).toBeVisible();
+  // The monthly chart and secondary statistics wait behind "More progress".
+  await expect(page.getByRole('figure', { name: 'Sessions attended, last 6 months' })).toBeHidden();
+  await page.getByRole('button', { name: 'More progress', exact: true }).click();
   await expect(page.getByRole('figure', { name: 'Sessions attended, last 6 months' })).toBeVisible();
   await expect(page.getByRole('table')).toContainText('September 2026');
 
@@ -414,6 +420,7 @@ test('progress separates statistics from coach feedback and records a viewed not
   await expect.poll(() => calls.viewed).toEqual(['feedback-1']);
   await expect(first.getByText('New', { exact: true })).toHaveCount(0);
 
+  await openDisclosure(page, 'Filter feedback');
   await page.getByLabel('Club', { exact: true }).selectOption({ label: 'Shuttle House' });
   await expect.poll(() => calls.progressQueries.at(-1)).toBe('?businessSlug=shuttle-house');
   await expect(notes.getByRole('article', { name: 'Group tennis' })).toHaveCount(0);
@@ -474,6 +481,7 @@ test('clubs can be saved optimistically, with a rollback when the save fails', a
   await expect(page.getByRole('status').filter({ hasText: 'Shuttle House could not be removed' })).toBeVisible();
   await expect(shuttleHeart).toHaveAttribute('aria-pressed', 'true');
 
+  await openDisclosure(page, 'More club filters');
   await page.getByRole('button', { name: 'Saved', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: '2 clubs found' })).toBeVisible();
   await expectNoSidewaysScroll(page);
@@ -485,6 +493,7 @@ test('Find a time searches across clubs, remembers the search, and links to the 
   const finder = page.getByRole('region', { name: 'Find a time' });
   await expect(finder.getByLabel('Date')).toHaveValue('2026-10-01');
   await finder.getByLabel('Sport').selectOption('Tennis');
+  await openDisclosure(finder, 'More filters');
   await finder.getByLabel('Time of day').selectOption('evening');
   await finder.getByRole('button', { name: 'Find times' }).click();
 
@@ -495,6 +504,7 @@ test('Find a time searches across clubs, remembers the search, and links to the 
   await expect(finder).toContainText('3 places left');
   await expect(finder).toContainText('$30');
   await expect(finder).toContainText('Tampines · East');
+  await openDisclosure(finder, 'Recent searches');
   await expect(finder.getByRole('button', { name: 'Search again: Tennis · Evening' })).toBeVisible();
 
   const book = finder.getByRole('link', { name: 'Book Group tennis at Riverside Rackets, Thursday 1 October at 7:00 PM' });

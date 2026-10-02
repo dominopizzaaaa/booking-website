@@ -17,6 +17,7 @@ import type {
 } from '../src/lib/types';
 import { money } from '../src/lib/utils';
 import { currentLegalAcceptance } from './legal-acceptance';
+import { openDisclosure } from './progressive-disclosure';
 
 const password = 'TestingOnly!2026';
 const timezone = 'Asia/Singapore';
@@ -72,12 +73,6 @@ async function sendMessage(page: Page, message: string, threadId: string) {
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   await responseJson(await sent);
   await expect(page.getByRole('log').getByText(message, { exact: true })).toBeVisible();
-}
-
-// The privacy note sits in the collapsed "Conversation details" disclosure.
-async function openConversationDetails(page: Page) {
-  const details = page.locator('details').filter({ has: page.locator('summary', { hasText: 'Conversation details' }) });
-  if (await details.getAttribute('open') === null) await details.locator('summary').click();
 }
 
 async function expectInsideViewport(page: Page, locator: Locator) {
@@ -228,7 +223,7 @@ test('a club can bring its coach into an account conversation and plan a session
 
     const message = `Student context before coach access ${run}`;
     await sendMessage(page, message, createdThreadId);
-    await openConversationDetails(page);
+    await openDisclosure(page, 'Conversation details');
     await expect(page.getByText(/Visible to the people in this conversation/)).toBeVisible();
     await expectInsideViewport(page, page.locator('.chat-thread-pane'));
 
@@ -277,7 +272,7 @@ test('a club can bring its coach into an account conversation and plan a session
     const log = await openAccountThread(page, studentName);
     await expect(log.getByText(studentMessage, { exact: true })).toBeVisible();
     await expect(log.getByText(clubMessage, { exact: true })).toBeVisible();
-    await openConversationDetails(page);
+    await openDisclosure(page, 'Conversation details');
     await expect(page.getByText(`Visible to the people in this conversation, including ${coachName}. Courtly does not monitor every message; authorized reviewers can review relevant context after a report.`, { exact: true })).toBeVisible();
 
     const slotsResponse = page.waitForResponse(response => {

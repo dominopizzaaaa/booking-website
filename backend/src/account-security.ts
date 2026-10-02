@@ -3,7 +3,7 @@ import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
-import { prisma } from './db.js';
+import { prisma, serializableTransaction } from './db.js';
 import { config, skipRateLimits } from './config.js';
 import { sharedRateLimit } from './rate-limit.js';
 import { asyncRoute, HttpError, requireRecentAuth, type AccountRequest } from './http.js';
@@ -140,7 +140,7 @@ export async function consumeMfaLoginChallenge(
 ) {
   assertSecurityAvailable();
   const tokenHash = securityTokenDigest(challengeId);
-  const result = await prisma.$transaction(async tx => {
+  const result = await serializableTransaction(async tx => {
     await tx.$queryRaw`SELECT "id" FROM "MfaLoginChallenge" WHERE "tokenHash" = ${tokenHash} FOR UPDATE`;
     const challenge = await tx.mfaLoginChallenge.findUnique({ where: { tokenHash } });
     const now = new Date();
@@ -157,7 +157,7 @@ export async function consumeMfaLoginChallenge(
     }
     await tx.mfaLoginChallenge.update({ where: { id: challenge.id }, data: { consumedAt: now } });
     return { valid: true as const, userId: challenge.userId, authenticatedAt: now };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  });
   if (!result.valid) throw new HttpError(401, 'MFA code is incorrect', { code: 'MFA_CODE_INVALID' });
   return result;
 }
@@ -208,7 +208,7 @@ accountSecurityPublicRouter.post('/password-reset/confirm', passwordResetConfirm
   const { token, password } = z.object({ token: tokenSchema, password: passwordSchema }).strict().parse(req.body);
   const tokenHash = securityTokenDigest(token);
   const passwordHash = await bcrypt.hash(password, 12);
-  await prisma.$transaction(async tx => {
+  await serializableTransaction(async tx => {
     await tx.$queryRaw`SELECT "id" FROM "PasswordResetClaim" WHERE "tokenHash" = ${tokenHash} FOR UPDATE`;
     const claim = await tx.passwordResetClaim.findUnique({ where: { tokenHash }, include: { user: true } });
     if (!claim || claim.consumedAt || claim.revokedAt || claim.expiresAt <= new Date()
@@ -234,7 +234,7 @@ accountSecurityPublicRouter.post('/password-reset/confirm', passwordResetConfirm
       title: 'Your Courtly password was reset',
       message: 'Your Courtly password was changed and all signed-in devices were signed out. If you did not make this change, contact support immediately.',
     });
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  });
   res.json({ ok: true });
 }));
 
@@ -242,7 +242,7 @@ accountSecurityPublicRouter.post('/email-change/confirm', emailChangeConfirmLimi
   assertSecurityAvailable();
   const { token } = z.object({ token: tokenSchema }).strict().parse(req.body);
   const tokenHash = securityTokenDigest(token);
-  const email = await prisma.$transaction(async tx => {
+  const email = await serializableTransaction(async tx => {
     await tx.$queryRaw`SELECT "id" FROM "EmailChangeClaim" WHERE "tokenHash" = ${tokenHash} FOR UPDATE`;
     const claim = await tx.emailChangeClaim.findUnique({ where: { tokenHash }, include: { user: true } });
     if (!claim || claim.consumedAt || claim.revokedAt || claim.expiresAt <= new Date()
@@ -282,7 +282,7 @@ accountSecurityPublicRouter.post('/email-change/confirm', emailChangeConfirmLimi
       message: 'This address is now your verified Courtly sign-in email. All earlier sessions were signed out.',
     });
     return claim.newEmail;
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  });
   res.json({ ok: true, email });
 }));
 

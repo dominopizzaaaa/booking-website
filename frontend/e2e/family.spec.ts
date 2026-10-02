@@ -7,6 +7,7 @@ import type {
   FamilyConsentRenewalChild,
   FamilyResponse,
 } from '../src/lib/types';
+import { openDisclosure } from './progressive-disclosure';
 
 const capabilities: AccountCapabilities = {
   ordinaryAccess: true, familyManagement: true, payments: true, staffAccess: true,
@@ -148,8 +149,10 @@ test('multiple children keep consent-only rows private and obey per-link permiss
   });
 
   await page.goto('/family');
-  await expect(page.getByRole('heading', { name: 'Booking for your children' })).toBeVisible();
   await expect(page.getByText('add and manage every child in your care', { exact: false })).toBeVisible();
+  // The booking guide is reference material, one tap away below the children.
+  await expect(page.getByText(/Book one child at a time from a club’s booking page/)).toBeHidden();
+  await openDisclosure(page, 'How booking and handover work');
   await expect(page.getByText(/Book one child at a time from a club’s booking page/)).toBeVisible();
   const renewalCard = page.getByRole('article', { name: 'Riley' });
   await expect(renewalCard).toContainText('privacy-minimal');

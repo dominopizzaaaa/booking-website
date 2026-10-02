@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { Router, type RequestHandler } from 'express';
 import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
-import { prisma } from './db.js';
+import { prisma, serializableTransaction } from './db.js';
 import { asyncRoute, effectiveClubPermissions, HttpError, requireRecentAuth, type AuthRequest } from './http.js';
 import { institutionalClubActor, namedStaffActor, recordBusinessAudit, type BusinessAuditActor } from './audit.js';
 
@@ -200,7 +200,7 @@ clubStaffAccessRouter.post('/staff-access/invitations', requireStaffAdministrati
   const resolved = resolvedAccess(input);
   requireAssignableAccess(administration, resolved);
   const rawToken = randomBytes(32).toString('base64url');
-  const invitation = await prisma.$transaction(async tx => {
+  const invitation = await serializableTransaction(async tx => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`courtly:staff-invite:${businessId}:${input.email}`}, 0))`;
     const existing = await tx.clubStaffAccess.findFirst({
       where: { businessId, active: true, user: { email: input.email } }, select: { id: true },
@@ -225,7 +225,7 @@ clubStaffAccessRouter.post('/staff-access/invitations', requireStaffAdministrati
       resourceType: 'ClubStaffInvitation', resourceId: created.id, summary: `Invited ${input.email} as ${resolved.accessLevel}`,
       metadata: { email: input.email, accessLevel: resolved.accessLevel, permissions: resolved.permissions } });
     return created;
-  }, { isolationLevel: 'Serializable' });
+  });
   const destination = `/account?staffInvite=${encodeURIComponent(rawToken)}`;
   res.status(201).json({ invitation: invitationJson(invitation), invitePath: `/signup?${new URLSearchParams({ next: destination })}` });
 }));
@@ -322,7 +322,7 @@ clubStaffInvitationRouter.post('/club-staff-invitations/accept', requireRecentAu
   const invitationId = 'invitationId' in input ? input.invitationId
     : (await prisma.clubStaffInvitation.findUnique({ where: { tokenHash: digest(input.token) }, select: { id: true } }))?.id;
   if (!invitationId) throw new HttpError(404, 'Staff invitation not found');
-  const access = await prisma.$transaction(async tx => {
+  const access = await serializableTransaction(async tx => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`courtly:staff-invitation:${invitationId}`}, 0))`;
     const invitation = await tx.clubStaffInvitation.findUnique({
       where: { id: invitationId }, select: { ...invitationSelect, business: { select: { name: true, slug: true, kind: true, legacyReadOnly: true } } },
@@ -348,6 +348,6 @@ clubStaffInvitationRouter.post('/club-staff-invitations/accept', requireRecentAu
       action: 'STAFF_INVITATION_ACCEPTED', resourceType: 'ClubStaffAccess', resourceId: grant.id,
       summary: `${req.auth.user.name} accepted named staff access`, metadata: { invitationId: invitation.id, accessLevel: grant.accessLevel } });
     return grant;
-  }, { isolationLevel: 'Serializable' });
+  });
   res.json({ staffAccess: accessJson(access) });
 }));

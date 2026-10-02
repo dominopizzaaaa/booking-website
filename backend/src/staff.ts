@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { Prisma } from '@prisma/client';
 import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
-import { prisma } from './db.js';
+import { prisma, serializableTransaction } from './db.js';
 import { asyncRoute, HttpError, initials, requireClubPermission, requireRecentAuth, type AuthRequest } from './http.js';
 import { resolveRegisteredAccountIdentity } from './account-directory.js';
 
@@ -242,11 +242,11 @@ coachInvitationRouter.post('/coach-invitations/accept', requireRecentAuth, async
       where: { tokenHash: inviteDigest(input.token) }, select: { id: true },
     }))?.id;
   if (!invitationId) throw new HttpError(404, 'Coach invitation not found');
-  const membershipId = await prisma.$transaction(async tx => {
+  const membershipId = await serializableTransaction(async tx => {
     const accepted = await acceptInvitation(tx, invitationId, req.auth.user);
     await tx.authSession.update({ where: { id: req.auth.session.id }, data: { activeMembershipId: accepted, activeStaffAccessId: null } });
     return accepted;
-  }, { isolationLevel: 'Serializable' });
+  });
   res.json({ membershipId });
 }));
 
@@ -277,7 +277,7 @@ staffRouter.post('/staff/invitations', requireClubPermission('ROSTER_MANAGE'), r
   const input = createInvitationSchema.parse(req.body);
   const businessId = clubBusinessId(req);
   const rawToken = randomBytes(32).toString('base64url');
-  const invitation = await prisma.$transaction(async tx => {
+  const invitation = await serializableTransaction(async tx => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`courtly:coach-invite:${businessId}:${input.email}`}, 0))`;
     const activeMembership = await tx.membership.findFirst({
       where: { businessId, active: true, user: { email: input.email } }, select: { id: true },
@@ -294,7 +294,7 @@ staffRouter.post('/staff/invitations', requireClubPermission('ROSTER_MANAGE'), r
       },
       include: { business: { select: { name: true, slug: true } } },
     });
-  }, { isolationLevel: 'Serializable' });
+  });
   const destination = `/account?invite=${encodeURIComponent(rawToken)}`;
   res.status(201).json({
     invitation: invitationJson(invitation),
@@ -315,7 +315,7 @@ staffRouter.delete('/staff/invitations/:invitationId', requireClubPermission('RO
 staffRouter.post('/staff', requireClubPermission('ROSTER_MANAGE'), requireRecentAuth, asyncRoute(async (req, res) => {
   const input = createStaffSchema.parse(req.body);
   const businessId = clubBusinessId(req);
-  const staff = await prisma.$transaction(async tx => {
+  const staff = await serializableTransaction(async tx => {
     const user = await resolveRegisteredAccountIdentity(tx, input.query);
     if (!user) {
       throw new HttpError(404, 'No registered Courtly account was found for this name, username, or email. Ask this person to self-register first.');
@@ -395,7 +395,7 @@ staffRouter.post('/staff', requireClubPermission('ROSTER_MANAGE'), requireRecent
       });
     }
     return { staff: created, restored: false };
-  }, { isolationLevel: 'Serializable' });
+  });
   res.status(staff.restored ? 200 : 201).json(staffJson(staff.staff));
 }));
 
@@ -403,7 +403,7 @@ staffRouter.patch('/staff/:membershipId', requireClubPermission('ROSTER_MANAGE')
   const membershipId = idSchema.parse(req.params.membershipId);
   const input = updateStaffSchema.parse(req.body);
   const businessId = clubBusinessId(req);
-  const staff = await prisma.$transaction(async tx => {
+  const staff = await serializableTransaction(async tx => {
     const current = await tx.membership.findFirst({
       where: { id: membershipId, businessId },
       select: staffSelect,
@@ -463,14 +463,14 @@ staffRouter.patch('/staff/:membershipId', requireClubPermission('ROSTER_MANAGE')
       });
     }
     return updated;
-  }, { isolationLevel: 'Serializable' });
+  });
   res.json(staffJson(staff));
 }));
 
 staffRouter.delete('/staff/:membershipId', requireClubPermission('ROSTER_MANAGE'), requireRecentAuth, asyncRoute(async (req, res) => {
   const membershipId = idSchema.parse(req.params.membershipId);
   const businessId = clubBusinessId(req);
-  await prisma.$transaction(async tx => {
+  await serializableTransaction(async tx => {
     const current = await tx.membership.findFirst({
       where: { id: membershipId, businessId },
       select: { id: true, userId: true, instructorId: true },
@@ -495,6 +495,6 @@ staffRouter.delete('/staff/:membershipId', requireClubPermission('ROSTER_MANAGE'
         where: { id: current.instructorId, businessId }, data: { active: false },
       });
     }
-  }, { isolationLevel: 'Serializable' });
+  });
   res.json({ ok: true });
 }));
