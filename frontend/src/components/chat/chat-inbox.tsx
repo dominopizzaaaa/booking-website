@@ -339,18 +339,22 @@ function MessageReportButton({ message, onReport }: { message: ChatMessage; onRe
   </button>;
 }
 
-function TextMessage({ message, timezone, showSender, showTime, onReport }: { message: ChatMessage; timezone: string; showSender: boolean; showTime: boolean; onReport: (message: ChatMessage) => void }) {
+function TextMessage({ message, timezone, showSender, showTime, pending = false, onReport }: { message: ChatMessage; timezone: string; showSender: boolean; showTime: boolean; pending?: boolean; onReport: (message: ChatMessage) => void }) {
   const role = message.senderRole === 'SYSTEM' ? null : roleLabel[message.senderRole];
-  return <li className={cn('flex px-1', message.mine ? 'justify-end' : 'justify-start')}>
+  // The log region announces the confirmed message; announcing its pending
+  // copy as well would read every sent message twice.
+  return <li aria-hidden={pending || undefined} className={cn('flex px-1', message.mine ? 'justify-end' : 'justify-start')}>
     <div className={cn('flex max-w-[82%] flex-col sm:max-w-[70%]', message.mine ? 'items-end' : 'items-start')}>
       {showSender && !message.mine && <p className="!mb-1 !ml-1 text-[11px] font-semibold text-[#4d5e51]">{message.senderName}{role && <span className="font-normal text-[#59675c]"> · {role}</span>}</p>}
       {message.mine && <span className="sr-only">You said:</span>}
       <p className={cn(
         'whitespace-pre-wrap break-words rounded-[20px] px-3.5 py-2 text-sm leading-relaxed [overflow-wrap:anywhere]',
         message.mine ? 'rounded-br-md bg-[#214e3e] text-white' : 'rounded-bl-md border border-[#e3e8df] bg-white text-[#263a30]',
+        pending && 'opacity-70',
       )}>{message.body}</p>
-      {(showTime || message.canReport || message.reportedByViewer) && <div className={cn('flex min-h-11 items-center gap-1', message.mine ? 'mr-1' : 'ml-1')}>
-        {showTime && <time dateTime={message.createdAt} className="text-[11px] text-[#59675c]">{time(message.createdAt, timezone)}</time>}
+      {(showTime || pending || message.canReport || message.reportedByViewer) && <div className={cn('flex min-h-11 items-center gap-1', message.mine ? 'mr-1' : 'ml-1')}>
+        {pending ? <span className="text-[11px] text-[#59675c]">Sending…</span>
+          : showTime && <time dateTime={message.createdAt} className="text-[11px] text-[#59675c]">{time(message.createdAt, timezone)}</time>}
         <MessageReportButton message={message} onReport={onReport} />
       </div>}
     </div>
@@ -433,8 +437,10 @@ function ProposalMessage({ message, proposal, busy, onAct, onCounter, onOpenBook
   </li>;
 }
 
-function ChatThreadPane({ threadId, mode, fullscreen, singlePane, onBack, beginUnreadRequest, commitUnreadNow, onRead, onRevoked, onActivity, onOpenBooking, onBookingsChanged }: {
+function ChatThreadPane({ threadId, initialDetail, mode, fullscreen, singlePane, onBack, beginUnreadRequest, commitUnreadNow, onRead, onRevoked, onActivity, onOpenBooking, onBookingsChanged }: {
   threadId: string;
+  /** A thread the server already returned, e.g. when it was just created. */
+  initialDetail?: ChatThreadDetail;
   mode: ChatMode;
   fullscreen: boolean;
   singlePane: boolean;
@@ -455,6 +461,9 @@ function ChatThreadPane({ threadId, mode, fullscreen, singlePane, onBack, beginU
   const [error, setError] = useState('');
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  // Shown the moment Send is pressed; replaced by the stored message once the
+  // server confirms it, without waiting for a full thread reload.
+  const [pendingMessage, setPendingMessage] = useState<ChatMessage | null>(null);
   const [busyProposalId, setBusyProposalId] = useState<string | null>(null);
   const [dialog, setDialog] = useState<null | { counterTo: SessionProposal | null }>(null);
   const [coachDialogOpen, setCoachDialogOpen] = useState(false);
@@ -576,10 +585,12 @@ function ChatThreadPane({ threadId, mode, fullscreen, singlePane, onBack, beginU
     setEarlierHasMore(null);
     setState('loading');
     setDraft('');
+    setPendingMessage(null);
     stickToBottom.current = true;
     lastReadMessage.current = null;
     seenMessages.current = null;
-    void load();
+    if (initialDetail?.id === threadId) apply(initialDetail);
+    else void load();
     return () => {
       lifecycle.current += 1;
       contentGeneration.current += 1;
@@ -609,8 +620,12 @@ function ChatThreadPane({ threadId, mode, fullscreen, singlePane, onBack, beginU
   const messages = useMemo(() => {
     if (!detail) return [];
     const seen = new Set(detail.messages.map(message => message.id));
-    return [...earlier.filter(message => !seen.has(message.id)), ...detail.messages];
-  }, [detail, earlier]);
+    return [
+      ...earlier.filter(message => !seen.has(message.id)),
+      ...detail.messages,
+      ...(pendingMessage ? [pendingMessage] : []),
+    ];
+  }, [detail, earlier, pendingMessage]);
 
   useLayoutEffect(() => {
     const element = scrollRef.current;
@@ -658,19 +673,36 @@ function ChatThreadPane({ threadId, mode, fullscreen, singlePane, onBack, beginU
     const operation = beginMutation();
     if (!operation) return;
     setSending(true);
+    setDraft('');
+    if (composerRef.current) composerRef.current.style.height = '';
+    stickToBottom.current = true;
+    setPendingMessage({
+      id: `pending:${operation.mutation}`, kind: 'TEXT', event: null,
+      senderRole: detail?.viewer.role === 'ADMIN' ? 'SYSTEM' : detail?.viewer.role ?? 'STUDENT',
+      senderName: '', body, createdAt: new Date().toISOString(), mine: true, proposalId: null,
+      proposal: null, canReport: false, reportedByViewer: false,
+    });
     try {
-      await sendChatMessage(threadId, body);
+      const { message } = await sendChatMessage(threadId, body);
       if (!mutationIsCurrent(operation)) return;
       invalidateContentRequests();
-      setDraft('');
-      if (composerRef.current) composerRef.current.style.height = '';
-      stickToBottom.current = true;
-      onActivity();
-      await load(true);
+      const sent: ChatMessage = { ...message, proposal: null, canReport: false, reportedByViewer: false };
+      const withSent = (current: ChatThreadDetail) => current.messages.some(existing => existing.id === sent.id)
+        ? current : { ...current, lastMessageAt: sent.createdAt, messages: [...current.messages, sent] };
+      setDetail(current => current && withSent(current));
+      setPendingMessage(null);
+      seenMessages.current?.add(sent.id);
+      // Sending already moved the sender's read position on the server.
+      lastReadMessage.current = sent.id;
+      onActivity(detail ? withSent(detail) : undefined);
+      // Pick up anything the other side wrote meanwhile, off the send path.
+      void load(true);
     } catch (cause) {
       if (mutationIsCurrent(operation)) {
+        setPendingMessage(null);
         if (!revokeAccess(cause)) {
           invalidateContentRequests();
+          setDraft(current => current || body);
           toast.error(messageOf(cause));
           void load(true);
         }
@@ -882,7 +914,7 @@ function ChatThreadPane({ threadId, mode, fullscreen, singlePane, onBack, beginU
                   onOpenBooking={mode === 'participant' ? onOpenBooking : undefined}
                   onReport={setReportMessage} />;
               }
-              return <TextMessage key={message.id} message={message} timezone={zone}
+              return <TextMessage key={message.id} message={message} timezone={zone} pending={message === pendingMessage}
                 showSender={startsChatRun(dayGroup.messages, index)} showTime={endsChatRun(dayGroup.messages, index)} onReport={setReportMessage} />;
             })}
           </ol>
@@ -983,6 +1015,7 @@ export function ChatInbox({
   const listHeadingRef = useRef<HTMLHeadingElement>(null);
   const openedFromRow = useRef<string | null>(null);
   const previousThreadId = useRef(threadId);
+  const createdThread = useRef<ChatThreadDetail | null>(null);
 
   const loadList = useCallback(async (query: string, quiet = false) => {
     const request = ++requestRef.current;
@@ -1097,6 +1130,8 @@ export function ChatInbox({
   useLayoutEffect(() => {
     const previous = previousThreadId.current;
     previousThreadId.current = threadId;
+    // A just-created thread seeds its first render only; reopening it later loads fresh.
+    if (createdThread.current && createdThread.current.id !== threadId) createdThread.current = null;
     if (previous && !threadId) {
       const targetId = openedFromRow.current ?? previous;
       (threadButtons.current.get(targetId) ?? listHeadingRef.current)?.focus({ preventScroll: true });
@@ -1128,6 +1163,7 @@ export function ChatInbox({
       ? <ChatThreadPane
         key={threadId}
         threadId={threadId}
+        initialDetail={createdThread.current?.id === threadId ? createdThread.current : undefined}
         mode={mode}
         fullscreen={fullscreen}
         singlePane={!split}
@@ -1157,7 +1193,8 @@ export function ChatInbox({
       open={newConversationOpen}
       onOpenChange={setNewConversationOpen}
       viewerUsername={viewerUsername}
-      onCreated={createdThreadId => {
+      onCreated={(createdThreadId, thread) => {
+        createdThread.current = thread ?? null;
         openedFromRow.current = createdThreadId;
         requestRef.current += 1;
         setSearch('');

@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 4.7.0** · Last updated 2026-10-02
+**Version 4.7.1** · Last updated 2026-10-02
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -1180,7 +1180,12 @@ duplicated into either alert store.
   so permission- and data-dependent UI never strands the tour.
 - Margin utilities on `p`, `h1`, `h2` and `h3` need the `!` modifier
   (`!mt-2`): the unlayered reset in `globals.css` outranks Tailwind's layered
-  utilities, so a plain `mt-2` on those elements computes to zero.
+  utilities, so a plain `mt-2` on those elements computes to zero. The same
+  unlayered rules fix `h2` size and tracking; `label` display, colour, size,
+  weight and bottom margin; `input`/`textarea`/`select` border, radius,
+  padding, minimum height, line height and focus shadow; and a `button`'s
+  font size at `max(14px, 1em)`. Restyle those properties with `!` (`!flex`,
+  `!rounded-xl`, `!text-sm`) or the utility silently has no effect.
 - A new application table must be added to the Elever provisioner's
   `TRUNCATE` list and its integration test, or the fixture reset fails on the
   new foreign key.
@@ -1452,6 +1457,14 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 4.7.1 — 2026-10-02
+
+Redesigned the coach's Edit coaching profile dialog as a sectioned editor with
+a live booking-card preview and a completeness checklist; languages and
+qualifications are now entered as removable entries. Clarified in §7 which
+other properties the unlayered globals in `globals.css` override, beyond text
+margins, so restyled form controls do not silently keep the global look.
 
 ### 4.7.0 — 2026-10-02
 

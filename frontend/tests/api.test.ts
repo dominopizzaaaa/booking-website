@@ -636,6 +636,15 @@ describe('generalized chat requests', () => {
     });
   });
 
+  it('normalises the conversation returned inline when one is opened', async () => {
+    respond({ threadId: 'account-thread', thread: accountDetail });
+    const result = await createAccountChat('marcus_tan');
+    expect(result.threadId).toBe('account-thread');
+    expect(result.thread).toMatchObject({ id: 'account-thread', kind: 'ACCOUNT', conversation: { timezone: 'Asia/Singapore' } });
+    // Older payloads omit safety; the boundary still fills it in.
+    expect(result.thread?.safety).toMatchObject({ messagingBlocked: false });
+  });
+
   it('keeps intentionally redacted prices optional in an ACCOUNT detail', async () => {
     const pricedProposal = { ...proposalMessage.proposal, price: 9_500, currency: 'SGD' };
     const { price: _price, currency: _currency, ...redactedProposal } = pricedProposal;

@@ -66,8 +66,13 @@ describe.sequential('Account chat', () => {
     const student = await person('Account Chat Student');
 
     const opened = await openConversation(student.cookie, club.user.username).expect(200);
-    expect(opened.body).toEqual({ threadId: expect.any(String) });
+    expect(opened.body).toEqual({ threadId: expect.any(String), thread: expect.any(Object) });
     const threadId = opened.body.threadId as string;
+    // The opened conversation arrives inline so the client needs no second request.
+    expect(opened.body.thread).toMatchObject({
+      id: threadId, kind: 'ACCOUNT', conversation: { timezone: 'Asia/Singapore' },
+      viewer: { role: 'STUDENT', canPost: true },
+    });
     const thread = await prisma.chatThread.findUniqueOrThrow({
       where: { id: threadId }, include: { members: { orderBy: { source: 'asc' } } },
     });
@@ -119,7 +124,9 @@ describe.sequential('Account chat', () => {
 
     await openConversation(viewer.cookie, hiddenChild.username).expect(404);
     const opened = await openConversation(viewer.cookie, legacy.username).expect(200);
-    expect(opened.body).toEqual({ threadId: expect.any(String) });
+    expect(opened.body).toEqual({ threadId: expect.any(String), thread: expect.objectContaining({ id: opened.body.threadId }) });
+    // No club stands behind this pair, so times follow Courtly's Singapore clock rather than UTC.
+    expect(opened.body.thread.conversation.timezone).toBe('Asia/Singapore');
     expect(await prisma.chatThread.findUniqueOrThrow({ where: { id: opened.body.threadId } }))
       .toMatchObject({ directKey: [viewer.id, legacy.id].sort().join(':') });
   });

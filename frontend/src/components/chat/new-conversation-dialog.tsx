@@ -4,13 +4,13 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { Building2, Loader2, MessageCircle, Search, UserRound, UsersRound } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { createAccountChat, searchAccounts } from '@/lib/api';
-import type { AccountDirectoryUser } from '@/lib/types';
+import type { AccountDirectoryUser, ChatThreadDetail } from '@/lib/types';
 import { cn, initials } from '@/lib/utils';
 
 type NewConversationDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreated: (threadId: string) => void;
+  onCreated: (threadId: string, thread?: ChatThreadDetail) => void;
   viewerUsername?: string;
 };
 
@@ -92,7 +92,7 @@ export function NewConversationDialog({ open, onOpenChange, onCreated, viewerUse
     try {
       const result = await createAccountChat(account.username);
       onOpenChange(false);
-      onCreated(result.threadId);
+      onCreated(result.threadId, result.thread);
     } catch (cause) {
       setError(messageOf(cause));
       setOpeningUsername(null);

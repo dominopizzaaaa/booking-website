@@ -708,8 +708,15 @@ export async function loadChatUnread() {
 }
 export const openBookingChat = (bookingId: string) =>
   api<{ threadId: string }>(`/chats/bookings/${encodeURIComponent(bookingId)}`, { method: 'POST', body: JSON.stringify({}) });
-export const createAccountChat = (username: string) =>
-  api<{ threadId: string }>('/chats/accounts', { method: 'POST', body: JSON.stringify({ username }) });
+export async function createAccountChat(username: string): Promise<{ threadId: string; thread?: ChatThreadDetail }> {
+  const result = await api<{ threadId: string; thread?: ChatThreadDetailWire }>('/chats/accounts', {
+    method: 'POST', body: JSON.stringify({ username }),
+  });
+  // An API that predates the inline thread returns only its ID.
+  return result.thread
+    ? { threadId: result.threadId, thread: normalizeChatThreadDetail(result.thread) }
+    : { threadId: result.threadId };
+}
 export async function loadChatThread(threadId: string, before?: string): Promise<ChatThreadDetail> {
   try {
     return normalizeChatThreadDetail(await api<ChatThreadDetailWire>(
