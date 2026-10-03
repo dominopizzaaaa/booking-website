@@ -448,6 +448,22 @@ export async function unreadThreadCount(
   return row?.count ?? 0;
 }
 
+/**
+ * The access rule as one statement, for a write that needs only the verdict.
+ * Loading the full thread costs a query per relation level, which a remote
+ * database turns into seconds.
+ */
+async function assertThreadAccessible(db: Tx | typeof prisma, viewer: ChatViewer, threadId: string) {
+  const [row] = await db.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT thread."id"
+    FROM "ChatThread" AS thread
+    LEFT JOIN "Booking" AS booking ON booking."id" = thread."bookingId"
+    LEFT JOIN "Business" AS business ON business."id" = thread."businessId"
+    WHERE thread."id" = ${threadId} AND ${accessibleThreadsSql(viewer)}
+  `);
+  if (!row) throw new HttpError(404, 'Chat not found');
+}
+
 async function unreadCounts(viewer: ChatViewer, threadIds: string[], db: Tx | typeof prisma = prisma) {
   if (!threadIds.length) return new Map<string, number>();
   const rows = await db.$queryRaw<Array<{ threadId: string; unread: number }>>(Prisma.sql`
@@ -711,6 +727,14 @@ function publicSchedulingOption(option: SchedulingOption, role: ChatRole | 'ADMI
   return coachSafe;
 }
 
+/** The clock a conversation's times are read and written in. */
+function conversationTimezone(thread: LoadedThread, options: SchedulingOption[]) {
+  if (thread.kind === 'SESSION' && thread.booking) return thread.booking.business.timezone;
+  // A conversation with no club has no business clock; Courtly operates on
+  // Singapore time, which is also the default for every club.
+  return thread.business?.timezone ?? options[0]?.timezone ?? SINGAPORE_TIME_ZONE;
+}
+
 async function conversationJson(
   thread: LoadedThread, viewer: ChatViewer | null, role: ChatRole | 'ADMIN',
   db: Tx | typeof prisma = prisma,
@@ -748,9 +772,7 @@ async function conversationJson(
   return {
     title: other?.name ?? 'Conversation',
     subtitle: assigned ? `Coach ${assigned.name} assigned` : other ? `${other.role[0]}${other.role.slice(1).toLowerCase()} account` : '',
-    // A conversation with no club has no business clock; Courtly operates on
-    // Singapore time, which is also the default for every club.
-    timezone: thread.business?.timezone ?? options[0]?.timezone ?? SINGAPORE_TIME_ZONE,
+    timezone: conversationTimezone(thread, options),
     business: thread.business ? { name: thread.business.name, slug: thread.business.slug } : null,
     assignedCoach: assigned,
     ...(assignableCoaches ? {
@@ -777,12 +799,11 @@ function suggestionOption(options: SchedulingOption[], draft: ScheduleDraft) {
  * proposal and its acceptance check availability again before booking.
  */
 async function suggestionAvailability(option: SchedulingOption, startAt: Date, db: Tx | typeof prisma) {
-  const evaluate = async (tx: Tx) => {
-    const context = await schedulingContext(tx, option.businessId, option.serviceId, option.instructorId, option.locationId);
-    return evaluateSlot(tx, context, startAt);
-  };
   try {
-    const slot = db === prisma ? await prisma.$transaction(evaluate, { timeout: 10_000 }) : await evaluate(db as Tx);
+    // It writes nothing, so it needs no transaction of its own; inside one,
+    // schedulingContext's parallel reads would also run one at a time.
+    const context = await schedulingContext(db, option.businessId, option.serviceId, option.instructorId, option.locationId);
+    const slot = await evaluateSlot(db, context, startAt);
     return slot.available
       ? { status: 'AVAILABLE' as const }
       : { status: 'UNAVAILABLE' as const, reason: slot.reason ?? 'Not available' };
@@ -816,16 +837,19 @@ async function scheduleSuggestionFor(
   const key = createHash('sha256')
     .update([draft.sourceMessageId, draft.date, draft.startMinutes, draft.endMinutes ?? '', draft.locationId ?? ''].join('|'))
     .digest('hex').slice(0, 32);
-  const [dismissal, covered] = await Promise.all([
+  const option = suggestionOption(options, draft);
+  // Checked side by side: an availability answer for a dismissed plan is
+  // simply discarded, which costs less than waiting for each in turn.
+  const [dismissal, covered, availability] = await Promise.all([
     db.chatScheduleDismissal.findUnique({
       where: { threadId_userId: { threadId: thread.id, userId: viewer.userId } }, select: { suggestionKey: true },
     }),
     db.sessionProposal.findFirst({
       where: { threadId: thread.id, startAt: draft.startAt, status: { in: ['OPEN', 'ACCEPTED'] } }, select: { id: true },
     }),
+    suggestionAvailability(option, draft.startAt, db),
   ]);
   if (dismissal?.suggestionKey === key || covered) return null;
-  const option = suggestionOption(options, draft);
   const endAt = draft.durationMinutes !== null ? new Date(draft.startAt.getTime() + draft.durationMinutes * 60_000) : null;
   return {
     key,
@@ -841,7 +865,7 @@ async function scheduleSuggestionFor(
       locationId: option.locationId, locationName: option.locationName,
       durationMinutes: option.duration,
     },
-    availability: await suggestionAvailability(option, draft.startAt, db),
+    availability,
   };
 }
 
@@ -869,33 +893,61 @@ async function buildThreadDetail(
   options: { before?: string } = {},
   db: Tx | typeof prisma = prisma,
 ) {
-  let pivot: { id: string; createdAt: Date } | null = null;
-  if (options.before) {
-    pivot = await db.chatMessage.findFirst({
-      where: { id: options.before, threadId: thread.id }, select: { id: true, createdAt: true },
+  const messagePage = async () => {
+    let pivot: { id: string; createdAt: Date } | null = null;
+    if (options.before) {
+      pivot = await db.chatMessage.findFirst({
+        where: { id: options.before, threadId: thread.id }, select: { id: true, createdAt: true },
+      });
+      if (!pivot) throw new HttpError(400, 'That message is not part of this chat');
+    }
+    return db.chatMessage.findMany({
+      where: {
+        threadId: thread.id,
+        ...(pivot ? { OR: [
+          { createdAt: { lt: pivot.createdAt } },
+          { createdAt: pivot.createdAt, id: { lt: pivot.id } },
+        ] } : {}),
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: messagePageSize + 1,
     });
-    if (!pivot) throw new HttpError(400, 'That message is not part of this chat');
-  }
-  const page = await db.chatMessage.findMany({
-    where: {
-      threadId: thread.id,
-      ...(pivot ? { OR: [
-        { createdAt: { lt: pivot.createdAt } },
-        { createdAt: pivot.createdAt, id: { lt: pivot.id } },
-      ] } : {}),
-    },
-    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-    take: messagePageSize + 1,
-  });
+  };
+  // Lookups that do not depend on each other run side by side. Each one is a
+  // database round trip, and against a remote database those add up to
+  // seconds when they wait in line.
+  const [page, schedulingOptions, messaging] = await Promise.all([
+    messagePage(),
+    schedulingOptionsFor(thread, db),
+    accountMessagingState(thread, viewer, db),
+  ]);
   const hasEarlier = page.length > messagePageSize;
   const messages = page.slice(0, messagePageSize).reverse();
   const proposalIds = [...new Set(messages.flatMap(message => message.proposalId ? [message.proposalId] : []))];
-  const proposals = proposalIds.length
-    ? await db.sessionProposal.findMany({ where: { id: { in: proposalIds } }, include: proposalInclude })
-    : [];
   const students = thread.kind === 'SESSION' && thread.booking ? activeStudents(thread.booking) : accountStudents(thread);
-  const schedulingOptions = await schedulingOptionsFor(thread, db);
-  const conversation = await conversationJson(thread, viewer, role, db, { schedulingOptions });
+  const viewerId = viewer?.userId ?? null;
+  const participant = role === 'STUDENT' || role === 'COACH' || role === 'CLUB';
+  const messagingAllowed = thread.kind !== 'ACCOUNT' || !messaging.blocked;
+  // Coaches and students plan their next session here; the club reads
+  // along but books through its own workspace.
+  const canPropose = messagingAllowed && (role === 'STUDENT' || role === 'COACH') && students.length > 0
+    && schedulingOptions.length > 0;
+  const [proposals, viewerReports, conversation, scheduleSuggestion] = await Promise.all([
+    proposalIds.length
+      ? db.sessionProposal.findMany({ where: { id: { in: proposalIds } }, include: proposalInclude })
+      : [],
+    viewer && messages.length ? db.chatSafetyReport.findMany({
+      where: { reporterUserId: viewer.userId, messageId: { in: messages.map(message => message.id) } },
+      select: { messageId: true },
+    }) : [],
+    conversationJson(thread, viewer, role, db, { schedulingOptions }),
+    // Only the newest page is read for a plan in progress, and only in a
+    // one-to-one conversation: a group session is proposed to everyone at once.
+    !options.before && viewer && canPropose
+      && (thread.kind === 'ACCOUNT' || thread.booking?.type === 'PRIVATE')
+      ? scheduleSuggestionFor(thread, viewer, messages, schedulingOptions, conversationTimezone(thread, schedulingOptions), db)
+      : null,
+  ]);
   const validProposal = (proposal: FullProposal) => thread.kind === 'SESSION'
     || conversation.schedulingOptions.some(option => option.businessSlug === proposal.business.slug
       && option.serviceId === proposal.serviceId && option.instructorId === proposal.instructorId
@@ -903,27 +955,7 @@ async function buildThreadDetail(
   const proposalById = new Map(proposals.map(proposal => [proposal.id, proposalJson(proposal, {
     viewer, role, students, validContext: validProposal(proposal), now: new Date(),
   })]));
-  const viewerId = viewer?.userId ?? null;
-  const participant = role === 'STUDENT' || role === 'COACH' || role === 'CLUB';
-  const [messaging, viewerReports] = await Promise.all([
-    accountMessagingState(thread, viewer, db),
-    viewer && messages.length ? db.chatSafetyReport.findMany({
-      where: { reporterUserId: viewer.userId, messageId: { in: messages.map(message => message.id) } },
-      select: { messageId: true },
-    }) : [],
-  ]);
   const reportedMessageIds = new Set(viewerReports.flatMap(report => report.messageId ? [report.messageId] : []));
-  const messagingAllowed = thread.kind !== 'ACCOUNT' || !messaging.blocked;
-  // Coaches and students plan their next session here; the club reads
-  // along but books through its own workspace.
-  const canPropose = messagingAllowed && (role === 'STUDENT' || role === 'COACH') && students.length > 0
-    && conversation.schedulingOptions.length > 0;
-  // Only the newest page is read for a plan in progress, and only in a
-  // one-to-one conversation: a group session is proposed to everyone at once.
-  const scheduleSuggestion = !options.before && viewer && canPropose
-    && (thread.kind === 'ACCOUNT' || thread.booking?.type === 'PRIVATE')
-    ? await scheduleSuggestionFor(thread, viewer, messages, schedulingOptions, conversation.timezone, db)
-    : null;
   const safety = {
     canReport: participant,
     blockTarget: messaging.blockTarget,
@@ -994,12 +1026,12 @@ export async function chatThreadForViewer(
 }
 
 function threadSummaryJson(
-  thread: LoadedThread & { messages: ChatMessage[] },
+  thread: LoadedThread,
+  last: ChatMessage | undefined,
   viewerId: string | null,
   unread: number,
   conversation: Awaited<ReturnType<typeof conversationJson>>,
 ) {
-  const last = thread.messages[0];
   return {
     id: thread.id,
     kind: thread.kind as 'SESSION' | 'ACCOUNT',
@@ -1040,10 +1072,7 @@ async function listThreads(
 ) {
   const threads = await prisma.chatThread.findMany({
     where: query.q ? { AND: [where, threadSearchWhere(query.q)] } : where,
-    include: {
-      ...threadInclude,
-      messages: { orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 1 },
-    },
+    include: threadInclude,
     orderBy: [{ lastMessageAt: 'desc' }, { id: 'desc' }],
     take: query.limit + 1,
     ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
@@ -1053,16 +1082,38 @@ async function listThreads(
   return { page, nextCursor: hasMore ? page.at(-1)!.id : null };
 }
 
+/**
+ * The newest message of each listed thread, in one indexed statement. A
+ * nested `take: 1` include has no per-thread LIMIT in SQL: it reads every
+ * message of every thread on the page and keeps one each in memory.
+ */
+async function lastMessages(threadIds: string[]) {
+  if (!threadIds.length) return new Map<string, ChatMessage>();
+  const rows = await prisma.$queryRaw<ChatMessage[]>(Prisma.sql`
+    SELECT last.*
+    FROM unnest(ARRAY[${Prisma.join(threadIds)}]::text[]) AS listed("threadId")
+    CROSS JOIN LATERAL (
+      SELECT message.* FROM "ChatMessage" AS message
+      WHERE message."threadId" = listed."threadId"
+      ORDER BY message."createdAt" DESC, message."id" DESC
+      LIMIT 1
+    ) AS last
+  `);
+  return new Map(rows.map(row => [row.threadId, row]));
+}
+
 export async function listChatThreads(viewer: ChatViewer, query: z.infer<typeof listQuery>) {
   const includeAccountChats = query.contract === 'accounts';
   const { page, nextCursor } = await listThreads(accessibleThreadsWhere(viewer, includeAccountChats), query);
-  const [unread, unreadThreads] = await Promise.all([
-    unreadCounts(viewer, page.map(thread => thread.id)),
+  const threadIds = page.map(thread => thread.id);
+  const [last, unread, unreadThreads] = await Promise.all([
+    lastMessages(threadIds),
+    unreadCounts(viewer, threadIds),
     unreadThreadCount(viewer, prisma, includeAccountChats),
   ]);
   return {
     threads: await Promise.all(page.map(async thread => threadSummaryJson(
-      thread, viewer.userId, unread.get(thread.id) ?? 0, await conversationJson(thread, viewer,
+      thread, last.get(thread.id), viewer.userId, unread.get(thread.id) ?? 0, await conversationJson(thread, viewer,
         thread.kind === 'SESSION' && thread.booking ? chatRoleIn(viewer, thread.booking)! : accountRoleIn(viewer, thread)!,
         prisma, { summary: true }),
     ))),
@@ -1077,16 +1128,20 @@ export async function listChatThreads(viewer: ChatViewer, query: z.infer<typeof 
 export async function listChatThreadsForAdmin(query: z.infer<typeof listQuery>) {
   const includeAccountChats = query.contract === 'accounts';
   const { page, nextCursor } = await listThreads(includeAccountChats ? {} : { kind: 'SESSION' }, query);
-  const counts = page.length
-    ? await prisma.chatMessage.groupBy({
-      // Count what people wrote; system lines are the platform's own record.
-      by: ['threadId'], where: { threadId: { in: page.map(thread => thread.id) }, kind: { not: 'SYSTEM' } }, _count: { _all: true },
-    })
-    : [];
+  const threadIds = page.map(thread => thread.id);
+  const [last, counts] = await Promise.all([
+    lastMessages(threadIds),
+    threadIds.length
+      ? prisma.chatMessage.groupBy({
+        // Count what people wrote; system lines are the platform's own record.
+        by: ['threadId'], where: { threadId: { in: threadIds }, kind: { not: 'SYSTEM' } }, _count: { _all: true },
+      })
+      : [],
+  ]);
   const countByThread = new Map(counts.map(count => [count.threadId, count._count._all]));
   return {
     threads: await Promise.all(page.map(async thread => ({
-      ...threadSummaryJson(thread, null, 0, await conversationJson(thread, null, 'ADMIN', prisma, { summary: true })),
+      ...threadSummaryJson(thread, last.get(thread.id), null, 0, await conversationJson(thread, null, 'ADMIN', prisma, { summary: true })),
       messageCount: countByThread.get(thread.id) ?? 0,
     }))),
     nextCursor,
@@ -1901,12 +1956,14 @@ export async function postChatMessage(viewer: ChatViewer, threadId: string, rawI
 }
 
 export async function markChatRead(viewer: ChatViewer, threadId: string, includeAccountChats = true) {
+  // It can wait on a send's conversation lock, and the five-second default
+  // expires mid-request against a remote database.
   return prisma.$transaction(async tx => {
     await lockThreadAccessForWrite(tx, viewer, threadId);
-    const { thread } = await loadAccessibleThread(viewer, threadId, tx);
-    await markRead(tx, thread.id, viewer.userId, new Date());
+    await assertThreadAccessible(tx, viewer, threadId);
+    await markRead(tx, threadId, viewer.userId, new Date());
     return unreadThreadCount(viewer, tx, includeAccountChats);
-  });
+  }, { timeout: 30_000 });
 }
 
 function reminderText(

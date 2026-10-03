@@ -126,6 +126,7 @@ import {
   type ChatThreadDetailWire,
   type ChatThreadListWire,
 } from './chat-wire';
+import { clearChatCache } from './chat-cache';
 import { isRecentAuthRequired } from './account-security';
 import { requestRecentAuthentication } from './recent-auth-coordinator';
 
@@ -149,6 +150,9 @@ async function apiFetch(path: string, options: RequestInit = {}, allowRecentAuth
 }
 
 export async function api<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
+  // Every sign-out passes through here, and signing out is a client-side
+  // navigation, so page memory would otherwise keep the last account's chats.
+  if (path === '/auth/logout') clearChatCache();
   const { response, prefetchedJson } = await apiFetch(path, options);
   if (!response.headers.get('content-type')?.includes('application/json')) throw new ApiError('The booking service is temporarily unavailable. Please try again.', response.status);
   const data = prefetchedJson ?? await response.json();

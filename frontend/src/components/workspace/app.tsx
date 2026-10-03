@@ -28,7 +28,7 @@ import { alertsButtonLabel, chatBadge, chatTabLabel } from '@/lib/chat';
 import { destroyProductTour, startProductTour, type ProductTourContext } from '@/lib/product-tour';
 import type { AccountDirectoryUser, ClubPermission, ClubStaffWorkspaceAccess, Membership, WorkspaceResponse } from '@/lib/types';
 import { cn, initials, shortDate } from '@/lib/utils';
-import { ChatInbox } from '@/components/chat/chat-inbox';
+import { ChatInbox, useChatInboxPrefetch } from '@/components/chat/chat-inbox';
 import { useChatUnread } from '@/components/chat/use-chat-unread';
 import Dashboard, { CalendarView } from './dashboard';
 import { ManagementView } from './management';
@@ -205,6 +205,8 @@ export default function WorkspaceApp() {
   const mainRef = useRef<HTMLElement>(null);
   const replayTourRef = useRef(false);
   const { unreadThreads: chatUnread, beginUnreadRequest, commitUnreadNow } = useChatUnread(!!data);
+  // Warm Chat while the person works elsewhere, so opening it is instant.
+  useChatInboxPrefetch(data?.user.accountType, data?.user.username, !!data && view !== 'chat');
 
   const refresh = useCallback(async () => {
     let workspace = await loadWorkspace();

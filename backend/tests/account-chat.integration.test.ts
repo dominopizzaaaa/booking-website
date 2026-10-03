@@ -131,6 +131,23 @@ describe.sequential('Account chat', () => {
       .toMatchObject({ directKey: [viewer.id, legacy.id].sort().join(':') });
   });
 
+  it('previews each listed conversation by its newest message', async () => {
+    const student = await person('Preview Student');
+    const threadId = (await openConversation(student.cookie, club.user.username).expect(200)).body.threadId as string;
+    for (const body of ['First question', 'Second question', 'Third question']) {
+      await request(app).post(`/api/chats/${threadId}/messages`).set('Cookie', student.cookie).send({ body }).expect(201);
+    }
+    // Written last but dated earlier: the preview follows time, not insertion.
+    await prisma.chatMessage.create({ data: {
+      threadId, kind: 'TEXT', senderUserId: student.id, senderRole: 'STUDENT', senderName: student.name,
+      body: 'Backdated note', createdAt: new Date(Date.now() - 86_400_000),
+    } });
+
+    const list = await request(app).get('/api/chats').query({ contract: 'accounts' }).set('Cookie', club.cookie).expect(200);
+    expect(list.body.threads.find((thread: { id: string }) => thread.id === threadId))
+      .toMatchObject({ lastMessage: { body: 'Third question', mine: false } });
+  });
+
   it('keeps account messages, lists and unread state private while granting one active roster coach access', async () => {
     const student = await person('Private Conversation Student');
     const outsider = await person('Account Chat Outsider');
@@ -173,6 +190,7 @@ describe.sequential('Account chat', () => {
     for (const cookie of [outsider.cookie, otherClub.cookie, otherClub.coachCookie]) {
       await request(app).get(`/api/chats/${threadId}`).query({ contract: 'accounts' }).set('Cookie', cookie).expect(404);
       await request(app).post(`/api/chats/${threadId}/messages`).set('Cookie', cookie).send({ body: 'Let me in' }).expect(404);
+      await request(app).post(`/api/chats/${threadId}/read`).query({ contract: 'accounts' }).set('Cookie', cookie).send({}).expect(404);
       const list = await request(app).get('/api/chats').query({ q: student.username, contract: 'accounts' }).set('Cookie', cookie).expect(200);
       expect(list.body.threads.map((item: { id: string }) => item.id)).not.toContain(threadId);
       expect(list.body.unreadThreads).toBe(0);
@@ -202,6 +220,9 @@ describe.sequential('Account chat', () => {
     expect(coachDetail.body.messages.some((message: { body: string }) => message.body === 'I would like help with my backhand.')).toBe(true);
     expect(coachDetail.body.viewer).toMatchObject({ role: 'COACH', canPost: true, canPropose: true, canAssignCoach: false });
     expect((await request(app).get('/api/chats/unread').query({ contract: 'accounts' }).set('Cookie', club.coachCookie).expect(200)).body.unreadThreads).toBe(1);
+    // Marking read authorizes with the same rule as reading, assigned coach included.
+    expect((await request(app).post(`/api/chats/${threadId}/read`).query({ contract: 'accounts' })
+      .set('Cookie', club.coachCookie).send({}).expect(200)).body).toEqual({ ok: true, unreadThreads: 0 });
     const coachList = await request(app).get('/api/chats').query({ contract: 'accounts' }).set('Cookie', club.coachCookie).expect(200);
     expect(coachList.body.threads.map((item: { id: string }) => item.id)).toContain(threadId);
 
@@ -223,6 +244,7 @@ describe.sequential('Account chat', () => {
     expect(removed.body.thread.conversation.assignedCoach).toBeNull();
     expect(removed.body.thread.messages.at(-1)).toMatchObject({ kind: 'SYSTEM', event: 'COACH_REMOVED' });
     await request(app).get(`/api/chats/${threadId}`).query({ contract: 'accounts' }).set('Cookie', club.coachCookie).expect(404);
+    await request(app).post(`/api/chats/${threadId}/read`).query({ contract: 'accounts' }).set('Cookie', club.coachCookie).send({}).expect(404);
     expect((await request(app).get('/api/chats/unread').query({ contract: 'accounts' }).set('Cookie', club.coachCookie).expect(200)).body.unreadThreads).toBe(0);
   });
 
