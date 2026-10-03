@@ -228,3 +228,49 @@ test('the club opens a session chat from its booking detail and messages everyon
   await expect(thread).toBeFocused();
   expect(await page.evaluate(() => window.history.length)).toBe(openedLength);
 });
+
+/** The workspace tab bar on screen: a sidebar on desktop, a bottom bar on phones. */
+async function workspaceNavigation(page: Page): Promise<Locator> {
+  const mobile = page.getByRole('navigation', { name: 'Mobile navigation' });
+  if (await mobile.isVisible()) return mobile;
+  const desktop = page.getByRole('navigation', { name: 'Primary' });
+  await expect(desktop).toBeVisible();
+  return desktop;
+}
+
+test('a slow connection still opens a chat, and returning to it paints from memory', async ({ page }) => {
+  test.setTimeout(120_000);
+  await responseJson(await page.request.post('/api/auth/demo', { data: {} }));
+  const club = await responseJson<ManagerWorkspace>(await page.request.get('/api/workspace'));
+  const booking = club.bookings.find(candidate => candidate.status === 'CONFIRMED' && candidate.participants.length > 0);
+  test.skip(!booking, 'This demo workspace has no confirmed session to message.');
+  const { threadId } = await responseJson<{ threadId: string }>(
+    await page.request.post(`/api/chats/bookings/${booking!.id}`, { data: {} }),
+  );
+  const message = `Bring spare grips ${Date.now()}`;
+  await responseJson(await page.request.post(`/api/chats/${threadId}/messages`, { data: { body: message } }));
+
+  // Every conversation load outlasts the four-second poll. The first answer
+  // must still be shown instead of being replaced by the next poll forever.
+  let conversationDelayMs = 5_000;
+  await page.route(url => url.pathname === `/api/chats/${threadId}`, async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    await new Promise(resolve => setTimeout(resolve, conversationDelayMs));
+    await route.continue().catch(() => undefined);
+  });
+  await page.goto(`/?tab=chat&thread=${threadId}`);
+  await expect(page.getByRole('log').getByText(message)).toBeVisible({ timeout: 20_000 });
+
+  // Leave Chat within the app, then come back while the server is slower
+  // still: the inbox and the conversation paint from what was already seen.
+  const backToChats = page.getByRole('button', { name: 'Back to chats' });
+  if (await backToChats.isVisible()) await backToChats.click();
+  await (await workspaceNavigation(page)).getByRole('button', { name: 'Home', exact: true }).click();
+  await expect(page).toHaveURL(url => url.searchParams.get('tab') !== 'chat');
+  conversationDelayMs = 60_000;
+  await (await workspaceNavigation(page)).getByRole('button', { name: /^Chat/ }).click();
+  const row = page.getByRole('list', { name: 'Chats' }).getByRole('button', { name: new RegExp(message) });
+  await expect(row).toBeVisible({ timeout: 2_000 });
+  await row.click();
+  await expect(page.getByRole('log').getByText(message)).toBeVisible({ timeout: 2_000 });
+});

@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 4.9.0** · Last updated 2026-10-02
+**Version 4.10.0** · Last updated 2026-10-03
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -174,6 +174,7 @@ frontend/          Next.js App Router (TypeScript, Tailwind)
     api.ts         Every API call lives here, typed
     alerts.ts      Alert icon/tone vocabulary shared by both apps
     chat.ts        Chat list/thread wording and grouping helpers
+    chat-cache.ts  Per-account, page-memory inbox and conversation cache
     product-tour.ts  Versioned Driver.js tours, first-run persistence, visible anchors
     utils.ts       cn, money, dates, initials()
     booking-links.ts  Re-book and search-result links into /book/[slug] preselection
@@ -1031,6 +1032,35 @@ session, locking the thread row so several API processes cannot double-post.
 Tests must pass `businessIds` to `sendDueSessionReminders()` so a sweep never
 writes into another tenant's data in a shared database.
 
+### Chat loading and latency
+
+Every Prisma relation level is one sequential database round trip, and the
+thread include alone is about fifteen levels deep, so chat cost grows with
+query count far more than with rows. Keep these rules when changing it:
+
+- The list previews come from `lastMessages()`, one lateral `LIMIT 1` query.
+  Never add a nested `messages: { take: 1 }` include: Prisma has no per-parent
+  LIMIT in SQL and reads every message of every listed thread.
+- `POST /api/chats/:threadId/read` authorizes with `assertThreadAccessible()`,
+  the `accessibleThreadsSql()` predicate, after its write locks; it does not
+  load the whole thread. That SQL rule must stay identical to `chatRoleIn()`
+  and `accountRoleIn()`. Its transaction uses the 30-second timeout because
+  it can wait behind a send's conversation lock.
+- `buildThreadDetail()` runs independent lookups side by side. The advisory
+  suggestion availability check runs outside any transaction of its own,
+  because inside one its parallel reads would run one at a time.
+- The browser keeps what one account last saw in `frontend/src/lib/chat-cache.ts`
+  (page memory only, never storage) and paints it first while a fresh copy
+  loads. A different account's first use replaces it, and `api()` clears it
+  on `/auth/logout`, because sign-out is a client-side navigation. Revoked
+  threads are evicted, and only a fresh server copy marks a thread read. Both
+  shells prefetch the inbox once while the person is elsewhere, and only the
+  inbox's first load may adopt that prefetch.
+- A background poll never starts while an earlier load is still in flight.
+  If it did, a response slower than the four-second thread poll would always
+  be replaced by the next poll, so a slow connection would never show the
+  conversation. Deliberate reloads after a mutation still supersede.
+
 ### Detected session suggestions
 
 While a student and coach talk a one-to-one session through (an `ACCOUNT`
@@ -1322,6 +1352,16 @@ independent of PostgreSQL and worker state. `/api/health` is the stricter
 release-readiness gate and may return 503 when the database or required schema
 contract is unavailable.
 
+The API and PostgreSQL must share a region and connect over the private
+network (`${{Postgres.DATABASE_URL}}`, not the public proxy URL). Requests make
+dozens of sequential queries, so per-query latency multiplies. On 2026-10-02,
+production took about 210 ms longer than `/api/live` for each query a request
+made: one query added about 0.2 s, and two added about 0.4–0.7 s. That is
+cross-region latency, and it put Chat over ten seconds. Fixing the placement is
+an **OPEN** operator action. To check a deployment, compare the time to first
+byte of `/api/live` with `/api/public/<missing-slug>`, which runs the
+rate-limit query plus one lookup.
+
 Backend Vitest must remain file-serial: `npm test` invokes
 `--no-file-parallelism` because integration and configuration tests share
 mutable process and database state. Do not run its files concurrently. Locally,
@@ -1511,6 +1551,19 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 4.10.0 — 2026-10-03
+
+Made Chat appear at once and survive slow database links. Production showed
+about 210 ms per database query against roughly 25 sequential queries per chat
+request, so the inbox and a conversation each took several seconds. A thread
+poll that outlasted its four-second interval also discarded every response.
+Polls now skip while a load is in flight. The browser paints the last-seen
+inbox and conversations from a per-account page-memory cache, which sign-out
+clears, and prefetches the inbox. The list reads previews with one lateral
+query instead of every message. Mark-read authorizes with one SQL predicate,
+and thread detail runs independent lookups in parallel. Co-locating the API
+and database is recorded in §8 as an open operator action.
 
 ### 4.9.0 — 2026-10-02
 

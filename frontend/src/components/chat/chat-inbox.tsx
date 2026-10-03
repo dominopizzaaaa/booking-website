@@ -64,6 +64,9 @@ import {
   proposalTone,
   startsChatRun,
 } from '@/lib/chat';
+import {
+  cachedInbox, cachedThread, chatCacheScope, forgetThread, pendingInbox, prefetchInbox, rememberInbox, rememberThread,
+} from '@/lib/chat-cache';
 import type {
   AccountType,
   ChatMessage,
@@ -440,10 +443,12 @@ function ProposalMessage({ message, proposal, busy, onAct, onCounter, onOpenBook
   </li>;
 }
 
-function ChatThreadPane({ threadId, initialDetail, mode, fullscreen, singlePane, onBack, beginUnreadRequest, commitUnreadNow, onRead, onRevoked, onActivity, onOpenBooking, onBookingsChanged }: {
+function ChatThreadPane({ threadId, initialDetail, cacheScope, mode, fullscreen, singlePane, onBack, beginUnreadRequest, commitUnreadNow, onRead, onRevoked, onActivity, onOpenBooking, onBookingsChanged }: {
   threadId: string;
   /** A thread the server already returned, e.g. when it was just created. */
   initialDetail?: ChatThreadDetail;
+  /** Whose remembered conversations may paint first; null to always wait for the server. */
+  cacheScope: string | null;
   mode: ChatMode;
   fullscreen: boolean;
   singlePane: boolean;
@@ -484,6 +489,9 @@ function ChatThreadPane({ threadId, initialDetail, mode, fullscreen, singlePane,
   const lifecycle = useRef(0);
   const contentGeneration = useRef(0);
   const latestLoad = useRef(0);
+  // A refresh that outlasts the poll interval must not be replaced by the
+  // next poll before it lands, or a slow connection never shows the chat.
+  const loadsInFlight = useRef(0);
   const latestEarlier = useRef(0);
   const latestMutation = useRef(0);
   const mutationInFlight = useRef(false);
@@ -527,9 +535,10 @@ function ChatThreadPane({ threadId, initialDetail, mode, fullscreen, singlePane,
     setBusyProposalId(null);
     lastReadMessage.current = null;
     seenMessages.current = null;
+    if (cacheScope) forgetThread(cacheScope, threadId);
     onRevoked(threadId);
     return true;
-  }, [mode, onRevoked, threadId]);
+  }, [cacheScope, mode, onRevoked, threadId]);
 
   const markRead = useCallback((latestId: string | null) => {
     if (mode !== 'participant' || !latestId || latestId === lastReadMessage.current) return;
@@ -548,7 +557,8 @@ function ChatThreadPane({ threadId, initialDetail, mode, fullscreen, singlePane,
     });
   }, [beginUnreadRequest, commitUnreadNow, mode, onRead, revokeAccess, threadId]);
 
-  const apply = useCallback((next: ChatThreadDetail) => {
+  /** Show a conversation. Only a copy fresh from the server marks it read. */
+  const apply = useCallback((next: ChatThreadDetail, fresh = true) => {
     // A booking made, moved or cancelled while the chat was open (by anyone)
     // arrives as a system line; the host app refreshes its bookings then.
     const seen = seenMessages.current;
@@ -558,13 +568,14 @@ function ChatThreadPane({ threadId, initialDetail, mode, fullscreen, singlePane,
     seenMessages.current = new Set([...(seen ?? []), ...next.messages.map(message => message.id)]);
     setDetail(next);
     setState('ready');
-    markRead(next.messages.at(-1)?.id ?? null);
+    if (fresh) markRead(next.messages.at(-1)?.id ?? null);
   }, [markRead, onBookingsChanged]);
 
   const load = useCallback(async (quiet = false) => {
     const activeLifecycle = lifecycle.current;
     const generation = contentGeneration.current;
     const request = ++latestLoad.current;
+    loadsInFlight.current += 1;
     try {
       const next = mode === 'admin' ? await adminChatThread(threadId) : await loadChatThread(threadId);
       if (activeLifecycle !== lifecycle.current || generation !== contentGeneration.current || request !== latestLoad.current) return;
@@ -576,8 +587,15 @@ function ChatThreadPane({ threadId, initialDetail, mode, fullscreen, singlePane,
         setState('error');
         setError(messageOf(cause));
       }
+    } finally {
+      if (activeLifecycle === lifecycle.current) loadsInFlight.current -= 1;
     }
   }, [apply, mode, revokeAccess, threadId]);
+
+  /** A background refresh, skipped while an earlier one is still on its way. */
+  const refreshQuietly = useCallback(() => {
+    if (loadsInFlight.current === 0) void load(true);
+  }, [load]);
 
   useEffect(() => {
     lifecycle.current += 1;
@@ -595,8 +613,14 @@ function ChatThreadPane({ threadId, initialDetail, mode, fullscreen, singlePane,
     stickToBottom.current = true;
     lastReadMessage.current = null;
     seenMessages.current = null;
+    loadsInFlight.current = 0;
+    const remembered = cacheScope ? cachedThread(cacheScope, threadId) : null;
     if (initialDetail?.id === threadId) apply(initialDetail);
-    else void load();
+    else if (remembered) {
+      // Paint what this person last saw here, then bring it up to date.
+      apply(remembered, false);
+      void load(true);
+    } else void load();
     return () => {
       lifecycle.current += 1;
       contentGeneration.current += 1;
@@ -607,15 +631,20 @@ function ChatThreadPane({ threadId, initialDetail, mode, fullscreen, singlePane,
   // from the host are recreated.
   }, [threadId]);
 
-  useVisiblePolling(() => { void load(true); }, mode === 'admin' ? 10_000 : threadPollMs);
+  useVisiblePolling(refreshQuietly, mode === 'admin' ? 10_000 : threadPollMs);
 
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === 'visible') void load(true);
+      if (document.visibilityState === 'visible') refreshQuietly();
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
-  }, [load]);
+  }, [refreshQuietly]);
+
+  // Whatever the conversation now shows is what reopening it paints first.
+  useEffect(() => {
+    if (cacheScope && detail?.id === threadId) rememberThread(cacheScope, detail);
+  }, [cacheScope, detail, threadId]);
 
   // Move focus into any single-pane conversation, including the 768–879px
   // range where the list is replaced even though the phone chrome stays.
@@ -1016,6 +1045,22 @@ const defaultHeading = {
   description: 'Messages and session planning, together.',
 };
 
+/** Long enough for the shell's own first loads to go ahead of the inbox. */
+const inboxPrefetchDelayMs = 1_000;
+
+/**
+ * Load the inbox in the background while the person is elsewhere in the app,
+ * so their first visit to Chat paints at once instead of waiting on it.
+ */
+export function useChatInboxPrefetch(viewerType: AccountType | undefined, viewerUsername: string | undefined, enabled: boolean) {
+  const scope = enabled && viewerType ? chatCacheScope(viewerType, viewerUsername) : null;
+  useEffect(() => {
+    if (!scope) return;
+    const timer = window.setTimeout(() => prefetchInbox(scope, () => loadChatThreads()), inboxPrefetchDelayMs);
+    return () => window.clearTimeout(timer);
+  }, [scope]);
+}
+
 /**
  * Instagram-style inbox: the list and the open conversation sit side by side
  * where there is room, and on a phone the conversation takes the whole
@@ -1028,29 +1073,39 @@ export function ChatInbox({
   const rootRef = useRef<HTMLElement>(null);
   const split = useSplitLayout(rootRef);
   const phone = usePhone();
-  const [threads, setThreads] = useState<ChatThreadSummary[]>([]);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const cacheScope = mode === 'participant' ? chatCacheScope(viewerType, viewerUsername) : null;
+  // The inbox this person last saw paints at once; the first load refreshes it.
+  const [remembered] = useState(() => cacheScope ? cachedInbox(cacheScope) : null);
+  const [threads, setThreads] = useState<ChatThreadSummary[]>(() => remembered?.threads ?? []);
+  const [nextCursor, setNextCursor] = useState<string | null>(() => remembered?.nextCursor ?? null);
   const [search, setSearch] = useState('');
-  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [state, setState] = useState<'loading' | 'ready' | 'error'>(() => remembered ? 'ready' : 'loading');
   const [error, setError] = useState('');
   const [loadingMore, setLoadingMore] = useState(false);
   const [newConversationOpen, setNewConversationOpen] = useState(false);
-  const [accountChatAvailable, setAccountChatAvailable] = useState(false);
+  const [accountChatAvailable, setAccountChatAvailable] = useState(() => remembered?.accountChatAvailable ?? false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const requestRef = useRef(0);
+  const listLoadsInFlight = useRef(0);
+  /** The search the rows on screen answer; only the unfiltered inbox is remembered. */
+  const [rowsQuery, setRowsQuery] = useState('');
   const threadButtons = useRef(new Map<string, HTMLButtonElement>());
   const listHeadingRef = useRef<HTMLHeadingElement>(null);
   const openedFromRow = useRef<string | null>(null);
   const previousThreadId = useRef(threadId);
   const createdThread = useRef<ChatThreadDetail | null>(null);
 
-  const loadList = useCallback(async (query: string, quiet = false) => {
+  const loadList = useCallback(async (query: string, quiet = false, adoptPrefetch = false) => {
     const request = ++requestRef.current;
     const commitUnread = beginUnreadRequest?.();
     setLoadingMore(false);
     if (!quiet) setState(current => (current === 'ready' ? current : 'loading'));
+    listLoadsInFlight.current += 1;
     try {
-      const result = mode === 'admin' ? await adminChatThreads({ q: query }) : await loadChatThreads({ q: query });
+      const prefetched = adoptPrefetch && !query && cacheScope ? pendingInbox(cacheScope) : null;
+      const result = mode === 'admin' ? await adminChatThreads({ q: query })
+        : prefetched ? await prefetched.catch(() => loadChatThreads({ q: query }))
+          : await loadChatThreads({ q: query });
       if (request !== requestRef.current) return;
       setNowMs(Date.now());
       // A first-page refresh is also the server's current authorization set.
@@ -1058,6 +1113,7 @@ export function ChatInbox({
       // revoked previews, while keeping their cursor would skip that page when
       // the reader asks to load it again.
       setThreads(result.threads);
+      setRowsQuery(query);
       setAccountChatAvailable(result.accountChatAvailable);
       setNextCursor(result.nextCursor);
       setState('ready');
@@ -1068,8 +1124,10 @@ export function ChatInbox({
         setError(messageOf(cause));
         setState('error');
       }
+    } finally {
+      listLoadsInFlight.current -= 1;
     }
-  }, [beginUnreadRequest, mode]);
+  }, [beginUnreadRequest, cacheScope, mode]);
 
   const changeSearch = useCallback((value: string) => {
     // Invalidate first-page polling and pagination immediately; waiting for
@@ -1079,12 +1137,25 @@ export function ChatInbox({
     setSearch(value);
   }, []);
 
+  // Only the very first load may adopt a background prefetch still on its way.
+  const firstListLoad = useRef(true);
   useEffect(() => {
-    const timer = window.setTimeout(() => { void loadList(search); }, search ? 250 : 0);
+    const timer = window.setTimeout(() => {
+      const adoptPrefetch = firstListLoad.current;
+      firstListLoad.current = false;
+      void loadList(search, false, adoptPrefetch);
+    }, search ? 250 : 0);
     return () => window.clearTimeout(timer);
   }, [loadList, search]);
 
-  useVisiblePolling(() => { void loadList(search, true); }, listPollMs);
+  // A slow list refresh is left to finish rather than replaced by the next poll.
+  useVisiblePolling(() => { if (listLoadsInFlight.current === 0) void loadList(search, true); }, listPollMs);
+
+  useEffect(() => {
+    if (cacheScope && state === 'ready' && rowsQuery === '') {
+      rememberInbox(cacheScope, { threads, nextCursor, accountChatAvailable });
+    }
+  }, [accountChatAvailable, cacheScope, nextCursor, rowsQuery, state, threads]);
 
   async function loadMore() {
     if (!nextCursor || loadingMore) return;
@@ -1191,6 +1262,7 @@ export function ChatInbox({
         key={threadId}
         threadId={threadId}
         initialDetail={createdThread.current?.id === threadId ? createdThread.current : undefined}
+        cacheScope={cacheScope}
         mode={mode}
         fullscreen={fullscreen}
         singlePane={!split}

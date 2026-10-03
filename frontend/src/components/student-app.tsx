@@ -114,7 +114,7 @@ import { compactButton, field, panel, primaryButton, secondaryButton, statusClas
 import { WaitlistPanel } from '@/components/student/waitlist-panel';
 import { alertsButtonLabel, chatBadge, chatTabLabel } from '@/lib/chat';
 import { destroyProductTour, startProductTour, type ProductTourContext } from '@/lib/product-tour';
-import { ChatInbox } from '@/components/chat/chat-inbox';
+import { ChatInbox, useChatInboxPrefetch } from '@/components/chat/chat-inbox';
 import { useChatUnread } from '@/components/chat/use-chat-unread';
 import type {
   AccountBooking,
@@ -2403,6 +2403,8 @@ export function StudentApp({ slug }: { slug?: string }) {
   const canUseRentals = !!session && session.user.capabilities?.rentals !== false;
   const canSearchPeople = !!session && session.user.capabilities?.directory !== false;
   const canUseDirectChat = !!session && session.user.capabilities?.chat !== false;
+  // Warm Chat while the student is on another tab, so opening it is instant.
+  useChatInboxPrefetch('STUDENT', session?.user.username, canUseDirectChat && activeTab !== 'chat');
   const canUseCalendar = !!session && session.user.capabilities?.calendar !== false;
   const canEditProfile = !!session && session.user.capabilities?.profileEdit !== false;
   const canUseFamily = session?.user.capabilities?.familyManagement === true;
