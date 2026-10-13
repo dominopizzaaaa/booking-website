@@ -1,6 +1,6 @@
 # AGENTS.md — Courtly
 
-**Version 4.11.0** · Last updated 2026-10-03
+**Version 4.11.1** · Last updated 2026-10-13
 
 Orientation for coding agents working on this repository. Read this before
 exploring; it exists so you do not start cold. **Update it in the same commit
@@ -1209,6 +1209,10 @@ duplicated into either alert store.
 
 ## 7. Conventions that reviewers enforce
 
+- Every commit created or amended in this repository must use
+  `domksj23@gmail.com` as both its author and committer email. Before
+  committing, verify the repository's `user.email`; never commit with a
+  `@bytedance.com` address.
 - **Comments explain *why*, not *what*.** Match the density already present.
 - Errors are user-facing sentences, thrown as `HttpError(status, message)`.
 - Zod `.strict()` on every request body; unknown fields are a 400.
@@ -1577,6 +1581,12 @@ quickest way to tell which mode a deployment is in.
 ---
 
 ## Changelog
+
+### 4.11.1 — 2026-10-13
+
+Pinned the author and committer email for every future repository commit to
+`domksj23@gmail.com`, with an explicit pre-commit configuration check so
+automated agents do not reintroduce a ByteDance address into history.
 
 ### 4.11.0 — 2026-10-03
 
